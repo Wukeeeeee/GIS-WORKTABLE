@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GIS AI WorkTable</title>
+
+  <!-- ===== Leaflet CSS (jsDelivr CDN — 国内可访问) ===== -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" />
+
+  <!-- ===== 自定义样式 ===== -->
+  <link rel="stylesheet" href="css/style.css" />
+
+  <!-- ===== 内联关键样式（防止 FOUC） ===== -->
+  <style>
+    /* 布局骨架闪白保护 */
+    .app-layout { opacity: 0; transition: opacity 0.15s; }
+    .app-layout.ready { opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <!-- ========================================================= -->
+  <!-- 应用布局                                                  -->
+  <!-- ========================================================= -->
+  <div class="app-layout" id="app">
+
+    <!-- ==================== 主体 ==================== -->
+    <div class="app-body">
+
+      <!-- ======== 左侧聊天面板 ======== -->
+      <aside class="chat-panel">
+        <div class="chat-header">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" style="height:48px;width:auto;">
+            <g transform="translate(10, 10)">
+              <rect x="0" y="0" width="40" height="40" fill="none" stroke="#1A1A1A" stroke-width="2.5" rx="4"/>
+              <line x1="20" y1="5" x2="20" y2="35" stroke="#1A1A1A" stroke-width="1.5" stroke-dasharray="2 2"/>
+              <line x1="5" y1="20" x2="35" y2="20" stroke="#1A1A1A" stroke-width="1.5" stroke-dasharray="2 2"/>
+              <circle cx="20" cy="20" r="4" fill="#1A1A1A"/>
+            </g>
+            <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="#1A1A1A">GIS</text>
+            <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="#444444">WORKTABLE</text>
+          </svg>
+        </div>
+
+        <!-- 消息列表 -->
+        <div class="chat-messages custom-scrollbar" id="chatMessages">
+          <div class="chat-messages-empty">
+            上传 GIS 数据后，<br>告诉我你想做什么分析
+          </div>
+        </div>
+
+        <!-- 输入区域 -->
+        <div class="chat-input-area">
+          <div class="chat-input-wrapper">
+            <textarea
+              class="chat-input"
+              id="chatInput"
+              placeholder="输入指令或查询..."
+              rows="3"
+            ></textarea>
+            <div class="chat-input-actions">
+              <button class="icon-btn" id="uploadTrigger" title="上传文件">
+                <svg class="svg-icon" style="color:var(--ui-gray-400)"><use href="assets/icons.svg#icon-attach"/></svg>
+              </button>
+              <button class="icon-btn" id="sendBtn" title="发送">
+                <svg class="svg-icon" style="color:var(--ui-gray-900)"><use href="assets/icons.svg#icon-send"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- ======== 中央主区域 ======== -->
+      <main class="main-content">
+
+        <!-- 地图区域 -->
+        <div class="map-area map-grid" id="mapArea">
+          <div class="map-placeholder">地图区域</div>
+          <div id="map"></div>
+
+          <!-- 缩放控件（自定义） -->
+          <div class="map-zoom-controls">
+            <button class="map-zoom-btn" id="zoomIn" title="放大">
+              <svg><use href="assets/icons.svg#icon-zoom-in"/></svg>
+            </button>
+            <button class="map-zoom-btn" id="zoomOut" title="缩小">
+              <svg><use href="assets/icons.svg#icon-zoom-out"/></svg>
+            </button>
+            <button class="map-zoom-btn" id="zoomLocate" title="定位">
+              <svg><use href="assets/icons.svg#icon-locate"/></svg>
+            </button>
+          </div>
+
+          <!-- 坐标显示 -->
+          <div class="map-coords" id="mapCoords">
+            --
+          </div>
+        </div>
+
+        <!-- ======== 底部面板 ======== -->
+        <div class="bottom-panels">
+
+          <!-- 图层列表 -->
+          <section class="panel-section panel-section-layers">
+            <div class="panel-header">
+              <span class="panel-header-title">图层列表</span>
+              <div class="panel-header-actions">
+                <button class="upload-btn" id="uploadTriggerBtn" title="上传文件">
+                  <svg><use href="assets/icons.svg#icon-upload"/></svg>
+                  <span>上传</span>
+                </button>
+                <button class="panel-header-btn" title="筛选">
+                  <svg><use href="assets/icons.svg#icon-filter"/></svg>
+                </button>
+                <button class="panel-header-btn" title="更多">
+                  <svg><use href="assets/icons.svg#icon-more"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="layers-table-wrapper custom-scrollbar" id="layersTableWrapper">
+              <!-- 空状态 -->
+              <div class="layers-empty" id="layersEmpty">
+                <svg><use href="assets/icons.svg#icon-file"/></svg>
+                <span>暂无图层</span>
+                <span style="font-size:12px;margin-top:4px;">上传 GIS 文件后图层将显示在此</span>
+              </div>
+              <!-- 图层表格 -->
+              <table class="layers-table" id="layersTable" style="display:none;">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>图层名称</th>
+                    <th>类型</th>
+                    <th style="text-align:right;">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="layerTbody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <!-- 处理结果 -->
+          <section class="panel-section panel-section-files">
+            <div class="panel-header">
+              <span class="panel-header-title">处理结果</span>
+              <div class="panel-header-actions">
+                <button class="download-header-btn" title="下载全部">
+                  <svg><use href="assets/icons.svg#icon-download"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="files-content custom-scrollbar" id="filesContainer">
+              <span style="color:var(--ui-gray-300);font-size:13px;text-align:center;display:block;padding:20px;">
+                执行 GIS 操作后，<br>结果文件将显示在此
+              </span>
+            </div>
+          </section>
+
+        </div><!-- /bottom-panels -->
+      </main>
+    </div><!-- /app-body -->
+  </div><!-- /app-layout -->
+
+  <!-- ========================================================= -->
+  <!-- 隐藏的文件输入（用于上传）                                  -->
+  <!-- ========================================================= -->
+  <input
+    type="file"
+    id="fileInput"
+    class="hidden-input"
+    accept=".geojson,.json,.shp,.gpkg,.kml,.csv"
+    multiple
+  />
+
+  <!-- ========================================================= -->
+  <!-- Toast 通知容器                                            -->
+  <!-- ========================================================= -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ========================================================= -->
+  <!-- JavaScript                                                -->
+  <!-- ========================================================= -->
+
+  <!-- Leaflet (jsDelivr CDN — 国内可访问) -->
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+
+  <!-- 应用模块（按依赖顺序加载） -->
+  <script src="js/api.js"></script>
+  <script src="js/map.js"></script>
+  <script src="js/chat.js"></script>
+  <script src="js/layers.js"></script>
+  <script src="js/upload.js"></script>
+  <script src="js/app.js"></script>
+
+  <!-- ===== 内联启动脚本（缩放控件绑定等） ===== -->
+  <script>
+    (function() {
+      'use strict';
+
+      // 显示布局（CSS transition）
+      document.getElementById('app').classList.add('ready');
+
+      // ---- 地图缩放控件绑定 ----
+      document.getElementById('zoomIn').addEventListener('click', function() {
+        if (window.GIS && window.GIS.map) {
+          var state = window.GIS.map.getState();
+          if (state) window.GIS.map.setView(state.center, state.zoom + 1);
+        }
+      });
+
+      document.getElementById('zoomOut').addEventListener('click', function() {
+        if (window.GIS && window.GIS.map) {
+          var state = window.GIS.map.getState();
+          if (state) window.GIS.map.setView(state.center, state.zoom - 1);
+        }
+      });
+
+      document.getElementById('zoomLocate').addEventListener('click', function() {
+        if (window.GIS && window.GIS.map) {
+          window.GIS.map.setView([35, 110], 4);
+        }
+      });
+
+      // ---- 上传触发按钮统一 ----
+      // 聊面板的 attach 按钮
+      var attachBtn = document.getElementById('uploadTrigger');
+      // 底部面板的导入按钮
+      var importBtn = document.getElementById('uploadTriggerBtn');
+      // 隐藏的 file input
+      var fileInput = document.getElementById('fileInput');
+
+      function triggerUpload() {
+        if (fileInput) fileInput.click();
+      }
+
+      if (attachBtn) attachBtn.addEventListener('click', triggerUpload);
+      if (importBtn) importBtn.addEventListener('click', triggerUpload);
+
+      // ---- 按钮按下反馈（微交互） ----
+      document.querySelectorAll('button, .icon-btn, .map-zoom-btn, .panel-header-btn, .layer-action-btn')
+        .forEach(function(el) {
+          el.addEventListener('mousedown', function() { this.style.opacity = '0.7'; });
+          el.addEventListener('mouseup', function() { this.style.opacity = '1'; });
+          el.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
+        });
+
+      console.log('[GIS] 内联启动脚本完成');
+    })();
+  </script>
+
+</body>
+</html>
