@@ -1,0 +1,27 @@
+# API Key
+apikey.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 环境变量
+.env
+.env.local
+
+# 对话历史缓存（自动生成）
+backend/chat_history.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

@@ -60,7 +60,7 @@
   --ui-white:    #FFFFFF;
 
   /* Layout */
-  --panel-width-chat: 320px;
+  --panel-width-chat: 25%;
   --panel-height-bottom: 240px;
   --stack-gap: 4px;
   --gutter: 1px;
@@ -272,6 +272,7 @@ html, body {
   font-size: 13px;
   line-height: 1.6;
   position: relative;
+  white-space: pre-wrap;
 }
 
 .message-bubble-ai {

@@ -9,7 +9,7 @@ window.GIS = window.GIS || {};
 
 (function() {
   'use strict';
-
+//将GIS命名空间赋值给常量GIS，相当于全局变量
   const GIS = window.GIS;
 
   /** @type {HTMLElement} */
@@ -48,11 +48,31 @@ window.GIS = window.GIS || {};
   async function send() {
     const text = inputEl ? inputEl.value.trim() : '';
     if (!text) return;
-
+    // 渲染用户消息添加到这个对话框
     addMessage(text, 'user');
     inputEl.value = '';
 
-    addMessage('等待后端接入后，这里会显示 AI 的回复...', 'ai');
+    // 显示加载状态：输入框显示提示文字，禁用按钮
+    const originalPlaceholder = inputEl.placeholder;
+    inputEl.placeholder = 'AI正在回复中...';
+    inputEl.disabled = true;
+    sendBtn.disabled = true;
+    sendBtn.style.opacity = '0.5';
+
+    try {
+      // 发送到后端 API，等待回复
+      const result = await GIS.api.chat(text);
+      addMessage(result.response, 'ai');
+    } catch (err) {
+      addMessage('请求失败: ' + err.message, 'system');
+    } finally {
+      // 恢复输入状态
+      inputEl.placeholder = originalPlaceholder;
+      inputEl.disabled = false;
+      sendBtn.disabled = false;
+      sendBtn.style.opacity = '1';
+      inputEl.focus();
+    }
   }
 
   function addMessage(text, type, options) {

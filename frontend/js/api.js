@@ -6,6 +6,8 @@
  * BASE_URL: http://localhost:8000
  */
 
+
+//创建一个空对象
 window.GIS = window.GIS || {};
 window.GIS.api = (() => {
   const BASE_URL = 'http://localhost:8000';
@@ -22,7 +24,20 @@ window.GIS.api = (() => {
 
   // ===== 聊天 / AI =====
   /** @param {string} message @param {string} [sessionId='default'] */
+// 发送消息到后端的聊天接口，并返回 AI 的回复
   async function chat(message, sessionId = 'default') {
+const res=await fetch(`${BASE_URL}/api/chat`,{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  //sessionId可以用来区分不同的聊天会话，方便后端管理
+  body:JSON.stringify({message,session_id:sessionId})
+})
+if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
+const data=await res.json();
+//返回ai的回复数据
+return data;
+
+
     // TODO: POST /chat  { message, session_id }
   }
 
