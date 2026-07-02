@@ -7,9 +7,9 @@
  * 依赖: Leaflet (jsDelivr CDN)
  *
  * 底图说明:
- * - osm: OpenStreetMap（默认）
- * - arcgis: ArcGIS World Street Map
- * - tianditu: 天地图（需申请免费 token）
+ * - bing_cn: Bing Maps 中国区（默认）
+ * - bing_clean: Bing Maps 无文字版
+ * - bing_aerial: Bing Maps 卫星图
  * ============================================
  */
 
@@ -31,63 +31,11 @@ window.GIS = window.GIS || {};
 
   /**
    * 地图源配置
-   * osm  — OpenStreetMap（默认）
-   * arcgis — ArcGIS 世界街道图（国内可访问）
-   * tianditu — 天地图矢量，最快最稳，需免费申请 token
-   *
-   * 天地图 token 申请: https://console.tianditu.gov.cn/
+   * bing_cn — Bing Maps 中国区（默认，国内可访问，WGS84）
+   * bing_clean — Bing Maps 无文字版
+   * bing_aerial — Bing Maps 卫星图
    */
   const TILE_CONFIG = {
-    // OpenStreetMap（默认）
-    osm: {
-      url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-      attribution: '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>',
-      subdomains: 'abc',
-      maxZoom: 19,
-    },
-    // ArcGIS 世界街道图（国内可访问，无需 token）
-    arcgis: {
-      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
-      attribution: '&copy; Esri, HERE, Garmin, OpenStreetMap',
-      subdomains: [],
-      maxZoom: 18,
-    },
-    // 天地图（WMTS，需申请 token）
-    tianditu: {
-      url: 'https://t{s}.tianditu.gov.cn/vec_w/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=vec&STYLE=default&TILEMATRIXSET=w&FORMAT=tiles&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&tk=',
-      attribution: '&copy; 天地图',
-      subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
-      maxZoom: 18,
-      token: 'YOUR_TIANDITU_TOKEN', // 申请: https://console.tianditu.gov.cn/
-    },
-    // ArcGIS 卫星影像图
-    satellite: {
-      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      attribution: '&copy; Esri, Maxar, Earthstar, USDA',
-      subdomains: [],
-      maxZoom: 18,
-    },
-    // CartoDB 轻量街道图（WGS84，国内部分地区可访问）
-    carto: {
-      url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 20,
-    },
-    // CartoDB 无文字版（纯地图，无标注）
-    carto_clean: {
-      url: 'https://{s}.basemaps.cartocdn.com/light_no_labels/{z}/{x}/{y}.png',
-      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 20,
-    },
-    // CartoDB 无文字深色版
-    carto_dark: {
-      url: 'https://{s}.basemaps.cartocdn.com/dark_no_labels/{z}/{x}/{y}.png',
-      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
-      subdomains: 'abcd',
-      maxZoom: 20,
-    },
     // Bing Maps 中国区（速度快，国内可访问，WGS84）
     bing_cn: {
       url: 'https://t1.dynamic.tiles.ditu.live.com/comp/ch/{q}?mkt=zh-CN&ur=cn&it=G,RL&n=z&og=804&cstl=vbd',
@@ -112,27 +60,6 @@ window.GIS = window.GIS || {};
       maxZoom: 19,
       isBing: true,
     },
-    // OpenTopoMap 全球地形图（WGS84，免费，无国界标注）
-    terrain: {
-      url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
-      attribution: '&copy; <a href="https://opentopomap.org">OpenTopoMap</a>',
-      subdomains: 'abc',
-      maxZoom: 17,
-    },
-    // Wikimedia 地图（OSM 数据，免费，国内部分地区可访问）
-    wikimedia: {
-      url: 'https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}.png',
-      attribution: '&copy; <a href="https://wikimedia.org">Wikimedia</a>',
-      subdomains: [],
-      maxZoom: 19,
-    },
-    // ESRI 世界地形图（ArcGIS 服务，免费）
-    esri_topo: {
-      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-      attribution: '&copy; Esri, USGS, NOAA',
-      subdomains: [],
-      maxZoom: 18,
-    },
   };
 
   /**
@@ -141,7 +68,7 @@ window.GIS = window.GIS || {};
    * @param {object} [options] - 地图选项
    * @param {number[]} [options.center=[35, 110]] - 初始中心点 [lat, lng]
    * @param {number} [options.zoom=4] - 初始缩放级别
-   * @param {'osm'|'arcgis'|'tianditu'|'satellite'|'carto'|'carto_clean'|'carto_dark'|'terrain'|'bing_cn'} [options.tileSource='osm'] - 底图来源
+   * @param {'bing_cn'|'bing_clean'|'bing_aerial'} [options.tileSource='bing_cn'] - 底图来源
    */
   function init(container, options = {}) {
     if (typeof L === 'undefined') {
@@ -192,7 +119,7 @@ window.GIS = window.GIS || {};
 
   let currentSource = 'osm';
   // 可供切换的底图列表
-  const SOURCE_LIST = ['bing_cn', 'bing_clean', 'bing_aerial', 'carto', 'carto_clean', 'terrain', 'osm', 'satellite'];
+  const SOURCE_LIST = ['bing_cn', 'bing_clean', 'bing_aerial'];
 
   /**
    * 将 z/x/y 转换为 Bing Maps quadkey
@@ -211,7 +138,7 @@ window.GIS = window.GIS || {};
 
   /**
    * 切换底图
-   * @param {'osm'|'arcgis'|'tianditu'|'satellite'|'carto'|'carto_clean'|'carto_dark'|'terrain'|'wikimedia'|'esri_topo'} source
+   * @param {'bing_cn'|'bing_clean'|'bing_aerial'} source
    */
   function setTileSource(source) {
     if (!mapInstance) return;
