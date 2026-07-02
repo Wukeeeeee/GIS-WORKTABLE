@@ -270,7 +270,7 @@
         try {
           await window.GIS.api.clearMemory();
           window.GIS.chat.clear();
-          window.GIS.chat.addMessage('已创建新会话', 'system');
+          if (typeof updateGreeting === 'function') updateGreeting();
         } catch (e) {
           window.GIS.chat.addMessage('操作失败: ' + e.message, 'system');
         }
