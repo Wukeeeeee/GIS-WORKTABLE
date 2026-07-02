@@ -201,18 +201,15 @@ window.GIS = window.GIS || {};
 
   /**
    * 加载 GeoJSON 数据到地图
-   * @param {object} geojson - GeoJSON FeatureCollection
-   * @param {string} [name='layer'] - 图层名称（用于索引）
-   * @param {object} [style] - 覆盖默认样式
-   * @returns {L.GeoJSON|null} Leaflet GeoJSON 图层
+   *  Leaflet 自动识别点/线/面，不用手动判断
+   *  @param {object} geojson - GeoJSON 数据
+   *  @param {string} [name='layer'] - 图层名，用于索引和显隐/删除
+   *  @param {object} [style] - 样式，如 { color, fillColor }
    */
   function loadGeoJSON(geojson, name = 'layer', style = {}) {
-    if (!mapInstance || !geojson) {
-      console.warn('[GIS Map] 地图未初始化或无数据');
-      return null;
-    }
+    if (!mapInstance || !geojson) return null;
 
-    // 清除同名旧图层
+    // 如果已存在同名图层，先移除旧的
     if (layers[name]) {
       mapInstance.removeLayer(layers[name]);
     }
@@ -224,6 +221,7 @@ window.GIS = window.GIS || {};
       fillOpacity: 0.1,
     };
 
+    // L.geoJSON 是 Leaflet 自带的，自动区分点线面
     const layer = L.geoJSON(geojson, {
       style: { ...defaultStyle, ...style },
       pointToLayer: (feature, latlng) => {
@@ -237,23 +235,20 @@ window.GIS = window.GIS || {};
       },
     }).addTo(mapInstance);
 
-    layers[name] = layer;
-    geoStore[name] = { geojson, style: { ...defaultStyle, ...style } };
+    layers[name] = layer;                    // 存图层引用（给显隐/删除用）
+    geoStore[name] = { geojson, style };      // 存原始数据（给换颜色用）
 
-    // 自动缩放至图层范围
     try {
       mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30] });
-    } catch (e) {
-      // 单点要素或异常范围时忽略
-    }
+    } catch (e) { /* 单点要素忽略 */ }
 
     return layer;
   }
 
   /**
    * 更新图层颜色
-   * @param {string} name - 图层名
-   * @param {string} color - 新颜色（十六进制）
+   *  调用 loadGeoJSON 用新颜色重新加载
+   *  被 layers.js 的颜色选择器调用
    */
   function setLayerColor(name, color) {
     if (!geoStore[name]) return;
@@ -262,22 +257,24 @@ window.GIS = window.GIS || {};
   }
 
   /**
-   * 显隐图层
-   * @param {string} name - 图层名
-   * @param {boolean} visible
+   * 显隐图层（不删除数据，只是隐藏/显示）
+   *  被 layers.js 的 toggleVisibility 调用
+   *  @param {string} name - 图层名
+   *  @param {boolean} visible - true=显示, false=隐藏
    */
   function setLayerVisible(name, visible) {
     if (!layers[name]) return;
     if (visible) {
-      mapInstance.addLayer(layers[name]);
+      mapInstance.addLayer(layers[name]);      // 加回地图
     } else {
-      mapInstance.removeLayer(layers[name]);
+      mapInstance.removeLayer(layers[name]);    // 从地图移除（数据还在）
     }
   }
 
   /**
-   * 清除所有或指定图层
-   * @param {string} [name] - 不传则清除全部
+   * 删除图层（从地图彻底移除）
+   *  被 layers.js 的 removeLayer 调用
+   *  @param {string} [name] - 图层名，不传则清除所有
    */
   function clearLayers(name) {
     if (!mapInstance) return;
@@ -285,10 +282,12 @@ window.GIS = window.GIS || {};
     if (name && layers[name]) {
       mapInstance.removeLayer(layers[name]);
       delete layers[name];
+      delete geoStore[name];                    // 一起清除存的数据
     } else {
       Object.keys(layers).forEach(k => {
         mapInstance.removeLayer(layers[k]);
         delete layers[k];
+        delete geoStore[k];
       });
     }
   }

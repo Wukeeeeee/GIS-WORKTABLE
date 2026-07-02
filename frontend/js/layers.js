@@ -71,10 +71,13 @@ window.GIS = window.GIS || {};
     renderList();
   }
 
+  // 删除图层：从列表移除 + 从地图清除
   function removeLayer(layerId) {
     layerData = layerData.filter(l => l.layer_id !== layerId);
     renderList();
-    // GIS.map.clearLayers(layerId);
+    if (GIS.map && GIS.map.clearLayers) {
+      GIS.map.clearLayers(layerId);  // 同时从地图上移除
+    }
   }
 
   function toggleVisibility(layerId) {
