@@ -344,7 +344,7 @@ html, body {
 
 .chat-input {
   width: 100%;
-  min-height: 72px;
+  min-height: 150px;
   padding: 10px 12px;
   border: 1px solid var(--ui-gray-200);
   border-radius: 2px;
@@ -676,10 +676,22 @@ html, body {
 }
 
 /* Layer name */
+.layer-color-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  cursor: pointer;
+  border: 1px solid rgba(0,0,0,0.15);
+  flex-shrink: 0;
+}
 .layer-name {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--ui-gray-900);
+  vertical-align: middle;
 }
 
 .layer-type {

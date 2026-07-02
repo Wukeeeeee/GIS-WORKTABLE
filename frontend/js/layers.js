@@ -42,7 +42,10 @@ window.GIS = window.GIS || {};
             <svg><use href="assets/icons.svg#icon-drag"/></svg>
           </span>
         </td>
-        <td><span class="layer-name">${escapeHtml(layer.filename || '未命名')}</span></td>
+        <td>
+          <span class="layer-color-dot" style="background:${layer.color || '#1c1b1b'}" data-id="${layer.layer_id || ''}"></span>
+          <span class="layer-name">${escapeHtml(layer.filename || '未命名')}</span>
+        </td>
         <td><span class="layer-type">${escapeHtml(layer.geometry_type || '未知')}</span></td>
         <td>
           <div class="layer-actions">
@@ -62,9 +65,10 @@ window.GIS = window.GIS || {};
   }
 
   function addLayer(layer) {
-    layerData.push({ ...layer, visible: true });
+    const colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
+    const color = layer.color || colors[layerData.length % colors.length];
+    layerData.push({ ...layer, visible: true, color });
     renderList();
-    // GIS.map.loadGeoJSON(layer.geojson, layer.layer_id);
   }
 
   function removeLayer(layerId) {
@@ -119,6 +123,26 @@ window.GIS = window.GIS || {};
   function bindActionEvents() {
     if (!tbody) return;
     tbody.addEventListener('click', (e) => {
+      // 颜色点点击 → 弹出颜色选择器
+      const dot = e.target.closest('.layer-color-dot');
+      if (dot) {
+        const id = dot.dataset.id;
+        const input = document.createElement('input');
+        input.type = 'color';
+        input.value = dot.style.backgroundColor || '#1c1b1b';
+        input.addEventListener('input', function() {
+          const layer = layerData.find(l => l.layer_id === id);
+          if (layer) {
+            layer.color = this.value;
+            dot.style.background = this.value;
+            // 更新地图上的图层颜色
+            // TODO: 用新颜色重新加载图层
+          }
+        });
+        input.click();
+        return;
+      }
+
       const btn = e.target.closest('.layer-action-btn');
       if (!btn) return;
       const action = btn.dataset.action;

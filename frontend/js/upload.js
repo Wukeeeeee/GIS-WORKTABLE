@@ -36,6 +36,7 @@ window.GIS = window.GIS || {};
     });
   }
 
+  // 文件格式校验
   function handleFiles(files) {
     Array.from(files).forEach(file => {
       const ext = '.' + file.name.split('.').pop().toLowerCase();
@@ -49,17 +50,35 @@ window.GIS = window.GIS || {};
     });
   }
 
+
   async function startUpload(file) {
-    // TODO: const result = await GIS.api.upload(file, onProgress)
-    // GIS.layers.addLayer(result)
-    // GIS.map.loadGeoJSON(result.geojson, result.layer_id)
-    notify(`待接入后端后实现上传: ${file.name}`, 'info');
+    notify(`文件上传中: ${file.name}`, 'info');
+
+    try {
+      const result=await GIS.api.upload(file);
+
+      GIS.map.loadGeoJSON(result.geojson,result.name);
+
+      // 加到图层列表
+      const geojson = result.geojson;
+      const type = geojson.type === 'FeatureCollection' && geojson.features.length > 0
+        ? (geojson.features[0].geometry?.type || '未知')
+        : (geojson.geometry?.type || '未知');
+      GIS.layers.addLayer({
+        layer_id: result.name,
+        filename: result.name,
+        geometry_type: type,
+      });
+
+      notify(`上传成功: ${result.name}`, 'success');
+    } catch (err) {
+      notify(`上传失败: ${err.message}`, 'error');
+    }
   }
 
   function notify(message, type = 'info') {
     if (GIS.chat && GIS.chat.addMessage) {
-      const icon = type === 'success' ? '✅ ' : type === 'error' ? '❌ ' : 'ℹ️ ';
-      GIS.chat.addMessage(icon + message, 'system');
+      GIS.chat.addMessage(message, 'system');
     }
   }
 
