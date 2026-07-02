@@ -22,16 +22,20 @@ window.GIS = window.GIS || {};
     renderList();
   }
 
+
+  //渲染表格
   function renderList(data) {
     if (data) layerData = data;
     if (!tbody) return;
 
     if (layerData.length === 0) {
+      // 空列表
       tbody.innerHTML = '';
       if (layersEmpty) layersEmpty.style.display = 'flex';
       if (layersTable) layersTable.style.display = 'none';
       return;
     }
+    // 非空列表
     if (layersEmpty) layersEmpty.style.display = 'none';
     if (layersTable) layersTable.style.display = '';
 
@@ -50,7 +54,7 @@ window.GIS = window.GIS || {};
         <td>
           <div class="layer-actions">
             <button class="layer-action-btn" data-action="visibility" data-id="${layer.layer_id || ''}" title="显隐">
-              <svg><use href="assets/icons.svg#icon-${layer.visible !== false ? 'visibility' : 'visibility-off'}"/></svg>
+              ${layer.visible !== false ? '👁' : '🚫'}
             </button>
             <button class="layer-action-btn btn-danger" data-action="delete" data-id="${layer.layer_id || ''}" title="删除">
               <svg><use href="assets/icons.svg#icon-delete"/></svg>
@@ -60,19 +64,27 @@ window.GIS = window.GIS || {};
       </tr>
     `).join('');
 
+    // 拖拽排序
     bindDragEvents();
+    // 显隐/删除按钮事件
     bindActionEvents();
   }
 
+  // 添加图层：加入列表 + 渲染
   function addLayer(layer) {
+    //随机取一个颜色
     const colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
+    // 保证不同的图层有不同的颜色
     const color = layer.color || colors[layerData.length % colors.length];
+    //记录图层的颜色数据
     layerData.push({ ...layer, visible: true, color });
+    // 渲染列表
     renderList();
   }
 
   // 删除图层：从列表移除 + 从地图清除
   function removeLayer(layerId) {
+    // 更新列表数据，将指定的图层删除
     layerData = layerData.filter(l => l.layer_id !== layerId);
     renderList();
     if (GIS.map && GIS.map.clearLayers) {
@@ -80,6 +92,7 @@ window.GIS = window.GIS || {};
     }
   }
 
+  // 切换图层显隐
   function toggleVisibility(layerId) {
     const layer = layerData.find(l => l.layer_id === layerId);
     if (layer) {
@@ -127,6 +140,7 @@ window.GIS = window.GIS || {};
 
   function bindActionEvents() {
     if (!tbody) return;
+    //监听
     tbody.addEventListener('click', (e) => {
       // 颜色点点击 → 弹出颜色选择器
       const dot = e.target.closest('.layer-color-dot');
@@ -143,15 +157,22 @@ window.GIS = window.GIS || {};
             if (GIS.map && GIS.map.setLayerColor) {
               GIS.map.setLayerColor(id, this.value);
             }
+            // 改颜色后如果原来隐藏就继续保持隐藏
+            if (!layer.visible && GIS.map && GIS.map.setLayerVisible) {
+              GIS.map.setLayerVisible(id, false);
+            }
           }
         });
         input.click();
         return;
       }
 
+      // 显隐/删除按钮点击 → 执行相应操作
+      //向上找一个匹配的祖先元素
       const btn = e.target.closest('.layer-action-btn');
       if (!btn) return;
       const action = btn.dataset.action;
+      // 获取图层 ID
       const id = btn.dataset.id;
       if (!id) return;
       if (action === 'visibility') toggleVisibility(id);
