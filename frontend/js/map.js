@@ -67,6 +67,13 @@ window.GIS = window.GIS || {};
       subdomains: [],
       maxZoom: 18,
     },
+    // CartoDB 轻量街道图（WGS84，国内部分地区可访问）
+    carto: {
+      url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 20,
+    },
   };
 
   /**
@@ -75,7 +82,7 @@ window.GIS = window.GIS || {};
    * @param {object} [options] - 地图选项
    * @param {number[]} [options.center=[35, 110]] - 初始中心点 [lat, lng]
    * @param {number} [options.zoom=4] - 初始缩放级别
-   * @param {'osm'|'arcgis'|'tianditu'|'satellite'} [options.tileSource='osm'] - 底图来源
+   * @param {'osm'|'arcgis'|'tianditu'|'satellite'|'carto'} [options.tileSource='arcgis'] - 底图来源
    */
   function init(container, options = {}) {
     if (typeof L === 'undefined') {
@@ -86,7 +93,7 @@ window.GIS = window.GIS || {};
     const {
       center = [35, 110],
       zoom = 4,
-      tileSource = 'osm',
+      tileSource = 'arcgis',
     } = options;
 
     // 如果已初始化，跳过
@@ -126,7 +133,7 @@ window.GIS = window.GIS || {};
 
   /**
    * 切换底图
-   * @param {'osm'|'arcgis'|'tianditu'|'satellite'} source
+   * @param {'osm'|'arcgis'|'tianditu'|'satellite'|'carto'} source
    */
   function setTileSource(source) {
     if (!mapInstance) return;
