@@ -217,9 +217,38 @@
         }
       });
 
+      var locateMarker = null;
       document.getElementById('zoomLocate').addEventListener('click', function() {
-        if (window.GIS && window.GIS.map) {
-          window.GIS.map.setView([35, 110], 4);
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(function(pos) {
+            if (window.GIS && window.GIS.map) {
+              var lat = pos.coords.latitude;
+              var lng = pos.coords.longitude;
+              window.GIS.map.setView([lat, lng], 15);
+
+              // 移除旧的定位标记
+              if (locateMarker) {
+                window.GIS.map.getMap().removeLayer(locateMarker);
+              }
+
+              // 创建脉冲蓝点
+              var icon = L.divIcon({
+                className: '',
+                html: '<div class="map-locate-dot"></div>',
+                iconSize: [24, 24],
+                iconAnchor: [12, 12],
+              });
+              locateMarker = L.marker([lat, lng], { icon: icon }).addTo(window.GIS.map.getMap());
+            }
+          }, function() {
+            if (window.GIS && window.GIS.map) {
+              window.GIS.map.setView([35, 110], 4);
+            }
+          });
+        } else {
+          if (window.GIS && window.GIS.map) {
+            window.GIS.map.setView([35, 110], 4);
+          }
         }
       });
 

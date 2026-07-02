@@ -336,6 +336,10 @@ window.GIS = window.GIS || {};
     Object.keys(layers).forEach(k => delete layers[k]);
   }
 
+  function getMap() {
+    return mapInstance;
+  }
+
   // ========== 公开接口 ==========
   GIS.map = {
     init,
@@ -346,6 +350,7 @@ window.GIS = window.GIS || {};
     getLayerNames,
     setView,
     getState,
+    getMap,
     destroy,
   };
 })();
