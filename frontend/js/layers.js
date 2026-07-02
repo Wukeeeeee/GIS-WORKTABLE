@@ -54,7 +54,11 @@ window.GIS = window.GIS || {};
         <td>
           <div class="layer-actions">
             <button class="layer-action-btn" data-action="visibility" data-id="${layer.layer_id || ''}" title="显隐">
-              ${layer.visible !== false ? '👁' : '🚫'}
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                ${layer.visible !== false
+                  ? '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
+                  : '<path d="M3 3l18 18"/><path d="M10.6 10.6a3 3 0 0 0 4.8 4.8"/><path d="M9.4 5.2A10.9 10.9 0 0 1 12 4c7 0 11 8 11 8a20 20 0 0 1-3.5 4.9"/><path d="M3.5 7.1A20 20 0 0 0 1 12s4 8 11 8c1.9 0 3.7-.4 5.3-1.1"/>'}
+              </svg>
             </button>
             <button class="layer-action-btn btn-danger" data-action="delete" data-id="${layer.layer_id || ''}" title="删除">
               <svg><use href="assets/icons.svg#icon-delete"/></svg>
