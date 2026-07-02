@@ -25,6 +25,8 @@ window.GIS = window.GIS || {};
 
   /** @type {object<string, L.Layer>} 已加载的图层集合 */
   const layers = {};
+  /** @type {object<string, object>} 存储 GeoJSON 原始数据 */
+  const geoStore = {};
 
   /** @type {L.TileLayer} 底图 */
   let baseLayer = null;
@@ -236,6 +238,7 @@ window.GIS = window.GIS || {};
     }).addTo(mapInstance);
 
     layers[name] = layer;
+    geoStore[name] = { geojson, style: { ...defaultStyle, ...style } };
 
     // 自动缩放至图层范围
     try {
@@ -245,6 +248,17 @@ window.GIS = window.GIS || {};
     }
 
     return layer;
+  }
+
+  /**
+   * 更新图层颜色
+   * @param {string} name - 图层名
+   * @param {string} color - 新颜色（十六进制）
+   */
+  function setLayerColor(name, color) {
+    if (!geoStore[name]) return;
+    const { geojson } = geoStore[name];
+    loadGeoJSON(geojson, name, { color, fillColor: color });
   }
 
   /**
@@ -346,6 +360,7 @@ window.GIS = window.GIS || {};
     setTileSource,
     cycleTileSource,
     loadGeoJSON,
+    setLayerColor,
     clearLayers,
     getLayerNames,
     setView,

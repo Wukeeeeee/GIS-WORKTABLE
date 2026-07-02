@@ -135,8 +135,9 @@ window.GIS = window.GIS || {};
           if (layer) {
             layer.color = this.value;
             dot.style.background = this.value;
-            // 更新地图上的图层颜色
-            // TODO: 用新颜色重新加载图层
+            if (GIS.map && GIS.map.setLayerColor) {
+              GIS.map.setLayerColor(id, this.value);
+            }
           }
         });
         input.click();
