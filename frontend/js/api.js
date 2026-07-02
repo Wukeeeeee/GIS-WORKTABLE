@@ -19,7 +19,18 @@ window.GIS.api = (() => {
   // ===== 文件上传 =====
   /** @param {File} file @param {function} [onProgress] */
   async function upload(file, onProgress) {
-    // TODO: POST /upload (multipart/form-data)
+    //上传文件使用 FormData 发送 POST 请求到 /api/upload
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const res = await fetch(`${BASE_URL}/api/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+    
+    if (!res.ok) throw new Error(`Upload API error: ${res.status}`);
+    const data = await res.json();
+    return data;
   }
 
   // ===== 聊天 / AI =====
@@ -63,11 +74,20 @@ return data;
   async function loadProject(id)    { /* TODO: GET /projects/:id */ }
   async function listProjects()     { /* TODO: GET /projects */ }
 
+  // ===== 清除记忆 =====
+  async function clearMemory(sessionId = 'default') {
+    const res = await fetch(`${BASE_URL}/api/chat/memory?session_id=${sessionId}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) throw new Error(`清除记忆失败: ${res.status}`);
+    return res.json();
+  }
+
   // ===== 系统 =====
   async function healthCheck()      { /* TODO: GET /health */ }
 
   return {
-    request, upload, chat,
+    request, upload, chat, clearMemory,
     getLayers, getLayer, deleteLayer,
     downloadLayer, executeGISAction,
     saveProject, loadProject, listProjects,

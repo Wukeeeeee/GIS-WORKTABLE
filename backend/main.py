@@ -1,8 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from backend.services.ai_service import chat_with_ai
-
+from backend.services.ai_service import chat_with_ai, clear_memory
 app = FastAPI()
 
 app.add_middleware(
@@ -24,3 +23,19 @@ async def chat(request: ChatRequest):
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+@app.delete("/api/chat/memory")
+async def clear_chat_memory(session_id: str = "default"):
+    clear_memory(session_id)
+    return {"status": "ok", "message": "记忆已清除"}
+
+@app.post('/api/upload')
+#加载文件，打开文件
+async def upload(file:UploadFile=File(...)):
+    content=await file.read()
+    filename=file.filename
+    #判断文件类型
+    if file.filename.endswith('.geojson'):
+        import json
+        geojson_data=json.loads(content)
+        return {"geojson":geojson_data,"name":filename}

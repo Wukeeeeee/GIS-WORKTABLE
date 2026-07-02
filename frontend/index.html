@@ -41,6 +41,7 @@
             <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="#1A1A1A">GIS</text>
             <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="#444444">WORKTABLE</text>
           </svg>
+          <button id="clearMemoryBtn" style="margin-left:auto;background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 8px;font-size:12px;color:var(--ui-gray-400);cursor:pointer;">清除记忆</button>
         </div>
 
         <!-- 消息列表 -->
@@ -257,6 +258,18 @@
       document.getElementById('switchMap').addEventListener('click', function() {
         if (window.GIS && window.GIS.map) {
           window.GIS.map.cycleTileSource();
+        }
+      });
+
+      document.getElementById('clearMemoryBtn').addEventListener('click', async function() {
+        if (confirm('确定要清除当前对话的记忆吗？')) {
+          try {
+            await window.GIS.api.clearMemory();
+            window.GIS.chat.clear();
+            window.GIS.chat.addMessage('记忆已清除', 'system');
+          } catch (e) {
+            window.GIS.chat.addMessage('清除失败: ' + e.message, 'system');
+          }
         }
       });
 
