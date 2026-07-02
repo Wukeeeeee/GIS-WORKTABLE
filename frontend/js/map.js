@@ -94,7 +94,23 @@ window.GIS = window.GIS || {};
       attribution: '&copy; Microsoft, 必应地图',
       subdomains: [],
       maxZoom: 19,
-      isBing: true, // 标记需要 quadkey 转换
+      isBing: true,
+    },
+    // Bing Maps 无文字版
+    bing_clean: {
+      url: 'https://t1.dynamic.tiles.ditu.live.com/comp/ch/{q}?mkt=zh-CN&ur=cn&it=G&n=z&og=804&cstl=vbd',
+      attribution: '&copy; Microsoft, 必应地图',
+      subdomains: [],
+      maxZoom: 19,
+      isBing: true,
+    },
+    // Bing Maps 卫星图
+    bing_aerial: {
+      url: 'https://t1.dynamic.tiles.ditu.live.com/comp/ch/{q}?mkt=zh-CN&ur=cn&it=A&n=z&og=804&cstl=vbd',
+      attribution: '&copy; Microsoft, 必应地图',
+      subdomains: [],
+      maxZoom: 19,
+      isBing: true,
     },
     // OpenTopoMap 全球地形图（WGS84，免费，无国界标注）
     terrain: {
@@ -176,7 +192,7 @@ window.GIS = window.GIS || {};
 
   let currentSource = 'osm';
   // 可供切换的底图列表
-  const SOURCE_LIST = ['osm', 'carto', 'carto_clean', 'carto_dark', 'terrain', 'satellite', 'bing_cn'];
+  const SOURCE_LIST = ['bing_cn', 'bing_clean', 'bing_aerial', 'carto', 'carto_clean', 'terrain', 'osm', 'satellite'];
 
   /**
    * 将 z/x/y 转换为 Bing Maps quadkey
