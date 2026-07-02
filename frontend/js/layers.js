@@ -20,6 +20,7 @@ window.GIS = window.GIS || {};
     layersTable = document.getElementById('layersTable');
     layersEmpty = document.getElementById('layersEmpty');
     renderList();
+    bindActionEvents();  // 只绑一次，用事件委托监听所有按钮点击
   }
 
 
@@ -67,11 +68,6 @@ window.GIS = window.GIS || {};
         </td>
       </tr>
     `).join('');
-
-    // 拖拽排序
-    bindDragEvents();
-    // 显隐/删除按钮事件
-    bindActionEvents();
   }
 
   // 添加图层：加入列表 + 渲染
