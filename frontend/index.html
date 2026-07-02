@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GIS AI WorkTable</title>
 
-  <!-- ===== Leaflet CSS (jsDelivr CDN — 国内可访问) ===== -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css" />
+  <!-- ===== Leaflet CSS (国内 CDN — bootcdn) ===== -->
+  <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 
   <!-- ===== 自定义样式 ===== -->
   <link rel="stylesheet" href="css/style.css" />
@@ -90,6 +90,7 @@
             <button class="map-zoom-btn" id="zoomLocate" title="定位">
               <svg><use href="assets/icons.svg#icon-locate"/></svg>
             </button>
+            <button class="map-zoom-btn" id="switchMap" title="切换底图" style="font-size:16px;font-weight:bold;">🗺</button>
           </div>
 
           <!-- 坐标显示 -->
@@ -182,8 +183,8 @@
   <!-- JavaScript                                                -->
   <!-- ========================================================= -->
 
-  <!-- Leaflet (jsDelivr CDN — 国内可访问) -->
-  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+  <!-- Leaflet (bootcdn CDN — 国内可用) -->
+  <script src="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 
   <!-- 应用模块（按依赖顺序加载） -->
   <script src="js/api.js"></script>
@@ -219,6 +220,12 @@
       document.getElementById('zoomLocate').addEventListener('click', function() {
         if (window.GIS && window.GIS.map) {
           window.GIS.map.setView([35, 110], 4);
+        }
+      });
+
+      document.getElementById('switchMap').addEventListener('click', function() {
+        if (window.GIS && window.GIS.map) {
+          window.GIS.map.cycleTileSource();
         }
       });
 

@@ -74,6 +74,49 @@ window.GIS = window.GIS || {};
       subdomains: 'abcd',
       maxZoom: 20,
     },
+    // CartoDB 无文字版（纯地图，无标注）
+    carto_clean: {
+      url: 'https://{s}.basemaps.cartocdn.com/light_no_labels/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 20,
+    },
+    // CartoDB 无文字深色版
+    carto_dark: {
+      url: 'https://{s}.basemaps.cartocdn.com/dark_no_labels/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+      subdomains: 'abcd',
+      maxZoom: 20,
+    },
+    // Bing Maps 中国区（速度快，国内可访问，WGS84）
+    bing_cn: {
+      url: 'https://t1.dynamic.tiles.ditu.live.com/comp/ch/{q}?mkt=zh-CN&ur=cn&it=G,RL&n=z&og=804&cstl=vbd',
+      attribution: '&copy; Microsoft, 必应地图',
+      subdomains: [],
+      maxZoom: 19,
+      isBing: true, // 标记需要 quadkey 转换
+    },
+    // OpenTopoMap 全球地形图（WGS84，免费，无国界标注）
+    terrain: {
+      url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://opentopomap.org">OpenTopoMap</a>',
+      subdomains: 'abc',
+      maxZoom: 17,
+    },
+    // Wikimedia 地图（OSM 数据，免费，国内部分地区可访问）
+    wikimedia: {
+      url: 'https://maps.wikimedia.org/osm-intl/{z}/{x}/{y}.png',
+      attribution: '&copy; <a href="https://wikimedia.org">Wikimedia</a>',
+      subdomains: [],
+      maxZoom: 19,
+    },
+    // ESRI 世界地形图（ArcGIS 服务，免费）
+    esri_topo: {
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+      attribution: '&copy; Esri, USGS, NOAA',
+      subdomains: [],
+      maxZoom: 18,
+    },
   };
 
   /**
@@ -82,7 +125,7 @@ window.GIS = window.GIS || {};
    * @param {object} [options] - 地图选项
    * @param {number[]} [options.center=[35, 110]] - 初始中心点 [lat, lng]
    * @param {number} [options.zoom=4] - 初始缩放级别
-   * @param {'osm'|'arcgis'|'tianditu'|'satellite'|'carto'} [options.tileSource='arcgis'] - 底图来源
+   * @param {'osm'|'arcgis'|'tianditu'|'satellite'|'carto'|'carto_clean'|'carto_dark'|'terrain'|'bing_cn'} [options.tileSource='osm'] - 底图来源
    */
   function init(container, options = {}) {
     if (typeof L === 'undefined') {
@@ -93,7 +136,7 @@ window.GIS = window.GIS || {};
     const {
       center = [35, 110],
       zoom = 4,
-      tileSource = 'arcgis',
+      tileSource = 'bing_cn',
     } = options;
 
     // 如果已初始化，跳过
@@ -131,9 +174,28 @@ window.GIS = window.GIS || {};
     console.log(`[GIS Map] 地图初始化完成 (${center[0]}, ${center[1]}, zoom=${zoom})`);
   }
 
+  let currentSource = 'osm';
+  // 可供切换的底图列表
+  const SOURCE_LIST = ['osm', 'carto', 'carto_clean', 'carto_dark', 'terrain', 'satellite', 'bing_cn'];
+
+  /**
+   * 将 z/x/y 转换为 Bing Maps quadkey
+   */
+  function toQuadkey(x, y, z) {
+    var q = '';
+    for (var i = z; i > 0; i--) {
+      var d = 0;
+      var m = 1 << (i - 1);
+      if ((x & m) !== 0) d += 1;
+      if ((y & m) !== 0) d += 2;
+      q += d;
+    }
+    return q;
+  }
+
   /**
    * 切换底图
-   * @param {'osm'|'arcgis'|'tianditu'|'satellite'|'carto'} source
+   * @param {'osm'|'arcgis'|'tianditu'|'satellite'|'carto'|'carto_clean'|'carto_dark'|'terrain'|'wikimedia'|'esri_topo'} source
    */
   function setTileSource(source) {
     if (!mapInstance) return;
@@ -155,11 +217,41 @@ window.GIS = window.GIS || {};
       url = url.replace(/tk=$/, `tk=${config.token}`);
     }
 
-    baseLayer = L.tileLayer(url, {
-      attribution: config.attribution,
-      subdomains: config.subdomains.length > 0 ? config.subdomains : undefined,
-      maxZoom: config.maxZoom,
-    }).addTo(mapInstance);
+    // Bing 瓦片要用 quadkey 转换
+    if (config.isBing) {
+      baseLayer = new L.TileLayer('', {
+        attribution: config.attribution,
+        maxZoom: config.maxZoom,
+      });
+      baseLayer.getTileUrl = function(coords) {
+        return url.replace('{q}', toQuadkey(coords.x, coords.y, coords.z));
+      };
+      baseLayer.addTo(mapInstance);
+    } else {
+      baseLayer = L.tileLayer(url, {
+        attribution: config.attribution,
+        subdomains: config.subdomains.length > 0 ? config.subdomains : undefined,
+        maxZoom: config.maxZoom,
+      }).addTo(mapInstance);
+    }
+
+    // 瓦片加载失败时打印日志
+    baseLayer.on('tileerror', function(e) {
+      console.warn('[GIS Map] 瓦片加载失败:', e.tile.src);
+    });
+
+    currentSource = source;
+  }
+
+  /**
+   * 切换到底图源（循环切换）
+   */
+  function cycleTileSource() {
+    const idx = SOURCE_LIST.indexOf(currentSource);
+    const next = SOURCE_LIST[(idx + 1) % SOURCE_LIST.length];
+    setTileSource(next);
+    console.log(`[GIS Map] 切换到底图: ${next}`);
+    return next;
   }
 
   /**
@@ -305,6 +397,7 @@ window.GIS = window.GIS || {};
   GIS.map = {
     init,
     setTileSource,
+    cycleTileSource,
     loadGeoJSON,
     clearLayers,
     getLayerNames,
