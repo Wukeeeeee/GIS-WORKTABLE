@@ -82,7 +82,9 @@ window.GIS = window.GIS || {};
     if (layer) {
       layer.visible = !layer.visible;
       renderList();
-      // 地图上显隐对应图层
+      if (GIS.map && GIS.map.setLayerVisible) {
+        GIS.map.setLayerVisible(layerId, layer.visible);
+      }
     }
   }
 

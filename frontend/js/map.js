@@ -262,6 +262,20 @@ window.GIS = window.GIS || {};
   }
 
   /**
+   * 显隐图层
+   * @param {string} name - 图层名
+   * @param {boolean} visible
+   */
+  function setLayerVisible(name, visible) {
+    if (!layers[name]) return;
+    if (visible) {
+      mapInstance.addLayer(layers[name]);
+    } else {
+      mapInstance.removeLayer(layers[name]);
+    }
+  }
+
+  /**
    * 清除所有或指定图层
    * @param {string} [name] - 不传则清除全部
    */
@@ -361,6 +375,7 @@ window.GIS = window.GIS || {};
     cycleTileSource,
     loadGeoJSON,
     setLayerColor,
+    setLayerVisible,
     clearLayers,
     getLayerNames,
     setView,
