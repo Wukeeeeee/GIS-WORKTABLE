@@ -90,6 +90,7 @@ window.GIS = window.GIS || {};
       return;
     }
 
+    // 获取容器元素
     const el = typeof container === 'string'
       ? document.getElementById(container)
       : container;
@@ -223,7 +224,9 @@ window.GIS = window.GIS || {};
 
     // L.geoJSON 是 Leaflet 自带的，自动区分点线面
     const layer = L.geoJSON(geojson, {
+      // 默认样式
       style: { ...defaultStyle, ...style },
+      // 点要素用 circleMarker 显示
       pointToLayer: (feature, latlng) => {
         return L.circleMarker(latlng, {
           radius: 6,
@@ -346,6 +349,7 @@ window.GIS = window.GIS || {};
     const coordsEl = document.getElementById('mapCoords');
     if (coordsEl && mapInstance) {
       const c = mapInstance.getCenter();
+      //小数点后4位
       const lat = c.lat.toFixed(4);
       const lng = c.lng.toFixed(4);
       coordsEl.textContent = `${lat}° N, ${lng}° E | 缩放 ${mapInstance.getZoom()}`;
@@ -357,6 +361,7 @@ window.GIS = window.GIS || {};
    */
   function destroy() {
     if (mapInstance) {
+      //移除地图实例
       mapInstance.remove();
       mapInstance = null;
     }

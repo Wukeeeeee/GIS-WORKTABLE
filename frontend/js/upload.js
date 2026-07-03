@@ -76,12 +76,14 @@ window.GIS = window.GIS || {};
     }
   }
 
+  // 系统通知
   function notify(message, type = 'info') {
     if (GIS.chat && GIS.chat.addMessage) {
       GIS.chat.addMessage(message, 'system');
     }
   }
 
+  // 打开文件选择对话框
   function openDialog() { if (fileInput) fileInput.click(); }
 
   GIS.upload = { init, openDialog, handleFiles, ALLOWED_EXTENSIONS };

@@ -51,7 +51,10 @@ window.GIS = window.GIS || {};
     // 渲染用户消息添加到这个对话框
     addMessage(text, 'user');
     inputEl.value = '';
-
+    var el = document.getElementsByClassName('chat-messages-empty')[0];
+    if (el) {
+      el.style.display = 'none';
+    }
     // 显示加载状态：输入框显示提示文字，禁用按钮
     const originalPlaceholder = inputEl.placeholder;
     inputEl.placeholder = 'AI正在回复中...';

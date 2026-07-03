@@ -28,3 +28,4 @@ Thumbs.db
 
 # AI 生成文件
 output/
+*.geojson

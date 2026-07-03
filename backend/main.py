@@ -24,6 +24,7 @@ async def chat(request: ChatRequest):
 async def health():
     return {"status": "ok"}
 
+#清除记忆
 @app.delete("/api/chat/memory")
 async def clear_chat_memory(session_id: str = "default"):
     clear_memory(session_id)
