@@ -25,3 +25,6 @@ backend/chat_history.json
 # OS
 .DS_Store
 Thumbs.db
+
+# AI 生成文件
+output/
