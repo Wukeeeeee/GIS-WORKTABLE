@@ -12,6 +12,24 @@ window.GIS = window.GIS || {};
 window.GIS.api = (() => {
   const BASE_URL = 'http://localhost:8000';
 
+  // ===== API 密钥管理 (localStorage) =====
+  // 密钥存在浏览器本地，每次发请求时带上，后端用完就丢不存盘
+  const STORAGE_KEY = 'gis_deepseek_api_key';
+
+  /** 从 localStorage 读取保存的 DeepSeek 密钥 */
+  function getApiKey() {
+    return localStorage.getItem(STORAGE_KEY) || '';
+  }
+
+  /** 把 DeepSeek 密钥保存到 localStorage（关掉浏览器再打开还在） */
+  function setApiKey(key) {
+    if (key) {
+      localStorage.setItem(STORAGE_KEY, key);
+    } else {
+      localStorage.removeItem(STORAGE_KEY);  // 传空字符串就当是清除
+    }
+  }
+
   async function request(endpoint, options = {}) {
     // TODO: 通用 fetch — 拼接 URL、headers、错误处理
   }
@@ -37,19 +55,38 @@ window.GIS.api = (() => {
   /** @param {string} message @param {string} [sessionId='default'] */
 // 发送消息到后端的聊天接口，并返回 AI 的回复
   async function chat(message, sessionId = 'default') {
+    // 从浏览器 localStorage 取出用户保存的 API 密钥，一起发给后端
+    const apiKey = getApiKey();
 const res=await fetch(`${BASE_URL}/api/chat`,{
   method:'POST',
   headers:{'Content-Type':'application/json'},
   //sessionId可以用来区分不同的聊天会话，方便后端管理
-  body:JSON.stringify({message,session_id:sessionId})
+  body:JSON.stringify({
+    message,                    // 用户输入的文字
+    session_id:sessionId,       // 会话ID（目前都用 default）
+    api_key: apiKey || undefined  // 密钥：有就带上，没有就不传（后端会用 apikey.txt）
+  })
 })
 if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
 const data=await res.json();
-//返回ai的回复数据
+// { response: "AI 回复的文字" }
 return data;
 
 
     // TODO: POST /chat  { message, session_id }
+  }
+
+  // ===== 测试 API 密钥 =====
+  /** 向后端发一个测试请求，验证 DeepSeek 密钥能不能用 */
+  async function testApiKey(apiKey) {
+    const res = await fetch(`${BASE_URL}/api/test-key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
+    // 返回 { success: true/false, message: "连接成功 ✓" / "密钥无效" }
+    return res.json();
   }
 
   // ===== 图层管理 =====
@@ -91,6 +128,7 @@ return data;
     getLayers, getLayer, deleteLayer,
     downloadLayer, executeGISAction,
     saveProject, loadProject, listProjects,
-    healthCheck, BASE_URL,
+    healthCheck, testApiKey, getApiKey, setApiKey,
+    BASE_URL,
   };
 })();

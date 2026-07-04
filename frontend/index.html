@@ -41,20 +41,31 @@
             <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="#1A1A1A">GIS</text>
             <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="#444444">WORKTABLE</text>
           </svg>
-          <button id="clearMemoryBtn" style="margin-left:auto;background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="新建会话">
+          <!-- header 右侧按钮组：齿轮(设置) + +(新建会话) -->
+          <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
+            <!-- 齿轮 ⚙ 按钮 → 打开设置弹窗，配置 DeepSeek API 密钥 -->
+            <button id="settingsBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="设置">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"/>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+              </svg>
+            </button>
+            <!-- + 按钮 → 清除当前会话的对话记忆，类似"新建会话" -->
+            <button id="clearMemoryBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="新建会话">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round">
               <line x1="12" y1="5" x2="12" y2="19"/>
               <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
           </button>
         </div>
+      </div>
 
-        <!-- 消息列表 -->
-        <div class="chat-messages custom-scrollbar" id="chatMessages">
-          <div class="chat-messages-empty">
-            
-          </div>
+      <!-- 消息列表 -->
+      <div class="chat-messages custom-scrollbar" id="chatMessages">
+        <div class="chat-messages-empty">
+
         </div>
+      </div>
 
         <!-- 输入区域 -->
         <div class="chat-input-area">
@@ -186,6 +197,46 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <!-- ========================================================= -->
+  <!-- 设置弹窗                                                  -->
+  <!-- 点击齿轮 ⚙ 按钮弹出，用来配置 DeepSeek API 密钥            -->
+  <!-- ========================================================= -->
+  <div class="modal-overlay" id="settingsModal" style="display:none;">
+    <div class="modal">
+      <!-- 弹窗头部：标题 + 关闭按钮 -->
+      <div class="modal-header">
+        <span class="modal-title">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          设置
+        </span>
+        <button class="modal-close-btn" id="modalCloseBtn">✕</button>
+      </div>
+      <!-- 弹窗内容 -->
+      <div class="modal-body">
+        <label class="modal-label">DeepSeek API 密钥</label>
+        <!-- 密钥输入框：默认 type=password 不显示明文，👁 按钮可切换 -->
+        <div class="modal-input-wrapper">
+          <input type="password" class="modal-input" id="apiKeyInput" placeholder="sk-..." />
+          <button class="modal-toggle-vis" id="toggleKeyVis" title="显示/隐藏密钥">👁</button>
+        </div>
+        <!-- 当前配置状态：已配置 / 未配置 -->
+        <div class="modal-status" id="apiKeyStatus">当前：未配置</div>
+        <!-- 测速结果显示区 -->
+        <div class="modal-test-result" id="testResult"></div>
+        <!-- 操作按钮：测速（验证密钥能否连上DeepSeek）+ 保存（存到浏览器localStorage） -->
+        <div class="modal-actions">
+          <button class="modal-btn modal-btn-test" id="testKeyBtn">测速</button>
+          <button class="modal-btn modal-btn-save" id="saveKeyBtn">保存</button>
+        </div>
+        <!-- 安全提示：密钥只存在用户浏览器里，不会传到服务器存下来 -->
+        <p class="modal-note">密钥仅保存在您的浏览器中，不会上传到服务器</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================= -->
   <!-- JavaScript                                                -->
   <!-- ========================================================= -->
 
@@ -276,6 +327,103 @@
         } catch (e) {
           window.GIS.chat.addMessage('操作失败: ' + e.message, 'system');
         }
+      });
+
+      // ---- 设置弹窗逻辑 ----
+      // 当用户点击齿轮 ⚙ 按钮时，弹出设置窗口，让用户配置 DeepSeek API 密钥
+      var settingsModal = document.getElementById('settingsModal');
+      var settingsBtn = document.getElementById('settingsBtn');
+      var modalCloseBtn = document.getElementById('modalCloseBtn');
+      var apiKeyInput = document.getElementById('apiKeyInput');
+      var apiKeyStatus = document.getElementById('apiKeyStatus');
+      var testResult = document.getElementById('testResult');
+      var testKeyBtn = document.getElementById('testKeyBtn');
+      var saveKeyBtn = document.getElementById('saveKeyBtn');
+      var toggleKeyVis = document.getElementById('toggleKeyVis');
+
+      // 打开弹窗：点击齿轮 ⚙ 触发
+      settingsBtn.addEventListener('click', function() {
+        // 从 localStorage 加载之前保存的密钥，回填到输入框
+        var savedKey = window.GIS.api.getApiKey();
+        apiKeyInput.value = savedKey;
+        updateKeyStatus(savedKey);
+        testResult.innerHTML = '';  // 清空上次测速结果
+        settingsModal.style.display = 'flex';  // 显示弹窗（flex 居中）
+      });
+
+      // 关闭弹窗：点击 ✕ 按钮、点击灰色遮罩、按 ESC 键 三种方式
+      function closeModal() {
+        settingsModal.style.display = 'none';
+      }
+      modalCloseBtn.addEventListener('click', closeModal);
+      // 点击弹窗外部的灰色遮罩（overlay）时关闭
+      settingsModal.addEventListener('click', function(e) {
+        if (e.target === settingsModal) closeModal();
+      });
+      // 按 ESC 键时关闭
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && settingsModal.style.display === 'flex') closeModal();
+      });
+
+      // 显示/隐藏密钥：点击 👁 按钮切换 input 的 type（password ↔ text）
+      toggleKeyVis.addEventListener('click', function() {
+        if (apiKeyInput.type === 'password') {
+          apiKeyInput.type = 'text';
+          toggleKeyVis.textContent = '🙈';  // 闭眼图标表示当前是明文
+        } else {
+          apiKeyInput.type = 'password';
+          toggleKeyVis.textContent = '👁';  // 睁眼图标表示当前是密文
+        }
+      });
+
+      // 更新配置状态显示："当前：已配置"（绿色）或"当前：未配置"（灰色）
+      function updateKeyStatus(key) {
+        apiKeyStatus.textContent = key ? '当前：已配置' : '当前：未配置';
+        apiKeyStatus.className = 'modal-status' + (key ? ' modal-status-configured' : '');
+      }
+
+      // ---- 测速按钮 ----
+      // 向后端发请求验证密钥能否连上 DeepSeek
+      var isTesting = false;  // 防止重复点击
+      testKeyBtn.addEventListener('click', async function() {
+        var key = apiKeyInput.value.trim();
+        if (!key) {
+          testResult.textContent = '请先输入 API 密钥';
+          testResult.className = 'modal-test-result modal-test-error';
+          return;
+        }
+        if (isTesting) return;
+        isTesting = true;
+        testKeyBtn.textContent = '测速中...';
+        testKeyBtn.disabled = true;
+        testResult.innerHTML = '<span class="loading-spinner"></span> 正在连接...';
+        testResult.className = 'modal-test-result';
+
+        try {
+          // 调后端 /api/test-key 接口，后端会发一条极简请求到 DeepSeek 验证
+          var res = await window.GIS.api.testApiKey(key);
+          testResult.textContent = res.message;  // "连接成功 ✓" 或 "密钥无效"
+          testResult.className = 'modal-test-result ' + (res.success ? 'modal-test-success' : 'modal-test-error');
+        } catch (e) {
+          testResult.textContent = '连接失败: ' + e.message;
+          testResult.className = 'modal-test-result modal-test-error';
+        } finally {
+          isTesting = false;
+          testKeyBtn.textContent = '测速';
+          testKeyBtn.disabled = false;
+        }
+      });
+
+      // ---- 保存按钮 ----
+      // 把密钥存到浏览器 localStorage，关闭浏览器再打开还在
+      saveKeyBtn.addEventListener('click', function() {
+        var key = apiKeyInput.value.trim();
+        window.GIS.api.setApiKey(key);  // 存到 localStorage
+        updateKeyStatus(key);
+        // 按钮文字闪一下"已保存 ✓"再变回来，给用户反馈
+        var orig = saveKeyBtn.textContent;
+        saveKeyBtn.textContent = '已保存 ✓';
+        setTimeout(function() { saveKeyBtn.textContent = orig; }, 2000);
       });
 
       // ---- 按钮按下反馈（微交互） ----
