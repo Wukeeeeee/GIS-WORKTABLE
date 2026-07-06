@@ -163,15 +163,27 @@
             <div class="panel-header">
               <span class="panel-header-title">处理结果</span>
               <div class="panel-header-actions">
-                <button class="download-header-btn" title="下载全部">
+                <button class="panel-header-btn" onclick="downloadAllFiles()" title="下载全部">
                   <svg><use href="assets/icons.svg#icon-download"/></svg>
                 </button>
               </div>
             </div>
-            <div class="files-content custom-scrollbar" id="filesContainer">
-              <span style="color:var(--ui-gray-300);font-size:13px;text-align:center;display:block;padding:20px;">
-                执行 GIS 操作后，<br>结果文件将显示在此
-              </span>
+            <div class="layers-table-wrapper custom-scrollbar">
+              <div class="layers-empty" id="filesEmpty">
+                <svg><use href="assets/icons.svg#icon-file"/></svg>
+                <span>暂无文件</span>
+                <span style="font-size:12px;margin-top:4px;">执行 GIS 操作后，结果文件将显示在此</span>
+              </div>
+              <table class="layers-table" id="filesTable" style="display:none;">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>文件名</th>
+                    <th style="text-align:right;">下载</th>
+                  </tr>
+                </thead>
+                <tbody id="filesTbody"></tbody>
+              </table>
             </div>
           </section>
 

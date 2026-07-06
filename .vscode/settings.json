@@ -1,6 +1,9 @@
 {
-    "liveServer.settings.port": 5501,
+    "liveServer.settings.port": 5502,
     "liveServer.settings.ignoreFiles": [
-        "output/**"
+        "output/**",
+        "backend/**",
+        "node_modules/**",
+        ".git/**"
     ]
 }

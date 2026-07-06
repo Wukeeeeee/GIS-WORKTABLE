@@ -78,6 +78,7 @@ window.GIS = window.GIS || {};
       return;
     }
 
+    // 默认配置
     const {
       center = [35, 110],
       zoom = 4,
@@ -125,6 +126,7 @@ window.GIS = window.GIS || {};
   const SOURCE_LIST = ['bing_cn', 'bing_clean', 'bing_aerial'];
 
   /**
+   * 
    * 将 z/x/y 转换为 Bing Maps quadkey
    */
   function toQuadkey(x, y, z) {
@@ -215,6 +217,7 @@ window.GIS = window.GIS || {};
       mapInstance.removeLayer(layers[name]);
     }
 
+    //默认样式
     const defaultStyle = {
       color: '#1c1b1b',
       weight: 2,
@@ -224,9 +227,9 @@ window.GIS = window.GIS || {};
 
     // L.geoJSON 是 Leaflet 自带的，自动区分点线面
     const layer = L.geoJSON(geojson, {
-      // 默认样式
+      // 后覆盖前
       style: { ...defaultStyle, ...style },
-      // 点要素用 circleMarker 显示
+      // 点要素用 circleMarker 显示，其他的不受影响
       pointToLayer: (feature, latlng) => {
         return L.circleMarker(latlng, {
           radius: 6,
@@ -241,6 +244,8 @@ window.GIS = window.GIS || {};
     layers[name] = layer;                    // 存图层引用（给显隐/删除用）
     geoStore[name] = { geojson, style };      // 存原始数据（给换颜色用）
 
+
+    // 自动缩放地图到图层范围
     try {
       mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30] });
     } catch (e) { /* 单点要素忽略 */ }

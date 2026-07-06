@@ -7,7 +7,7 @@ window.GIS = window.GIS || {};
 
 (function() {
   'use strict';
-
+  
   const GIS = window.GIS;
 
   let tbody = null;
@@ -40,6 +40,7 @@ window.GIS = window.GIS || {};
     if (layersEmpty) layersEmpty.style.display = 'none';
     if (layersTable) layersTable.style.display = '';
 
+    // 渲染列表
     tbody.innerHTML = layerData.map((layer, index) => `
       <tr draggable="true" data-index="${index}" data-id="${layer.layer_id || ''}">
         <td>
@@ -99,7 +100,7 @@ window.GIS = window.GIS || {};
       layer.visible = !layer.visible;
       renderList();
       if (GIS.map && GIS.map.setLayerVisible) {
-        GIS.map.setLayerVisible(layerId, layer.visible);
+        GIS.map.setLayerVisible(layer.filename || layer.layer_id, layer.visible);
       }
     }
   }
@@ -155,11 +156,11 @@ window.GIS = window.GIS || {};
             layer.color = this.value;
             dot.style.background = this.value;
             if (GIS.map && GIS.map.setLayerColor) {
-              GIS.map.setLayerColor(id, this.value);
+              GIS.map.setLayerColor(layer.filename || layer.layer_id, this.value);
             }
             // 改颜色后如果原来隐藏就继续保持隐藏
             if (!layer.visible && GIS.map && GIS.map.setLayerVisible) {
-              GIS.map.setLayerVisible(id, false);
+              GIS.map.setLayerVisible(layer.filename || layer.layer_id, false);
             }
           }
         });

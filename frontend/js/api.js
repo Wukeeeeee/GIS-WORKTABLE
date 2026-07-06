@@ -106,6 +106,16 @@ return data;
     // TODO: POST /execute  { action, params }
   }
 
+  // ===== 边界加载 =====
+  /** 从OSM加载行政边界，返回GeoJSON */
+  async function getBoundary(place) {
+    const res = await fetch(`${BASE_URL}/api/boundary?place=${encodeURIComponent(place)}`);
+    if (!res.ok) throw new Error(`获取边界失败: ${res.status}`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data; // { geojson: ..., name: "..." }
+  }
+
   // ===== 项目保存/加载 =====
   async function saveProject(data)  { /* TODO: POST /projects */ }
   async function loadProject(id)    { /* TODO: GET /projects/:id */ }
@@ -126,9 +136,39 @@ return data;
   return {
     request, upload, chat, clearMemory,
     getLayers, getLayer, deleteLayer,
-    downloadLayer, executeGISAction,
+    downloadLayer, executeGISAction, getBoundary,
     saveProject, loadProject, listProjects,
     healthCheck, testApiKey, getApiKey, setApiKey,
     BASE_URL,
   };
 })();
+
+// ===== 全局下载函数 =====
+window.downloadGeoJSON = function(layerId) {
+  const layers = GIS.layers.getLayers();
+  const layer = layers.find(l => l.layer_id === layerId);
+  if (!layer || !layer.geojson) return;
+  //封装成blob对象
+  const blob = new Blob([JSON.stringify(layer.geojson, null, 2)], { type: 'application/json' });
+  //创建下载连接
+  const url = URL.createObjectURL(blob);
+  // 创建a标签
+  const a = document.createElement('a');
+  // 设置a标签的href属性为下载链接
+  //必须要有一个<a>才能触发下载
+  a.href = url;
+  // 设置a标签的download属性为文件名
+  a.download = (layer.filename || 'layer') + '.geojson';
+  // 模拟点击a标签
+  a.click();
+  //释放URL对象
+  URL.revokeObjectURL(url);
+};
+
+window.downloadAllFiles = function() {
+  const rows = document.querySelectorAll('#filesTbody tr');
+  rows.forEach(row => {
+    const btn = row.querySelector('button');
+    if (btn && btn.onclick) btn.onclick();
+  });
+};

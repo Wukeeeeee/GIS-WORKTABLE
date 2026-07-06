@@ -66,6 +66,54 @@ window.GIS = window.GIS || {};
       // 发送到后端 API，等待回复
       const result = await GIS.api.chat(text);
       addMessage(result.response, 'ai');
+      // 如果 AI 生成了 GeoJSON 数据，自动加载到地图和图层
+      if (result.geojson && result.layerName) {
+        setTimeout(() => {
+          // 避免重复添加同名的图层
+          const existing = GIS.layers.getLayers().find(l => l.filename === result.layerName);
+          if (existing) return;
+
+          const layerId = 'ai_' + Date.now();
+          const geoType = result.geojson.type === 'FeatureCollection'
+            ? (result.geojson.features[0]?.geometry?.type || '未知')
+            : (result.geojson.geometry?.type || '未知');
+
+          // 1. 加载到地图
+          GIS.map.loadGeoJSON(result.geojson, result.layerName);
+
+          // 2. 添加到图层面板
+          GIS.layers.addLayer({
+            layer_id: layerId,
+            filename: result.layerName,
+            geometry_type: geoType,
+            geojson: result.geojson,
+            visible: true,
+          });
+
+          // 3. 添加到处理结果面板（表格样式）
+          const filesTbody = document.getElementById('filesTbody');
+          const filesTable = document.getElementById('filesTable');
+          const filesEmpty = document.getElementById('filesEmpty');
+          if (filesTbody && filesTable && filesEmpty) {
+            filesEmpty.style.display = 'none';
+            filesTable.style.display = '';
+            const row = document.createElement('tr');
+            row.draggable = false;
+            row.innerHTML = `
+              <td></td>
+              <td><span class="layer-name">${result.layerName}.geojson</span></td>
+              <td style="text-align:right;">
+                <button class="layer-action-btn" onclick="downloadGeoJSON('${layerId}')" title="下载">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                </button>
+              </td>
+            `;
+            filesTbody.appendChild(row);
+          }
+        }, 100);
+      }
     } catch (err) {
       addMessage('请求失败: ' + err.message, 'system');
     } finally {
