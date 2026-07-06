@@ -20,7 +20,8 @@ window.GIS = window.GIS || {};
     layersTable = document.getElementById('layersTable');
     layersEmpty = document.getElementById('layersEmpty');
     renderList();
-    bindActionEvents();  // 只绑一次，用事件委托监听所有按钮点击
+    bindActionEvents();  // 用事件委托监听按钮点击
+    bindDragEvents();    // 用事件委托监听拖拽排序
   }
 
 
@@ -85,11 +86,14 @@ window.GIS = window.GIS || {};
 
   // 删除图层：从列表移除 + 从地图清除
   function removeLayer(layerId) {
+    // 先找到要删的图层，拿到它的名称（地图模块是按文件名存的）
+    const target = layerData.find(l => l.layer_id === layerId);
+    const mapName = target ? (target.filename || target.layer_id) : null;
     // 更新列表数据，将指定的图层删除
     layerData = layerData.filter(l => l.layer_id !== layerId);
     renderList();
-    if (GIS.map && GIS.map.clearLayers) {
-      GIS.map.clearLayers(layerId);  // 同时从地图上移除
+    if (mapName && GIS.map && GIS.map.clearLayers) {
+      GIS.map.clearLayers(mapName);  // 传正确的文件名，不是 layerId
     }
   }
 
@@ -109,33 +113,59 @@ window.GIS = window.GIS || {};
     if (!tbody) return;
     let dragSrcIndex = null;
 
-    tbody.querySelectorAll('tr[draggable]').forEach(tr => {
-      tr.addEventListener('dragstart', (e) => {
-        dragSrcIndex = parseInt(tr.dataset.index, 10);
-        tr.classList.add('dragging');
-        e.dataTransfer.effectAllowed = 'move';
-        if (!e.target.closest('.drag-handle')) e.preventDefault();
-      });
-      tr.addEventListener('dragend', () => {
-        tr.classList.remove('dragging');
-        tbody.querySelectorAll('tr').forEach(r => r.classList.remove('drag-over'));
-      });
-      tr.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        tr.classList.add('drag-over');
-      });
-      tr.addEventListener('dragleave', () => { tr.classList.remove('drag-over'); });
-      tr.addEventListener('drop', (e) => {
-        e.preventDefault();
+    // 用事件委托，不怕 renderList 重绘丢失绑定
+    tbody.addEventListener('dragstart', (e) => {
+      const tr = e.target.closest('tr[draggable]');
+      if (!tr) return;
+      // 只能通过拖拽手柄拖动
+      if (!e.target.closest('.drag-handle')) { e.preventDefault(); return; }
+      dragSrcIndex = parseInt(tr.dataset.index, 10);
+      tr.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', tr.dataset.index); // 浏览器要求必须setData
+    });
+
+    tbody.addEventListener('dragend', () => {
+      dragSrcIndex = null;
+      tbody.querySelectorAll('tr').forEach(r => r.classList.remove('dragging', 'drag-over'));
+    });
+
+    tbody.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      const tr = e.target.closest('tr[draggable]');
+      if (!tr) return;
+      e.dataTransfer.dropEffect = 'move';
+      tr.classList.add('drag-over');
+    });
+
+    tbody.addEventListener('dragleave', (e) => {
+      const tr = e.target.closest('tr[draggable]');
+      if (!tr) return;
+      // 只有真正离开行时才移除样式（避免子元素冒泡干扰）
+      if (!tr.contains(e.relatedTarget)) {
         tr.classList.remove('drag-over');
-        const target = parseInt(tr.dataset.index, 10);
-        if (dragSrcIndex === null || dragSrcIndex === target) return;
-        const [moved] = layerData.splice(dragSrcIndex, 1);
-        layerData.splice(target, 0, moved);
-        renderList();
-        dragSrcIndex = null;
-      });
+      }
+    });
+
+    tbody.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const tr = e.target.closest('tr[draggable]');
+      if (!tr) return;
+      tr.classList.remove('drag-over');
+      const target = parseInt(tr.dataset.index, 10);
+      if (dragSrcIndex === null || dragSrcIndex === target) return;
+      const [moved] = layerData.splice(dragSrcIndex, 1);
+      layerData.splice(target, 0, moved);
+      renderList();
+      dragSrcIndex = null;
+      // 更新地图图层的叠放顺序
+      if (GIS.map && GIS.map.getLayer) {
+        for (let i = layerData.length - 1; i >= 0; i--) {
+          const layer = layerData[i];
+          const leafletLayer = GIS.map.getLayer(layer.filename || layer.layer_id);
+          if (leafletLayer) leafletLayer.bringToFront();
+        }
+      }
     });
   }
 

@@ -40,17 +40,23 @@ window.GIS = window.GIS || {};
     }
 
     if (sendBtn) {
-      sendBtn.addEventListener('click', send);
+      sendBtn.addEventListener('click', function() { send(); });
     }
 
   }
 
-  async function send() {
-    const text = inputEl ? inputEl.value.trim() : '';
+  async function send(text) {
+    // 如果传了参数就用参数，否则从输入框读取
+    if (text === undefined) {
+      text = inputEl ? inputEl.value.trim() : '';
+    }
     if (!text) return;
-    // 渲染用户消息添加到这个对话框
+    // 渲染用户消息
     addMessage(text, 'user');
-    inputEl.value = '';
+    // 只有从输入框发送时才清空输入框
+    if (inputEl && arguments.length === 0) {
+      inputEl.value = '';
+    }
     var el = document.getElementsByClassName('chat-messages-empty')[0];
     if (el) {
       el.style.display = 'none';
@@ -69,28 +75,26 @@ window.GIS = window.GIS || {};
       // 如果 AI 生成了 GeoJSON 数据，自动加载到地图和图层
       if (result.geojson && result.layerName) {
         setTimeout(() => {
-          // 避免重复添加同名的图层
-          const existing = GIS.layers.getLayers().find(l => l.filename === result.layerName);
-          if (existing) return;
-
           const layerId = 'ai_' + Date.now();
+          // 给图层名加时间戳避免重复（AI生成的结果每次都重新加）
+          const uniqueName = result.layerName + '_' + Date.now();
           const geoType = result.geojson.type === 'FeatureCollection'
             ? (result.geojson.features[0]?.geometry?.type || '未知')
             : (result.geojson.geometry?.type || '未知');
 
           // 1. 加载到地图
-          GIS.map.loadGeoJSON(result.geojson, result.layerName);
+          GIS.map.loadGeoJSON(result.geojson, uniqueName);
 
-          // 2. 添加到图层面板
+          // 2. 添加到图层面板（每次都加，不加去重）
           GIS.layers.addLayer({
             layer_id: layerId,
-            filename: result.layerName,
+            filename: uniqueName,
             geometry_type: geoType,
             geojson: result.geojson,
             visible: true,
           });
 
-          // 3. 添加到处理结果面板（表格样式）
+          // 3. 添加到处理结果面板
           const filesTbody = document.getElementById('filesTbody');
           const filesTable = document.getElementById('filesTable');
           const filesEmpty = document.getElementById('filesEmpty');
@@ -182,5 +186,5 @@ window.GIS = window.GIS || {};
     if (messagesContainer) messagesContainer.innerHTML = '';
   }
 
-  GIS.chat = { init: init, send: send, addMessage: addMessage, clear: clear };
+  GIS.chat = { init, send, addMessage, clear, sendMessage: send };
 })();

@@ -377,6 +377,11 @@ window.GIS = window.GIS || {};
     return mapInstance;
   }
 
+  /** 根据图层名获取 Leaflet 图层对象（用于调整叠放顺序等） */
+  function getLayer(name) {
+    return layers[name] || null;
+  }
+
   // ========== 公开接口 ==========
   GIS.map = {
     init,
@@ -387,6 +392,7 @@ window.GIS = window.GIS || {};
     setLayerVisible,
     clearLayers,
     getLayerNames,
+    getLayer,
     setView,
     getState,
     getMap,

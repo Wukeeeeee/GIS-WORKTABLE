@@ -1,6 +1,8 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
+from io import BytesIO
 from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, generated_geojson
 app = FastAPI()
 
@@ -15,7 +17,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str                          # 用户发送的消息
     session_id: str = "default"           # 会话ID，用来区分不同的聊天会话
-    api_key: str = None                   # DeepSeek API 密钥，由前端 localStorage 传来，用完即弃
+    api_key: Optional[str] = None         # DeepSeek API 密钥，由前端 localStorage 传来，用完即弃
 
 class TestKeyRequest(BaseModel):
     api_key: str                          # 要测试的 DeepSeek API 密钥
@@ -68,12 +70,86 @@ async def get_boundary_api(place: str = "长沙市"):
         return {"error": str(e)}
 
 @app.post('/api/upload')
-#加载文件，打开文件
-async def upload(file:UploadFile=File(...)):
-    content=await file.read()
-    filename=file.filename
-    #判断文件类型
-    if file.filename.endswith('.geojson'):
-        import json
-        geojson_data=json.loads(content)
-        return {"geojson":geojson_data,"name":filename}
+async def upload(file: UploadFile = File(...)):
+    import json, os, tempfile, zipfile
+    content = await file.read()
+    filename = file.filename or ''
+    ext = os.path.splitext(filename)[1].lower()
+
+    # 所有上传的文件都存一份到 output/uploads/，供 AI 后续处理用
+    upload_dir = os.path.join(os.path.dirname(__file__), "..", "output", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    saved_path = os.path.join(upload_dir, filename)
+    with open(saved_path, 'wb') as f:
+        f.write(content)
+
+    # ===== GeoJSON =====
+    if ext == '.geojson' or ext == '.json':
+        geojson_data = json.loads(content)
+        if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
+            return {"geojson": geojson_data, "name": filename, "saved_path": saved_path}
+        return {"error": "文件不是有效的 GeoJSON 格式"}
+
+    # ===== SHP (zip 包) =====
+    if ext == '.zip':
+        # 看看 zip 里有没有 .shp
+        with zipfile.ZipFile(BytesIO(content)) as zf:
+            shp_files = [n for n in zf.namelist() if n.endswith('.shp')]
+            if not shp_files:
+                return {"error": "ZIP 包中没有找到 .shp 文件"}
+            # 解压到临时目录
+            with tempfile.TemporaryDirectory() as tmpdir:
+                zf.extractall(tmpdir)
+                shp_path = os.path.join(tmpdir, shp_files[0])
+                if not os.path.exists(shp_path):
+                    return {"error": "无法读取 Shapefile"}
+                import geopandas as gpd
+                gdf = gpd.read_file(shp_path)
+                geojson_data = json.loads(gdf.to_json())
+                name = os.path.splitext(shp_files[0])[0]
+                return {"geojson": geojson_data, "name": name + ".zip"}
+
+    # ===== GPKG / KML 等（geopandas 支持的单文件格式） =====
+    supported = {'.gpkg', '.kml', '.kmz', '.gpx', '.dxf'}
+    if ext in supported:
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        try:
+            import geopandas as gpd
+            gdf = gpd.read_file(tmp_path)
+            if gdf.empty:
+                return {"error": "文件未包含有效的地理数据"}
+            geojson_data = json.loads(gdf.to_json())
+            name = os.path.splitext(filename)[0]
+            return {"geojson": geojson_data, "name": name}
+        except Exception as e:
+            return {"error": f"无法读取 {ext} 文件: {str(e)[:200]}"}
+        finally:
+            try: os.unlink(tmp_path)
+            except: pass
+
+    # ===== CSV（保存文件，让AI处理转换） =====
+    if ext == '.csv':
+        try:
+            content_str = content.decode('utf-8-sig')
+            import pandas as pd
+            from io import StringIO
+            df = pd.read_csv(StringIO(content_str))
+            columns = df.columns.tolist()
+            preview = df.head(3).to_dict(orient='records')
+
+            return {
+                "csv_info": {
+                    "filename": filename,
+                    "rows": len(df),
+                    "columns": columns,
+                    "preview": preview,
+                    "path": saved_path
+                },
+                "message": f"CSV已保存，共{len(df)}行，列名：{', '.join(columns)}"
+            }
+        except Exception as e:
+            return {"error": f"CSV 读取失败: {str(e)[:200]}"}
+
+    return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .zip(含shp)"}

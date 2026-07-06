@@ -141,7 +141,7 @@
               <div class="layers-empty" id="layersEmpty">
                 <svg><use href="assets/icons.svg#icon-file"/></svg>
                 <span>暂无图层</span>
-                <span style="font-size:12px;margin-top:4px;">上传 GIS 文件后图层将显示在此</span>
+                <span style="font-size:12px;margin-top:4px;">上传 GeoJSON / GPKG / KML / ZIP(SHP) 文件后将显示在此</span>
               </div>
               <!-- 图层表格 -->
               <table class="layers-table" id="layersTable" style="display:none;">
@@ -199,7 +199,7 @@
     type="file"
     id="fileInput"
     class="hidden-input"
-    accept=".geojson,.json,.shp,.gpkg,.kml,.csv"
+    accept=".geojson,.json,.gpkg,.kml,.kmz,.gpx,.dxf,.zip,.csv"
     multiple
   />
 
