@@ -72,36 +72,6 @@ python -m uvicorn backend.main:app --port 8000
 > 前端默认连接 `http://localhost:8000`，确保后端先启动。
 > 后端建议不加 `--reload`，Playwright 在 Windows 热加载下存在兼容问题。
 
-## 目录结构
-
-```
-Gis-WorkTable/
-├── frontend/
-│   ├── index.html              # 主页面
-│   ├── css/style.css           # 全部样式
-│   ├── js/
-│   │   ├── api.js              # API 接口层
-│   │   ├── app.js              # 应用入口
-│   │   ├── map.js              # 地图模块（Leaflet）
-│   │   ├── chat.js             # 聊天界面模块
-│   │   ├── layers.js           # 图层管理
-│   │   ├── upload.js           # 文件上传
-│   │   ├── aoi.js              # 🆕 AOI 候选选择（聊天框内嵌）
-│   │   └── time.js             # 时间问候
-│   └── assets/icons.svg        # SVG 图标 sprite
-├── backend/
-│   ├── main.py                 # FastAPI 应用入口 + 路由
-│   ├── requirements.txt        # Python 依赖
-│   └── services/
-│       ├── ai_service.py       # AI 对话服务 + Function Calling 工具系统
-│       ├── baidu_aoi_service.py # 🆕 百度地图 AOI 提取（Playwright）
-│       └── gaode_aoi_service.py # 🆕 高德地图 AOI 提取（Playwright）
-├── cache/aoi/                  # 🆕 AOI 结果缓存（自动生成）
-├── output/                     # AI 生成的文件（CSV / GeoJSON）
-├── apikey.txt                  # API Key（已加入 .gitignore）
-└── README.md
-```
-
 ## 技术栈
 
 - **前端**：原生 HTML + CSS（无框架）
@@ -109,7 +79,7 @@ Gis-WorkTable/
 - **后端**：FastAPI（Python）
 - **AI**：DeepSeek Chat API（OpenAI 兼容接口）
 - **地图数据源**：多源地图数据查询
-- **坐标转换**：transbigdata（BD09 / GCJ-02 / WGS-84 互转）
+- **坐标转换**：多坐标系自动统一转 WGS-84
 - **GIS 数据处理**：shapely + geopandas
 - **搜索引擎**：必应（无需 API Key）
 
