@@ -87,6 +87,7 @@ window.GIS = window.GIS || {};
         layer_id: result.name + '_' + Date.now(),
         filename: result.name,
         geometry_type: type,
+        crs: 'WGS-84',
         geojson: geojson,
       });
 

@@ -68,10 +68,31 @@ window.GIS = window.GIS || {};
     sendBtn.disabled = true;
     sendBtn.style.opacity = '0.5';
 
+    // 添加一个"思考中"的占位气泡，让用户知道 AI 正在处理
+    var loadingMsg = addMessage('思考中...', 'ai');
+    loadingMsg.id = 'ai-loading-msg';
+    var loadingDots = document.createElement('span');
+    loadingDots.className = 'loading-dots';
+    loadingDots.innerHTML = '<span>.</span><span>.</span><span>.</span>';
+    var loadingBubble = loadingMsg.querySelector('.message-bubble');
+    if (loadingBubble) loadingBubble.appendChild(loadingDots);
+
     try {
       // 发送到后端 API，等待回复
       const result = await GIS.api.chat(text);
+      // 移除"思考中"占位气泡
+      var loadingEl = document.getElementById('ai-loading-msg');
+      if (loadingEl) loadingEl.remove();
+
       addMessage(result.response, 'ai');
+      // 如果有待处理的 AOI 候选列表，显示在聊天框供点击选择
+      if (result.pending_suggestions && result.pending_suggestions.length > 0) {
+        setTimeout(() => {
+          if (window.GIS.aoi && typeof window.GIS.aoi.showSuggestions === 'function') {
+            window.GIS.aoi.showSuggestions(result.pending_suggestions);
+          }
+        }, 200);
+      }
       // 如果 AI 生成了 GeoJSON 数据，自动加载到地图和图层
       if (result.geojson && result.layerName) {
         setTimeout(() => {
@@ -90,6 +111,7 @@ window.GIS = window.GIS || {};
             layer_id: layerId,
             filename: uniqueName,
             geometry_type: geoType,
+            crs: 'WGS-84',
             geojson: result.geojson,
             visible: true,
           });
@@ -119,6 +141,9 @@ window.GIS = window.GIS || {};
         }, 100);
       }
     } catch (err) {
+      // 移除"思考中"占位气泡
+      var loadingEl = document.getElementById('ai-loading-msg');
+      if (loadingEl) loadingEl.remove();
       addMessage('请求失败: ' + err.message, 'system');
     } finally {
       // 恢复输入状态

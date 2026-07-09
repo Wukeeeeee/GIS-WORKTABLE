@@ -41,7 +41,7 @@
             <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="#1A1A1A">GIS</text>
             <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="#444444">WORKTABLE</text>
           </svg>
-          <!-- header 右侧按钮组：齿轮(设置) + +(新建会话) -->
+          <!-- header 右侧按钮组：AOI提取 + 齿轮(设置) + +(新建会话) -->
           <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
             <!-- 齿轮 ⚙ 按钮 → 打开设置弹窗，配置 DeepSeek API 密钥 -->
             <button id="settingsBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="设置">
@@ -107,7 +107,6 @@
             <button class="map-zoom-btn" id="zoomLocate" title="定位">
               <svg><use href="assets/icons.svg#icon-locate"/></svg>
             </button>
-            <button class="map-zoom-btn" id="switchMap" title="切换底图" style="font-size:16px;font-weight:bold;">🗺</button>
           </div>
 
           <!-- 坐标显示 -->
@@ -266,6 +265,7 @@
   <script src="js/chat.js"></script>
   <script src="js/layers.js"></script>
   <script src="js/upload.js"></script>
+  <script src="js/aoi.js"></script>
   <script src="js/app.js"></script>
   <script src="js/time.js"></script>
 
@@ -275,7 +275,7 @@
     (function() {
       'use strict';
 
-      // 显示布局（CSS transition）
+      // 显示布局
       document.getElementById('app').classList.add('ready');
 
       // ---- 地图缩放控件绑定 ----
@@ -325,12 +325,6 @@
           if (window.GIS && window.GIS.map) {
             window.GIS.map.setView([35, 110], 4);
           }
-        }
-      });
-
-      document.getElementById('switchMap').addEventListener('click', function() {
-        if (window.GIS && window.GIS.map) {
-          window.GIS.map.cycleTileSource();
         }
       });
 

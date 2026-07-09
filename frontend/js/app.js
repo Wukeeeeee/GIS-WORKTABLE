@@ -47,7 +47,14 @@ window.GIS = window.GIS || {};
       console.warn('[GIS] 上传模块未加载');
     }
 
-    // 5. 绑定全局快捷键 / 事件
+    // 5. 初始化 AOI 提取（百度 + 高德双源）
+    if (GIS.aoi && typeof GIS.aoi.init === 'function') {
+      GIS.aoi.init();
+    } else {
+      console.warn('[GIS] AOI模块未加载');
+    }
+
+    // 6. 绑定全局快捷键 / 事件
     bindGlobalEvents();
 
     console.log('[GIS] 应用初始化完成');
