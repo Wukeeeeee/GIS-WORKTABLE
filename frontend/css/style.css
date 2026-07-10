@@ -508,6 +508,14 @@ html, body {
   border-top: 1px solid var(--ui-gray-200);
   background: var(--ui-gray-100);
   flex-shrink: 0;
+  overflow: hidden;
+  transition: height 0.35s ease, opacity 0.35s ease;
+}
+
+.bottom-panels.collapsed {
+  height: 0;
+  opacity: 0;
+  border-top: none;
 }
 
 .panel-section {
@@ -573,6 +581,50 @@ html, body {
 .panel-header-btn svg {
   width: 16px;
   height: 16px;
+}
+
+/* Panel collapse toggle */
+.panel-toggle-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--ui-gray-400);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.panel-toggle-btn:hover {
+  color: var(--ui-gray-900);
+  background: var(--ui-gray-100);
+}
+
+/* Floating expand button (map bottom-right, 在 Bing 版权信息上方) */
+.map-expand-btn {
+  position: absolute;
+  bottom: 32px;
+  right: 16px;
+  z-index: 10;
+  width: 28px;
+  height: 28px;
+  background: var(--ui-white);
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ui-gray-900);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  transition: background var(--transition-fast);
+}
+
+.map-expand-btn:hover {
+  background: var(--ui-gray-100);
 }
 
 /* ========== Layers Table ========== */
@@ -699,16 +751,6 @@ html, body {
   color: var(--ui-gray-400);
 }
 
-.layer-crs-badge {
-  display: inline-block;
-  font-size: 10px;
-  font-family: 'JetBrains Mono', monospace;
-  color: var(--ui-gray-500);
-  border: 1px solid var(--ui-gray-200);
-  border-radius: 4px;
-  padding: 1px 6px;
-  letter-spacing: 0.3px;
-}
 
 /* Layer actions */
 .layer-actions {
@@ -1325,4 +1367,87 @@ tr:hover .layer-actions {
 }
 .aoi-choice-item:hover {
   background: #f0f0f0;
+}
+
+/* ========== Toast 通知系统 ========== */
+.toast-container {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 360px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--ui-white);
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 4px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--on-surface);
+  pointer-events: auto;
+  animation: toast-drop-in 0.3s ease forwards;
+  min-width: 200px;
+}
+
+.toast.toast-leaving {
+  animation: toast-drop-out 0.2s ease forwards;
+}
+
+.toast-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.toast-message {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.toast-close {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ui-gray-300);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.toast-close:hover {
+  color: var(--ui-gray-900);
+  background: var(--ui-gray-100);
+}
+
+.toast-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+@keyframes toast-drop-in {
+  from { opacity: 0; transform: translateY(-20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toast-drop-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-20px); }
 }

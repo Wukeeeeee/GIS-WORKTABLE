@@ -54,7 +54,6 @@ window.GIS = window.GIS || {};
           <span class="layer-name">${escapeHtml(layer.filename || '未命名')}</span>
         </td>
         <td><span class="layer-type">${escapeHtml(layer.geometry_type || '未知')}</span></td>
-        <td><span class="layer-crs-badge">${escapeHtml(layer.crs || 'WGS-84')}</span></td>
         <td>
           <div class="layer-actions">
             <button class="layer-action-btn" data-action="visibility" data-id="${layer.layer_id || ''}" title="显隐">
@@ -95,6 +94,10 @@ window.GIS = window.GIS || {};
     renderList();
     if (mapName && GIS.map && GIS.map.removeLayer) {
       GIS.map.removeLayer(mapName);  // 传正确的文件名，不是 layerId
+    }
+    // Toast 提示
+    if (target && GIS.app && GIS.app.toast) {
+      GIS.app.toast('已删除: ' + (target.filename || '图层'), 'info');
     }
   }
 

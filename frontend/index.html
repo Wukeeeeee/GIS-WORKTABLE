@@ -44,7 +44,7 @@
           <!-- header 右侧按钮组：AOI提取 + 齿轮(设置) + +(新建会话) -->
           <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
             <!-- 版本标签：显示 Git 提交号与后端启动时间，让用户知道当前运行的是哪个版本 -->
-            <span id="versionBadge" title="后端版本信息" style="font-size:10px;color:var(--ui-gray-400);background:var(--ui-gray-100);padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;display:none;">载入中...</span>
+            <span id="versionBadge" title="后端版本信息" style="font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;">载入中...</span>
             <!-- 齿轮 ⚙ 按钮 → 打开设置弹窗，配置 DeepSeek API 密钥 -->
             <button id="settingsBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="设置">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -115,10 +115,21 @@
           <div class="map-coords" id="mapCoords">
             --
           </div>
+
+          <!-- Toast 通知（放在地图区域内，左上角弹出） -->
+          <div class="toast-container" id="toastContainer"></div>
+
+          <!-- 展开面板按钮（右下角，面板收起时显示） -->
+          <button class="map-expand-btn" id="expandBottomPanel" title="展开面板" style="display:none;">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="8 11 12 7 16 11"/>
+              <line x1="4" y1="17" x2="20" y2="17"/>
+            </svg>
+          </button>
         </div>
 
         <!-- ======== 底部面板 ======== -->
-        <div class="bottom-panels">
+        <div class="bottom-panels" id="bottomPanels">
 
           <!-- 图层列表 -->
           <section class="panel-section panel-section-layers">
@@ -128,12 +139,6 @@
                 <button class="upload-btn" id="uploadTriggerBtn" title="上传文件">
                   <svg><use href="assets/icons.svg#icon-upload"/></svg>
                   <span>上传</span>
-                </button>
-                <button class="panel-header-btn" title="筛选">
-                  <svg><use href="assets/icons.svg#icon-filter"/></svg>
-                </button>
-                <button class="panel-header-btn" title="更多">
-                  <svg><use href="assets/icons.svg#icon-more"/></svg>
                 </button>
               </div>
             </div>
@@ -166,6 +171,12 @@
               <div class="panel-header-actions">
                 <button class="panel-header-btn" onclick="downloadAllFiles()" title="下载全部">
                   <svg><use href="assets/icons.svg#icon-download"/></svg>
+                </button>
+                <button class="panel-toggle-btn" id="toggleBottomPanel2" title="收起面板">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="4" y1="9" x2="20" y2="9"/>
+                    <polyline points="16 13 12 17 8 13"/>
+                  </svg>
                 </button>
               </div>
             </div>
@@ -204,10 +215,6 @@
     multiple
   />
 
-  <!-- ========================================================= -->
-  <!-- Toast 通知容器                                            -->
-  <!-- ========================================================= -->
-  <div class="toast-container" id="toastContainer"></div>
 
   <!-- ========================================================= -->
   <!-- 设置弹窗                                                  -->
@@ -454,6 +461,9 @@
         var orig = saveKeyBtn.textContent;
         saveKeyBtn.textContent = '已保存 ✓';
         setTimeout(function() { saveKeyBtn.textContent = orig; }, 2000);
+        if (window.GIS && window.GIS.app && window.GIS.app.toast) {
+          window.GIS.app.toast('API 密钥已保存', 'success');
+        }
       });
 
       // ---- 按钮按下反馈（微交互） ----
@@ -471,24 +481,67 @@
         if (window.GIS && window.GIS.api && window.GIS.api.getVersion) {
           window.GIS.api.getVersion().then(function(ver) {
             if (ver && ver.commit) {
-              badge.textContent = ver.commit + ' | ' + (ver.start_time || '');
-              badge.style.display = 'inline';
-              badge.title = '提交: ' + ver.commit + ' | 后端启动: ' + (ver.start_time || '未知');
+              var dirty = ver.dirty ? '*' : '';
+              badge.textContent = ver.commit + dirty + ' | ' + (ver.start_time || '');
+              badge.style.cssText = 'font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;background:var(--ui-gray-100);color:var(--ui-gray-400);';
+              badge.title = '提交: ' + ver.commit + (ver.dirty ? ' (有未提交的改动)' : '') + ' | 后端启动: ' + (ver.start_time || '未知');
               // 同步更新设置弹窗里的版本信息
               var mc = document.getElementById('modalVersionCommit');
               var mt = document.getElementById('modalVersionTime');
-              if (mc) mc.textContent = ver.commit;
+              if (mc) mc.textContent = ver.commit + (ver.dirty ? '*' : '');
               if (mt) mt.textContent = ver.start_time || '未知';
             } else {
-              badge.style.display = 'none';
+              badge.textContent = '无法连接';
+              badge.style.cssText = 'font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;background:#ffebee;color:#c62828;';
+              badge.title = '后端未响应，请确认服务已启动';
             }
           }).catch(function() {
-            badge.style.display = 'none';
+            badge.textContent = '无法连接';
+            badge.style.cssText = 'font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;background:#ffebee;color:#c62828;';
+            badge.title = '后端未响应，请确认服务已启动';
           });
         } else {
           setTimeout(loadVersion, 1000);
         }
       })();
+
+      // ---- 底部面板折叠展开 ----
+      var bottomPanels = document.getElementById('bottomPanels') || document.querySelector('.bottom-panels');
+      var toggleBtn = document.getElementById('toggleBottomPanel2');
+      var expandBtn = document.getElementById('expandBottomPanel');
+      var isCollapsed = false;
+
+      function collapsePanel() {
+        if (!bottomPanels) return;
+        bottomPanels.classList.add('collapsed');
+        if (toggleBtn) toggleBtn.style.display = 'none';
+        if (expandBtn) expandBtn.style.display = 'flex';
+        isCollapsed = true;
+        // 面板折叠后地图尺寸变化，通知 Leaflet 重算
+        setTimeout(function() {
+          if (window.GIS && window.GIS.map && window.GIS.map.getMap) {
+            var m = window.GIS.map.getMap();
+            if (m) m.invalidateSize();
+          }
+        }, 400);
+      }
+
+      function expandPanel() {
+        if (!bottomPanels) return;
+        bottomPanels.classList.remove('collapsed');
+        if (toggleBtn) toggleBtn.style.display = '';
+        if (expandBtn) expandBtn.style.display = 'none';
+        isCollapsed = false;
+        setTimeout(function() {
+          if (window.GIS && window.GIS.map && window.GIS.map.getMap) {
+            var m = window.GIS.map.getMap();
+            if (m) m.invalidateSize();
+          }
+        }, 400);
+      }
+
+      if (toggleBtn) toggleBtn.addEventListener('click', collapsePanel);
+      if (expandBtn) expandBtn.addEventListener('click', expandPanel);
 
       console.log('[GIS] 内联启动脚本完成');
     })();

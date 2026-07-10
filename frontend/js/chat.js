@@ -95,7 +95,96 @@ window.GIS = window.GIS || {};
         loadingEl.remove();
       }
 
-      addMessage(result.response, 'ai');
+      // 显示 AI 的文字回复
+      var msgEl = addMessage(result.response, 'ai');
+
+      // 如果有 AI 生成的图表图片，追加到最后一条回复下方
+      if (result.images && result.images.length > 0) {
+        // 如果上一步有返回 msgEl 就用它，否则新建容器
+        var imgContainer = document.createElement('div');
+        imgContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;margin-left:32px;';
+        // 通用下载函数（fetch + Blob，解决跨域下载问题）
+        function downloadFile(url, filename) {
+          fetch(url).then(function(res) { return res.blob(); }).then(function(blob) {
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+          }).catch(function(e) { console.warn('下载失败:', e); });
+        }
+
+        result.images.forEach(function(item) {
+          // 兼容新旧格式：item 可能是字符串（旧）或对象（新）
+          var imgUrl = typeof item === 'string' ? item : (item.url || '');
+          var imgType = typeof item === 'string' ? (imgUrl.match(/\.html?$/i) ? 'html' : 'png') : (item.type || 'png');
+          var htmlContent = typeof item === 'string' ? null : (item.content || null);
+          var fileName = imgUrl.split('/').pop() || 'file';
+          var baseUrl = (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || 'http://localhost:8000';
+          var fullUrl = baseUrl + imgUrl;
+
+          if (imgType === 'html') {
+            var htmlWrap = document.createElement('div');
+            htmlWrap.style.cssText = 'border:1px solid var(--ui-gray-200);border-radius:4px;overflow:hidden;width:100%;';
+            var iframe = document.createElement('iframe');
+            iframe.style.cssText = 'width:100%;height:420px;border:none;display:block;';
+            iframe.title = '交互式地图';
+            // 优先用 srcdoc（内联 HTML，不落磁盘），其次用 src
+            if (htmlContent) {
+              iframe.srcdoc = htmlContent;
+            } else {
+              iframe.src = fullUrl;
+            }
+            htmlWrap.appendChild(iframe);
+            var toolBar = document.createElement('div');
+            toolBar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid var(--ui-gray-200);background:var(--surface-container-low);font-size:12px;';
+            toolBar.innerHTML =
+              '<span style="flex:1;color:var(--ui-gray-400);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + fileName + '</span>' +
+              '<a href="' + fullUrl + '" target="_blank" style="padding:3px 8px;border:1px solid var(--ui-gray-200);border-radius:3px;text-decoration:none;color:var(--ui-gray-900);">新标签打开</a>';
+            // 下载按钮（用 fetch+blob，不会跳转）
+            var dlHtmlBtn = document.createElement('button');
+            dlHtmlBtn.textContent = '下载';
+            dlHtmlBtn.style.cssText = 'padding:3px 8px;background:var(--ui-gray-900);color:var(--ui-white);border:none;border-radius:3px;cursor:pointer;font-size:12px;';
+            dlHtmlBtn.addEventListener('click', function() { downloadFile(fullUrl, fileName); });
+            toolBar.appendChild(dlHtmlBtn);
+            htmlWrap.appendChild(toolBar);
+            imgContainer.appendChild(htmlWrap);
+          } else {
+            // 图片文件
+            var wrapper = document.createElement('div');
+            wrapper.style.cssText = 'position:relative;display:inline-block;';
+            var img = document.createElement('img');
+            img.src = fullUrl;
+            img.style.cssText = 'max-width:100%;max-height:300px;border-radius:4px;border:1px solid var(--ui-gray-200);cursor:pointer;display:block;';
+            img.title = '点击放大';
+            img.addEventListener('click', function() { window.open(fullUrl); });
+            wrapper.appendChild(img);
+            // 下载按钮（右上角悬浮，用 fetch+blob）
+            var dlImgBtn = document.createElement('button');
+            dlImgBtn.title = '下载图片';
+            dlImgBtn.innerHTML =
+              '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+                '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>' +
+              '</svg>';
+            dlImgBtn.style.cssText = 'position:absolute;top:4px;right:4px;width:28px;height:28px;background:rgba(255,255,255,0.9);border:1px solid var(--ui-gray-200);border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--ui-gray-900);opacity:0;transition:opacity 0.15s;cursor:pointer;padding:0;';
+            dlImgBtn.addEventListener('click', function(e) { e.stopPropagation(); downloadFile(fullUrl, fileName); });
+            wrapper.addEventListener('mouseenter', function() { dlImgBtn.style.opacity = '1'; });
+            wrapper.addEventListener('mouseleave', function() { dlImgBtn.style.opacity = '0'; });
+            wrapper.appendChild(dlImgBtn);
+            imgContainer.appendChild(wrapper);
+          }
+        });
+        // 如果 msgEl 存在，追加到它的气泡里
+        if (msgEl) {
+          var bubble = msgEl.querySelector('.message-bubble');
+          if (bubble) bubble.appendChild(imgContainer);
+        } else {
+          // 否则单独插到聊天容器
+          document.getElementById('chatMessages').appendChild(imgContainer);
+        }
+      }
 
       // 如果 AI 清空了图层，同步清空前端地图和面板
       if (result.clear_layers) {
@@ -113,6 +202,9 @@ window.GIS = window.GIS || {};
         if (ftb) ftb.innerHTML = '';
         if (ft) ft.style.display = 'none';
         if (fe) fe.style.display = 'flex';
+        if (window.GIS && window.GIS.app && window.GIS.app.toast) {
+          window.GIS.app.toast('已清空所有图层', 'info');
+        }
       }
 
       // 如果有待处理的 AOI 候选列表，显示在聊天框供点击选择
@@ -251,6 +343,9 @@ window.GIS = window.GIS || {};
         loadingEl.remove();
       }
       addMessage('请求失败: ' + err.message, 'system');
+      if (window.GIS && window.GIS.app && window.GIS.app.toast) {
+        window.GIS.app.toast('请求失败: ' + err.message, 'error');
+      }
     } finally {
       // 恢复输入状态
       inputEl.placeholder = originalPlaceholder;
@@ -269,7 +364,10 @@ window.GIS = window.GIS || {};
     // 系统消息：居中灰色小字条
     if (type === 'system') {
       const row = document.createElement('div');
-      row.style.cssText = 'display:flex;justify-content:center;max-width:100%;';
+      var isHidden = options && options.hidden;
+      row.style.cssText = isHidden
+        ? 'display:none;'
+        : 'display:flex;justify-content:center;max-width:100%;';
       const bubble = document.createElement('div');
       bubble.style.cssText = 'font-size:12px;color:var(--ui-gray-400);background:var(--ui-gray-100);padding:4px 12px;border-radius:10px;text-align:center;';
       bubble.innerHTML = text;

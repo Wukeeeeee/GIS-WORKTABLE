@@ -91,9 +91,9 @@ window.GIS = window.GIS || {};
         geojson: geojson,
       });
 
-      // 通知 AI 文件路径（简洁的标记，不打扰用户）
+      // 通知 AI 文件路径（隐藏消息，不显示在聊天框，但 AI 能读到）
       if (GIS.chat && GIS.chat.addMessage) {
-        GIS.chat.addMessage(`[文件上传] ${result.name} → output/uploads/`, 'system');
+        GIS.chat.addMessage(`[文件上传] ${result.name} → output/uploads/`, 'system', { hidden: true });
       }
 
       notify(`上传成功: ${result.name}`, 'success');
@@ -102,10 +102,10 @@ window.GIS = window.GIS || {};
     }
   }
 
-  // 系统通知
-  function notify(message, type = 'info') {
-    if (GIS.chat && GIS.chat.addMessage) {
-      GIS.chat.addMessage(message, 'system');
+  // 系统通知（只弹 Toast，不往聊天框里刷消息）
+  function notify(message, type) {
+    if (GIS.app && GIS.app.toast) {
+      GIS.app.toast(message, type || 'info');
     }
   }
 

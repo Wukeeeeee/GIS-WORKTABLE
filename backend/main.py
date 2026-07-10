@@ -1,10 +1,11 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
 import subprocess, datetime, time, os
-from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, generated_geojson, pending_aoi_suggestions, pending_layers, _register_layer, registered_layers
+from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, generated_geojson, pending_aoi_suggestions, pending_layers, pending_images, _register_layer, registered_layers, _TEMP_OUTPUT_DIR
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
 from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
 from backend.services.gaode_aoi_service import search_suggestions as gaode_search_suggestions
@@ -13,12 +14,20 @@ from backend.services.gaode_aoi_service import extract_boundary as gaode_extract
 # ===== 版本信息（服务器启动时自动生成） =====
 _SERVER_START_TIME = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
 _GIT_COMMIT = ""
+_GIT_DIRTY = False
 try:
     _GIT_COMMIT = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
         capture_output=True, text=True, timeout=3,
         cwd=os.path.dirname(os.path.dirname(__file__))
     ).stdout.strip()
+    # 检测是否有未提交的改动
+    _status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True, text=True, timeout=3,
+        cwd=os.path.dirname(os.path.dirname(__file__))
+    ).stdout.strip()
+    _GIT_DIRTY = bool(_status)
 except Exception:
     _GIT_COMMIT = "unknown"
 
@@ -30,6 +39,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 挂载临时输出目录为静态文件（不触发 Live Server 刷新）
+app.mount("/output", StaticFiles(directory=_TEMP_OUTPUT_DIR), name="output")
 
 # ---- 请求体数据结构 ----
 class ChatRequest(BaseModel):
@@ -75,6 +87,13 @@ async def chat(request: ChatRequest):
     if _ai_svc.clear_layers_flag:
         result["clear_layers"] = True
         _ai_svc.clear_layers_flag = False
+    # 如果有 AI 生成的图表图片，一起返回
+    if pending_images:
+        print(f"[GIS Debug] 返回 {len(pending_images)} 个图片/文件: {pending_images}", flush=True)
+        result["images"] = list(pending_images)
+        pending_images.clear()
+    else:
+        print("[GIS Debug] pending_images 为空", flush=True)
     return result
 
 @app.get("/api/health")
@@ -86,6 +105,7 @@ async def version():
     return {
         "commit": _GIT_COMMIT,
         "start_time": _SERVER_START_TIME,
+        "dirty": _GIT_DIRTY,
     }
 
 # ===== 清除记忆 =====
@@ -244,8 +264,8 @@ async def upload(file: UploadFile = File(...)):
     filename = file.filename or ''
     ext = os.path.splitext(filename)[1].lower()
 
-    # 所有上传的文件都存一份到 output/uploads/，供 AI 后续处理用
-    upload_dir = os.path.join(os.path.dirname(__file__), "..", "output", "uploads")
+    # 所有上传的文件存到临时目录，供 AI 后续处理用
+    upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     saved_path = os.path.join(upload_dir, filename)
     with open(saved_path, 'wb') as f:
