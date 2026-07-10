@@ -93,8 +93,8 @@ window.GIS = window.GIS || {};
     // 更新列表数据，将指定的图层删除
     layerData = layerData.filter(l => l.layer_id !== layerId);
     renderList();
-    if (mapName && GIS.map && GIS.map.clearLayers) {
-      GIS.map.clearLayers(mapName);  // 传正确的文件名，不是 layerId
+    if (mapName && GIS.map && GIS.map.removeLayer) {
+      GIS.map.removeLayer(mapName);  // 传正确的文件名，不是 layerId
     }
   }
 

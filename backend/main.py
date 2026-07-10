@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
-from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, generated_geojson, pending_aoi_suggestions
+from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, generated_geojson, pending_aoi_suggestions, pending_layers, _register_layer, registered_layers
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
 from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
 from backend.services.gaode_aoi_service import search_suggestions as gaode_search_suggestions
@@ -46,11 +46,21 @@ async def chat(request: ChatRequest):
         result["geojson"] = geo_data["geojson"]
         result["layerName"] = geo_data["name"]
         geo_data['sent'] = True  # 标记已发送，不再重复发
+
+    # 返回所有待发送的图层（支持 AI 一次生成多个独立图层）
+    if pending_layers:
+        result["layers"] = list(pending_layers)
+        pending_layers.clear()
     # 如果有待处理的百度 AOI 候选列表，传给前端弹出选择窗口
     suggest_data = pending_aoi_suggestions.get('latest')
     if suggest_data and suggest_data.get('sent') != True:
         result["pending_suggestions"] = suggest_data["suggestions"]
         suggest_data['sent'] = True  # 标记已发送
+    # 如果 AI 调用了 clear_layers，通知前端清空地图
+    import backend.services.ai_service as _ai_svc
+    if _ai_svc.clear_layers_flag:
+        result["clear_layers"] = True
+        _ai_svc.clear_layers_flag = False
     return result
 
 @app.get("/api/health")
@@ -224,6 +234,7 @@ async def upload(file: UploadFile = File(...)):
     if ext == '.geojson' or ext == '.json':
         geojson_data = json.loads(content)
         if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
+            _register_layer(filename, geojson_data)
             return {"geojson": geojson_data, "name": filename, "saved_path": saved_path}
         return {"error": "文件不是有效的 GeoJSON 格式"}
 
@@ -244,6 +255,7 @@ async def upload(file: UploadFile = File(...)):
                 gdf = gpd.read_file(shp_path)
                 geojson_data = json.loads(gdf.to_json())
                 name = os.path.splitext(shp_files[0])[0]
+                _register_layer(name, geojson_data)
                 return {"geojson": geojson_data, "name": name + ".zip"}
 
     # ===== GPKG / KML 等（geopandas 支持的单文件格式） =====
@@ -259,6 +271,7 @@ async def upload(file: UploadFile = File(...)):
                 return {"error": "文件未包含有效的地理数据"}
             geojson_data = json.loads(gdf.to_json())
             name = os.path.splitext(filename)[0]
+            _register_layer(name, geojson_data)
             return {"geojson": geojson_data, "name": name}
         except Exception as e:
             return {"error": f"无法读取 {ext} 文件: {str(e)[:200]}"}

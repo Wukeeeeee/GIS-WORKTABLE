@@ -87,6 +87,30 @@ window.GIS = window.GIS || {};
     if (layers[name]) { mapInstance.removeLayer(layers[name]); delete layers[name]; delete geoStore[name]; }
   }
 
+  /** 切换图层显隐 */
+  function setLayerVisible(name, visible) {
+    if (!layers[name]) return;
+    if (visible) {
+      if (!mapInstance.hasLayer(layers[name])) mapInstance.addLayer(layers[name]);
+    } else {
+      if (mapInstance.hasLayer(layers[name])) mapInstance.removeLayer(layers[name]);
+    }
+  }
+
+  /** 获取 Leaflet 图层对象 */
+  function getLayer(name) {
+    return layers[name] || null;
+  }
+
+  /** 修改图层颜色 */
+  function setLayerColor(name, color) {
+    if (!layers[name] || !geoStore[name]) return;
+    // 重新用新颜色加载
+    var geo = geoStore[name].geojson;
+    removeLayer(name);
+    loadGeoJSON(geo, name, { color: color, fillColor: color });
+  }
+
   function toggleLayer(name) {
     if (!layers[name]) return;
     if (mapInstance.hasLayer(layers[name])) mapInstance.removeLayer(layers[name]);
@@ -117,6 +141,9 @@ window.GIS = window.GIS || {};
     init: init,
     loadGeoJSON: loadGeoJSON,
     removeLayer: removeLayer,
+    setLayerVisible: setLayerVisible,
+    setLayerColor: setLayerColor,
+    getLayer: getLayer,
     toggleLayer: toggleLayer,
     flyTo: flyTo,
     fitLayer: fitLayer,

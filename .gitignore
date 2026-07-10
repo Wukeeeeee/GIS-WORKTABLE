@@ -26,6 +26,13 @@ backend/chat_history.json
 .DS_Store
 Thumbs.db
 
+# 日志
+logs/temp.jsonl
+logs/permanent.jsonl
+
+# 缓存（AOI 搜索/提取缓存、对话历史、OSM 边界等）
+cache/
+
 # AI 生成文件
 output/
 *.geojson

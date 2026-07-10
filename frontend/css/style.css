@@ -958,6 +958,79 @@ tr:hover .layer-actions {
   to { transform: rotate(360deg); }
 }
 
+/* ========== 翻牌计时器 (AI 思考计时) ========== */
+.flip-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  vertical-align: middle;
+  margin-left: 6px;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1;
+  user-select: none;
+}
+
+.flip-timer .t-digit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.8em;
+  height: 1.3em;
+  overflow: hidden;
+  position: relative;
+  text-align: center;
+  background: rgba(0,0,0,0.06);
+  border-radius: 2px;
+  font-weight: 600;
+}
+
+.flip-timer .t-d-main {
+  position: relative;
+  z-index: 2;
+}
+
+.flip-timer .t-d-float {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.flip-timer .t-sep {
+  display: inline-block;
+  width: 0.3em;
+  text-align: center;
+  font-weight: 600;
+  opacity: 0.4;
+}
+
+/* 向上翻 — 正常计数 (新数字从下面出现) */
+@keyframes t-up-out {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(-100%); opacity: 0; }
+}
+@keyframes t-up-in {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
+/* 向下翻 — 进位触发 (新数字从上面出现) */
+@keyframes t-down-out {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(100%); opacity: 0; }
+}
+@keyframes t-down-in {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+
 /* ========== AI 思考中加载动画 ========== */
 .loading-dots {
   display: inline-flex;

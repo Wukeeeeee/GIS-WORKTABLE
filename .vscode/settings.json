@@ -3,7 +3,11 @@
     "liveServer.settings.ignoreFiles": [
         "output/**",
         "backend/**",
+        "cache/**",
+        "logs/**",
         "node_modules/**",
-        ".git/**"
+        ".git/**",
+        "ne_110m_*/**",
+        "*.zip"
     ]
 }

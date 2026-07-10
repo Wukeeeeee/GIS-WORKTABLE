@@ -334,6 +334,20 @@
           // 清掉聊天记录，但保留空状态提示元素
           var container = document.getElementById('chatMessages');
           container.innerHTML = '<div class="chat-messages-empty"></div>';
+          // 清掉地图上的所有图层
+          if (window.GIS.layers) {
+            var allLayers = window.GIS.layers.getLayers();
+            allLayers.forEach(function(l) {
+              if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
+            });
+          }
+          // 清掉处理结果面板
+          var filesTbody = document.getElementById('filesTbody');
+          var filesTable = document.getElementById('filesTable');
+          var filesEmpty = document.getElementById('filesEmpty');
+          if (filesTbody) filesTbody.innerHTML = '';
+          if (filesTable) filesTable.style.display = 'none';
+          if (filesEmpty) filesEmpty.style.display = 'flex';
           if (typeof updateGreeting === 'function') updateGreeting();
         } catch (e) {
           window.GIS.chat.addMessage('操作失败: ' + e.message, 'system');
