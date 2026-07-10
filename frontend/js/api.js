@@ -133,12 +133,23 @@ return data;
   // ===== 系统 =====
   async function healthCheck()      { /* TODO: GET /health */ }
 
+  /** 获取后端版本信息（Git 提交号 + 启动时间） */
+  async function getVersion() {
+    try {
+      const res = await fetch(`${BASE_URL}/api/version`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
   return {
     request, upload, chat, clearMemory,
     getLayers, getLayer, deleteLayer,
     downloadLayer, executeGISAction, getBoundary,
     saveProject, loadProject, listProjects,
-    healthCheck, testApiKey, getApiKey, setApiKey,
+    healthCheck, testApiKey, getApiKey, setApiKey, getVersion,
     BASE_URL,
   };
 })();

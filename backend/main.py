@@ -3,11 +3,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
+import subprocess, datetime, time, os
 from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, generated_geojson, pending_aoi_suggestions, pending_layers, _register_layer, registered_layers
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
 from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
 from backend.services.gaode_aoi_service import search_suggestions as gaode_search_suggestions
 from backend.services.gaode_aoi_service import extract_boundary as gaode_extract_boundary
+
+# ===== 版本信息（服务器启动时自动生成） =====
+_SERVER_START_TIME = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+_GIT_COMMIT = ""
+try:
+    _GIT_COMMIT = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        capture_output=True, text=True, timeout=3,
+        cwd=os.path.dirname(os.path.dirname(__file__))
+    ).stdout.strip()
+except Exception:
+    _GIT_COMMIT = "unknown"
+
 app = FastAPI()
 
 app.add_middleware(
@@ -66,6 +80,13 @@ async def chat(request: ChatRequest):
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/api/version")
+async def version():
+    return {
+        "commit": _GIT_COMMIT,
+        "start_time": _SERVER_START_TIME,
+    }
 
 # ===== 清除记忆 =====
 # 前端点 "+" 按钮时调用，清空后端内存里的对话历史记录

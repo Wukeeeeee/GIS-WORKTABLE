@@ -43,6 +43,8 @@
           </svg>
           <!-- header 右侧按钮组：AOI提取 + 齿轮(设置) + +(新建会话) -->
           <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
+            <!-- 版本标签：显示 Git 提交号与后端启动时间，让用户知道当前运行的是哪个版本 -->
+            <span id="versionBadge" title="后端版本信息" style="font-size:10px;color:var(--ui-gray-400);background:var(--ui-gray-100);padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;display:none;">载入中...</span>
             <!-- 齿轮 ⚙ 按钮 → 打开设置弹窗，配置 DeepSeek API 密钥 -->
             <button id="settingsBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="设置">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -248,12 +250,14 @@
         </div>
         <!-- 安全提示：密钥只存在用户浏览器里，不会传到服务器存下来 -->
         <p class="modal-note">密钥仅保存在您的浏览器中，不会上传到服务器</p>
+        <!-- 版本信息 -->
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--ui-gray-200);font-size:11px;color:var(--ui-gray-400);display:flex;gap:12px;">
+          <span>提交: <span id="modalVersionCommit">-</span></span>
+          <span>后端启动: <span id="modalVersionTime">-</span></span>
+        </div>
       </div>
     </div>
   </div>
-
-  <!-- ========================================================= -->
-  <!-- JavaScript                                                -->
   <!-- ========================================================= -->
 
   <!-- Leaflet (bootcdn CDN — 国内可用) -->
@@ -459,6 +463,32 @@
           el.addEventListener('mouseup', function() { this.style.opacity = '1'; });
           el.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
         });
+
+      // ---- 加载版本信息 ----
+      (function loadVersion() {
+        var badge = document.getElementById('versionBadge');
+        if (!badge) return;
+        if (window.GIS && window.GIS.api && window.GIS.api.getVersion) {
+          window.GIS.api.getVersion().then(function(ver) {
+            if (ver && ver.commit) {
+              badge.textContent = ver.commit + ' | ' + (ver.start_time || '');
+              badge.style.display = 'inline';
+              badge.title = '提交: ' + ver.commit + ' | 后端启动: ' + (ver.start_time || '未知');
+              // 同步更新设置弹窗里的版本信息
+              var mc = document.getElementById('modalVersionCommit');
+              var mt = document.getElementById('modalVersionTime');
+              if (mc) mc.textContent = ver.commit;
+              if (mt) mt.textContent = ver.start_time || '未知';
+            } else {
+              badge.style.display = 'none';
+            }
+          }).catch(function() {
+            badge.style.display = 'none';
+          });
+        } else {
+          setTimeout(loadVersion, 1000);
+        }
+      })();
 
       console.log('[GIS] 内联启动脚本完成');
     })();
