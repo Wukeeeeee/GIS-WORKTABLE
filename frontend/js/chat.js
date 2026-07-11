@@ -61,12 +61,15 @@ window.GIS = window.GIS || {};
     if (el) {
       el.style.display = 'none';
     }
-    // 显示加载状态：输入框显示提示文字，禁用按钮
+    // 显示加载状态：输入框显示提示文字，禁用按钮和模型选择
     const originalPlaceholder = inputEl.placeholder;
     inputEl.placeholder = 'AI正在回复中...';
     inputEl.disabled = true;
     sendBtn.disabled = true;
     sendBtn.style.opacity = '0.5';
+    // 禁用模型选择器（请求中不允许换模型）
+    var modelBar = document.querySelector('.chat-input-model-bar');
+    if (modelBar) modelBar.classList.add('is-disabled');
 
     // 添加一个"思考中"的占位气泡，让用户知道 AI 正在处理
     var loadingMsg = addMessage('思考中...', 'ai');
@@ -86,8 +89,11 @@ window.GIS = window.GIS || {};
     loadingMsg._timerInterval = timerInterval;
 
     try {
+      // 读取当前选择的模型
+      const modelSelector = document.getElementById('modelSelector');
+      const provider = modelSelector ? modelSelector.value : 'deepseek';
       // 发送到后端 API，等待回复
-      const result = await GIS.api.chat(text);
+      const result = await GIS.api.chat(text, 'default', provider);
       // 移除"思考中"占位气泡
       var loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
@@ -353,6 +359,9 @@ window.GIS = window.GIS || {};
       sendBtn.disabled = false;
       sendBtn.style.opacity = '1';
       inputEl.focus();
+      // 重新启用模型选择
+      var modelBar = document.querySelector('.chat-input-model-bar');
+      if (modelBar) modelBar.classList.remove('is-disabled');
     }
   }
 

@@ -10,7 +10,7 @@
 
 ## 简介
 
-基于 Web 的 GIS 数据处理可视化工作台，内置 AI 助手（DeepSeek Chat），支持自然语言交互。通过对话让 AI 搜索地图数据、提取建筑轮廓、处理 GIS 数据并加载到地图。
+基于 Web 的 GIS 数据处理可视化工作台，内置 AI 助手（支持 DeepSeek Chat / GLM-4.7-Flash），通过自然语言交互即可搜索数据、提取建筑轮廓、处理 GIS 数据并加载到地图。
 
 ## 快速开始
 
@@ -37,17 +37,24 @@ python -m uvicorn backend.main:app --port 8000
 
 ### 配置 API Key
 
-打开前端页面，点击左上角齿轮按钮，输入你的 DeepSeek API Key，点击保存。
+打开前端页面，点击左下角齿轮按钮，在设置弹窗中配置：
 
-或者在项目根目录创建 apikey.txt：
+- **DeepSeek**：输入 API Key，点击保存
+- **GLM-4.7-Flash（免费）**：输入智谱 API Key，点击保存
+
+或者在项目根目录创建密钥文件：
 
 ```bash
+# DeepSeek
 echo "your-deepseek-api-key" > apikey.txt
+# GLM
+echo "your-glm-api-key" > glm_apikey.txt
 ```
 
 ## 核心功能
 
-- AI 对话：左侧聊天面板接入 DeepSeek Chat，支持自然语言 GIS 操作
+- AI 对话：左侧聊天面板接入 AI 助手（DeepSeek Chat / GLM-4.7-Flash），支持自然语言 GIS 操作
+- 模型切换：底部栏点击模型名称弹出选择器，状态圆点显示连接状态（绿色=可用/红色=未通过）
 - 地图：Leaflet + Bing 卫星底图（WGS-84），坐标显示、定位、缩放
 - 图层管理：显隐控制、颜色自定义、拖拽排序、删除
 - 文件上传：支持 GeoJSON / Shapefile / GPKG / KML / CSV
@@ -70,7 +77,7 @@ echo "your-deepseek-api-key" > apikey.txt
 - 前端：原生 HTML + CSS
 - 地图：Leaflet 1.9.4 + Bing 卫星底图
 - 后端：FastAPI（Python）
-- AI：DeepSeek Chat API
+- AI：DeepSeek Chat API / GLM-4.7-Flash API（双模型）
 - GIS 处理：shapely + geopandas
 - 图表：matplotlib + seaborn + pyecharts
 - 数据源：阿里云 DataV / 百度地图 / 高德地图

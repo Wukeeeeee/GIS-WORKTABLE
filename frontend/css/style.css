@@ -367,12 +367,77 @@ html, body {
   color: var(--ui-gray-300);
 }
 
-.chat-input-actions {
-  position: absolute;
-  bottom: 8px;
-  right: 8px;
+/* ===== 底部操作栏（模型选择 + 上传 + 发送） ===== */
+.chat-input-model-bar {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 12px 0 0;
+  background: var(--surface-container-lowest);
+  flex-shrink: 0;
+}
+
+.model-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.model-bar-right .icon-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: background var(--transition-fast);
+}
+.model-bar-right .icon-btn:hover {
+  background: var(--ui-gray-100);
+}
+
+.model-select-wrapper {
+  display: flex;
+  align-items: center;
   gap: 4px;
+  height: 24px;
+  padding: 0 6px 0 4px;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 4px;
+  background: var(--ui-white);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), opacity var(--transition-fast);
+}
+.model-select-wrapper:hover {
+  border-color: var(--ui-gray-400);
+}
+
+.chat-input-model-bar #modelSelector {
+  font-size: 11px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--ui-gray-400);
+  cursor: pointer;
+  outline: none;
+  font-family: var(--font-body);
+  transition: color var(--transition-fast);
+}
+.chat-input-model-bar #modelSelector:hover {
+  color: var(--ui-gray-900);
+}
+
+/* 请求中禁用状态 */
+.chat-input-model-bar.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 /* ========== Main Content Area ========== */
@@ -1274,16 +1339,6 @@ tr:hover .layer-actions {
   background: var(--ui-gray-100);
 }
 
-.modal-status {
-  font-size: 12px;
-  color: var(--ui-gray-300);
-  margin-top: 8px;
-}
-
-.modal-status-configured {
-  color: #2e7d32;
-}
-
 .modal-test-result {
   font-size: 12px;
   margin-top: 8px;
@@ -1298,12 +1353,170 @@ tr:hover .layer-actions {
   color: var(--error);
 }
 
-.modal-actions {
+/* ===== 模型配置卡片 ===== */
+.model-config-card {
+  background: var(--surface-container-low);
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 6px;
+  padding: 14px;
+  margin-bottom: 12px;
+  transition: border-color var(--transition-fast);
+}
+.model-config-card:hover {
+  border-color: var(--ui-gray-300);
+}
+
+.model-config-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.model-config-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ui-gray-900);
+}
+
+.model-config-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--ui-gray-200);
+  color: var(--ui-gray-400);
+  margin-left: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.model-config-badge.configured {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.model-config-free {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.model-config-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 16px;
+  margin-top: 10px;
 }
+
+/* ===== 版本信息 ===== */
+.modal-version-info {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--ui-gray-200);
+  font-size: 11px;
+  color: var(--ui-gray-400);
+  display: flex;
+  gap: 12px;
+}
+
+.model-option-logo {
+  flex-shrink: 0;
+  border-radius: 3px;
+}
+
+.model-select-arrow {
+  flex-shrink: 0;
+  color: var(--ui-gray-300);
+}
+
+/* ===== 模型选择弹窗 ===== */
+.model-bar-left {
+  position: relative;
+}
+
+.model-picker {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 100;
+  background: var(--ui-white);
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.12);
+  width: 220px;
+  overflow: hidden;
+  display: none;
+  animation: picker-up 0.12s ease;
+}
+.model-picker.is-open {
+  display: block;
+}
+
+@keyframes picker-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.model-picker-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.model-picker-option:hover {
+  background: var(--surface-container-low);
+}
+
+.model-picker-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-picker-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ui-gray-900);
+}
+
+.model-picker-desc {
+  font-size: 11px;
+  color: var(--ui-gray-300);
+}
+
+.model-picker-free {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #e8f5e9;
+  color: #2e7d32;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.model-picker-check {
+  flex-shrink: 0;
+  color: var(--ui-gray-200);
+}
+.model-picker-option.is-selected .model-picker-check {
+  color: var(--ui-gray-900);
+}
+
+.model-picker-divider {
+  height: 1px;
+  background: var(--ui-gray-100);
+  margin: 0 12px;
+}
+
 
 .modal-btn {
   padding: 8px 20px;
@@ -1450,4 +1663,31 @@ tr:hover .layer-actions {
 @keyframes toast-drop-out {
   from { opacity: 1; transform: translateY(0); }
   to   { opacity: 0; transform: translateY(-20px); }
+}
+
+#modelSelector option {
+  background: var(--surface);
+  color: var(--on-surface);
+}
+
+/* 模型状态圆点 (SVG) */
+.model-status-dot {
+  flex-shrink: 0;
+  display: block;
+  transition: fill 0.3s ease;
+}
+.model-status-dot.online circle {
+  fill: #2e7d32;
+}
+.model-status-dot.offline circle {
+  fill: #d32f2f;
+}
+.model-status-dot.checking circle {
+  fill: #f57c00;
+  animation: dot-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes dot-pulse {
+  from { opacity: 0.4; }
+  to   { opacity: 1; }
 }

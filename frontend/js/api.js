@@ -14,20 +14,74 @@ window.GIS.api = (() => {
 
   // ===== API 密钥管理 (localStorage) =====
   // 密钥存在浏览器本地，每次发请求时带上，后端用完就丢不存盘
-  const STORAGE_KEY = 'gis_deepseek_api_key';
+  const DS_STORAGE_KEY = 'gis_deepseek_api_key';
+  const GLM_STORAGE_KEY = 'gis_glm_api_key';
+  const MODEL_STORAGE_KEY = 'gis_selected_model';
+  const MODEL_STATUS_KEY = 'gis_model_status';
 
   /** 从 localStorage 读取保存的 DeepSeek 密钥 */
   function getApiKey() {
-    return localStorage.getItem(STORAGE_KEY) || '';
+    return localStorage.getItem(DS_STORAGE_KEY) || '';
   }
 
   /** 把 DeepSeek 密钥保存到 localStorage（关掉浏览器再打开还在） */
   function setApiKey(key) {
     if (key) {
-      localStorage.setItem(STORAGE_KEY, key);
+      localStorage.setItem(DS_STORAGE_KEY, key);
     } else {
-      localStorage.removeItem(STORAGE_KEY);  // 传空字符串就当是清除
+      localStorage.removeItem(DS_STORAGE_KEY);
     }
+  }
+
+  /** 从 localStorage 读取保存的 GLM 密钥 */
+  function getGLMApiKey() {
+    return localStorage.getItem(GLM_STORAGE_KEY) || '';
+  }
+
+  /** 把 GLM 密钥保存到 localStorage */
+  function setGLMApiKey(key) {
+    if (key) {
+      localStorage.setItem(GLM_STORAGE_KEY, key);
+    } else {
+      localStorage.removeItem(GLM_STORAGE_KEY);
+    }
+  }
+
+  /** 获取保存的模型偏好 */
+  function getSelectedModel() {
+    return localStorage.getItem(MODEL_STORAGE_KEY) || 'deepseek';
+  }
+
+  /** 保存模型偏好 */
+  function setSelectedModel(model) {
+    localStorage.setItem(MODEL_STORAGE_KEY, model);
+  }
+
+  // ===== 模型状态追踪 =====
+  /** 获取指定模型的测速状态: 'untested' | 'online' | 'offline' */
+  function getModelStatus(provider) {
+    try {
+      var stored = JSON.parse(localStorage.getItem(MODEL_STATUS_KEY)) || {};
+      return stored[provider] || 'untested';
+    } catch (e) {
+      return 'untested';
+    }
+  }
+
+  /** 设置指定模型的测速状态 */
+  function setModelStatus(provider, status) {
+    try {
+      var stored = JSON.parse(localStorage.getItem(MODEL_STATUS_KEY)) || {};
+      stored[provider] = status;
+      localStorage.setItem(MODEL_STATUS_KEY, JSON.stringify(stored));
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  /** 清除所有模型的测速状态 */
+  function clearModelStatus() {
+    localStorage.removeItem(MODEL_STATUS_KEY);
   }
 
   async function request(endpoint, options = {}) {
@@ -52,11 +106,11 @@ window.GIS.api = (() => {
   }
 
   // ===== 聊天 / AI =====
-  /** @param {string} message @param {string} [sessionId='default'] */
+  /** @param {string} message @param {string} [sessionId='default'] @param {string} [provider='deepseek'] */
 // 发送消息到后端的聊天接口，并返回 AI 的回复
-  async function chat(message, sessionId = 'default') {
-    // 从浏览器 localStorage 取出用户保存的 API 密钥，一起发给后端
-    const apiKey = getApiKey();
+  async function chat(message, sessionId = 'default', provider = 'deepseek') {
+    // 根据 provider 选择对应的 API 密钥
+    const apiKey = provider === 'glm' ? getGLMApiKey() : getApiKey();
 const res=await fetch(`${BASE_URL}/api/chat`,{
   method:'POST',
   headers:{'Content-Type':'application/json'},
@@ -64,7 +118,8 @@ const res=await fetch(`${BASE_URL}/api/chat`,{
   body:JSON.stringify({
     message,                    // 用户输入的文字
     session_id:sessionId,       // 会话ID（目前都用 default）
-    api_key: apiKey || undefined  // 密钥：有就带上，没有就不传（后端会用 apikey.txt）
+    api_key: apiKey || undefined,  // 密钥：有就带上，没有就不传（后端会用 apikey.txt 或 glm_apikey.txt）
+    provider                    // 模型提供商：deepseek 或 glm
   })
 })
 if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
@@ -86,6 +141,17 @@ return data;
     });
     if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
     // 返回 { success: true/false, message: "连接成功 ✓" / "密钥无效" }
+    return res.json();
+  }
+
+  /** 向后端发一个测试请求，验证 GLM 密钥能不能用 */
+  async function testGLMApiKey(apiKey) {
+    const res = await fetch(`${BASE_URL}/api/test-key-glm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
     return res.json();
   }
 
@@ -149,8 +215,11 @@ return data;
     getLayers, getLayer, deleteLayer,
     downloadLayer, executeGISAction, getBoundary,
     saveProject, loadProject, listProjects,
-    healthCheck, testApiKey, getApiKey, setApiKey, getVersion,
-    BASE_URL,
+    healthCheck, testApiKey, testGLMApiKey,
+    getApiKey, setApiKey, getGLMApiKey, setGLMApiKey,
+    getSelectedModel, setSelectedModel,
+    getModelStatus, setModelStatus, clearModelStatus,
+    BASE_URL, DS_STORAGE_KEY, GLM_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };
 })();
 

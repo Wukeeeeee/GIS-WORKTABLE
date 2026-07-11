@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
 import subprocess, datetime, time, os
-from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, generated_geojson, pending_aoi_suggestions, pending_layers, pending_images, _register_layer, registered_layers, _TEMP_OUTPUT_DIR
+from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, generated_geojson, pending_aoi_suggestions, pending_layers, pending_images, _register_layer, registered_layers, _TEMP_OUTPUT_DIR
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
 from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
 from backend.services.gaode_aoi_service import search_suggestions as gaode_search_suggestions
@@ -47,7 +47,8 @@ app.mount("/output", StaticFiles(directory=_TEMP_OUTPUT_DIR), name="output")
 class ChatRequest(BaseModel):
     message: str                          # 用户发送的消息
     session_id: str = "default"           # 会话ID，用来区分不同的聊天会话
-    api_key: Optional[str] = None         # DeepSeek API 密钥，由前端 localStorage 传来，用完即弃
+    api_key: Optional[str] = None         # API 密钥，前端 localStorage 传来，用完即弃
+    provider: str = "deepseek"            # 模型提供商：deepseek 或 glm
 
 class TestKeyRequest(BaseModel):
     api_key: str                          # 要测试的 DeepSeek API 密钥
@@ -64,7 +65,7 @@ class BaiduExtractRequest(BaseModel):
 # 前端发消息到这里，后端调 DeepSeek API 获取 AI 回复
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    response = chat_with_ai(request.message, request.session_id, request.api_key)
+    response = chat_with_ai(request.message, request.session_id, request.api_key, request.provider)
     result = {"response": response}
     # 如果有最新生成的 GeoJSON，一起返回给前端
     geo_data = generated_geojson.get('latest')
@@ -121,6 +122,12 @@ async def clear_chat_memory(session_id: str = "default"):
 async def test_key(request: TestKeyRequest):
     # 返回 { success: true/false, message: "连接成功"/"密钥无效" }
     success, message = test_deepseek_key(request.api_key)
+    return {"success": success, "message": message}
+
+# ===== 测试 GLM API 密钥 =====
+@app.post("/api/test-key-glm")
+async def test_key_glm(request: TestKeyRequest):
+    success, message = test_glm_key(request.api_key)
     return {"success": success, "message": message}
 
 @app.get('/api/boundary')
