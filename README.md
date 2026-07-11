@@ -10,9 +10,18 @@
 
 ## 简介
 
-基于 Web 的 GIS 数据处理可视化工作台，内置 AI 助手（支持 **DeepSeek V4 Flash** / **GLM-4.7-Flash**），通过自然语言交互即可搜索数据、提取建筑轮廓、处理 GIS 数据并加载到地图。
+基于 Web 的 GIS 数据处理可视化工作台，内置双模型 AI 助手，通过自然语言交互即可搜索数据、提取建筑轮廓、处理 GIS 数据并加载到地图。
 
-AI 回复支持 **Markdown 渲染**（标题、代码块、表格等）、片段一键复制，加载状态带流光动画与实时计时。
+### 🤖 双模型协作机制
+
+| 模型 | 角色 | 能力 |
+|------|------|------|
+| **DeepSeek V4 Flash** | 🛠️ 执行者 | 支持 Function Calling，可搜索网页、执行 Python 代码、生成图表、获取边界、操作地图 |
+| **GLM-4.7-Flash**（免费） | 📋 规划者 | 纯文本问答，设计 GIS 工作流，完成后自动提示切换到 DeepSeek 执行 |
+
+**工作流：** 使用 GLM 规划分析步骤 → 点击"切换到 DeepSeek 执行"按钮 → DeepSeek 自动按规划执行全部操作。
+
+AI 回复支持 **Markdown 渲染**（标题、代码块、表格等）、**一键复制**，加载状态带模型名显示、**流光扫描动画**与**翻牌计时器**。
 
 ## 快速开始
 
@@ -41,7 +50,7 @@ python -m uvicorn backend.main:app --port 8000
 
 打开前端页面，点击左下角齿轮按钮，在设置弹窗中配置：
 
-- **DeepSeek**：输入 API Key，点击保存
+- **DeepSeek V4 Flash**：输入 API Key，点击保存
 - **GLM-4.7-Flash（免费）**：输入智谱 API Key，点击保存
 
 或者在项目根目录创建密钥文件：
@@ -55,10 +64,11 @@ echo "your-glm-api-key" > glm_apikey.txt
 
 ## 核心功能
 
-- AI 对话：左侧聊天面板接入 AI 助手（**DeepSeek V4 Flash** / GLM-4.7-Flash），支持自然语言 GIS 操作
-- Markdown 渲染：AI 回复支持标题、列表、代码块、表格等，阅读体验更佳
-- 一键复制：AI 回复右下角常驻复制按钮，点击复制纯文本
-- 加载动效：AI 思考气泡显示模型名 + 流光扫描动画 + 翻牌计时器
+### 🤖 AI 对话
+- 双模型协作：GLM 免费规划 → 一键切换到 **DeepSeek V4 Flash** 自动执行
+- Markdown 渲染：AI 回复支持标题、列表、代码块、表格，阅读体验更佳
+- 一键复制：AI 回复右下角复制按钮（常驻半透明，hover 强化），点击复制纯文本
+- 加载动效：思考气泡显示模型名 + **流光扫描动画** + 翻牌计时器（独立一行）
 - 模型切换：底部栏点击模型名称弹出选择器，状态圆点显示连接状态（绿色=可用/红色=未通过）
 - 地图：Leaflet + Bing 卫星底图（WGS-84），坐标显示、定位、缩放
 - 图层管理：显隐控制、颜色自定义、拖拽排序、删除
@@ -83,7 +93,7 @@ echo "your-glm-api-key" > glm_apikey.txt
 - 地图：Leaflet 1.9.4 + Bing 卫星底图
 - Markdown 渲染：marked.js
 - 后端：FastAPI（Python）
-- AI：DeepSeek V4 Flash API / GLM-4.7-Flash API（双模型）
+- AI：DeepSeek V4 Flash API（Function Calling，执行）/ GLM-4.7-Flash API（纯文本，规划）
 - GIS 处理：shapely + geopandas
 - 图表：matplotlib + seaborn + pyecharts
 - 数据源：阿里云 DataV / 百度地图 / 高德地图
