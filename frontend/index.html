@@ -131,6 +131,9 @@
               </button>
             </div>
           </div>
+          <div id="modelWarning" class="model-warning" style="display:none;margin:0 12px 6px;padding:4px 8px;font-size:11px;color:#b71c1c;background:#ffebee;border-radius:4px;text-align:center;">
+            <span></span>
+          </div>
         </div>
       </aside>
 
@@ -598,6 +601,29 @@
         } else {
           // 'untested' — 默认显示红色（未通过）
           modelStatusDot.classList.add('offline');
+        }
+        // 同时更新双模型警告
+        updateModelWarning();
+      }
+
+      /** 检查两个模型是否都未配置，显示警告 */
+      function updateModelWarning() {
+        var warn = document.getElementById('modelWarning');
+        if (!warn) return;
+        var dsKey = window.GIS.api.getApiKey();
+        var glmKey = window.GIS.api.getGLMApiKey();
+        var dsStatus = window.GIS.api.getModelStatus('deepseek');
+        var glmStatus = window.GIS.api.getModelStatus('glm');
+        // 两个都未配置或都离线时显示警告
+        var bothOffline = (!dsKey && !glmKey) || (dsStatus === 'offline' && glmStatus === 'offline');
+        if (bothOffline) {
+          warn.style.display = 'block';
+          var msg = '';
+          if (!dsKey && !glmKey) msg = 'DeepSeek 和 GLM 均未配置 API Key，请点击齿轮按钮设置';
+          else msg = 'DeepSeek 和 GLM 均连接失败，请检查 API Key 配置';
+          warn.querySelector('span').textContent = msg;
+        } else {
+          warn.style.display = 'none';
         }
       }
 

@@ -109,7 +109,7 @@ window.GIS = window.GIS || {};
     }
     // Toast 提示
     if (target && GIS.app && GIS.app.toast) {
-      GIS.app.toast('已删除: ' + (target.filename || '图层'), 'info');
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') { window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system'); }
     }
   }
 
@@ -135,7 +135,7 @@ window.GIS = window.GIS || {};
       geojson = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
     }
     if (!geojson) {
-      if (GIS.app && GIS.app.toast) GIS.app.toast('无数据可下载', 'warning');
+      if (typeof addMessage === 'function') addMessage('无数据可下载', 'system');
       return;
     }
     var blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/geo+json;charset=utf-8' });
@@ -147,7 +147,7 @@ window.GIS = window.GIS || {};
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    if (GIS.app && GIS.app.toast) GIS.app.toast('已下载: ' + a.download, 'success');
+    
   }
 
   function bindDragEvents() {

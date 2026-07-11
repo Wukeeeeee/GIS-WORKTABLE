@@ -52,6 +52,26 @@ window.GIS = window.GIS || {};
       text = inputEl ? inputEl.value.trim() : '';
     }
     if (!text) return;
+
+    // 检查当前选中的模型是否已配置 API Key
+    var selModel = document.getElementById('modelSelector');
+    var curProvider = selModel ? selModel.value : 'deepseek';
+    var hasKey = curProvider === 'glm' ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
+    if (!hasKey) {
+      if (window.GIS && window.GIS.app && window.GIS.app.toast) {
+        var modelName = curProvider === 'glm' ? 'GLM-4.7-Flash' : 'DeepSeek V4 Flash';
+        addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
+      }
+      // 恢复输入框
+      inputEl.placeholder = originalPlaceholder;
+      inputEl.disabled = false;
+      sendBtn.disabled = false;
+      sendBtn.style.opacity = '1';
+      var modelBar2 = document.querySelector('.chat-input-model-bar');
+      if (modelBar2) modelBar2.classList.remove('is-disabled');
+      return;
+    }
+
     // 渲染用户消息
     addMessage(text, 'user');
     // 只有从输入框发送时才清空输入框
@@ -214,7 +234,7 @@ window.GIS = window.GIS || {};
           });
         }
         if (window.GIS && window.GIS.app && window.GIS.app.toast) {
-          window.GIS.app.toast('已清空所有图层', 'info');
+          addMessage('已清空所有图层', 'system');
         }
       }
 
@@ -311,7 +331,7 @@ window.GIS = window.GIS || {};
       }
       addMessage('请求失败: ' + err.message, 'system');
       if (window.GIS && window.GIS.app && window.GIS.app.toast) {
-        window.GIS.app.toast('请求失败: ' + err.message, 'error');
+        addMessage('请求失败: ' + err.message, 'system');
       }
     } finally {
       // 恢复 GLM→DeepSeek 切换按钮（如果有）
@@ -386,6 +406,18 @@ window.GIS = window.GIS || {};
       switchBtn.addEventListener('mouseenter', function() { this.style.opacity = '0.8'; });
       switchBtn.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
       switchBtn.addEventListener('click', function() {
+        // 检查 DeepSeek 是否已配置 API Key
+        var dsKey = window.GIS.api.getApiKey();
+        if (!dsKey) {
+          switchBtn.disabled = false;
+          switchBtn.style.opacity = '1';
+          switchBtn.style.cursor = 'pointer';
+          var tip = document.createElement('div');
+          tip.style.cssText = 'margin-top:6px;padding:6px 10px;font-size:11px;color:#b71c1c;background:#ffebee;border-radius:4px;border:1px solid #ef9a9a;';
+          tip.textContent = 'DeepSeek 未配置 API Key，请点击齿轮按钮设置';
+          switchBtn.parentNode.insertBefore(tip, switchBtn.nextSibling);
+          return;
+        }
         // 保存引用，AI 执行完后恢复
         _switchBtnRef = switchBtn;
         // 立即禁用按钮（防重复点击）

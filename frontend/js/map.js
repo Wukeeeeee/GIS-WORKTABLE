@@ -68,6 +68,18 @@ window.GIS = window.GIS || {};
     var defaultStyle = { color: '#1c1b1b', weight: 2, fillColor: '#1c1b1b', fillOpacity: 0.1 };
     var mergedStyle = Object.assign({}, defaultStyle, style);
 
+    // 调试：检查 GeoJSON 是否有效
+    var featCount = geojson.type === 'FeatureCollection' ? (geojson.features || []).length : 1;
+    var firstCoord = null;
+    try {
+      if (geojson.type === 'FeatureCollection' && geojson.features && geojson.features[0] && geojson.features[0].geometry) {
+        firstCoord = JSON.stringify(geojson.features[0].geometry.coordinates);
+      } else if (geojson.geometry) {
+        firstCoord = JSON.stringify(geojson.geometry.coordinates);
+      }
+    } catch(e) {}
+    console.log('[GIS Map] 加载图层:', name, '要素:', featCount, '首坐标:', firstCoord);
+
     var layer = L.geoJSON(geojson, {
       style: mergedStyle,
       pointToLayer: function(feature, latlng) {
@@ -76,10 +88,23 @@ window.GIS = window.GIS || {};
           color: mergedStyle.color, weight: 2, opacity: 1, fillOpacity: 0.6,
         });
       },
+      coordsToLatLng: function(coords) {
+        // GeoJSON 标准是 [lng, lat]，但有的数据是 [lat, lng]
+        // 如果纬度值看起来像经度（超出合理纬度范围 -90~90），自动交换
+        var lng = coords[0], lat = coords[1];
+        if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) {
+          return L.latLng(lng, lat);
+        }
+        return L.latLng(lat, lng);
+      },
     });
     layer.addTo(mapInstance);
     layers[name] = layer;
     geoStore[name] = { geojson: geojson, style: style };
+    // 自动缩放到图层范围
+    try {
+      mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 });
+    } catch(e) {}
     return layer;
   }
 

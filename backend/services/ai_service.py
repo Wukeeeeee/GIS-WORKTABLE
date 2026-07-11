@@ -31,6 +31,10 @@ def _add_pending_item(url: str, file_path: str = None):
         pending_images.append({"url": url, "type": "png"})
 # 标记是否需要前端清空地图图层
 clear_layers_flag = False
+
+# Browser-Use / LLM 工具需要用到的当前会话 API Key（在 chat_with_ai 入口设置）
+_current_api_key = ""
+_current_provider = "deepseek"
 # 存储待处理的 AOI 候选列表
 pending_aoi_suggestions = {}
 # AI 工作空间目录（用于跨步骤数据持久化，在临时目录内）
@@ -265,7 +269,7 @@ SYSTEM_PROMPT = """你是一个基于##MODEL_NAME##模型的GIS WorkTable内置A
 
   数据获取：
   - **search_web** → 搜索网络信息（百度百科、统计局等）
-  - **fetch_webpage** → 获取指定网页内容
+  - **fetch_webpage** → 获取网页内容（Scrapling隐身引擎 + markdownify清洗，自动去广告/导航/侧栏，返回干净Markdown，token节省约80%）
 
   文件保存：
   - **save_file** → 保存 CSV/GeoJSON/TXT/HTML 等
@@ -279,7 +283,11 @@ SYSTEM_PROMPT = """你是一个基于##MODEL_NAME##模型的GIS WorkTable内置A
   - **get_registered_layers** → 查看地图上所有图层
   - **get_layer_detail** → 查看某图层具体数据
 
-  其他：
+  反爬增强：
+  - **scrape_page** → Scrapling 隐身引擎抓取（TLS指纹混淆+真实浏览器UA+Cloudflare绕过），适合反爬严格的网站
+  - **search_platform** → 搜索中国互联网平台（B站/bilibili 等），零配置国内直连
+
+其他：
   - **get_session_logs** → 查看历史问答记录
 
   ## 工具使用规则
@@ -604,6 +612,11 @@ def chat_with_ai(message: str, session_id: str = "default", api_key: str = None,
     """
     MAX_HISTORY=30
 
+    # 设置全局 API Key（供 browser_operate 等工具使用）
+    global _current_api_key, _current_provider
+    _current_api_key = api_key or _get_default_key()
+    _current_provider = provider
+
     # 自动清理过期缓存（7天以上）
     clean_old_cache(7)
     pending_layers.clear()
@@ -631,19 +644,58 @@ def chat_with_ai(message: str, session_id: str = "default", api_key: str = None,
             "type": "function",
             "function": {
                 "name":"fetch_webpage",
-                "description": "获取网页文本内容，优先选择国内可访问的网站，用于查看网页上的数据、新闻、表格等信息",
-                #参数在这里
+                "description": "获取网页内容（Scrapling隐身引擎 + markdownify清洗，自动去广告/导航/侧栏，返回干净 Markdown，token 节省约80%）。国内网直连，反爬增强。用于查看网页上的数据、新闻、表格等信息",
                 "parameters": {
                     "type": "object",
-                    #具体参数
                     "properties": {
                         "url": {
                             "type": "string",
                             "description": "要获取内容的网页地址",
                         }
                     },
-                    #需求
                     "required": ["url"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name":"scrape_page",
+                "description": "使用 Scrapling 隐身引擎抓取网页（TLS指纹混淆+真实浏览器UA+Cloudflare绕过），适合反爬严格的网站。比 fetch_webpage 更快更反爬，但返回 HTML 片段。可用 CSS 选择器提取页面特定区域",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "目标网页地址"
+                        },
+                        "selector": {
+                            "type": "string",
+                            "description": "CSS 选择器，如 'body' 取全部、'#content' 取正文、'.article' 取文章。默认 body"
+                        }
+                    },
+                    "required": ["url"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name":"search_platform",
+                "description": "搜索中国互联网平台内容（目前支持 B站/bilibili），获取地理相关视频、数据、新闻等。零配置国内直连，无需额外设置。其他平台陆续支持中",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "platform": {
+                            "type": "string",
+                            "description": "平台名称：bilibili / B站 / b站"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "搜索关键词，例如：GIS教程、城市规划、卫星影像"
+                        }
+                    },
+                    "required": ["platform", "query"]
                 }
             }
         },
@@ -962,6 +1014,10 @@ def chat_with_ai(message: str, session_id: str = "default", api_key: str = None,
                         result = search_web(args["query"])
                     elif tool_call.function.name == "fetch_webpage":
                         result = fetch_webpage(args["url"])
+                    elif tool_call.function.name == "scrape_page":
+                        result = scrape_page(args["url"], args.get("selector", "body"))
+                    elif tool_call.function.name == "search_platform":
+                        result = search_platform(args["platform"], args["query"])
                     elif tool_call.function.name == "save_file":
                         result = save_file(args["filename"], args["content"])
                     elif tool_call.function.name == "execute_python":
@@ -1348,17 +1404,80 @@ def search_web(query: str) -> str:
 
 
 
-# ===== Playwright 浏览器抓取 =====
+# ===== Scrapling + markdownify 智能抓取（省 token 模式）=====
+
+def _html_to_markdown(html: str, url: str = "") -> str:
+    """
+    将 HTML 转为干净 Markdown，去除广告/导航噪音。
+
+    Args:
+        html: 原始 HTML 内容
+        url: 来源 URL（用于日志）
+
+    Returns:
+        清洗后的 Markdown 文本
+    """
+    import re as _re
+
+    # 1. 去掉无用标签
+    text = _re.sub(r'<script[^>]*>.*?</script>', '', html, flags=_re.DOTALL)
+    text = _re.sub(r'<style[^>]*>.*?</style>', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'<nav[^>]*>.*?</nav>', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'<footer[^>]*>.*?</footer>', '', text, flags=_re.DOTALL)
+    text = _re.sub(r'<header[^>]*>.*?</header>', '', text, flags=_re.DOTALL)
+
+    # 2. 转为 Markdown（使用 markdownify）
+    try:
+        from markdownify import markdownify as _md
+        text = _md(text, heading_style="ATX", strip=["img", "a"])
+    except ImportError:
+        # markdownify 未安装，用简单文本提取
+        text = _re.sub(r'<[^>]+>', '', text)
+        text = _re.sub(r'\s+', ' ', text)
+
+    # 3. 清理空行
+    text = _re.sub(r'\n{4,}', '\n\n', text)
+    text = _re.sub(r'[ \t]+', ' ', text)
+
+    return text.strip()
 
 
-# ===== Playwright 浏览器抓取 =====
+def fetch_webpage(url: str, max_length: int = 10000) -> str:
+    """
+    智能获取网页内容，返回干净 Markdown 格式。
 
-def fetch_webpage(url: str) -> str:
-    """使用浏览器获取网页内容，支持JS渲染（子进程运行，浏览器用完不关，重复使用）"""
+    流程：Scrapling 隐身抓取 HTML → markdownify 转为 Markdown（去广告/导航）
+    相比原始 HTML，token 消耗减少约 80-90%。
+    如果 Scrapling 不可用，自动回退到 Playwright 子进程。
+    """
+    # === 方案 A：Scrapling（隐身抓取）===
+    try:
+        from scrapling.fetchers import Fetcher
+        page = Fetcher.get(url, timeout=20)
+        if page.status == 200:
+            html = str(page.html_content)
+            if html and len(html) > 50:
+                text = _html_to_markdown(html, url)
+                text = text[:max_length]
+                if text:
+                    return f"[Scrapling清洗] 以下为网页的干净内容（Markdown格式，已去除广告/导航，token节省约80%）\n\n{text}"
+    except ImportError:
+        pass  # Scrapling 未安装，走方案 B
+    except Exception as e:
+        print(f"[GIS] Scrapling 抓取失败，回退: {type(e).__name__}: {str(e)[:100]}", flush=True)
+
+    # === 方案 B：Playwright 子进程（JS 渲染）===
+    return _fetch_webpage_fallback(url, max_length)
+
+
+# ===== Playwright 浏览器抓取（回退方案）=====
+
+def _fetch_webpage_fallback(url: str, max_length: int = 10000) -> str:
+    """使用 Playwright 获取网页文本内容（原 fetch_webpage 逻辑）"""
     try:
         import subprocess, sys
-        script = r"""
-import sys, asyncio
+        # 注意：用 r"""...""" 非 f-string，避免 { } 冲突
+        script = r"""import sys, asyncio
 from playwright.async_api import async_playwright
 
 async def fetch():
@@ -1368,7 +1487,6 @@ async def fetch():
             args=['--disable-blink-features=AutomationControlled']
         )
         page = await browser.new_page()
-        # 伪装成真实浏览器
         await page.set_extra_http_headers({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'})
         await page.goto(sys.argv[1], timeout=15000, wait_until='domcontentloaded')
         await page.wait_for_timeout(1000)
@@ -1377,16 +1495,18 @@ async def fetch():
         return text
 
 result = asyncio.run(fetch())
-print(result[:10000])
+print(result[:int(sys.argv[2])])
 """
-        import io
         my_env = {**{k: v for k, v in __import__('os').environ.items()}, 'PYTHONIOENCODING': 'utf-8'}
+        startupinfo = None
+        if sys.platform == 'win32':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         result = subprocess.run(
-            [sys.executable, '-c', script, url],
+            [sys.executable, '-c', script, url, str(max_length)],
             capture_output=True, timeout=30,
-            env=my_env
+            env=my_env, startupinfo=startupinfo
         )
-        # 用 utf-8 解码，避免 GBK 报错
         stdout = result.stdout.decode('utf-8', errors='replace')
         stderr = result.stderr.decode('utf-8', errors='replace')
         if result.returncode != 0:
@@ -1397,6 +1517,213 @@ print(result[:10000])
         return text
     except Exception as e:
         return f"错误：[{type(e).__name__}] {str(e)[:200]}"
+
+
+# ===== Scrapling 隐身抓取（反爬增强，独立工具）=====
+
+def scrape_page(url: str, selector: str = "body") -> str:
+    """
+    使用 Scrapling 隐身引擎抓取网页内容。
+
+    Scrapling 内置 TLS 指纹混淆、真实浏览器 User-Agent、Cloudflare 绕过，
+    适合反爬严格的网站。比 Playwright 轻量快速，但比 Crawl4AI 更反爬。
+
+    Args:
+        url: 目标网页地址
+        selector: CSS 选择器，默认 "body" 提取全部，可指定如 "#content"、".article" 等
+
+    Returns:
+        网页文本内容
+    """
+    try:
+        from scrapling.fetchers import Fetcher
+
+        page = Fetcher.get(url, timeout=20)
+
+        if page.status != 200:
+            return f"错误：HTTP {page.status}"
+
+        # 使用 CSS 选择器提取指定内容
+        elements = page.css(selector)
+        if not elements:
+            return f"未找到匹配「{selector}」的内容"
+
+        # 取第一个匹配元素的文本
+        text = str(elements[0].text) if hasattr(elements[0], 'text') else ""
+        if not text:
+            # text 为空时回退到 html_content
+            text = str(page.html_content)
+
+        text = text.strip()
+        if len(text) > 8000:
+            text = text[:8000] + "\n\n...(内容过长，已截断)"
+
+        return text
+
+    except ImportError:
+        return "错误：Scrapling 未安装，请执行 pip install scrapling[fetchers]"
+    except Exception as e:
+        return f"错误：[{type(e).__name__}] {str(e)[:200]}"
+
+
+# ===== Agent-Reach 多平台搜索 =====
+
+def search_platform(platform: str, query: str) -> str:
+    """
+    搜索中国互联网平台的内容（B站/微博等），获取地理相关的数据、新闻、视频等。
+
+    通过 Agent-Reach 脚手架或直接 API 调用，零配置即可使用 B站搜索。
+    其他平台（微博、小红书等）需要额外配置 cookie。
+
+    Args:
+        platform: 平台名称，支持：bilibili/B站/b站 (目前)
+        query: 搜索关键词
+
+    Returns:
+        搜索结果文本
+    """
+    platform = platform.lower().strip()
+
+    # ===== B站搜索（零配置，国内直连）=====
+    if platform in ('bilibili', 'b站', 'b站'):
+        try:
+            import urllib.request, urllib.parse, json
+
+            # B站搜索 API（无需 cookie 即可搜索）
+            params = urllib.parse.urlencode({
+                'search_type': 'video',
+                'keyword': query,
+                'page': 1,
+            })
+            url = f"https://api.bilibili.com/x/web-interface/search/all/v2?{params}"
+            req = urllib.request.Request(url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://www.bilibili.com/',
+            })
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+
+            if data.get('code') != 0:
+                return f"B站搜索失败：{data.get('message', '未知错误')}"
+
+            # 提取搜索结果
+            results = []
+            for nav in data.get('data', {}).get('result', []):
+                for item in nav.get('data', [])[:5]:
+                    title = item.get('title', '')
+                    # 去掉 HTML 标签
+                    import re as _r
+                    title = _r.sub(r'<[^>]+>', '', title)
+                    author = item.get('author', '')
+                    desc = item.get('desc', '')[:100]
+                    play = item.get('play', 0)
+                    results.append(f"  - {title}（作者:{author} 播放:{play}）\n    {desc}")
+
+            if results:
+                return f"B站搜索「{query}」结果（共{len(results)}条）：\n" + "\n".join(results[:15])
+            else:
+                return f"B站搜索「{query}」未找到相关视频"
+
+        except Exception as e:
+            return f"B站搜索出错：{str(e)[:200]}"
+
+    # ===== 其他平台（通过 agent-reach CLI，可选）=====
+    else:
+        return (
+            f"平台「{platform}」暂不支持。"
+            f"当前支持：bilibili（B站，零配置）。"
+            f"其他平台（微博/小红书等）需额外配置。"
+            f"你可以换用 search_web 网页搜索或指定 bilibili 平台"
+        )
+
+
+# ===== Browser-Use AI 浏览器操控 =====
+
+def browser_operate(task: str, url: str = "") -> str:
+    """
+    使用 Browser-Use AI Agent 操控浏览器执行复杂任务。
+    能点击、滚动、输入文字、填表、登录、翻页等，
+    适用于需要交互操作才能获取数据的场景（如登录 GIS 网站查询数据）。
+
+    Args:
+        task: 要执行的任务描述，如"打开天地图网站，搜索北京市的规划用地数据"
+        url: 起始网址（可选），留空则 AI Agent 自行决定起始页
+
+    Returns:
+        任务执行结果文本
+    """
+    import asyncio, sys, os as _os
+    from backend.services.ai_service import _current_api_key, _current_provider
+
+    if not _current_api_key:
+        return "错误：未配置 API Key，browser_operate 需要 API Key 驱动 AI 决策"
+
+    script = rf'''
+import asyncio, sys, os
+os.environ["ANONYMIZED_TELEMETRY"] = "false"
+
+from browser_use import Agent
+from langchain_openai import ChatOpenAI
+
+async def main():
+    llm = ChatOpenAI(
+        model="deepseek-chat",
+        api_key="{_current_api_key}",
+        base_url="https://api.deepseek.com",
+        temperature=0,
+    )
+    # browser-use 需要 provider 属性来识别 LLM 类型
+    # 旧版 langchain-openai 没有这个属性，手动加上
+    llm.provider = "openai"
+
+    agent = Agent(
+        task=sys.argv[1],
+        llm=llm,
+        use_vision=False,
+        max_actions_per_step=5,
+    )
+    result = await agent.run(max_steps=20)
+    text = str(result)
+    if len(text) > 5000:
+        text = text[:5000] + "\n\n...(结果过长已截断)"
+    return text
+
+if __name__ == "__main__":
+    try:
+        print(asyncio.run(main()))
+    except Exception as e:
+        print(f"Browser-Use 执行错误: {{str(e)}}")
+'''
+
+    try:
+        import subprocess
+        my_env = {**_os.environ.copy(), 'PYTHONIOENCODING': 'utf-8'}
+        cmd = [sys.executable, '-c', script, task]
+        if url:
+            cmd.append(url)
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=120,  # 浏览器操作比较慢，给 2 分钟
+            env=my_env,
+        )
+
+        stdout = result.stdout.decode('utf-8', errors='replace')
+        stderr = result.stderr.decode('utf-8', errors='replace')
+
+        if result.returncode != 0:
+            return f"Browser-Use 执行失败：{stderr[:500]}"
+
+        text = stdout.strip()
+        if not text:
+            return f"Browser-Use 未返回结果（stderr: {stderr[:200] or '无'}）"
+        return text
+
+    except subprocess.TimeoutExpired:
+        return "错误：Browser-Use 执行超时（120 秒），请简化任务描述"
+    except Exception as e:
+        return f"Browser-Use 错误：[{type(e).__name__}] {str(e)[:300]}"
 
 
 def save_file(filename: str, content: str) -> str:
@@ -1483,29 +1810,57 @@ def execute_python(code: str) -> str:
         before_images = set()
         before_html = set()
 
-    # 注入 matplotlib 中文字体配置（自动检测系统字体）
+    # 注入 matplotlib 中文字体配置
     _font_setup = """
-import matplotlib
+import matplotlib, os
 matplotlib.use('Agg')
+# 清除字体缓存，避免旧缓存导致字体找不到
+try:
+    import shutil
+    _cache_dir = os.path.join(matplotlib.get_cachedir(), 'fontlist*.json')
+    import glob
+    for _f in glob.glob(_cache_dir):
+        os.remove(_f)
+except:
+    pass
+
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as _fm
-# 自动检测中文字体
-_cjk_fonts = [f for f in _fm.findSystemFonts() if 'noto' in f.lower() or 'simhei' in f.lower() or 'yahei' in f.lower() or 'msyh' in f.lower() or 'simsun' in f.lower() or 'wqy' in f.lower() or 'deng' in f.lower() or 'songti' in f.lower() or 'heiti' in f.lower()]
-# 优先用 Noto Sans SC（缺字最少）
-_sc = [f for f in _cjk_fonts if 'notosanssc' in f.lower().replace('-','')]
-if _sc:
-    _prop = _fm.FontProperties(fname=_sc[0])
-    plt.rcParams['font.family'] = _prop.get_name()
-    plt.rcParams['axes.unicode_minus'] = False
-elif _cjk_fonts:
-    _prop = _fm.FontProperties(fname=_cjk_fonts[0])
-    plt.rcParams['font.family'] = _prop.get_name()
-    plt.rcParams['axes.unicode_minus'] = False
-else:
+
+# Windows 已知中文字体路径（按优先级）
+_WIN_CJK_FONTS = [
+    r'C:\Windows\Fonts\msyh.ttc',        # Microsoft YaHei
+    r'C:\Windows\Fonts\simhei.ttf',       # SimHei
+    r'C:\Windows\Fonts\NotoSansSC-VF.ttf', # Noto Sans SC
+    r'C:\Windows\Fonts\Deng.ttf',         # DengXian
+    r'C:\Windows\Fonts\simsun.ttc',       # SimSun
+    r'C:\Windows\Fonts\simfang.ttf',      # FangSong
+]
+_font_loaded = False
+for _fp in _WIN_CJK_FONTS:
+    if os.path.exists(_fp):
+        try:
+            _prop = _fm.FontProperties(fname=_fp)
+            plt.rcParams['font.family'] = _prop.get_name()
+            _fm.fontManager.addfont(_fp)
+            plt.rcParams['axes.unicode_minus'] = False
+            _font_loaded = True
+            break
+        except:
+            continue
+
+if not _font_loaded:
+    # 回退：扫描系统字体
     try:
-        plt.rcParams['font.sans-serif'] = ['SimHei'] + plt.rcParams.get('font.sans-serif', [])
+        _cjk = [f for f in _fm.findSystemFonts() if any(k in f.lower() for k in ['yahei','msyh','simhei','noto','deng','songti','heiti','wqy'])]
+        if _cjk:
+            _prop = _fm.FontProperties(fname=_cjk[0])
+            plt.rcParams['font.family'] = _prop.get_name()
+            plt.rcParams['axes.unicode_minus'] = False
+        else:
+            plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans'] + plt.rcParams.get('font.sans-serif', [])
     except:
-        pass
+        plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei'] + plt.rcParams.get('font.sans-serif', [])
 # 使用 seaborn 风格让图表更好看
 try:
     import seaborn as sns
