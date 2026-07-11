@@ -279,6 +279,7 @@ html, body {
   background: var(--surface-container-low);
   border: 1px solid var(--ui-gray-200);
   border-radius: 0 4px 4px 4px;
+  position: relative;
 }
 
 .message-bubble-ai::after {
@@ -1164,6 +1165,156 @@ tr:hover .layer-actions {
   40% { transform: translateY(-4px); opacity: 1; }
 }
 
+/* ========== 思考中流光扫描（shimmer）动画 ========== */
+.shimmer-loading-text {
+  background: linear-gradient(
+    90deg,
+    var(--on-surface) 0%,
+    var(--on-surface) 35%,
+    rgba(255,255,255,0.92) 50%,
+    var(--on-surface) 65%,
+    var(--on-surface) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer-scan 4s ease-in-out infinite;
+}
+
+@keyframes shimmer-scan {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+/* ========== AI 回复 Markdown 样式 ========== */
+.message-bubble-ai h1,
+.message-bubble-ai h2,
+.message-bubble-ai h3,
+.message-bubble-ai h4 {
+  margin: 10px 0 4px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.message-bubble-ai h1 { font-size: 1.2em; }
+.message-bubble-ai h2 { font-size: 1.1em; }
+.message-bubble-ai h3 { font-size: 1.05em; }
+
+.message-bubble-ai p {
+  margin: 6px 0;
+  line-height: 1.5;
+}
+.message-bubble-ai p:first-child { margin-top: 0; }
+.message-bubble-ai p:last-child { margin-bottom: 0; }
+
+.message-bubble-ai ul,
+.message-bubble-ai ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+.message-bubble-ai li {
+  margin: 2px 0;
+  line-height: 1.5;
+}
+
+.message-bubble-ai strong {
+  font-weight: 700;
+}
+
+.message-bubble-ai code {
+  background: rgba(0,0,0,0.07);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;
+  font-size: 0.88em;
+}
+
+.message-bubble-ai pre {
+  margin: 8px 0;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 10px 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.message-bubble-ai pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit;
+}
+
+.message-bubble-ai table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 0.92em;
+  width: 100%;
+}
+.message-bubble-ai th,
+.message-bubble-ai td {
+  border: 1px solid var(--ui-gray-300);
+  padding: 5px 10px;
+  text-align: left;
+}
+.message-bubble-ai th {
+  background: var(--ui-gray-100);
+  font-weight: 600;
+}
+
+.message-bubble-ai blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--ui-gray-300);
+  color: var(--ui-gray-500);
+}
+.message-bubble-ai hr {
+  border: none;
+  border-top: 1px solid var(--ui-gray-200);
+  margin: 12px 0;
+}
+
+/* ========== AI 回复复制按钮 ========== */
+.btn-copy-ai {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 4px;
+  background: var(--surface-container-low);
+  color: var(--ui-gray-400);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s;
+  z-index: 5;
+  line-height: 1;
+}
+.message-bubble-ai:hover .btn-copy-ai {
+  opacity: 1;
+}
+.btn-copy-ai:hover {
+  color: var(--ui-gray-900);
+  border-color: var(--ui-gray-300);
+  opacity: 1;
+}
+.btn-copy-ai.copied {
+  color: #2e7d32;
+  border-color: #2e7d32;
+  opacity: 1;
+}
+.btn-copy-ai svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ========== Toast Notifications ========== */
 .toast-container {
   position: fixed;
@@ -1490,6 +1641,12 @@ tr:hover .layer-actions {
 .model-picker-desc {
   font-size: 11px;
   color: var(--ui-gray-300);
+}
+
+.model-picker-hint {
+  font-size: 10px;
+  color: var(--ui-gray-300);
+  opacity: 0.6;
 }
 
 .model-picker-free {

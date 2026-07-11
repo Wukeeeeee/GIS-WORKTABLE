@@ -86,13 +86,13 @@
                 <svg class="model-status-dot" id="modelStatusDot" viewBox="0 0 8 8" width="8" height="8">
                   <circle cx="4" cy="4" r="4" fill="#d32f2f"/>
                 </svg>
-                <span id="modelSelectValue">DeepSeek</span>
+                <span id="modelSelectValue">DeepSeek V4 Flash</span>
                 <svg class="model-select-arrow" viewBox="0 0 10 6" width="10" height="6">
                   <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
                 <!-- 隐藏的原生 select（保持 JS 兼容） -->
                 <select id="modelSelector" title="选择AI模型" style="display:none;">
-                  <option value="deepseek">DeepSeek</option>
+                  <option value="deepseek">DeepSeek V4 Flash</option>
                   <option value="glm">GLM-4.7-Flash</option>
                 </select>
               </div>
@@ -100,8 +100,8 @@
               <div class="model-picker" id="modelPicker">
               <div class="model-picker-option" data-value="deepseek">
                 <div class="model-picker-info">
-                  <span class="model-picker-name">DeepSeek</span>
-                  <span class="model-picker-desc">DeepSeek Chat 通用模型</span>
+                  <span class="model-picker-name">DeepSeek V4 Flash</span>
+                  <span class="model-picker-desc">GIS 处理与执行</span>
                 </div>
                 <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
                   <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>
@@ -112,7 +112,7 @@
               <div class="model-picker-option" data-value="glm">
                 <div class="model-picker-info">
                   <span class="model-picker-name">GLM-4.7-Flash</span>
-                  <span class="model-picker-desc">智谱免费模型</span>
+                  <span class="model-picker-desc">文本问答与规划</span>
                 </div>
                 <span class="model-picker-free">免费</span>
                 <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
@@ -282,7 +282,7 @@
         <!-- ===== DeepSeek 配置卡片 ===== -->
         <div class="model-config-card">
           <div class="model-config-header">
-            <span class="model-config-name">DeepSeek</span>
+            <span class="model-config-name">DeepSeek V4 Flash</span>
             <span class="model-config-badge" id="apiKeyStatus">未配置</span>
           </div>
           <div class="modal-input-wrapper">
@@ -337,6 +337,7 @@
 
   <!-- Leaflet (bootcdn CDN — 国内可用) -->
   <script src="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdn.bootcdn.net/ajax/libs/marked/15.0.6/marked.min.js"></script>
 
   <!-- 应用模块（按依赖顺序加载） -->
   <script src="js/api.js"></script>
@@ -651,7 +652,7 @@
       function selectModel(value) {
         if (value === modelSelector.value) { modelPicker.classList.remove('is-open'); return; }
         modelSelector.value = value;
-        modelSelectValue.textContent = value === 'deepseek' ? 'DeepSeek' : 'GLM-4.7-Flash';
+        modelSelectValue.textContent = value === 'deepseek' ? 'DeepSeek V4 Flash' : 'GLM-4.7-Flash';
         window.GIS.api.setSelectedModel(value);
         updateModelStatusDot();
         modelPicker.classList.remove('is-open');
@@ -683,7 +684,7 @@
       if (modelSelector) {
         var savedModel = window.GIS.api.getSelectedModel();
         modelSelector.value = savedModel;
-        modelSelectValue.textContent = savedModel === 'deepseek' ? 'DeepSeek' : 'GLM-4.7-Flash';
+        modelSelectValue.textContent = savedModel === 'deepseek' ? 'DeepSeek V4 Flash' : 'GLM-4.7-Flash';
         modelPickerOptions.forEach(function(opt) {
           opt.classList.toggle('is-selected', opt.dataset.value === savedModel);
         });

@@ -71,14 +71,25 @@ window.GIS = window.GIS || {};
     var modelBar = document.querySelector('.chat-input-model-bar');
     if (modelBar) modelBar.classList.add('is-disabled');
 
-    // 添加一个"思考中"的占位气泡，让用户知道 AI 正在处理
-    var loadingMsg = addMessage('思考中...', 'ai');
+    // 获取当前模型显示名（从模型选择器取）
+    var modelDisplayEl = document.getElementById('modelSelectValue');
+    var modelDisplayName = modelDisplayEl ? modelDisplayEl.textContent : 'AI';
+
+    // 添加"模型名 思考中..."占位气泡，让用户知道 AI 正在处理
+    var loadingMsg = addMessage(modelDisplayName + ' 思考中...', 'ai', { noMarkdown: true });
     loadingMsg.id = 'ai-loading-msg';
 
-    // 添加翻牌计时器（实时显示 AI 思考耗时）
+    // 给气泡文本加流光 scan 动画
+    var loadingContent = loadingMsg.querySelector('.message-bubble > div');
+    if (loadingContent) loadingContent.classList.add('shimmer-loading-text');
+
+    // 添加翻牌计时器（实时显示 AI 思考耗时），另起一行
     var timerEl = createFlipTimer();
+    var timerWrapper = document.createElement('div');
+    timerWrapper.style.cssText = 'margin-top:6px;';
+    timerWrapper.appendChild(timerEl);
     var loadingBubble = loadingMsg.querySelector('.message-bubble');
-    if (loadingBubble) loadingBubble.appendChild(timerEl);
+    if (loadingBubble) loadingBubble.appendChild(timerWrapper);
 
     var startTime = Date.now();
     var timerInterval = setInterval(function() {
@@ -402,14 +413,90 @@ window.GIS = window.GIS || {};
     bubble.className = 'message-bubble' + (type === 'user' ? ' message-bubble-user' : ' message-bubble-ai');
 
     const content = document.createElement('div');
-    content.innerHTML = text;
+    // AI 消息渲染 Markdown（跳过加载气泡，避免 <p> 包裹破坏流光动画）
+    if (type === 'ai' && !options.noMarkdown && typeof marked !== 'undefined') {
+      content.innerHTML = marked.parse(text, { breaks: true, gfm: true });
+    } else {
+      content.innerHTML = text;
+    }
     bubble.appendChild(content);
+
+    // 检测 AI 回复是否建议切换到 DeepSeek
+    if (type === 'ai' && text.indexOf('→ 建议切换到 DeepSeek 执行') !== -1) {
+      var switchBtn = document.createElement('button');
+      switchBtn.textContent = '切换到 DeepSeek 执行';
+      switchBtn.style.cssText = 'margin-top:10px;padding:6px 14px;font-size:12px;background:var(--ui-gray-900);color:var(--ui-white);border:none;border-radius:4px;cursor:pointer;display:block;transition:opacity 0.15s;';
+      switchBtn.addEventListener('mouseenter', function() { this.style.opacity = '0.8'; });
+      switchBtn.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
+      switchBtn.addEventListener('click', function() {
+        // 切换到 DeepSeek 模型
+        var sel = document.getElementById('modelSelector');
+        var val = document.getElementById('modelSelectValue');
+        if (sel) sel.value = 'deepseek';
+        if (val) val.textContent = 'DeepSeek V4 Flash';
+        if (window.GIS.api) window.GIS.api.setSelectedModel('deepseek');
+        if (typeof updateModelStatusDot === 'function') updateModelStatusDot();
+        // 提取规划内容，发给 DeepSeek 处理
+        var workflow = text.replace('→ 建议切换到 DeepSeek 执行', '').trim();
+        // 拼接执行指令
+        var msg = '请按以下规划执行：\n' + workflow;
+        // 通知用户
+        var container = document.getElementById('chatMessages');
+        var notice = document.createElement('div');
+        notice.style.cssText = 'display:flex;justify-content:center;max-width:100%;';
+        var noticeBubble = document.createElement('div');
+        noticeBubble.style.cssText = 'font-size:11px;color:var(--ui-gray-400);background:var(--ui-gray-100);padding:3px 10px;border-radius:8px;text-align:center;margin:4px 0;';
+        noticeBubble.textContent = '已切换到 DeepSeek，正在执行规划...';
+        notice.appendChild(noticeBubble);
+        container.appendChild(notice);
+        container.scrollTop = container.scrollHeight;
+        // 延迟一下等 UI 更新，然后把规划发给 DeepSeek
+        setTimeout(function() {
+          if (typeof sendMessage === 'function') {
+            sendMessage(msg);
+          } else if (window.GIS && window.GIS.chat && typeof window.GIS.chat.send === 'function') {
+            window.GIS.chat.send(msg);
+          }
+        }, 500);
+      });
+      bubble.appendChild(switchBtn);
+    }
 
     if (options.code) {
       const codeBlock = document.createElement('div');
       codeBlock.className = 'message-code-block';
       codeBlock.textContent = options.code;
       bubble.appendChild(codeBlock);
+    }
+
+    // AI 消息右下角复制按钮（跳过加载气泡）
+    if (type === 'ai' && !options.noMarkdown) {
+      var copyBtn = document.createElement('button');
+      copyBtn.className = 'btn-copy-ai';
+      copyBtn.title = '复制回复';
+      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      copyBtn.addEventListener('click', function() {
+        // 取纯文本（跳过 markdown HTML 标签）
+        var plainText = content.textContent || content.innerText || text;
+        navigator.clipboard.writeText(plainText).then(function() {
+          copyBtn.classList.add('copied');
+          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+          setTimeout(function() {
+            copyBtn.classList.remove('copied');
+            copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+          }, 2000);
+        }).catch(function() {
+          // fallback: 用 textarea 复制
+          var ta = document.createElement('textarea');
+          ta.value = plainText;
+          ta.style.position = 'fixed'; ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); copyBtn.classList.add('copied'); } catch(e) {}
+          document.body.removeChild(ta);
+        });
+      });
+      bubble.appendChild(copyBtn);
     }
 
     row.appendChild(bubble);
