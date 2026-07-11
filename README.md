@@ -59,21 +59,10 @@ echo "your-deepseek-api-key" > apikey.txt
 
 ## 用 AI 部署
 
-复制以下提示词给 AI 助手（如 Claude、ChatGPT）来帮你部署：
+复制以下提示词给 AI 助手（如 Claude、ChatGPT）：
 
 ```
-请帮我部署一个 GIS WorkTable 项目。项目是一个 Web 应用，前端是原生 HTML/JS，后端是 Python FastAPI。
-
-部署步骤：
-1. 安装 Python 依赖：pip install -r backend/requirements.txt
-2. 安装 Playwright 浏览器：playwright install chromium
-3. 启动后端：python -m uvicorn backend.main:app --port 8000
-4. 前端用浏览器直接打开 frontend/index.html
-
-需要确认：
-- Python 3.10+ 已安装
-- 有 DeepSeek API Key（写在 apikey.txt 或前端设置）
-- 端口 8000 未被占用
+帮我从 https://github.com/Wukeeeeee/GIS-WORKTABLE.git 部署 GIS WorkTable，配置好所有依赖并启动。
 ```
 
 ## 技术栈
