@@ -44,23 +44,35 @@ window.GIS = window.GIS || {};
     // 渲染列表
     tbody.innerHTML = layerData.map((layer, index) => `
       <tr draggable="true" data-index="${index}" data-id="${layer.layer_id || ''}">
-        <td>
+        <td class="col-drag">
           <span class="drag-handle" draggable="true">
             <svg><use href="assets/icons.svg#icon-drag"/></svg>
           </span>
         </td>
-        <td>
+        <td class="col-vis">
+          <button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="${layer.layer_id || ''}" title="显隐">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              ${layer.visible !== false
+                ? '<rect x="3" y="3" width="18" height="18" rx="3" fill="var(--ui-gray-900)" stroke="var(--ui-gray-900)"/><polyline points="7 12 10 15 17 8" stroke="#fff" stroke-width="2.5"/>'
+                : '<rect x="3" y="3" width="18" height="18" rx="3" fill="none" stroke="var(--ui-gray-300)"/>'}
+            </svg>
+          </button>
+        </td>
+        <td class="col-name">
           <span class="layer-color-dot" style="background:${layer.color || '#1c1b1b'}" data-id="${layer.layer_id || ''}"></span>
+          <span class="layer-source layer-source-${layer.source || 'upload'}">
+            ${layer.source === 'ai'
+              ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
+              : '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'}
+          </span>
           <span class="layer-name">${escapeHtml(layer.filename || '未命名')}</span>
         </td>
-        <td><span class="layer-type">${escapeHtml(layer.geometry_type || '未知')}</span></td>
-        <td>
+        <td class="col-type"><span class="layer-type">${escapeHtml(layer.geometry_type || '未知')}</span></td>
+        <td class="col-actions">
           <div class="layer-actions">
-            <button class="layer-action-btn" data-action="visibility" data-id="${layer.layer_id || ''}" title="显隐">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                ${layer.visible !== false
-                  ? '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
-                  : '<path d="M3 3l18 18"/><path d="M10.6 10.6a3 3 0 0 0 4.8 4.8"/><path d="M9.4 5.2A10.9 10.9 0 0 1 12 4c7 0 11 8 11 8a20 20 0 0 1-3.5 4.9"/><path d="M3.5 7.1A20 20 0 0 0 1 12s4 8 11 8c1.9 0 3.7-.4 5.3-1.1"/>'}
+            <button class="layer-action-btn" data-action="download" data-id="${layer.layer_id || ''}" title="下载">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
               </svg>
             </button>
             <button class="layer-action-btn btn-danger" data-action="delete" data-id="${layer.layer_id || ''}" title="删除">
@@ -111,6 +123,31 @@ window.GIS = window.GIS || {};
         GIS.map.setLayerVisible(layer.filename || layer.layer_id, layer.visible);
       }
     }
+  }
+
+  // 下载图层（导出 GeoJSON）
+  function downloadLayer(layerId) {
+    const layer = layerData.find(l => l.layer_id === layerId);
+    if (!layer) return;
+    var geojson = layer.geojson;
+    // 如果没有独立 geojson，尝试从地图模块拿
+    if (!geojson && GIS.map && GIS.map.getGeoJSON) {
+      geojson = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+    }
+    if (!geojson) {
+      if (GIS.app && GIS.app.toast) GIS.app.toast('无数据可下载', 'warning');
+      return;
+    }
+    var blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/geo+json;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = (layer.filename || '图层') + '.geojson';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    if (GIS.app && GIS.app.toast) GIS.app.toast('已下载: ' + a.download, 'success');
   }
 
   function bindDragEvents() {
@@ -212,6 +249,7 @@ window.GIS = window.GIS || {};
       if (!id) return;
       if (action === 'visibility') toggleVisibility(id);
       if (action === 'delete') removeLayer(id);
+      if (action === 'download') downloadLayer(id);
     });
   }
 
@@ -222,7 +260,7 @@ window.GIS = window.GIS || {};
   }
 
   GIS.layers = {
-    init, renderList, addLayer, removeLayer, toggleVisibility,
+    init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer,
     getLayers: () => [...layerData],
   };
 })();

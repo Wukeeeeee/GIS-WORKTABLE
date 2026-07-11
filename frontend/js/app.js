@@ -70,6 +70,16 @@ window.GIS = window.GIS || {};
         // TODO: 关闭弹窗/下拉菜单
       }
     });
+
+    // 浮动图层面板：折叠/展开
+    var layerPanel = document.getElementById('mapLayerPanel');
+    var toggleBtn = document.getElementById('toggleLayerPanel');
+    if (layerPanel && toggleBtn) {
+      toggleBtn.addEventListener('click', function() {
+        layerPanel.classList.toggle('collapsed');
+        toggleBtn.classList.toggle('active');
+      });
+    }
   }
 
   /**

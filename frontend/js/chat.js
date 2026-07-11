@@ -16,6 +16,7 @@ window.GIS = window.GIS || {};
   let messagesContainer = null;
   let inputEl = null;
   let sendBtn = null;
+  let _switchBtnRef = null;  // GLM→DeepSeek 切换按钮引用，执行完后恢复
 
   /**
    * 初始化聊天模块
@@ -212,13 +213,6 @@ window.GIS = window.GIS || {};
             if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
           });
         }
-        // 清空处理结果面板
-        var ftb = document.getElementById('filesTbody');
-        var ft = document.getElementById('filesTable');
-        var fe = document.getElementById('filesEmpty');
-        if (ftb) ftb.innerHTML = '';
-        if (ft) ft.style.display = 'none';
-        if (fe) fe.style.display = 'flex';
         if (window.GIS && window.GIS.app && window.GIS.app.toast) {
           window.GIS.app.toast('已清空所有图层', 'info');
         }
@@ -264,30 +258,8 @@ window.GIS = window.GIS || {};
               crs: 'WGS-84',
               geojson: geojson,
               visible: true,
+              source: 'ai',
             });
-
-            // 添加到处理结果面板
-            var filesTbody = document.getElementById('filesTbody');
-            var filesTable = document.getElementById('filesTable');
-            var filesEmpty = document.getElementById('filesEmpty');
-            if (filesTbody && filesTable && filesEmpty) {
-              filesEmpty.style.display = 'none';
-              filesTable.style.display = '';
-              var row = document.createElement('tr');
-              row.draggable = false;
-              row.innerHTML = [
-                '<td></td>',
-                '<td><span class="layer-name">', layerName, '.geojson</span></td>',
-                '<td style="text-align:right;">',
-                  '<button class="layer-action-btn" onclick="downloadGeoJSON(\'', layerId, '\')" title="下载">',
-                    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">',
-                      '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
-                    '</svg>',
-                  '</button>',
-                '</td>',
-              ].join('');
-              filesTbody.appendChild(row);
-            }
           });
         })(0);
       }
@@ -326,31 +298,9 @@ window.GIS = window.GIS || {};
             crs: 'WGS-84',
             geojson: result.geojson,
             visible: true,
+            source: 'ai',
           });
-
-          // 3. 添加到处理结果面板
-          var filesTbody = document.getElementById('filesTbody');
-          var filesTable = document.getElementById('filesTable');
-          var filesEmpty = document.getElementById('filesEmpty');
-          if (filesTbody && filesTable && filesEmpty) {
-            filesEmpty.style.display = 'none';
-            filesTable.style.display = '';
-            var row = document.createElement('tr');
-            row.draggable = false;
-            row.innerHTML = [
-              '<td></td>',
-              '<td><span class="layer-name">', result.layerName, '.geojson</span></td>',
-              '<td style="text-align:right;">',
-                '<button class="layer-action-btn" onclick="downloadGeoJSON(\'', layerId, '\')" title="下载">',
-                  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">',
-                    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
-                  '</svg>',
-                '</button>',
-              '</td>',
-            ].join('');
-            filesTbody.appendChild(row);
-          }
-        })(0); // 从第 0 次尝试开始
+        })(0);
       }
     } catch (err) {
       // 移除"思考中"占位气泡
@@ -364,6 +314,13 @@ window.GIS = window.GIS || {};
         window.GIS.app.toast('请求失败: ' + err.message, 'error');
       }
     } finally {
+      // 恢复 GLM→DeepSeek 切换按钮（如果有）
+      if (_switchBtnRef) {
+        _switchBtnRef.disabled = false;
+        _switchBtnRef.style.opacity = '1';
+        _switchBtnRef.style.cursor = 'pointer';
+        _switchBtnRef = null;
+      }
       // 恢复输入状态
       inputEl.placeholder = originalPlaceholder;
       inputEl.disabled = false;
@@ -429,6 +386,12 @@ window.GIS = window.GIS || {};
       switchBtn.addEventListener('mouseenter', function() { this.style.opacity = '0.8'; });
       switchBtn.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
       switchBtn.addEventListener('click', function() {
+        // 保存引用，AI 执行完后恢复
+        _switchBtnRef = switchBtn;
+        // 立即禁用按钮（防重复点击）
+        switchBtn.disabled = true;
+        switchBtn.style.opacity = '0.35';
+        switchBtn.style.cursor = 'default';
         // 切换到 DeepSeek 模型
         var sel = document.getElementById('modelSelector');
         var val = document.getElementById('modelSelectValue');

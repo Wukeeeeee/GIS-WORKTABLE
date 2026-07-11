@@ -142,7 +142,7 @@
           <div class="map-placeholder">地图区域</div>
           <div id="map"></div>
 
-          <!-- 缩放控件（自定义） -->
+          <!-- === 右上角：缩放控件 + 图层折叠按钮（嵌入底部） === -->
           <div class="map-zoom-controls">
             <button class="map-zoom-btn" id="zoomIn" title="放大">
               <svg><use href="assets/icons.svg#icon-zoom-in"/></svg>
@@ -153,6 +153,54 @@
             <button class="map-zoom-btn" id="zoomLocate" title="定位">
               <svg><use href="assets/icons.svg#icon-locate"/></svg>
             </button>
+            <button class="map-zoom-btn map-toggle-layer" id="toggleLayerPanel" title="切换图层面板">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <line x1="3" y1="9" x2="21" y2="9"/>
+                <line x1="9" y1="21" x2="9" y2="9"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- === 浮动图层面板（右上角） === -->
+          <div class="map-layer-panel collapsed" id="mapLayerPanel">
+            <div class="map-layer-header">
+              <span class="map-layer-title">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="3" y1="9" x2="21" y2="9"/>
+                  <line x1="9" y1="21" x2="9" y2="9"/>
+                </svg>
+                图层列表
+              </span>
+              <div class="map-layer-header-actions">
+                <button class="map-layer-btn primary" id="uploadTriggerBtn" title="上传文件">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  上传
+                </button>
+              </div>
+            </div>
+            <div class="map-layer-body custom-scrollbar" id="layersTableWrapper">
+              <!-- 空状态 -->
+              <div class="map-layer-empty" id="layersEmpty">
+                <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                <span>暂无图层</span>
+                <span style="font-size:11px;opacity:0.5;">上传文件或让 AI 生成</span>
+              </div>
+              <!-- 图层列表 -->
+              <table class="map-layer-table" id="layersTable" style="display:none;">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th></th>
+                    <th>名称</th>
+                    <th>类型</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="layerTbody"></tbody>
+              </table>
+            </div>
           </div>
 
           <!-- 坐标显示 -->
@@ -163,87 +211,10 @@
           <!-- Toast 通知（放在地图区域内，左上角弹出） -->
           <div class="toast-container" id="toastContainer"></div>
 
-          <!-- 展开面板按钮（右下角，面板收起时显示） -->
-          <button class="map-expand-btn" id="expandBottomPanel" title="展开面板" style="display:none;">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="8 11 12 7 16 11"/>
-              <line x1="4" y1="17" x2="20" y2="17"/>
-            </svg>
-          </button>
+          <!-- 底部面板已移除 -->
         </div>
 
-        <!-- ======== 底部面板 ======== -->
-        <div class="bottom-panels" id="bottomPanels">
-
-          <!-- 图层列表 -->
-          <section class="panel-section panel-section-layers">
-            <div class="panel-header">
-              <span class="panel-header-title">图层列表</span>
-              <div class="panel-header-actions">
-                <button class="upload-btn" id="uploadTriggerBtn" title="上传文件">
-                  <svg><use href="assets/icons.svg#icon-upload"/></svg>
-                  <span>上传</span>
-                </button>
-              </div>
-            </div>
-            <div class="layers-table-wrapper custom-scrollbar" id="layersTableWrapper">
-              <!-- 空状态 -->
-              <div class="layers-empty" id="layersEmpty">
-                <svg><use href="assets/icons.svg#icon-file"/></svg>
-                <span>暂无图层</span>
-                <span style="font-size:12px;margin-top:4px;">上传 GeoJSON / GPKG / KML / ZIP(SHP) 文件后将显示在此</span>
-              </div>
-              <!-- 图层表格 -->
-              <table class="layers-table" id="layersTable" style="display:none;">
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>图层名称</th>
-                    <th>类型</th>
-                    <th style="text-align:right;">操作</th>
-                  </tr>
-                </thead>
-                <tbody id="layerTbody"></tbody>
-              </table>
-            </div>
-          </section>
-
-          <!-- 处理结果 -->
-          <section class="panel-section panel-section-files">
-            <div class="panel-header">
-              <span class="panel-header-title">处理结果</span>
-              <div class="panel-header-actions">
-                <button class="panel-header-btn" onclick="downloadAllFiles()" title="下载全部">
-                  <svg><use href="assets/icons.svg#icon-download"/></svg>
-                </button>
-                <button class="panel-toggle-btn" id="toggleBottomPanel2" title="收起面板">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="4" y1="9" x2="20" y2="9"/>
-                    <polyline points="16 13 12 17 8 13"/>
-                  </svg>
-                </button>
-              </div>
-            </div>
-            <div class="layers-table-wrapper custom-scrollbar">
-              <div class="layers-empty" id="filesEmpty">
-                <svg><use href="assets/icons.svg#icon-file"/></svg>
-                <span>暂无文件</span>
-                <span style="font-size:12px;margin-top:4px;">执行 GIS 操作后，结果文件将显示在此</span>
-              </div>
-              <table class="layers-table" id="filesTable" style="display:none;">
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>文件名</th>
-                    <th style="text-align:right;">下载</th>
-                  </tr>
-                </thead>
-                <tbody id="filesTbody"></tbody>
-              </table>
-            </div>
-          </section>
-
-        </div><!-- /bottom-panels -->
+        <!-- 底部面板已移除（图层浮窗+下载已整合到图层行内） -->
       </main>
     </div><!-- /app-body -->
   </div><!-- /app-layout -->
@@ -421,13 +392,7 @@
               if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
             });
           }
-          // 清掉处理结果面板
-          var filesTbody = document.getElementById('filesTbody');
-          var filesTable = document.getElementById('filesTable');
-          var filesEmpty = document.getElementById('filesEmpty');
-          if (filesTbody) filesTbody.innerHTML = '';
-          if (filesTable) filesTable.style.display = 'none';
-          if (filesEmpty) filesEmpty.style.display = 'flex';
+          // 处理结果面板已移除
           if (typeof updateGreeting === 'function') updateGreeting();
         } catch (e) {
           window.GIS.chat.addMessage('操作失败: ' + e.message, 'system');
@@ -692,7 +657,7 @@
       }
 
       // ---- 按钮按下反馈（微交互） ----
-      document.querySelectorAll('button, .icon-btn, .map-zoom-btn, .panel-header-btn, .layer-action-btn')
+      document.querySelectorAll('button, .icon-btn, .map-zoom-btn, .map-layer-btn, .layer-action-btn')
         .forEach(function(el) {
           el.addEventListener('mousedown', function() { this.style.opacity = '0.7'; });
           el.addEventListener('mouseup', function() { this.style.opacity = '1'; });
@@ -770,44 +735,6 @@
           });
         });
       })();
-
-      // ---- 底部面板折叠展开 ----
-      var bottomPanels = document.getElementById('bottomPanels') || document.querySelector('.bottom-panels');
-      var toggleBtn = document.getElementById('toggleBottomPanel2');
-      var expandBtn = document.getElementById('expandBottomPanel');
-      var isCollapsed = false;
-
-      function collapsePanel() {
-        if (!bottomPanels) return;
-        bottomPanels.classList.add('collapsed');
-        if (toggleBtn) toggleBtn.style.display = 'none';
-        if (expandBtn) expandBtn.style.display = 'flex';
-        isCollapsed = true;
-        // 面板折叠后地图尺寸变化，通知 Leaflet 重算
-        setTimeout(function() {
-          if (window.GIS && window.GIS.map && window.GIS.map.getMap) {
-            var m = window.GIS.map.getMap();
-            if (m) m.invalidateSize();
-          }
-        }, 400);
-      }
-
-      function expandPanel() {
-        if (!bottomPanels) return;
-        bottomPanels.classList.remove('collapsed');
-        if (toggleBtn) toggleBtn.style.display = '';
-        if (expandBtn) expandBtn.style.display = 'none';
-        isCollapsed = false;
-        setTimeout(function() {
-          if (window.GIS && window.GIS.map && window.GIS.map.getMap) {
-            var m = window.GIS.map.getMap();
-            if (m) m.invalidateSize();
-          }
-        }, 400);
-      }
-
-      if (toggleBtn) toggleBtn.addEventListener('click', collapsePanel);
-      if (expandBtn) expandBtn.addEventListener('click', expandPanel);
 
       console.log('[GIS] 内联启动脚本完成');
     })();

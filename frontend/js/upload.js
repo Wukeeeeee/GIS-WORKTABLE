@@ -89,6 +89,7 @@ window.GIS = window.GIS || {};
         geometry_type: type,
         crs: 'WGS-84',
         geojson: geojson,
+        source: 'upload',
       });
 
       // 通知 AI 文件路径（隐藏消息，不显示在聊天框，但 AI 能读到）
