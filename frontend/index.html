@@ -92,12 +92,24 @@
                 </svg>
                 <!-- 隐藏的原生 select（保持 JS 兼容） -->
                 <select id="modelSelector" title="选择AI模型" style="display:none;">
+                  <option value="deepseek-routed">DeepSeek V4 Flash+</option>
                   <option value="deepseek">DeepSeek V4 Flash</option>
                   <option value="glm">GLM-4.7-Flash</option>
                 </select>
               </div>
               <!-- 模型选择器（向上弹出） -->
               <div class="model-picker" id="modelPicker">
+              <div class="model-picker-option" data-value="deepseek-routed">
+                <div class="model-picker-info">
+                  <span class="model-picker-name">DeepSeek V4 Flash+</span>
+                  <span class="model-picker-desc">GLM 路由 + DeepSeek 执行 · 按需加载技能，节省 token</span>
+                </div>
+                <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
+                  <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M5 8l2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="model-picker-divider"></div>
               <div class="model-picker-option" data-value="deepseek">
                 <div class="model-picker-info">
                   <span class="model-picker-name">DeepSeek V4 Flash</span>
@@ -123,6 +135,9 @@
             <div class="model-bar-right">
               <button class="icon-btn" id="uploadTrigger" title="上传文件">
                 <svg class="svg-icon" style="color:var(--ui-gray-400)"><use href="assets/icons.svg#icon-attach"/></svg>
+              </button>
+              <button class="icon-btn" id="stopBtn" title="停止" style="display:none;color:#e53935;">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
               </button>
               <button class="icon-btn" id="sendBtn" title="发送">
                 <svg class="svg-icon" style="color:var(--ui-gray-900)"><use href="assets/icons.svg#icon-send"/></svg>
@@ -218,6 +233,31 @@
   </div><!-- /app-layout -->
 
   <!-- ========================================================= -->
+  <!-- 地图右键菜单                                              -->
+  <!-- ========================================================= -->
+  <div id="mapContextMenu" class="map-context-menu" style="display:none;">
+    <div class="context-menu-item" data-action="send-location">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
+      <span>发送此位置给AI</span>
+      <span class="ctx-badge">DeepSeek</span>
+    </div>
+    <div class="context-menu-item" data-action="send-location-routed">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
+      <span>发送此位置给AI</span>
+      <span class="ctx-badge" style="background:#1a1a2e;">增强</span>
+    </div>
+    <div class="context-menu-item" data-action="get-dem" style="display:none;">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l6-9 4 5 4-7 4 11"/><circle cx="16" cy="7" r="2"/></svg>
+      <span>获取此区域DEM数据</span>
+      <span class="ctx-badge">DeepSeek</span>
+    </div>
+    <div class="context-menu-item" data-action="copy-coords">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      <span>复制坐标</span>
+    </div>
+  </div>
+
+  <!-- ========================================================= -->
   <!-- 隐藏的文件输入（用于上传）                                  -->
   <!-- ========================================================= -->
   <input
@@ -307,6 +347,8 @@
   <!-- Leaflet (bootcdn CDN — 国内可用) -->
   <script src="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="https://cdn.bootcdn.net/ajax/libs/marked/15.0.6/marked.min.js"></script>
+  <!-- leaflet.heat 热力图插件 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.heat/0.2.0/leaflet-heat.js"></script>
 
   <!-- 应用模块（按依赖顺序加载） -->
   <script src="js/api.js"></script>
@@ -584,7 +626,9 @@
       function updateModelStatusDot() {
         if (!modelSelector || !modelStatusDot) return;
         var provider = modelSelector.value;
-        var status = window.GIS.api.getModelStatus(provider);
+        // deepseek-routed 借用 deepseek 的状态（共用密钥）
+        var statusProvider = provider === 'deepseek-routed' ? 'deepseek' : provider;
+        var status = window.GIS.api.getModelStatus(statusProvider);
         // 移除所有状态类
         modelStatusDot.classList.remove('online', 'offline', 'checking');
         if (status === 'online') {
@@ -636,7 +680,8 @@
       function selectModel(value) {
         if (value === modelSelector.value) { modelPicker.classList.remove('is-open'); return; }
         modelSelector.value = value;
-        modelSelectValue.textContent = value === 'deepseek' ? 'DeepSeek V4 Flash' : 'GLM-4.7-Flash';
+        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'deepseek': 'DeepSeek V4 Flash', 'glm': 'GLM-4.7-Flash' };
+        modelSelectValue.textContent = names[value] || value;
         window.GIS.api.setSelectedModel(value);
         updateModelStatusDot();
         modelPicker.classList.remove('is-open');
@@ -668,7 +713,8 @@
       if (modelSelector) {
         var savedModel = window.GIS.api.getSelectedModel();
         modelSelector.value = savedModel;
-        modelSelectValue.textContent = savedModel === 'deepseek' ? 'DeepSeek V4 Flash' : 'GLM-4.7-Flash';
+        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'deepseek': 'DeepSeek V4 Flash', 'glm': 'GLM-4.7-Flash' };
+        modelSelectValue.textContent = names[savedModel] || savedModel;
         modelPickerOptions.forEach(function(opt) {
           opt.classList.toggle('is-selected', opt.dataset.value === savedModel);
         });

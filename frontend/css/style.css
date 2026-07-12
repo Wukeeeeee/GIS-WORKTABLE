@@ -332,6 +332,7 @@ html, body {
 
 /* ========== Chat Input ========== */
 .chat-input-area {
+  position: relative;
   padding: var(--margin-md);
   border-top: 1px solid var(--ui-gray-200);
   background: var(--ui-white);
@@ -434,9 +435,10 @@ html, body {
   color: var(--ui-gray-900);
 }
 
-/* 请求中禁用状态 */
-.chat-input-model-bar.is-disabled {
-  opacity: 0.5;
+/* 请求中禁用状态（只禁用模型选择器和上传按钮，停止按钮保持醒目） */
+.chat-input-model-bar.is-disabled .model-select-wrapper,
+.chat-input-model-bar.is-disabled #uploadTrigger {
+  opacity: 0.4;
   pointer-events: none;
 }
 
@@ -474,6 +476,8 @@ html, body {
   width: 100%;
   height: 100%;
   z-index: 1;
+  /* 隔离地图渲染区域，减少合成开销 */
+  contain: paint layout style;
 }
 
 .map-placeholder {
@@ -733,8 +737,10 @@ html, body {
 }
 .map-layer-table .col-drag { flex: 0 0 auto; width: 20px; }
 .map-layer-table .col-vis { flex: 0 0 auto; width: 30px; display: flex; justify-content: center; }
-.map-layer-table .col-name { flex: 1; min-width: 0; padding-left: 2px; }
-.map-layer-table .col-type { flex: 0 0 auto; width: 50px; text-align: center; }
+.map-layer-table .col-name { flex: 1; min-width: 0; padding-left: 2px; overflow: hidden; }
+.map-layer-table .col-name .layer-name { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.map-layer-table .col-type { flex: 0 0 auto; width: 50px; text-align: center; overflow: hidden; }
+.map-layer-table .col-type .layer-type { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-layer-table .col-actions { flex: 0 0 auto; width: 64px; display: flex; justify-content: center; gap: 2px; }
 
 /* 来源标识 */
@@ -793,6 +799,77 @@ html, body {
 .map-layer-table .col-vis .layer-action-btn svg {
   width: 18px;
   height: 18px;
+}
+
+/* ========== 地图右键菜单 ========== */
+.map-context-menu {
+  display: none;
+  position: fixed;
+  background: var(--surface-container-high, #ebe7e6);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  padding: 4px 0;
+  min-width: 180px;
+  z-index: 10000;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.map-context-menu .context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  color: var(--on-surface, #1c1b1b);
+  transition: background 0.1s;
+}
+.map-context-menu .context-menu-item:hover {
+  background: var(--surface-variant, #e5e2e1);
+}
+.map-context-menu .context-menu-item svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.map-context-menu .context-menu-item span {
+  white-space: nowrap;
+}
+.map-context-menu .context-menu-item.is-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+.map-context-menu .context-menu-item .ctx-badge {
+  margin-left: auto;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--ui-gray-900);
+  color: var(--ui-white);
+  opacity: 0.7;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* Leaflet 十字准星坐标标签 */
+.crosshair-leaflet-label {
+  background: none !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.crosshair-leaflet-label span {
+  display: inline-block;
+  padding: 2px 6px;
+  background: rgba(0,0,0,0.7);
+  color: #fff;
+  font-size: 11px;
+  font-family: monospace;
+  border-radius: 3px;
+  white-space: nowrap;
 }
 
 /* ========== 定位蓝点 ========== */
@@ -1341,6 +1418,24 @@ html, body {
 .btn-copy-ai svg {
   width: 14px;
   height: 14px;
+}
+
+/* ========== 模型标记徽章（右上角圆角矩形） ========== */
+.msg-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border-radius: 4px;
+  background: var(--ui-gray-900);
+  color: var(--ui-white);
+  line-height: 1.5;
+  opacity: 0.7;
+  vertical-align: middle;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* ========== Hidden File Input ========== */

@@ -79,9 +79,9 @@ def extract_geo_from_detail(data):
         return geo if geo else None
     except: return None
 
-# ===== 浏览器（跟老代码完全一致）=====
+# ===== 浏览器（无头模式，不显示窗口）=====
 def _launch_browser(p, headless=True):
-    opts = dict(headless=headless, args=["--no-sandbox","--disable-setuid-sandbox","--disable-blink-features=AutomationControlled","--disable-dev-shm-usage","--disable-gpu","--disable-software-rasterizer"])
+    opts = dict(headless=headless, args=["--no-sandbox","--disable-setuid-sandbox","--disable-blink-features=AutomationControlled","--disable-dev-shm-usage","--disable-gpu","--disable-software-rasterizer","--headless=new"])
     try: return p.chromium.launch(channel="chrome", **opts)
     except: return p.chromium.launch(**opts)
 

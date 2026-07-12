@@ -4,8 +4,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
-import subprocess, datetime, time, os
-from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, generated_geojson, pending_aoi_suggestions, pending_layers, pending_images, _register_layer, registered_layers, _TEMP_OUTPUT_DIR
+import subprocess, datetime, time, os, asyncio, functools
+from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, generated_geojson, pending_aoi_suggestions, pending_layers, pending_images, pending_heatmap, _register_layer, registered_layers, _TEMP_OUTPUT_DIR
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
 from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
 from backend.services.gaode_aoi_service import search_suggestions as gaode_search_suggestions
@@ -65,7 +65,10 @@ class BaiduExtractRequest(BaseModel):
 # 前端发消息到这里，后端调 DeepSeek API 获取 AI 回复
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    response = chat_with_ai(request.message, request.session_id, request.api_key, request.provider)
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(None, functools.partial(
+        chat_with_ai, request.message, request.session_id, request.api_key, request.provider
+    ))
     result = {"response": response}
     # 如果有最新生成的 GeoJSON，一起返回给前端
     geo_data = generated_geojson.get('latest')
@@ -93,9 +96,23 @@ async def chat(request: ChatRequest):
         print(f"[GIS Debug] 返回 {len(pending_images)} 个图片/文件: {pending_images}", flush=True)
         result["images"] = list(pending_images)
         pending_images.clear()
-    else:
-        print("[GIS Debug] pending_images 为空", flush=True)
+    # 如果有热力图数据，传给前端
+    if pending_heatmap.get('latest'):
+        h_data = pending_heatmap['latest']
+        result["heatmap"] = {
+            "points": h_data["points"],
+            "name": h_data.get("name", "热力图"),
+            "options": h_data.get("options", {}),
+        }
+        pending_heatmap['latest'] = None
     return result
+
+@app.post("/api/cancel")
+async def cancel_request():
+    """取消当前 AI 请求"""
+    from backend.services.ai_service import request_cancel
+    result = request_cancel()
+    return {"status": "ok", "message": result}
 
 @app.get("/api/health")
 async def health():

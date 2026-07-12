@@ -49,7 +49,7 @@ window.GIS.api = (() => {
 
   /** 获取保存的模型偏好 */
   function getSelectedModel() {
-    return localStorage.getItem(MODEL_STORAGE_KEY) || 'deepseek';
+    return localStorage.getItem(MODEL_STORAGE_KEY) || 'deepseek-routed';
   }
 
   /** 保存模型偏好 */
@@ -111,21 +111,27 @@ window.GIS.api = (() => {
   async function chat(message, sessionId = 'default', provider = 'deepseek') {
     // 根据 provider 选择对应的 API 密钥
     const apiKey = provider === 'glm' ? getGLMApiKey() : getApiKey();
-const res=await fetch(`${BASE_URL}/api/chat`,{
-  method:'POST',
-  headers:{'Content-Type':'application/json'},
-  //sessionId可以用来区分不同的聊天会话，方便后端管理
-  body:JSON.stringify({
-    message,                    // 用户输入的文字
-    session_id:sessionId,       // 会话ID（目前都用 default）
-    api_key: apiKey || undefined,  // 密钥：有就带上，没有就不传（后端会用 apikey.txt 或 glm_apikey.txt）
-    provider                    // 模型提供商：deepseek 或 glm
-  })
-})
-if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
-const data=await res.json();
-// { response: "AI 回复的文字" }
-return data;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(function() { controller.abort(); }, 600000);
+    let res;
+    try {
+      res = await fetch(`${BASE_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          message,
+          session_id: sessionId,
+          api_key: apiKey || undefined,
+          provider
+        })
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
+    const data = await res.json();
+    return data;
 
 
     // TODO: POST /chat  { message, session_id }

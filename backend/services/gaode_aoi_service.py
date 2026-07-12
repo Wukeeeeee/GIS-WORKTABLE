@@ -117,6 +117,7 @@ def _build_launch_opts(headless=True):
             "--disable-software-rasterizer",
             "--disable-webgl",
             "--disable-features=IsolateOrigins,site-per-process",
+            "--headless=new",
         ],
     )
 
