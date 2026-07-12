@@ -525,7 +525,9 @@
       saveKeyBtn.addEventListener('click', function() {
         var key = apiKeyInput.value.trim();
         window.GIS.api.setApiKey(key);  // 存到 localStorage
+        window.GIS.api.setModelStatus('deepseek', 'untested');  // 重置状态，让警告重新判断
         updateKeyStatus(key);
+        updateModelWarning();  // 更新红色警告状态
         // 按钮文字闪一下"已保存 ✓"再变回来，给用户反馈
         var orig = saveKeyBtn.textContent;
         saveKeyBtn.textContent = '已保存 ✓';
@@ -574,7 +576,9 @@
       saveGlmKeyBtn.addEventListener('click', function() {
         var key = glmApiKeyInput.value.trim();
         window.GIS.api.setGLMApiKey(key);
+        window.GIS.api.setModelStatus('glm', 'untested');  // 重置状态，让警告重新判断
         updateGlmKeyStatus(key);
+        updateModelWarning();  // 更新红色警告状态
         var orig = saveGlmKeyBtn.textContent;
         saveGlmKeyBtn.textContent = '已保存 ✓';
         setTimeout(function() { saveGlmKeyBtn.textContent = orig; }, 2000);

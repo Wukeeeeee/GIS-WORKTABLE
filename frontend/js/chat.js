@@ -62,8 +62,7 @@ window.GIS = window.GIS || {};
         var modelName = curProvider === 'glm' ? 'GLM-4.7-Flash' : 'DeepSeek V4 Flash';
         addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
       }
-      // 恢复输入框
-      inputEl.placeholder = originalPlaceholder;
+      // 恢复输入框（placeholder 还没被改过，不需要还原）
       inputEl.disabled = false;
       sendBtn.disabled = false;
       sendBtn.style.opacity = '1';
@@ -331,7 +330,7 @@ window.GIS = window.GIS || {};
       }
       addMessage('请求失败: ' + err.message, 'system');
       if (window.GIS && window.GIS.app && window.GIS.app.toast) {
-        addMessage('请求失败: ' + err.message, 'system');
+        window.GIS.app.toast('请求失败: ' + err.message, 'error');
       }
     } finally {
       // 恢复 GLM→DeepSeek 切换按钮（如果有）

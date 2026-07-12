@@ -1811,7 +1811,7 @@ def execute_python(code: str) -> str:
         before_html = set()
 
     # 注入 matplotlib 中文字体配置
-    _font_setup = """
+    _font_setup = r"""
 import matplotlib, os
 matplotlib.use('Agg')
 # 清除字体缓存，避免旧缓存导致字体找不到
