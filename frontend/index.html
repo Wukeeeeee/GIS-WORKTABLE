@@ -101,7 +101,6 @@
               <div class="model-picker-option" data-value="deepseek">
                 <div class="model-picker-info">
                   <span class="model-picker-name">DeepSeek V4 Flash</span>
-                  <span class="model-picker-desc">GIS 处理与执行</span>
                 </div>
                 <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
                   <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>
@@ -112,7 +111,6 @@
               <div class="model-picker-option" data-value="glm">
                 <div class="model-picker-info">
                   <span class="model-picker-name">GLM-4.7-Flash</span>
-                  <span class="model-picker-desc">文本问答与规划</span>
                 </div>
                 <span class="model-picker-free">免费</span>
                 <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
@@ -210,9 +208,6 @@
           <div class="map-coords" id="mapCoords">
             --
           </div>
-
-          <!-- Toast 通知（放在地图区域内，左上角弹出） -->
-          <div class="toast-container" id="toastContainer"></div>
 
           <!-- 底部面板已移除 -->
         </div>
@@ -532,9 +527,6 @@
         var orig = saveKeyBtn.textContent;
         saveKeyBtn.textContent = '已保存 ✓';
         setTimeout(function() { saveKeyBtn.textContent = orig; }, 2000);
-        if (window.GIS && window.GIS.app && window.GIS.app.toast) {
-          window.GIS.app.toast('API 密钥已保存', 'success');
-        }
       });
 
       // ---- GLM 测速按钮 ----
@@ -582,9 +574,6 @@
         var orig = saveGlmKeyBtn.textContent;
         saveGlmKeyBtn.textContent = '已保存 ✓';
         setTimeout(function() { saveGlmKeyBtn.textContent = orig; }, 2000);
-        if (window.GIS && window.GIS.app && window.GIS.app.toast) {
-          window.GIS.app.toast('GLM API 密钥已保存', 'success');
-        }
       });
 
       // ---- 模型选择器持久化 + 状态圆点 ----

@@ -9,6 +9,20 @@ window.GIS = window.GIS || {};
 
 (function() {
   'use strict';
+
+// marked Markdown 渲染：所有外部链接新标签打开，不丢失当前界面
+try {
+  if (typeof marked !== 'undefined') {
+    marked.use({
+      renderer: {
+        link: function(token) {
+          return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer">' + token.text + '</a>';
+        }
+      }
+    });
+  }
+} catch(e) { /* marked 版本兼容性兜底 */ }
+
 //将GIS命名空间赋值给常量GIS，相当于全局变量
   const GIS = window.GIS;
 
@@ -16,8 +30,6 @@ window.GIS = window.GIS || {};
   let messagesContainer = null;
   let inputEl = null;
   let sendBtn = null;
-  let _switchBtnRef = null;  // GLM→DeepSeek 切换按钮引用，执行完后恢复
-
   /**
    * 初始化聊天模块
    * 绑定 DOM 元素和事件
@@ -58,10 +70,8 @@ window.GIS = window.GIS || {};
     var curProvider = selModel ? selModel.value : 'deepseek';
     var hasKey = curProvider === 'glm' ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
     if (!hasKey) {
-      if (window.GIS && window.GIS.app && window.GIS.app.toast) {
         var modelName = curProvider === 'glm' ? 'GLM-4.7-Flash' : 'DeepSeek V4 Flash';
         addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
-      }
       // 恢复输入框（placeholder 还没被改过，不需要还原）
       inputEl.disabled = false;
       sendBtn.disabled = false;
@@ -232,9 +242,7 @@ window.GIS = window.GIS || {};
             if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
           });
         }
-        if (window.GIS && window.GIS.app && window.GIS.app.toast) {
-          addMessage('已清空所有图层', 'system');
-        }
+        addMessage('已清空所有图层', 'system');
       }
 
       // 如果有待处理的 AOI 候选列表，显示在聊天框供点击选择
@@ -329,17 +337,7 @@ window.GIS = window.GIS || {};
         loadingEl.remove();
       }
       addMessage('请求失败: ' + err.message, 'system');
-      if (window.GIS && window.GIS.app && window.GIS.app.toast) {
-        window.GIS.app.toast('请求失败: ' + err.message, 'error');
-      }
     } finally {
-      // 恢复 GLM→DeepSeek 切换按钮（如果有）
-      if (_switchBtnRef) {
-        _switchBtnRef.disabled = false;
-        _switchBtnRef.style.opacity = '1';
-        _switchBtnRef.style.cursor = 'pointer';
-        _switchBtnRef = null;
-      }
       // 恢复输入状态
       inputEl.placeholder = originalPlaceholder;
       inputEl.disabled = false;
@@ -396,65 +394,6 @@ window.GIS = window.GIS || {};
       content.innerHTML = text;
     }
     bubble.appendChild(content);
-
-    // 检测 AI 回复是否建议切换到 DeepSeek
-    if (type === 'ai' && text.indexOf('→ 建议切换到 DeepSeek 执行') !== -1) {
-      var switchBtn = document.createElement('button');
-      switchBtn.textContent = '切换到 DeepSeek 执行';
-      switchBtn.style.cssText = 'margin-top:10px;padding:6px 14px;font-size:12px;background:var(--ui-gray-900);color:var(--ui-white);border:none;border-radius:4px;cursor:pointer;display:block;transition:opacity 0.15s;';
-      switchBtn.addEventListener('mouseenter', function() { this.style.opacity = '0.8'; });
-      switchBtn.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
-      switchBtn.addEventListener('click', function() {
-        // 检查 DeepSeek 是否已配置 API Key
-        var dsKey = window.GIS.api.getApiKey();
-        if (!dsKey) {
-          switchBtn.disabled = false;
-          switchBtn.style.opacity = '1';
-          switchBtn.style.cursor = 'pointer';
-          var tip = document.createElement('div');
-          tip.style.cssText = 'margin-top:6px;padding:6px 10px;font-size:11px;color:#b71c1c;background:#ffebee;border-radius:4px;border:1px solid #ef9a9a;';
-          tip.textContent = 'DeepSeek 未配置 API Key，请点击齿轮按钮设置';
-          switchBtn.parentNode.insertBefore(tip, switchBtn.nextSibling);
-          return;
-        }
-        // 保存引用，AI 执行完后恢复
-        _switchBtnRef = switchBtn;
-        // 立即禁用按钮（防重复点击）
-        switchBtn.disabled = true;
-        switchBtn.style.opacity = '0.35';
-        switchBtn.style.cursor = 'default';
-        // 切换到 DeepSeek 模型
-        var sel = document.getElementById('modelSelector');
-        var val = document.getElementById('modelSelectValue');
-        if (sel) sel.value = 'deepseek';
-        if (val) val.textContent = 'DeepSeek V4 Flash';
-        if (window.GIS.api) window.GIS.api.setSelectedModel('deepseek');
-        if (typeof updateModelStatusDot === 'function') updateModelStatusDot();
-        // 提取规划内容，发给 DeepSeek 处理
-        var workflow = text.replace('→ 建议切换到 DeepSeek 执行', '').trim();
-        // 拼接执行指令
-        var msg = '请按以下规划执行：\n' + workflow;
-        // 通知用户
-        var container = document.getElementById('chatMessages');
-        var notice = document.createElement('div');
-        notice.style.cssText = 'display:flex;justify-content:center;max-width:100%;';
-        var noticeBubble = document.createElement('div');
-        noticeBubble.style.cssText = 'font-size:11px;color:var(--ui-gray-400);background:var(--ui-gray-100);padding:3px 10px;border-radius:8px;text-align:center;margin:4px 0;';
-        noticeBubble.textContent = '已切换到 DeepSeek，正在执行规划...';
-        notice.appendChild(noticeBubble);
-        container.appendChild(notice);
-        container.scrollTop = container.scrollHeight;
-        // 延迟一下等 UI 更新，然后把规划发给 DeepSeek
-        setTimeout(function() {
-          if (typeof sendMessage === 'function') {
-            sendMessage(msg);
-          } else if (window.GIS && window.GIS.chat && typeof window.GIS.chat.send === 'function') {
-            window.GIS.chat.send(msg);
-          }
-        }, 500);
-      });
-      bubble.appendChild(switchBtn);
-    }
 
     if (options.code) {
       const codeBlock = document.createElement('div');

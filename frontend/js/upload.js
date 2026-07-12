@@ -103,10 +103,12 @@ window.GIS = window.GIS || {};
     }
   }
 
-  // 系统通知（只弹 Toast，不往聊天框里刷消息）
+  // 系统通知（往聊天框里显示）
   function notify(message, type) {
-    if (GIS.app && GIS.app.toast) {
-      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') { window.GIS.chat.addMessage(message, 'system'); } else if (typeof addMessage === 'function') { addMessage(message, 'system'); }
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      window.GIS.chat.addMessage(message, 'system');
+    } else if (typeof addMessage === 'function') {
+      addMessage(message, 'system');
     }
   }
 

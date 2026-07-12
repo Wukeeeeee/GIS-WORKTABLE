@@ -58,31 +58,6 @@ def log_turn(session_id: str, user_message: str, ai_reply: str,
     if saved_files:
         record["saved_files"] = saved_files
 
-    # 工作区快照：记录当前 output/ 目录下有哪些文件
-    try:
-        output_dir = os.path.join(os.path.dirname(__file__), "..", "..", "output")
-        geojson_files = []
-        upload_files = []
-        if os.path.isdir(output_dir):
-            for fname in os.listdir(output_dir):
-                if fname.endswith('.geojson'):
-                    fpath = os.path.join(output_dir, fname)
-                    geojson_files.append({
-                        'name': fname,
-                        'size': os.path.getsize(fpath) if os.path.isfile(fpath) else 0
-                    })
-            uploads_dir = os.path.join(output_dir, "uploads")
-            if os.path.isdir(uploads_dir):
-                for fname in os.listdir(uploads_dir):
-                    if fname.endswith(('.json', '.geojson', '.csv')):
-                        upload_files.append(fname)
-        record["workspace"] = {
-            "output_geojsons": geojson_files[:20],
-            "upload_files": upload_files[:20],
-        }
-    except Exception:
-        pass
-
     path = _temp_path(session_id)
     try:
         with open(path, "a", encoding="utf-8") as f:

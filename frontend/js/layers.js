@@ -107,9 +107,9 @@ window.GIS = window.GIS || {};
     if (mapName && GIS.map && GIS.map.removeLayer) {
       GIS.map.removeLayer(mapName);  // 传正确的文件名，不是 layerId
     }
-    // Toast 提示
-    if (target && GIS.app && GIS.app.toast) {
-      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') { window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system'); }
+    // 删除提示
+    if (target && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system');
     }
   }
 

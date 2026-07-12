@@ -20,17 +20,76 @@ _ADCODES = {
     '台湾省': 710000, '香港特别行政区': 810000, '澳门特别行政区': 820000,
 }
 
+def _load_city_adcodes():
+    """
+    从所有省份的 DataV GeoJSON 中提取城市/区县 adcode，构建名称→adcode 映射。
+    结果缓存到本地文件，仅首次需要遍历所有省份（约 34 次请求）。
+    """
+    cache_path = os.path.join(_CACHE_DIR, "_city_adcodes.json")
+    # 尝试读缓存
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    # 从省份字典的 adcode，逐个拉取省份 GeoJSON 提取城市
+    city_map = {}
+    for prov_name, prov_adcode in _ADCODES.items():
+        try:
+            url = f"https://geo.datav.aliyun.com/areas_v3/bound/{prov_adcode}_full.json"
+            resp = requests.get(url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                for feat in data.get('features', []):
+                    p = feat.get('properties', {})
+                    name = p.get('name', '')
+                    adcode = p.get('adcode', 0)
+                    level = p.get('level', '')
+                    if name and adcode:
+                        city_map[name] = adcode
+                        # 也存去掉后缀的版本（如 "广州" 来自 "广州市"）
+                        for sfx in ['市', '区', '县', '自治州']:
+                            if name.endswith(sfx):
+                                city_map[name[:-len(sfx)]] = adcode
+        except Exception:
+            continue
+
+    # 写缓存
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(city_map, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+    return city_map
+
+
 def _find_adcode(name):
-    """根据名称找 adcode"""
+    """
+    根据名称查找 adcode，支持省/市/区三级。
+    优先用本地省份字典，找不到则从 DataV 省份 GeoJSON 中提取城市 adcode 并缓存。
+    """
+    # 先在省份字典里查
     if name in _ADCODES:
         return _ADCODES[name]
-    # 去掉后缀
     for suffix in ['省', '市', '区', '县', '自治州', '自治区', '特别行政区']:
         if name.endswith(suffix):
             bare = name[:-len(suffix)]
             for k, v in _ADCODES.items():
                 if bare in k:
                     return v
+    # 不是省份，从城市 adcode 字典查
+    city_map = _load_city_adcodes()
+    if city_map:
+        if name in city_map:
+            return city_map[name]
+        for sfx in ['市', '区', '县']:
+            if name.endswith(sfx) and name[:-len(sfx)] in city_map:
+                return city_map[name[:-len(sfx)]]
+            if name + sfx in city_map:
+                return city_map[name + sfx]
     return 0
 
 
@@ -101,11 +160,8 @@ def fetch_boundary(name: str) -> dict:
 
     data = resp.json()
 
-    # 转 WGS-84
-    for feat in data.get('features', []):
-        geom = feat.get('geometry', {})
-        if geom.get('type') in ('Polygon', 'MultiPolygon'):
-            geom['coordinates'] = _convert(geom['coordinates'])
+    # DataV areas_v3 返回的已经是 WGS-84 坐标，无需转换
+    # （旧版 v1/v2 用 GCJ-02，v3 已改为 WGS-84）
 
     # 写缓存
     try:
