@@ -109,7 +109,7 @@ window.GIS.api = (() => {
   /** @param {string} message @param {string} [sessionId='default'] @param {string} [provider='deepseek'] @param {string[]} [forceSkills=[]] */
   async function chat(message, sessionId = 'default', provider = 'deepseek', forceSkills = []) {
     // 根据 provider 选择对应的 API 密钥
-    const apiKey = provider === 'glm' ? getGLMApiKey() : getApiKey();
+    const apiKey = (provider === 'glm' || provider === 'glm-routed') ? getGLMApiKey() : getApiKey();
     const controller = new AbortController();
     const timeoutId = setTimeout(function() { controller.abort(); }, 600000);
     let res;

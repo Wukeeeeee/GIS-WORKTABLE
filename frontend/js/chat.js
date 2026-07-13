@@ -356,9 +356,9 @@ try {
     // 检查当前选中的模型是否已配置 API Key（优先用 providerOverride）
     const selModel = document.getElementById('modelSelector');
     const curProvider = providerOverride || (selModel ? selModel.value : 'deepseek');
-    const hasKey = curProvider === 'glm' ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
+    const hasKey = (curProvider === 'glm' || curProvider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
     if (!hasKey) {
-        const modelName = curProvider === 'glm' ? 'GLM-4.7-Flash' : (curProvider === 'deepseek-routed' ? 'DeepSeek V4 Flash+' : 'DeepSeek V4 Flash');
+        const modelName = (curProvider === 'glm-routed' || curProvider === 'glm') ? 'GLM-4.7-Flash+' : 'DeepSeek V4 Flash+';
         addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
       // 恢复输入框（placeholder 还没被改过，不需要还原）
       inputEl.disabled = false;
@@ -399,19 +399,22 @@ try {
     // 获取当前模型显示名（优先用 providerOverride）
     const modelDisplayEl = document.getElementById('modelSelectValue');
     let modelDisplayName = modelDisplayEl ? modelDisplayEl.textContent : 'AI';
-    if (providerOverride === 'deepseek-routed') modelDisplayName = 'DeepSeek V4 Flash+';
+    if (providerOverride === 'deepseek-routed') modelDisplayName = 'DeepSeek V4 Flash+'; else if (providerOverride === 'glm-routed') modelDisplayName = 'GLM-4.7-Flash+';
     else if (providerOverride === 'deepseek') modelDisplayName = 'DeepSeek V4 Flash';
-    else if (providerOverride === 'glm') modelDisplayName = 'GLM-4.7-Flash';
+    
 
     // 添加"模型名 思考中..."占位气泡，让用户知道 AI 正在处理
-    const isRouted = (providerOverride === 'deepseek-routed');
+    const isRouted = (providerOverride === 'deepseek-routed' || providerOverride === 'glm-routed');
     const loadingMsg = addMessage(modelDisplayName + ' 思考中...', 'ai', { noMarkdown: true });
     loadingMsg.id = 'ai-loading-msg';
 
     // DS+ 模式：先显示 GLM 路由阶段，再切换到执行阶段
     if (isRouted) {
       const loadingContent = loadingMsg.querySelector('.message-bubble > div');
-      if (loadingContent) loadingContent.textContent = 'DeepSeek V4 Flash+ GLM 路由分析中...';
+      if (loadingContent) {
+        if (providerOverride === 'glm-routed') loadingContent.textContent = 'GLM-4.7-Flash+ 路由分析中...';
+        else loadingContent.textContent = 'DeepSeek V4 Flash+ GLM 路由分析中...';
+      }
     }
 
     // 给气泡文本加流光 scan 动画
@@ -434,7 +437,8 @@ try {
         const el = document.getElementById('ai-loading-msg');
         if (el) {
           const c = el.querySelector('.message-bubble > div');
-          if (c) c.textContent = 'DeepSeek V4 Flash+ 执行中...';
+          if (providerOverride === 'glm-routed') c.textContent = 'GLM-4.7-Flash+ 执行中...';
+          else c.textContent = 'DeepSeek V4 Flash+ 执行中...';
         }
       }, 1500);
     }
@@ -449,7 +453,7 @@ try {
     try {
       // 读取当前选择的模型（优先用 providerOverride）
       const modelSelector = document.getElementById('modelSelector');
-      const provider = providerOverride || (modelSelector ? modelSelector.value : 'deepseek');
+      const rawProvider = providerOverride || (modelSelector ? modelSelector.value : 'deepseek'); const provider = rawProvider;
       const forceSkills = _skillChips.map(function(c) { return CHIP_TO_SKILL[c.name]; }).filter(Boolean);
       const result = await GIS.api.chat(text, 'default', provider, forceSkills);
       // 发送后清除 chip 标签（已消费）

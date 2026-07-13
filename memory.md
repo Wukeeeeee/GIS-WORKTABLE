@@ -4,6 +4,63 @@
 
 ---
 
+## 2026-07-13（续6）：布局修复 + 连续绘制 + 图层AI分析 + 删除优化
+
+### 改动清单
+
+#### 前端 — style.css
+- **body 8px 默认边距修复**：`html, body { margin: 0 }` 显式声明（`*` 通配符在某些浏览器不覆盖 body 默认边距）
+- **100vw → 100%**：`width: 100vw` 在 `overflow:hidden` 下仍计入滚动条宽度，导致右侧 8px 溢出，改为 `width: 100%`
+- **Leaflet 版权署名定位**：`#map .leaflet-bottom { bottom: 4px !important }`，留呼吸空间，不被 `overflow:hidden` 裁切
+- **图层面板操作列扩容**：`.map-layer-table .col-actions` 从 `64px` → `88px`，容纳新增的分析按钮
+
+#### 前端 — index.html
+- **删除按钮移除**：右上角 🗑 按钮去掉（用户反馈无实际用处）
+- **模型选择 inline script**：精简模型列表为两个（deepseek-routed / glm-routed）
+
+#### 前端 — map.js
+- **ResizeObserver**：新增 `ResizeObserver` 监听 `.map-area` 尺寸变化，配合 50/200/500/1000ms 四次 `invalidateSize()`，确保 Leaflet 容器尺寸正确
+- **删除按钮重写**：用 `L.Edit.Delete` API 不可用，改为自定义 `_enterDeleteMode()` / `_exitDeleteMode()` / `_onDeleteClick()`，通过 `drawnItems.on('click')` 事件委托实现点击图形删除，从地图 FeatureGroup 和 GIS layers 系统同时移除
+- **连续绘制**：`L.Draw.Event.CREATED` 完成后检查按钮是否仍高亮，是则 50ms 后自动重新启用同款绘制工具，无需反复点击
+- 暴露 `invalidateSize()` 公共方法
+
+#### 前端 — layers.js
+- **图层 → AI 分析按钮**：每个图层行新增 `data-action="analyze"` 按钮（⭐ icon-ai-send 图标），点击后：
+  - 提取图层 GeoJSON + 计算中心坐标（`getGeoJSONCenter()`：遍历所有坐标求平均）
+  - 组装提示词：位置归属 / 地理特征 / 气候海拔等
+  - 通过 `GIS.chat.send()` 发给当前选中的 AI 模型
+  - AI 分析后在地图加标记点 + 表格回复
+- 新增 `analyzeLayer()`, `getGeoJSONCenter()` 函数
+- `bindActionEvents()` 新增 `action === 'analyze'` 分支
+
+### 已修复的问题
+- 地图顶上有白框 → body 8px margin 导致布局偏移
+- 地图右侧空白 → 100vw 溢出
+- Bing 版权署名只显示一半 → `overflow:hidden` 裁切 + body margin 双重原因
+- 删除按钮没反应 → `L.Edit.Delete` API 不存在
+- 画完一个就停 → 缺乏连续绘制支持
+- 图层想发给 AI 分析 → 无此入口
+
+---## 2026-07-13（续5）：新增 GDAL 技能 + GLM+ 模式 + 右键修复
+
+### 改动清单
+
+#### 新增技能文件
+- `skills/gdal.md`：GDAL 地理数据处理（栅格/矢量格式转换、投影转换、裁剪拼接、COG），从 GitHub GDAL Skill 适配
+
+#### 新增 GLM-4.7-Flash+ 模式
+- 模型选择器从 4 个精简为 2 个：DeepSeek V4 Flash+ 和 GLM-4.7-Flash+
+- 淘汰标准 DS 和标准 GLM（DS+ 和 GLM+ 分别覆盖）
+- GLM+ 流程：GLM 路由分析 → 加载 skill 文件 → GLM 执行（全程免费）
+- 修正 api.js/chat.js/ai_service.py/main.py 中 glm-routed 链路不识别的问题
+
+#### 右键菜单修复
+- 去除标准 DeepSeek 选项，只保留一个"发送此位置给AI"
+- 使用当前选中的模型（DS+ 或 GLM+）
+- 提示词明确"只加一个点，不要生成多个点位"
+
+---
+
 ## 2026-07-13（续3）：SYSTEM_PROMPT 精简 + Skill Chip 标签系统 + force_skills
 
 ### 背景

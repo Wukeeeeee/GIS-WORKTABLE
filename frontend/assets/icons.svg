@@ -178,4 +178,38 @@
     <path d="M12 8v4"/>
     <path d="M12 14h.01"/>
   </symbol>
+
+  <!-- ===== 绘制工具图标 ===== -->
+  <symbol id="icon-draw-polygon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="12 3 20 8 20 17 12 22 4 17 4 8"/>
+    <circle cx="12" cy="3" r="1" fill="currentColor"/>
+    <circle cx="20" cy="8" r="1" fill="currentColor"/>
+    <circle cx="20" cy="17" r="1" fill="currentColor"/>
+    <circle cx="12" cy="22" r="1" fill="currentColor"/>
+    <circle cx="4" cy="17" r="1" fill="currentColor"/>
+    <circle cx="4" cy="8" r="1" fill="currentColor"/>
+  </symbol>
+  <symbol id="icon-draw-rect" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="4" y="4" width="16" height="16" rx="1"/>
+  </symbol>
+  <symbol id="icon-draw-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="8"/>
+    <circle cx="12" cy="12" r="2" fill="currentColor"/>
+  </symbol>
+  <symbol id="icon-draw-line" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="4 6 10 10 14 6 20 12"/>
+    <circle cx="4" cy="6" r="1.5" fill="currentColor"/>
+    <circle cx="10" cy="10" r="1.5" fill="currentColor"/>
+    <circle cx="14" cy="6" r="1.5" fill="currentColor"/>
+    <circle cx="20" cy="12" r="1.5" fill="currentColor"/>
+  </symbol>
+  <symbol id="icon-draw-marker" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/>
+    <circle cx="12" cy="10" r="3"/>
+  </symbol>
+
+  <!-- 鼠标指针/选择工具 -->
+  <symbol id="icon-select" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 3l4 18 3.5-7.5L20 10z"/>
+  </symbol>
 </svg>

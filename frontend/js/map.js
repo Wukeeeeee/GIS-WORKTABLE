@@ -16,11 +16,52 @@ window.GIS = window.GIS || {};
   const layers = {};
   const geoStore = {};
   let baseLayer = null;
+  let drawnItems = null;        // Leaflet.Draw 绘制的图形集合
   // 缓存 DOM 引用——避免每次 mousemove 都 querySelector
   var _coordsEl = null;
   var _zoomLabelEl = null;
+  var _resizeObserver = null;
+  var _deleteMode = false;
 
   var TILE_URL = 'https://t1.dynamic.tiles.ditu.live.com/comp/ch/{q}?mkt=zh-CN&ur=cn&it=A&n=z&og=804&cstl=vbd';
+
+  /** 进入删除模式：点击已绘制的图形将其移除 */
+  function _enterDeleteMode() {
+    if (_deleteMode) return;
+    _deleteMode = true;
+    document.getElementById('map').style.cursor = 'crosshair';
+    // 监听绘制图层上的点击
+    if (drawnItems) {
+      drawnItems.on('click', _onDeleteClick);
+    }
+  }
+
+  /** 退出删除模式 */
+  function _exitDeleteMode() {
+    if (!_deleteMode) return;
+    _deleteMode = false;
+    document.getElementById('map').style.cursor = '';
+    if (drawnItems) {
+      drawnItems.off('click', _onDeleteClick);
+    }
+    // 不操作 active 类（由 toolbar click handler 管理）
+  }
+
+  /** 点击删除回调 */
+  function _onDeleteClick(e) {
+    var layer = e.target;
+    if (!layer || !drawnItems) return;
+    // 从地图上的 FeatureGroup 移除
+    drawnItems.removeLayer(layer);
+    // 从 GIS 图层系统移除
+    if (layer._name && window.GIS && window.GIS.layers && window.GIS.layers.removeLayer) {
+      window.GIS.layers.removeLayer(layer._name);
+    }
+    // 如果删完了，自动退出删除模式
+    if (drawnItems.getLayers().length === 0) {
+      _exitDeleteMode();
+    }
+  }
 
   function init(container, options) {
     if (typeof L === 'undefined') { console.warn('[GIS Map] Leaflet 未加载'); return; }
@@ -56,6 +97,113 @@ window.GIS = window.GIS || {};
 
     // 初始化右键菜单
     setTimeout(initContextMenu, 200);
+
+    // 确保地图尺寸正确——多次尝试 + ResizeObserver
+    function doInvalidate() { if (mapInstance) mapInstance.invalidateSize(); }
+    [50, 200, 500, 1000].forEach(function(t) { setTimeout(doInvalidate, t); });
+
+    // ResizeObserver：地图容器尺寸变化时自动重算
+    if (typeof ResizeObserver !== 'undefined') {
+      _resizeObserver = new ResizeObserver(function() { doInvalidate(); });
+      _resizeObserver.observe(el.parentElement);
+    }
+
+    // ---- 绘制工具（顶部工具栏 + Leaflet.Draw 引擎）----
+    if (typeof L.Draw !== 'undefined') {
+      drawnItems = new L.FeatureGroup();
+      mapInstance.addLayer(drawnItems);
+
+      // 绘制完成事件
+      mapInstance.on(L.Draw.Event.CREATED, function(e) {
+        var layer = e.layer;
+        drawnItems.addLayer(layer);
+        var name = '绘制_' + Date.now().toString(36);
+        layer._name = name;
+        if (window.GIS && window.GIS.layers && window.GIS.layers.addLayer) {
+          window.GIS.layers.addLayer({
+            layer_id: name, name: name, checked: true,
+            geojson: layer.toGeoJSON(), source: '绘制'
+          });
+        }
+        // 连续绘制：如果绘制按钮仍高亮，自动重新启用同款工具
+        var activeBtn = document.querySelector('.map-draw-btn.active:not([data-tool="delete"])');
+        if (activeBtn) {
+          var tool = activeBtn.dataset.tool;
+          var DrawClass = { polygon: L.Draw.Polygon, rectangle: L.Draw.Rectangle,
+            circle: L.Draw.Circle, polyline: L.Draw.Polyline, marker: L.Draw.Marker }[tool];
+          if (DrawClass) {
+            // 等 Leaflet.Draw 内部清理完再重新启用
+            setTimeout(function() {
+              if (!mapInstance) return;
+              if (!document.querySelector('.map-draw-btn.active[data-tool="' + tool + '"]')) return;
+              mapInstance._drawHandler = new DrawClass(mapInstance);
+              mapInstance._drawHandler.enable();
+            }, 50);
+          }
+        }
+      });
+
+      // 编辑/删除事件
+      mapInstance.on(L.Draw.Event.DELETED, function() {
+        // 删除后清理已移除的图层
+      });
+
+      // 右侧面板绘制按钮
+      var drawToolbar = document.getElementById('mapZoomControls');
+      if (drawToolbar) {
+        drawToolbar.addEventListener('click', function(e) {
+          var btn = e.target.closest('.map-draw-btn');
+          if (!btn) return;
+          var tool = btn.dataset.tool;
+
+          // 高亮当前按钮，取消其他按钮高亮
+          document.querySelectorAll('.map-draw-btn').forEach(function(b) { b.classList.remove('active'); });
+          btn.classList.add('active');
+
+          // 停止之前的绘制模式
+          if (mapInstance._drawHandler) { mapInstance._drawHandler.disable(); mapInstance._drawHandler = null; }
+
+          if (tool === 'select') {
+            // 选择工具：退出所有编辑/删除模式，恢复默认光标
+            _exitDeleteMode();
+            return;
+          }
+
+          if (tool === 'delete') {
+            // 切换删除模式：点击已绘制的图形将其移除
+            if (_deleteMode) {
+              _exitDeleteMode();
+            } else {
+              _enterDeleteMode();
+            }
+            return;
+          }
+
+          // 启用手动绘制工具
+          var DrawClass = { polygon: L.Draw.Polygon, rectangle: L.Draw.Rectangle,
+            circle: L.Draw.Circle, polyline: L.Draw.Polyline, marker: L.Draw.Marker }[tool];
+          if (DrawClass) {
+            mapInstance._drawHandler = new DrawClass(mapInstance);
+            mapInstance._drawHandler.enable();
+          }
+        });
+
+        // 点击地图关闭绘制模式
+        mapInstance.on('click', function() {
+          // 不要立即清除高亮，让用户看到当前工具
+        });
+
+        // 按 Esc 取消绘制 / 退出删除模式 / 清除高亮
+        mapInstance.on('keydown', function(e) {
+          if (e.originalEvent.key === 'Escape') {
+            if (mapInstance._drawHandler) { mapInstance._drawHandler.disable(); mapInstance._drawHandler = null; }
+            _exitDeleteMode();
+            document.querySelectorAll('.map-draw-btn').forEach(function(b) { b.classList.remove('active'); });
+            document.getElementById('map').style.cursor = '';
+          }
+        });
+      }
+    }
   }
 
   function toQuadkey(x, y, z) {
@@ -394,6 +542,7 @@ window.GIS = window.GIS || {};
     fitLayer: fitLayer,
     loadHeatmap: loadHeatmap,
     removeHeatmap: removeHeatmap,
+    invalidateSize: function() { if (mapInstance) mapInstance.invalidateSize(); },
     getInstance: function() { return mapInstance; },
     // 以下为兼容旧内联脚本
     getState: function() {

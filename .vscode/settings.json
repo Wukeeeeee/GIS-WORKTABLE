@@ -8,6 +8,7 @@
         "node_modules/**",
         ".git/**",
         "ne_110m_*/**",
+        "frontend/**",
         "*.zip"
     ]
 }

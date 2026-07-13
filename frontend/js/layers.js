@@ -70,6 +70,9 @@ window.GIS = window.GIS || {};
         <td class="col-type"><span class="layer-type">${escapeHtml(layer.geometry_type || '未知')}</span></td>
         <td class="col-actions">
           <div class="layer-actions">
+            <button class="layer-action-btn" data-action="analyze" data-id="${layer.layer_id || ''}" title="发送给AI分析">
+              <svg><use href="assets/icons.svg#icon-ai-send"/></svg>
+            </button>
             <button class="layer-action-btn" data-action="download" data-id="${layer.layer_id || ''}" title="下载">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
@@ -210,6 +213,67 @@ window.GIS = window.GIS || {};
     });
   }
 
+  /** 获取 GeoJSON 的中心点坐标（取所有坐标平均） */
+  function getGeoJSONCenter(geojson) {
+    try {
+      var coords = [];
+      function extractCoords(geom) {
+        if (!geom) return;
+        if (geom.type === 'Point') coords.push(geom.coordinates);
+        else if (geom.type === 'MultiPoint' || geom.type === 'LineString') coords.push.apply(coords, geom.coordinates);
+        else if (geom.type === 'MultiLineString' || geom.type === 'Polygon') {
+          geom.coordinates.forEach(function(ring) { coords.push.apply(coords, ring); });
+        } else if (geom.type === 'MultiPolygon') {
+          geom.coordinates.forEach(function(poly) {
+            poly.forEach(function(ring) { coords.push.apply(coords, ring); });
+          });
+        }
+      }
+      if (geojson.type === 'Feature') extractCoords(geojson.geometry);
+      else if (geojson.type === 'FeatureCollection') geojson.features.forEach(function(f) { extractCoords(f.geometry); });
+      if (coords.length === 0) return null;
+      var avgLng = coords.reduce(function(s, c) { return s + c[0]; }, 0) / coords.length;
+      var avgLat = coords.reduce(function(s, c) { return s + c[1]; }, 0) / coords.length;
+      return { lat: avgLat, lng: avgLng };
+    } catch(e) { return null; }
+  }
+
+  /** 将图层发送给 AI 分析 */
+  function analyzeLayer(layerId) {
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      window.GIS.chat.addMessage('正在准备图层数据发送给 AI...', 'system');
+    }
+    var geojson = layer.geojson;
+    if (!geojson && GIS.map && GIS.map.getGeoJSON) {
+      geojson = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+    }
+    if (!geojson) {
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+        window.GIS.chat.addMessage('该图层无可用数据', 'system');
+      }
+      return;
+    }
+    var center = getGeoJSONCenter(geojson);
+    var coordsStr = center ? center.lat.toFixed(6) + ', ' + center.lng.toFixed(6) : '未知';
+    var msg = '我会分析以下图层的地理信息并向地图添加结果标记。\n\n';
+    msg += '**位置信息**\n';
+    msg += '- 坐标: ' + coordsStr + '\n';
+    msg += '- 图层名称: ' + (layer.filename || '未命名') + '\n';
+    msg += '- 几何类型: ' + (layer.geometry_type || '未知') + '\n\n';
+    msg += '请完成以下任务：\n';
+    msg += '1. 先搜索确定这个位置属于哪个省/市/区/县\n';
+    msg += '2. 查询附近的地理特征（山脉、河流、湖泊、地形等）\n';
+    msg += '3. 查询该区域的气候类型、典型海拔、植被等地理信息\n';
+    msg += '4. 最后用 execute_python 在地图上该位置加一个点标记，只加一个点\n';
+    msg += '5. 用 markdown 表格回复\n\n';
+    msg += '**GeoJSON 数据**\n```json\n' + JSON.stringify(geojson, null, 2) + '\n```';
+    if (window.GIS.chat && typeof window.GIS.chat.send === 'function') {
+      window.GIS.chat.send(msg, { displayText: '分析图层: ' + (layer.filename || '图层') });
+    }
+  }
+
   function bindActionEvents() {
     if (!tbody) return;
     //监听
@@ -250,6 +314,7 @@ window.GIS = window.GIS || {};
       if (action === 'visibility') toggleVisibility(id);
       if (action === 'delete') removeLayer(id);
       if (action === 'download') downloadLayer(id);
+      if (action === 'analyze') analyzeLayer(id);
     });
   }
 
@@ -260,7 +325,7 @@ window.GIS = window.GIS || {};
   }
 
   GIS.layers = {
-    init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer,
+    init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer, analyzeLayer,
     getLayers: () => [...layerData],
   };
 })();
