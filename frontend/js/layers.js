@@ -65,7 +65,7 @@ window.GIS = window.GIS || {};
               ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
               : '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'}
           </span>
-          <span class="layer-name">${escapeHtml(layer.filename || '未命名')}</span>
+          <span class="layer-name" data-id="${layer.layer_id || ''}" title="双击重命名">${escapeHtml(layer.filename || '未命名')}</span>
         </td>
         <td class="col-type"><span class="layer-type">${escapeHtml(layer.geometry_type || '未知')}</span></td>
         <td class="col-actions">
@@ -94,13 +94,16 @@ window.GIS = window.GIS || {};
 
   // 添加图层：加入列表 + 渲染
   function addLayer(layer) {
-    //随机取一个颜色
     const colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
-    // 保证不同的图层有不同的颜色
     const color = layer.color || colors[layerData.length % colors.length];
-    //记录图层的颜色数据
-    layerData.push({ ...layer, visible: true, color });
-    // 渲染列表
+    // 重名自动加 (1) (2)
+    var name = layer.filename || '未命名';
+    if (layerData.some(function(l) { return l.filename === name; })) {
+      var suffix = 1;
+      while (layerData.some(function(l) { return l.filename === name + '(' + suffix + ')'; })) { suffix++; }
+      name = name + '(' + suffix + ')';
+    }
+    layerData.push({ ...layer, filename: name, visible: true, color });
     renderList();
   }
 
@@ -322,6 +325,48 @@ window.GIS = window.GIS || {};
       if (action === 'analyze') analyzeLayer(id);
       if (action === 'inspect') showLayerInspector(id);
     });
+
+    // 双击图层名重命名
+    tbody.addEventListener('dblclick', function(e) {
+      var nameEl = e.target.closest('.layer-name');
+      if (!nameEl) return;
+      var id = nameEl.dataset.id;
+      if (!id) return;
+      var layer = layerData.find(function(l) { return l.layer_id === id; });
+      if (!layer) return;
+
+      var oldName = layer.filename || '未命名';
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.value = oldName;
+      input.className = 'layer-rename-input';
+      input.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid var(--ui-gray-400);border-radius:2px;padding:1px 4px;font-size:inherit;font-family:inherit;background:var(--ui-white);color:var(--ui-gray-900);';
+
+      nameEl.textContent = '';
+      nameEl.appendChild(input);
+      input.focus();
+      input.select();
+
+      function commit() {
+        var val = input.value.trim() || oldName;
+        // 检查重名
+        var exists = layerData.some(function(l) { return l !== layer && l.filename === val; });
+        if (exists) {
+          var suffix = 1;
+          while (layerData.some(function(l) { return l !== layer && l.filename === val + '(' + suffix + ')'; })) { suffix++; }
+          val = val + '(' + suffix + ')';
+        }
+        layer.filename = val;
+        nameEl.textContent = val;
+        nameEl.title = '双击重命名';
+      }
+
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', function(ke) {
+        if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
+        if (ke.key === 'Escape') { ke.preventDefault(); nameEl.textContent = oldName; }
+      });
+    });
   }
 
   function escapeHtml(str) {
@@ -440,6 +485,73 @@ window.GIS = window.GIS || {};
 
     if (title) title.textContent = layer.filename || '图层检查';
 
+    // 获取 features 列表用于属性数据表
+    var features = [];
+    if (geojson.type === 'FeatureCollection') features = geojson.features || [];
+    else if (geojson.type === 'Feature') features = [geojson];
+
+    // 构建可编辑属性数据表
+    var dataHtml = '';
+    if (features.length > 0 && attrKeys.length > 0) {
+      dataHtml += '<div class="attr-toolbar">' +
+        '<span class="inspector-section-title" style="margin-bottom:0;border:none;">属性数据 (' + features.length + ' 条)</span>' +
+        '<div class="attr-toolbar-btns">' +
+          '<button class="attr-btn" data-action="save-attrs" data-layer="' + layerId + '" title="保存修改">' +
+            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 5v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h7l2 2z"/><path d="M5 11h6"/><path d="M5 8h6"/><path d="M5 5h2"/></svg>' +
+            '保存' +
+          '</button>' +
+          '<button class="attr-btn" data-action="add-row" data-layer="' + layerId + '" title="添加行">' +
+            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>' +
+            '行' +
+          '</button>' +
+          '<button class="attr-btn" data-action="toggle-filter" data-layer="' + layerId + '" title="筛选">' +
+            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2h12l-5 6.5V14l-2-1V8.5L2 2z"/></svg>' +
+            '筛选' +
+          '</button>' +
+          '<button class="attr-btn" data-action="export-csv" data-layer="' + layerId + '" title="导出 CSV">' +
+            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1v10"/><path d="M4 7l4 4 4-4"/><path d="M2 13h12"/></svg>' +
+          '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="attr-fill-row">' +
+        '<span class="attr-fill-label">空值填充</span>' +
+        '<input class="attr-fill-input" id="attrFillValue" placeholder="输入默认值，保存时自动填入空单元格" />' +
+      '</div>' +
+      '<div class="attr-filter-bar" id="attrFilterBar" style="display:none;">' +
+        '<select class="attr-filter-field" id="attrFilterField">' +
+          attrKeys.map(function(k) { return '<option value="' + escapeHtml(k) + '">' + escapeHtml(k) + '</option>'; }).join('') +
+        '</select>' +
+        '<select class="attr-filter-op" id="attrFilterOp">' +
+          '<option value="eq">=</option><option value="neq">≠</option><option value="gt">&gt;</option>' +
+          '<option value="gte">≥</option><option value="lt">&lt;</option><option value="lte">≤</option>' +
+          '<option value="contains">包含</option>' +
+        '</select>' +
+        '<input class="attr-filter-val" id="attrFilterVal" placeholder="值" />' +
+        '<button class="attr-btn attr-btn-sm" id="attrFilterApply">筛选</button>' +
+        '<button class="attr-btn attr-btn-sm" id="attrFilterClear">清除</button>' +
+        '<button class="attr-btn attr-btn-primary attr-btn-sm" id="attrFilterExport">导出为新图层</button>' +
+        '<span class="attr-filter-count" id="attrFilterCount"></span>' +
+      '</div>' +
+      '<div class="inspector-data-wrap"><table class="inspector-data-table" id="attrDataTable"><thead><tr><th>#</th>';
+      attrKeys.forEach(function(k) { dataHtml += '<th>' + escapeHtml(k) + '</th>'; });
+      dataHtml += '<th style="width:32px;"></th></tr></thead><tbody>';
+      features.forEach(function(f, i) {
+        var props = f.properties || {};
+        dataHtml += '<tr data-idx="' + i + '">';
+        dataHtml += '<td class="data-idx">' + (i + 1) + '</td>';
+        attrKeys.forEach(function(k) {
+          var v = props[k];
+          var display = (v === null || v === undefined) ? '' : String(v);
+          dataHtml += '<td><input class="attr-cell" data-field="' + escapeHtml(k) + '" value="' + escapeHtml(display) + '" /></td>';
+        });
+        dataHtml += '<td><button class="attr-del-btn" data-idx="' + i + '" title="删除此行">×</button></td>';
+        dataHtml += '</tr>';
+      });
+      dataHtml += '</tbody></table></div>';
+    } else if (features.length > 0) {
+      dataHtml = '<div class="inspector-section"><div class="inspector-section-title">属性数据</div><span style="color:var(--ui-gray-300);font-size:var(--fs-12);">无属性字段</span></div>';
+    }
+
     body.innerHTML =
       '<div class="inspector-section">' +
         '<div class="inspector-row"><span class="inspector-label">要素数</span><span class="inspector-value">' + (remote.feature_count ?? local.featureCount) + '</span></div>' +
@@ -453,9 +565,293 @@ window.GIS = window.GIS || {};
       '<div class="inspector-section">' +
         '<div class="inspector-section-title">属性字段 (' + attrKeys.length + ')</div>' +
         attrHtml +
+      '</div>' +
+      '<div class="inspector-section" id="attrSection">' +
+        dataHtml +
       '</div>';
 
+    // 绑定属性表事件
+    var attrSection = document.getElementById('attrSection');
+    if (attrSection) {
+      // 保存
+      attrSection.querySelector('[data-action="save-attrs"]')?.addEventListener('click', function() {
+        saveAttrChanges(layerId, attrKeys);
+      });
+      // 添加行
+      attrSection.querySelector('[data-action="add-row"]')?.addEventListener('click', function() {
+        addAttrRow(layerId, attrKeys);
+      });
+      // 切换筛选栏
+      attrSection.querySelector('[data-action="toggle-filter"]')?.addEventListener('click', function() {
+        var bar = document.getElementById('attrFilterBar');
+        if (bar) bar.style.display = bar.style.display === 'none' ? 'flex' : 'none';
+      });
+      // CSV 导出
+      attrSection.querySelector('[data-action="export-csv"]')?.addEventListener('click', function() {
+        exportAttrCSV(layerId);
+      });
+      // 筛选按钮
+      document.getElementById('attrFilterApply')?.addEventListener('click', function() {
+        applyFilter(layerId);
+      });
+      document.getElementById('attrFilterClear')?.addEventListener('click', function() {
+        clearFilter(layerId);
+      });
+      document.getElementById('attrFilterExport')?.addEventListener('click', function() {
+        exportFilteredLayer(layerId);
+      });
+      // 删除行（事件委托）
+      attrSection.querySelector('.inspector-data-wrap')?.addEventListener('click', function(e) {
+        var btn = e.target.closest('.attr-del-btn');
+        if (btn) deleteAttrRow(layerId, parseInt(btn.dataset.idx, 10));
+      });
+    }
+
     panel.style.display = 'flex';
+  }
+
+  // ---- 属性表编辑函数 ----
+
+  function getLayerGeoJSON(layerId) {
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return null;
+    var gj = layer.geojson;
+    if (!gj && GIS.map && GIS.map.getGeoJSON) {
+      gj = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+    }
+    return gj;
+  }
+
+  /** 保存属性修改：读取 input → 检查空行 → 更新 GeoJSON → 刷新地图 */
+  function saveAttrChanges(layerId, attrKeys) {
+    var gj = getLayerGeoJSON(layerId);
+    if (!gj) return;
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+
+    var table = document.getElementById('attrDataTable');
+    if (!table) return;
+
+    var fillVal = (document.getElementById('attrFillValue')?.value || '').trim();
+
+    var rows = table.querySelectorAll('tbody tr');
+    var emptyRowNums = [];
+
+    rows.forEach(function(row) {
+      var idx = parseInt(row.dataset.idx, 10);
+      if (isNaN(idx) || idx >= features.length) return;
+      var inputs = row.querySelectorAll('.attr-cell');
+      var allEmpty = true;
+      inputs.forEach(function(inp) {
+        var field = inp.dataset.field;
+        var val = inp.value;
+        if (fillVal && val === '') val = fillVal;
+        features[idx].properties[field] = val;
+        if (val !== '') allEmpty = false;
+      });
+      if (allEmpty) emptyRowNums.push(idx + 1);
+    });
+
+    // 弹窗警告空行
+    if (emptyRowNums.length > 0) {
+      showConfirm('空行警告',
+        '第 ' + emptyRowNums.join(', ') + ' 行为完全空行（无任何数据），建议删除或填写数据。是否继续保存？',
+        function() { doSave(); }
+      );
+    } else {
+      doSave();
+    }
+
+    function doSave() {
+      var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+      if (layer && GIS.map && GIS.map.loadGeoJSON) {
+        GIS.map.loadGeoJSON(gj, layer.filename || layer.layer_id, { color: layer.color });
+      }
+      showLayerInspector(layerId);
+    }
+  }
+
+  /** 添加空行 */
+  function addAttrRow(layerId, attrKeys) {
+    var gj = getLayerGeoJSON(layerId);
+    if (!gj) return;
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+
+    var fillVal = (document.getElementById('attrFillValue')?.value || '').trim();
+    var props = {};
+    attrKeys.forEach(function(k) { props[k] = fillVal; });
+
+    var newFeat = { type: 'Feature', geometry: null, properties: props };
+    features.push(newFeat);
+
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (layer && GIS.map && GIS.map.loadGeoJSON) {
+      GIS.map.loadGeoJSON(gj, layer.filename || layer.layer_id, { color: layer.color });
+    }
+    showLayerInspector(layerId);
+  }
+
+  /** 删除行 */
+  function deleteAttrRow(layerId, idx) {
+    var gj = getLayerGeoJSON(layerId);
+    if (!gj) return;
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+
+    if (idx < 0 || idx >= features.length) return;
+    features.splice(idx, 1);
+
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (layer && GIS.map && GIS.map.loadGeoJSON) {
+      GIS.map.loadGeoJSON(gj, layer.filename || layer.layer_id, { color: layer.color });
+    }
+    showLayerInspector(layerId);
+  }
+
+  // ---- 筛选函数 ----
+
+  var _filteredIndices = null;
+
+  function applyFilter(layerId) {
+    var gj = getLayerGeoJSON(layerId);
+    if (!gj) return;
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+
+    var field = document.getElementById('attrFilterField')?.value;
+    var op = document.getElementById('attrFilterOp')?.value;
+    var val = document.getElementById('attrFilterVal')?.value?.trim();
+    if (!field || !op || val === undefined) return;
+
+    var matched = [];
+    features.forEach(function(f, i) {
+      var pv = String(f.properties ? f.properties[field] ?? '' : '');
+      var match = false;
+      switch (op) {
+        case 'eq': match = pv === val; break;
+        case 'neq': match = pv !== val; break;
+        case 'gt': match = Number(pv) > Number(val); break;
+        case 'gte': match = Number(pv) >= Number(val); break;
+        case 'lt': match = Number(pv) < Number(val); break;
+        case 'lte': match = Number(pv) <= Number(val); break;
+        case 'contains': match = pv.includes(val); break;
+      }
+      if (match) matched.push(i);
+    });
+
+    _filteredIndices = matched;
+
+    // 高亮表格行
+    var table = document.getElementById('attrDataTable');
+    if (table) {
+      table.querySelectorAll('tbody tr').forEach(function(row) {
+        var idx = parseInt(row.dataset.idx, 10);
+        row.style.display = matched.includes(idx) ? '' : 'none';
+      });
+    }
+
+    var countEl = document.getElementById('attrFilterCount');
+    if (countEl) countEl.textContent = '匹配 ' + matched.length + ' / ' + features.length;
+  }
+
+  function clearFilter() {
+    _filteredIndices = null;
+    var table = document.getElementById('attrDataTable');
+    if (table) {
+      table.querySelectorAll('tbody tr').forEach(function(row) {
+        row.style.display = '';
+      });
+    }
+    var countEl = document.getElementById('attrFilterCount');
+    if (countEl) countEl.textContent = '';
+  }
+
+  /** 筛选结果导出为新图层 */
+  function exportFilteredLayer(layerId) {
+    if (!_filteredIndices || _filteredIndices.length === 0) {
+      if (window.GIS.chat) window.GIS.chat.addMessage('请先设置筛选条件', 'system');
+      return;
+    }
+    var gj = getLayerGeoJSON(layerId);
+    if (!gj) return;
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    var name = (layer ? layer.filename || layer.layer_id : '图层') + '_筛选结果';
+
+    var newFeatures = _filteredIndices.map(function(i) { return features[i]; });
+    var newGJ = { type: 'FeatureCollection', features: newFeatures };
+
+    var color = layer ? layer.color : '#1c1b1b';
+    var newLayerId = 'filter_' + Date.now();
+
+    if (GIS.map && GIS.map.loadGeoJSON) {
+      GIS.map.loadGeoJSON(newGJ, name, { color: color });
+    }
+    if (GIS.layers && GIS.layers.addLayer) {
+      GIS.layers.addLayer({
+        layer_id: newLayerId,
+        filename: name,
+        geometry_type: (newFeatures[0] && newFeatures[0].geometry && newFeatures[0].geometry.type) || '未知',
+        crs: 'WGS-84',
+        geojson: newGJ,
+        visible: true,
+        color: color,
+        source: 'filter',
+      });
+    }
+    if (window.GIS.chat) {
+      window.GIS.chat.addMessage('已从筛选结果创建新图层「' + name + '」（' + newFeatures.length + ' 个要素）', 'system');
+    }
+    clearFilter();
+    closeInspector();
+  }
+
+  /** 导出属性表为 CSV */
+  function exportAttrCSV(layerId) {
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+    var gj = layer.geojson;
+    if (!gj && GIS.map && GIS.map.getGeoJSON) {
+      gj = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+    }
+    if (!gj) return;
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+    if (!features.length) return;
+
+    var keys = Object.keys(features[0].properties || {});
+    if (!keys.length) return;
+
+    var csv = keys.join(',') + '\n';
+    features.forEach(function(f) {
+      csv += keys.map(function(k) {
+        var v = f.properties ? f.properties[k] : null;
+        var s = (v === null || v === undefined) ? '' : String(v);
+        return (s.includes(',') || s.includes('"') || s.includes('\n'))
+          ? '"' + s.replace(/"/g, '""') + '"'
+          : s;
+      }).join(',') + '\n';
+    });
+
+    var bom = '\ufeff';
+    var blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = (layer.filename || '图层') + '_属性表.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   /** 关闭图层检查器 */
@@ -464,9 +860,51 @@ window.GIS = window.GIS || {};
     if (panel) panel.style.display = 'none';
   }
 
+  // ---- 通用确认弹窗 ----
+
+  function showConfirm(title, message, onConfirm) {
+    var overlay = document.getElementById('confirmOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'confirmOverlay';
+      overlay.className = 'confirm-overlay';
+      overlay.innerHTML =
+        '<div class="confirm-dialog">' +
+          '<div class="confirm-title" id="confirmTitle"></div>' +
+          '<div class="confirm-msg" id="confirmMsg"></div>' +
+          '<div class="confirm-actions">' +
+            '<button class="confirm-btn confirm-cancel" id="confirmCancel">取消</button>' +
+            '<button class="confirm-btn confirm-ok" id="confirmOk">确认</button>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(overlay);
+
+      overlay.addEventListener('click', function(e) {
+        if (e.target === overlay) closeConfirm();
+      });
+      document.getElementById('confirmCancel').addEventListener('click', closeConfirm);
+    }
+
+    document.getElementById('confirmTitle').textContent = title;
+    document.getElementById('confirmMsg').textContent = message;
+    overlay.style.display = 'flex';
+
+    var okBtn = document.getElementById('confirmOk');
+    var newBtn = okBtn.cloneNode(true);
+    okBtn.parentNode.replaceChild(newBtn, okBtn);
+    newBtn.addEventListener('click', function() {
+      closeConfirm();
+      if (typeof onConfirm === 'function') onConfirm();
+    });
+
+    function closeConfirm() {
+      overlay.style.display = 'none';
+    }
+  }
+
   GIS.layers = {
     init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer,
-    analyzeLayer, showLayerInspector, closeInspector,
+    analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
     getLayers: () => [...layerData],
   };
 })();

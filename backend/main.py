@@ -5,7 +5,8 @@ from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
 import subprocess, datetime, time, os, asyncio, functools
-from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, generated_geojson, pending_aoi_suggestions, pending_layers, pending_images, pending_heatmap, _register_layer, registered_layers, _TEMP_OUTPUT_DIR
+from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, _TEMP_OUTPUT_DIR
+from backend.services.tools import _register_layer
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
 from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
 from backend.services.gaode_aoi_service import search_suggestions as gaode_search_suggestions
@@ -64,50 +65,55 @@ class BaiduExtractRequest(BaseModel):
     name: str = "未命名"                  # 地点名称
 
 # ===== 聊天接口 =====
-# 前端发消息到这里，后端调 DeepSeek API 获取 AI 回复
+# 前端发消息到这里，用 LangGraph Agent 处理
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
     loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(None, functools.partial(
+    result = await loop.run_in_executor(None, functools.partial(
         chat_with_ai, request.message, request.session_id, request.api_key, request.provider, request.force_skills, request.amap_key
     ))
-    result = {"response": response}
-    # 如果有最新生成的 GeoJSON，一起返回给前端
-    geo_data = generated_geojson.get('latest')
-    if geo_data and geo_data.get('sent') != True:
-        result["geojson"] = geo_data["geojson"]
-        result["layerName"] = geo_data["name"]
-        geo_data['sent'] = True  # 标记已发送，不再重复发
+    # result 已包含 layers / images / heatmap / clear_layers / pending_suggestions
+    # 从 chat_with_ai 直接返回给前端，不需要再读全局变量
+    response_text = result.get("response", "")
 
-    # 返回所有待发送的图层（支持 AI 一次生成多个独立图层）
-    if pending_layers:
-        result["layers"] = list(pending_layers)
-        pending_layers.clear()
-    # 如果有待处理的百度 AOI 候选列表，传给前端弹出选择窗口
-    suggest_data = pending_aoi_suggestions.get('latest')
-    if suggest_data and suggest_data.get('sent') != True:
-        result["pending_suggestions"] = suggest_data["suggestions"]
-        suggest_data['sent'] = True  # 标记已发送
-    # 如果 AI 调用了 clear_layers，通知前端清空地图
-    import backend.services.ai_service as _ai_svc
-    if _ai_svc.clear_layers_flag:
-        result["clear_layers"] = True
-        _ai_svc.clear_layers_flag = False
-    # 如果有 AI 生成的图表图片，一起返回
-    if pending_images:
-        print(f"[GIS Debug] 返回 {len(pending_images)} 个图片/文件: {pending_images}", flush=True)
-        result["images"] = list(pending_images)
-        pending_images.clear()
-    # 如果有热力图数据，传给前端
-    if pending_heatmap.get('latest'):
-        h_data = pending_heatmap['latest']
-        result["heatmap"] = {
-            "points": h_data["points"],
-            "name": h_data.get("name", "热力图"),
-            "options": h_data.get("options", {}),
+    # 组装前端响应（保持与原格式兼容）
+    output = {"response": response_text}
+
+    # 如果有图层
+    layers = result.get("layers", [])
+    if layers:
+        output["layers"] = layers
+        # 兼容旧格式：第一个图层作为 geojson + layerName
+        if layers and len(layers) > 0:
+            output["geojson"] = layers[0].get("geojson")
+            output["layerName"] = layers[0].get("name", "")
+
+    # 如果有待处理的 AOI 候选列表
+    suggest_data = result.get("pending_suggestions")
+    if suggest_data and suggest_data.get("sent") != True:
+        output["pending_suggestions"] = suggest_data["suggestions"]
+        suggest_data["sent"] = True
+
+    # 如果 AI 调用了 clear_layers
+    if result.get("clear_layers"):
+        output["clear_layers"] = True
+
+    # 如果有图表图片
+    images = result.get("images", [])
+    if images:
+        print(f"[GIS Debug] 返回 {len(images)} 个图片/文件: {images}", flush=True)
+        output["images"] = images
+
+    # 如果有热力图数据
+    heatmap = result.get("heatmap")
+    if heatmap:
+        output["heatmap"] = {
+            "points": heatmap["points"],
+            "name": heatmap.get("name", "热力图"),
+            "options": heatmap.get("options", {}),
         }
-        pending_heatmap['latest'] = None
-    return result
+
+    return output
 
 @app.post("/api/cancel")
 async def cancel_request():
@@ -201,9 +207,6 @@ async def baidu_extract(request: BaiduExtractRequest):
     try:
         geojson = baidu_extract_boundary(request.uid, request.name)
         if geojson:
-            # 也存到 generated_geojson 供前端加载
-            from backend.services.ai_service import generated_geojson
-            generated_geojson['latest'] = {'geojson': geojson, 'name': request.name}
             return BaiduExtractResponse(
                 geojson=geojson,
                 name=request.name,
@@ -265,8 +268,6 @@ async def gaode_extract(request: GaodeExtractRequest):
     try:
         geojson = gaode_extract_boundary(request.id, request.name)
         if geojson:
-            from backend.services.ai_service import generated_geojson
-            generated_geojson['latest'] = {'geojson': geojson, 'name': request.name}
             return GaodeExtractResponse(
                 geojson=geojson,
                 name=request.name,

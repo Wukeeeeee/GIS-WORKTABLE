@@ -4,6 +4,76 @@
 
 ---
 
+## 2026-07-14：可编辑属性表 + 筛选导出 + 图层重命名 + 上传修复
+
+### 改动清单
+
+#### 后端 — tools.py
+- **修复中文乱码**：`execute_python` 子进程添加 `env['PYTHONIOENCODING'] = 'utf-8'`，解决 Windows GBK 编码下中文变 `��` 的问题
+
+#### 后端 — ai_service.py / graph.py
+- **GLM 模型名更新**：`glm-4-flash` → `glm-4.7-flash`（4 处），对齐最新 API
+
+#### 前端 — layers.js
+- **可编辑属性表**：图层检查器中的属性数据改为可编辑 `<input>`，支持直接修改单元格值
+- **保存按钮**：读取所有 input 值 → 更新 GeoJSON → 刷新地图图层
+- **添加行**：点击"+行"按钮添加新要素（空几何），默认值优先用"空值填充"输入框
+- **删除行**：每行末尾 × 按钮删除
+- **空行警告**：保存时检测完全空行，弹窗提示行号，确认后才保存
+- **空值填充**：表格上方新增输入框，保存时自动填充空白单元格，新增行也使用此默认值
+- **筛选导出**：筛选栏（字段+运算符+值），匹配行高亮，不匹配行隐藏 → "导出为新图层"一键创建筛选结果图层
+- **CSV 导出**：保留原有 CSV 导出功能
+- **图层重命名**：双击图层名 → 内联编辑 → Enter/blur 确认，ESC 取消，自动去重重名加 (1)(2)
+- **重名自动去重**：`addLayer()` 检测重名自动追加 (1)(2) 后缀
+
+#### 前端 — upload.js
+- **上传按钮修复**：`querySelectorAll('[id="..."]')` → `getElementById` 直接绑定
+- **上传状态气泡**：改为在 AI 对话区居中显示对话框样式气泡（无头像）
+  - 导入中：弹跳 SVG + "导入中: 文件名" + **取消导入按钮**
+  - 成功：绿色勾 + "上传成功"，3 秒自动消失
+  - 失败：红色叉 + "上传失败"，5 秒自动消失
+- **取消导入**：`AbortController` 中断 fetch，点击取消按钮后消息变为"导入已取消"
+
+#### 前端 — api.js
+- `upload()` 新增 `signal` 参数，支持 AbortController 取消
+
+#### 前端 — index.html
+- 移除上传按钮旁的 `upload-indicator` 元素（改用对话区气泡）
+
+#### 前端 — style.css
+- 新增 `.attr-toolbar`、`.attr-btn`、`.attr-cell`、`.attr-del-btn`、`.attr-filter-bar`、`.attr-fill-row` 等属性表相关样式
+- 新增 `.confirm-overlay`、`.confirm-dialog` 弹窗样式
+- 新增 `@keyframes upload-bounce` 导入动画
+- 新增 `.upload-cancel-btn` 深色主题适配
+- 移除旧的上传 toast 样式
+
+#### README.md
+- 更新时间戳、新增更新日志
+
+---
+
+## 2026-07-13（续11）：图层检查器 + 任务管理系统 + 右键十字准星优化 + /amap 命令
+
+### 改动清单
+
+#### 前端 — layers.js
+- **图层检查器**：新增 ⓘ 检查按钮，`_fastInspect()` 快速统计 GeoJSON 要素数/字段/坐标范围，`showLayerInspector()` 弹窗展示图层详情，`closeInspector()` 关闭。
+
+#### 前端 — map.js
+- **右键十字准星优化**：点击右键菜单发送后十字准星保留在地图上不消失，`position:fixed` 直接固定在视口坐标，缩放/拖拽不偏移。
+
+#### 前端 — task.js
+- **任务管理系统**：AI 分析任务的 CRUD，5 种状态（pending/planning/executing/success/failed），localStorage 持久化（key: `gis_task_history`，最大 50 条），任务卡片 UI 渲染与折叠代码块。
+
+#### 前端 — chat.js
+- **新增 `/amap` 命令**：在斜杠命令面板中新增「高德POI搜索」，带地图 pin SVG 图标，映射到 `amap` 技能标签，发送气泡底部保留 `/amap` chip。
+
+#### 技能文档
+- **skills/amap.md**：高德地图 Web API 完整文档（POI 搜索/天气/地理编码/坐标转换 GCJ-02→WGS-84）。
+- **skills/heatmap.md**：补充从城市名生成热力图的工作流（datav_boundary → search_web → execute_python 采样 → create_heatmap）。
+
+---
+
 ## 2026-07-13（续10）：接入高德地图 Web API
 
 ### 改动清单

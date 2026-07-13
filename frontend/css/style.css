@@ -2014,10 +2014,10 @@ html, body {
 /* ===== 三栏侧边栏设置弹窗 ===== */
 .modal-sidebar {
   display: flex;
-  width: 580px;
-  max-width: 92vw;
-  height: 420px;
-  max-height: 80vh;
+  width: 720px;
+  max-width: 94vw;
+  height: 520px;
+  max-height: 85vh;
   padding: 0;
   overflow: hidden;
   border-radius: 6px;
@@ -2457,6 +2457,308 @@ html.theme-dark {
   font-family: var(--font-mono);
 }
 
+/* ---- 可编辑属性表 ---- */
+.attr-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.attr-toolbar-btns {
+  display: flex;
+  gap: 3px;
+}
+.attr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  padding: 3px 7px;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 3px;
+  background: none;
+  cursor: pointer;
+  color: var(--ui-gray-600);
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+.attr-btn svg {
+  flex-shrink: 0;
+}
+.attr-btn:hover {
+  background: var(--ui-gray-100);
+  border-color: var(--ui-gray-400);
+  color: var(--ui-gray-900);
+}
+.attr-btn-primary {
+  background: var(--ui-gray-900);
+  color: var(--ui-white);
+  border-color: var(--ui-gray-900);
+}
+.attr-btn-primary:hover {
+  background: var(--ui-gray-700);
+  border-color: var(--ui-gray-700);
+  color: var(--ui-white);
+}
+.attr-btn-sm {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+.attr-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  margin-bottom: 4px;
+  background: var(--ui-gray-50);
+  border-radius: 4px;
+  font-size: var(--fs-11);
+}
+.attr-filter-field,
+.attr-filter-op {
+  font-size: var(--fs-11);
+  padding: 1px 4px;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 3px;
+  background: var(--ui-white);
+  color: var(--ui-gray-900);
+}
+.attr-filter-val {
+  font-size: var(--fs-11);
+  padding: 1px 6px;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 3px;
+  background: var(--ui-white);
+  color: var(--ui-gray-900);
+  width: 80px;
+}
+.attr-filter-count {
+  font-size: var(--fs-10);
+  color: var(--ui-gray-400);
+  margin-left: auto;
+}
+.attr-cell {
+  width: 100%;
+  min-width: 40px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11);
+  background: transparent;
+  color: var(--ui-gray-900);
+  transition: border-color 0.12s, background 0.12s;
+}
+.attr-cell:hover {
+  border-color: var(--ui-gray-200);
+  background: var(--ui-white);
+}
+.attr-cell:focus {
+  border-color: var(--ui-gray-900);
+  background: var(--ui-white);
+  outline: none;
+}
+.attr-del-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ui-gray-300);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  transition: color 0.12s;
+}
+.attr-del-btn:hover {
+  color: #e53935;
+}
+/* ---- 确认弹窗 ---- */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(0,0,0,0.35);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  animation: modal-fade-in 0.12s ease;
+}
+.confirm-dialog {
+  background: var(--ui-white);
+  border-radius: 8px;
+  padding: 24px;
+  min-width: 280px;
+  max-width: 400px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  animation: modal-slide-in 0.12s ease;
+}
+.confirm-title {
+  font-size: var(--fs-14);
+  font-weight: 700;
+  color: var(--ui-gray-900);
+  margin-bottom: 8px;
+}
+.confirm-msg {
+  font-size: var(--fs-12);
+  color: var(--ui-gray-600);
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.confirm-btn {
+  font-size: var(--fs-12);
+  padding: 6px 16px;
+  border-radius: 4px;
+  border: 1px solid var(--ui-gray-200);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.confirm-cancel {
+  background: none;
+  color: var(--ui-gray-600);
+}
+.confirm-cancel:hover {
+  background: var(--ui-gray-100);
+}
+.confirm-ok {
+  background: var(--ui-gray-900);
+  color: var(--ui-white);
+  border-color: var(--ui-gray-900);
+}
+.confirm-ok:hover {
+  background: #333;
+}
+html.theme-dark .confirm-dialog {
+  background: var(--surface-container-lowest);
+}
+html.theme-dark .confirm-title {
+  color: var(--on-surface);
+}
+html.theme-dark .confirm-msg {
+  color: var(--on-surface-variant);
+}
+html.theme-dark .confirm-cancel {
+  color: var(--on-surface-variant);
+  border-color: var(--ui-gray-600);
+}
+html.theme-dark .confirm-cancel:hover {
+  background: var(--surface-container-low);
+}
+html.theme-dark .confirm-ok {
+  background: var(--on-surface);
+  color: var(--surface-container-lowest);
+  border-color: var(--on-surface);
+}
+
+/* ---- 空值填充行 ---- */
+.attr-fill-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0 6px;
+}
+.attr-fill-label {
+  font-size: var(--fs-11);
+  color: var(--ui-gray-400);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.attr-fill-input {
+  flex: 1;
+  font-size: var(--fs-11);
+  padding: 2px 8px;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 3px;
+  background: var(--ui-white);
+  color: var(--ui-gray-900);
+  min-width: 0;
+}
+.attr-fill-input::placeholder {
+  color: var(--ui-gray-300);
+}
+.attr-fill-input:focus {
+  border-color: var(--ui-gray-900);
+  outline: none;
+}
+html.theme-dark .attr-fill-input {
+  background: var(--surface-container-lowest);
+  border-color: var(--ui-gray-700);
+  color: var(--on-surface);
+}
+html.theme-dark .attr-fill-input::placeholder {
+  color: var(--on-surface-variant);
+}
+html.theme-dark .attr-fill-input:focus {
+  border-color: var(--on-surface);
+}
+
+.upload-cancel-btn:hover {
+  background: var(--ui-gray-100) !important;
+  border-color: var(--ui-gray-500) !important;
+  color: var(--ui-gray-900) !important;
+}
+html.theme-dark .upload-cancel-btn {
+  border-color: var(--ui-gray-600) !important;
+  color: var(--on-surface-variant) !important;
+}
+html.theme-dark .upload-cancel-btn:hover {
+  background: var(--surface-container-low) !important;
+  border-color: var(--on-surface-variant) !important;
+  color: var(--on-surface) !important;
+}
+
+/* ---- 上传导入动画 ---- */
+@keyframes upload-bounce {
+  from { transform: translateY(-4px); }
+  to { transform: translateY(4px); }
+}
+
+.inspector-data-wrap {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--ui-gray-100);
+  border-radius: 4px;
+}
+.inspector-data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-11);
+  font-family: var(--font-mono);
+}
+.inspector-data-table th,
+.inspector-data-table td {
+  padding: 2px 6px;
+  text-align: left;
+  border-bottom: 1px solid var(--ui-gray-100);
+  white-space: nowrap;
+}
+.inspector-data-table th {
+  font-weight: 600;
+  color: var(--ui-gray-400);
+  font-size: var(--fs-10);
+  text-transform: uppercase;
+  font-family: var(--font-ui);
+  background: var(--ui-gray-50);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.inspector-data-table td.data-idx {
+  color: var(--ui-gray-300);
+  text-align: center;
+  width: 28px;
+}
+.inspector-data-table tbody tr:hover {
+  background: var(--ui-gray-50);
+}
+.data-null {
+  color: var(--ui-gray-300);
+}
+
 html.theme-dark .inspector-panel {
   background: var(--surface-container-lowest);
 }
@@ -2468,6 +2770,73 @@ html.theme-dark .inspector-value {
 }
 html.theme-dark .inspector-attr-table td {
   color: var(--on-surface);
+}
+html.theme-dark .attr-btn {
+  border-color: var(--ui-gray-600);
+  color: var(--on-surface-variant);
+}
+html.theme-dark .attr-btn:hover {
+  background: var(--surface-container-low);
+  border-color: var(--on-surface-variant);
+  color: var(--on-surface);
+}
+html.theme-dark .attr-btn-primary {
+  background: var(--on-surface);
+  color: var(--surface-container-lowest);
+  border-color: var(--on-surface);
+}
+html.theme-dark .attr-btn-primary:hover {
+  background: var(--on-surface-variant);
+  border-color: var(--on-surface-variant);
+  color: var(--surface-container-lowest);
+}
+html.theme-dark .attr-filter-bar {
+  background: var(--surface-container-low);
+}
+html.theme-dark .attr-filter-field,
+html.theme-dark .attr-filter-op,
+html.theme-dark .attr-filter-val {
+  background: var(--surface-container-lowest);
+  border-color: var(--ui-gray-700);
+  color: var(--on-surface);
+}
+html.theme-dark .attr-cell {
+  color: var(--on-surface);
+}
+html.theme-dark .attr-cell:hover {
+  border-color: var(--ui-gray-600);
+  background: var(--surface-container-low);
+}
+html.theme-dark .attr-cell:focus {
+  border-color: var(--on-surface);
+  background: var(--surface-container-lowest);
+}
+html.theme-dark .attr-del-btn {
+  color: var(--on-surface-variant);
+}
+html.theme-dark .attr-del-btn:hover {
+  color: #ef5350;
+}
+html.theme-dark .inspector-data-wrap {
+  border-color: var(--ui-gray-700);
+}
+html.theme-dark .inspector-data-table th {
+  background: var(--surface-container-low);
+  color: var(--on-surface-variant);
+}
+html.theme-dark .inspector-data-table th,
+html.theme-dark .inspector-data-table td {
+  border-color: var(--ui-gray-700);
+  color: var(--on-surface);
+}
+html.theme-dark .inspector-data-table tbody tr:hover {
+  background: var(--surface-container-low);
+}
+html.theme-dark .inspector-data-table td.data-idx {
+  color: var(--on-surface-variant);
+}
+html.theme-dark .data-null {
+  color: var(--on-surface-variant);
 }
 
 /* 历史记录面板中的任务卡片 */

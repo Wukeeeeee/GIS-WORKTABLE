@@ -95,6 +95,15 @@ window.GIS = window.GIS || {};
     mapInstance.on('mousemove', onMouseMove);
     mapInstance.on('zoomend', onZoomEnd);
 
+    // 拖拽地图时自动隐藏十字准星（坐标不再对应）
+    mapInstance.on('dragstart', function() {
+      _hideCrosshair();
+    });
+    // 缩放时也隐藏
+    mapInstance.on('zoomstart', function() {
+      _hideCrosshair();
+    });
+
     // 初始化右键菜单
     setTimeout(initContextMenu, 200);
 
@@ -421,35 +430,41 @@ window.GIS = window.GIS || {};
     _hideCrosshair();
   }
 
-  // ---- 十字准星：使用 position:fixed 固定在点击的屏幕位置，不跟踪地图移动 ----
+  // ---- 十字准星：用 position:fixed 固定在点击的屏幕位置 ----
+  // 注意：拖拽地图时准星不会跟踪地理坐标，所以拖拽开始时自动隐藏
   var _crosshairOverlay = null;
 
   function _showCrosshair(x, y, latlng) {
     _hideCrosshair();
     var lat = latlng.lat, lng = latlng.lng;
 
+    // 获取地图容器边界，把辅助线限制在地图区域内
+    var mapEl = document.getElementById('map');
+    var mapRect = mapEl ? mapEl.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    var mLeft = mapRect.left, mTop = mapRect.top;
+    var mRight = mLeft + mapRect.width, mBottom = mTop + mapRect.height;
+
     var container = document.createElement('div');
     container.id = 'crosshair-overlay';
-    container.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:9999;';
+    container.style.cssText = 'position:fixed;left:' + mLeft + 'px;top:' + mTop + 'px;width:' + mapRect.width + 'px;height:' + mapRect.height + 'px;pointer-events:none;z-index:9999;overflow:hidden;';
 
-    // 竖线
+    // 竖线（只在地图区域内）
     var vLine = document.createElement('div');
-    vLine.style.cssText = 'position:fixed;left:' + x + 'px;top:0;width:1px;height:100%;background:#666;opacity:0.5;pointer-events:none;';
-    // 横线
+    vLine.style.cssText = 'position:absolute;left:' + (x - mLeft) + 'px;top:0;width:1px;height:100%;background:#666;opacity:0.5;pointer-events:none;';
+    // 横线（只在地图区域内）
     var hLine = document.createElement('div');
-    hLine.style.cssText = 'position:fixed;left:0;top:' + y + 'px;width:100%;height:1px;background:#666;opacity:0.5;pointer-events:none;';
+    hLine.style.cssText = 'position:absolute;left:0;top:' + (y - mTop) + 'px;width:100%;height:1px;background:#666;opacity:0.5;pointer-events:none;';
     // 中心圆点
     var dot = document.createElement('div');
-    dot.style.cssText = 'position:fixed;left:' + (x - 5) + 'px;top:' + (y - 5) + 'px;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #333;box-sizing:border-box;pointer-events:none;';
+    dot.style.cssText = 'position:absolute;left:' + (x - mLeft - 5) + 'px;top:' + (y - mTop - 5) + 'px;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #333;box-sizing:border-box;pointer-events:none;';
     // 坐标标签
     var label = document.createElement('div');
     label.textContent = lat.toFixed(5) + ', ' + lng.toFixed(5);
-    var labelStyle = 'position:fixed;font-size:11px;font-family:monospace;padding:2px 6px;border-radius:3px;white-space:nowrap;line-height:1.5;color:#fff;background:rgba(0,0,0,0.75);pointer-events:none;';
-    if (y - 22 > 0) {
-      label.style.cssText = labelStyle + 'left:' + (x + 10) + 'px;top:' + (y - 22) + 'px;';
-    } else {
-      label.style.cssText = labelStyle + 'left:' + (x + 10) + 'px;top:' + (y + 10) + 'px;';
-    }
+    var labelStyle = 'position:absolute;font-size:11px;font-family:monospace;padding:2px 6px;border-radius:3px;white-space:nowrap;line-height:1.5;color:#fff;background:rgba(0,0,0,0.75);pointer-events:none;';
+    var lx = x - mLeft + 10, ly = y - mTop - 22;
+    if (ly < 0) ly = y - mTop + 10;
+    if (lx + 120 > mapRect.width) lx = x - mLeft - 130;
+    label.style.cssText = labelStyle + 'left:' + lx + 'px;top:' + ly + 'px;';
 
     container.appendChild(vLine);
     container.appendChild(hLine);

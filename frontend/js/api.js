@@ -104,15 +104,15 @@ window.GIS.api = (() => {
   }
 
   // ===== 文件上传 =====
-  /** @param {File} file @param {function} [onProgress] */
-  async function upload(file, onProgress) {
-    //上传文件使用 FormData 发送 POST 请求到 /api/upload
+  /** @param {File} file @param {AbortSignal} [signal] */
+  async function upload(file, signal) {
     const formData = new FormData();
     formData.append('file', file);
 
     const res = await fetch(`${BASE_URL}/api/upload`, {
       method: 'POST',
       body: formData,
+      signal: signal || null,
     });
     
     if (!res.ok) throw new Error(`Upload API error: ${res.status}`);
