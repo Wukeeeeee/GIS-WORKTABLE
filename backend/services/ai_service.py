@@ -1628,7 +1628,6 @@ def scrape_page(url: str, selector: str = "body") -> str:
         if page.status != 200:
             return f"错误：HTTP {page.status}"
 
-        # 使用 CSS 选择器提取指定内容
         elements = page.css(selector)
         if not elements:
             return f"未找到匹配「{selector}」的内容"

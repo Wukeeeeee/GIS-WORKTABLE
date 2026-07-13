@@ -80,6 +80,14 @@
   --transition-normal: 250ms ease;
 }
 
+/* ══════════════════════════════════════════
+   变量迁移说明
+   当前有两套变量系统共存：
+   - --ui-* 系列：旧版，逐步迁移中
+   - --surface-*/--primary-* 等：Material Design 3 主题变量
+   新代码优先使用 MD3 变量。
+   ══════════════════════════════════════════ */
+
 /* ========== Reset & Base ========== */
 *, *::before, *::after {
   margin: 0;
@@ -118,7 +126,7 @@ html, body {
   height: 48px;
   padding: 0 var(--margin-md);
   background: var(--surface-container);
-  border-bottom: 1px solid var(--ui-gray-200);
+  border-bottom: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   flex-shrink: 0;
   z-index: 50;
 }
@@ -136,8 +144,8 @@ html, body {
 .top-nav-brand-icon {
   width: 28px;
   height: 28px;
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -152,7 +160,7 @@ html, body {
 .top-nav-status {
   margin-left: 12px;
   font-size: 12px;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   font-weight: 400;
 }
 
@@ -163,14 +171,14 @@ html, body {
   display: flex;
   flex-direction: column;
   background: var(--surface-container-low);
-  border-right: 1px solid var(--ui-gray-200);
+  border-right: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   height: 100%;
   flex-shrink: 0;
 }
 
 .chat-header {
   padding: var(--margin-md);
-  border-bottom: 1px solid var(--ui-gray-200);
+  border-bottom: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -180,8 +188,8 @@ html, body {
 .chat-header-avatar {
   width: 40px;
   height: 40px;
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -203,7 +211,7 @@ html, body {
 
 .chat-header-subtitle {
   font-size: 12px;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   line-height: 1.3;
 }
 
@@ -222,7 +230,7 @@ html, body {
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
   font-size: 13px;
   text-align: center;
   padding: 20px;
@@ -257,13 +265,13 @@ html, body {
 }
 
 .message-avatar-ai {
-  background: var(--ui-gray-200);
-  color: var(--ui-gray-900);
+  background: var(--ui-gray-200) /* -> --outline-variant */;
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .message-avatar-user {
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
 }
 
 .message-bubble {
@@ -276,7 +284,7 @@ html, body {
 
 .message-bubble-ai {
   background: var(--surface-container-low);
-  border: 1px solid var(--ui-gray-200);
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 0 4px 4px 4px;
   position: relative;
 }
@@ -292,8 +300,8 @@ html, body {
 }
 
 .message-bubble-user {
-  background: var(--ui-white);
-  border: 1px solid var(--ui-gray-200);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 4px 0 4px 4px;
   box-shadow: var(--shadow-sm);
 }
@@ -305,21 +313,21 @@ html, body {
   top: 10px;
   border-width: 6px 0 6px 6px;
   border-style: solid;
-  border-color: transparent transparent transparent var(--ui-white);
+  border-color: transparent transparent transparent var(--ui-white) /* -> --surface-container-lowest */;
 }
 
 .message-bubble code {
   font-family: var(--font-mono);
   font-size: 11px;
-  background: var(--ui-gray-100);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
   padding: 1px 4px;
   border-radius: 2px;
 }
 
 .message-code-block {
   margin-top: 8px;
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
   padding: 10px 12px;
   border-radius: 2px;
   font-family: var(--font-mono);
@@ -337,8 +345,8 @@ html, body {
   left: 8px;
   right: 8px;
   max-height: 280px;
-  background: var(--ui-white);
-  border: 1px solid var(--ui-gray-200);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 6px;
   box-shadow: 0 -4px 20px rgba(0,0,0,0.12);
   display: flex;
@@ -358,16 +366,16 @@ html, body {
   padding: 8px 12px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   background: var(--surface-container-low);
-  border-bottom: 1px solid var(--ui-gray-200);
+  border-bottom: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   flex-shrink: 0;
 }
 .slash-menu-hint {
   margin-left: auto;
   font-size: 10px;
   font-weight: 400;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
 }
 .slash-menu-body {
   flex: 1;
@@ -388,7 +396,7 @@ html, body {
 .slash-item:hover,
 .slash-item.is-selected {
   background: var(--surface-container-low);
-  border-left-color: var(--ui-gray-900);
+  border-left-color: var(--ui-gray-900) /* -> --on-surface */;
 }
 .slash-item-left {
   display: flex;
@@ -403,7 +411,7 @@ html, body {
   width: 20px;
   height: 20px;
   flex-shrink: 0;
-  color: var(--ui-gray-500);
+  color: var(--ui-gray-500) /* -> --on-surface-variant */;
 }
 .slash-item-icon svg {
   width: 14px;
@@ -413,23 +421,23 @@ html, body {
 .slash-item-name {
   font-size: 12px;
   font-weight: 600;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
   white-space: nowrap;
 }
 .slash-item-hint {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
   white-space: nowrap;
 }
 .slash-item-label {
   font-size: 11px;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
   white-space: nowrap;
 }
 .slash-item-desc {
   font-size: 11px;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   text-align: right;
   margin-left: 12px;
   flex-shrink: 0;
@@ -439,22 +447,22 @@ html, body {
 .chat-input-area {
   position: relative;
   padding: var(--margin-md);
-  border-top: 1px solid var(--ui-gray-200);
-  background: var(--ui-white);
+  border-top: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
+  background: var(--ui-white) /* -> --surface-container-lowest */;
   flex-shrink: 0;
 }
 
 .chat-input-wrapper {
   position: relative;
-  border: 1px solid var(--ui-gray-200);
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 2px;
   transition: border-color var(--transition-fast);
-  background: var(--ui-white);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
 }
 
 .chat-input-wrapper:focus-within {
-  border-color: var(--ui-gray-900);
-  box-shadow: 0 0 0 1px var(--ui-gray-900);
+  border-color: var(--ui-gray-900) /* -> --on-surface */;
+  box-shadow: 0 0 0 1px var(--ui-gray-900) /* -> --on-surface */;
 }
 
 /* ===== Skill Chip 标签容器（嵌入输入框内部） ===== */
@@ -537,7 +545,7 @@ html, body {
 }
 
 .chat-input::placeholder {
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
 }
 
 /* ===== 底部操作栏（模型选择 + 上传 + 发送） ===== */
@@ -573,7 +581,7 @@ html, body {
   transition: background var(--transition-fast);
 }
 .model-bar-right .icon-btn:hover {
-  background: var(--ui-gray-100);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
 }
 
 .model-select-wrapper {
@@ -582,14 +590,14 @@ html, body {
   gap: 4px;
   height: 24px;
   padding: 0 6px 0 4px;
-  border: 1px solid var(--ui-gray-200);
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 4px;
-  background: var(--ui-white);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
   cursor: pointer;
   transition: border-color var(--transition-fast), opacity var(--transition-fast);
 }
 .model-select-wrapper:hover {
-  border-color: var(--ui-gray-400);
+  border-color: var(--ui-gray-400) /* -> --on-surface */;
 }
 
 .chat-input-model-bar #modelSelector {
@@ -597,14 +605,14 @@ html, body {
   padding: 0;
   border: none;
   background: transparent;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   cursor: pointer;
   outline: none;
   font-family: var(--font-body);
   transition: color var(--transition-fast);
 }
 .chat-input-model-bar #modelSelector:hover {
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 /* 请求中禁用状态（只禁用模型选择器和上传按钮，停止按钮保持醒目） */
@@ -619,7 +627,7 @@ html, body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--ui-white);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
   min-width: 0;
 }
 
@@ -636,7 +644,7 @@ html, body {
 .map-grid {
   background-image:
     linear-gradient(to right, var(--ui-gray-100) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--ui-gray-100) 1px, transparent 1px);
+    linear-gradient(to bottom, var(--ui-gray-100) 1px, transparent 1px) /* -> --surface-container-high */;
   background-size: 40px 40px;
 }
 
@@ -677,8 +685,8 @@ html, body {
   right: 16px;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--ui-gray-200);
-  background: var(--ui-white);
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
+  background: var(--ui-white) /* -> --surface-container-lowest */;
   box-shadow: var(--shadow-sm);
   overflow: hidden;
   z-index: 10;
@@ -686,24 +694,24 @@ html, body {
 
 /* 缩放控件组最底部的图层折叠按钮 */
 .map-zoom-controls .map-toggle-layer {
-  border-top: 1px solid var(--ui-gray-200);
+  border-top: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   width: 40px;
   height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--ui-white);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
   border: none;
   cursor: pointer;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   transition: background var(--transition-fast), color var(--transition-fast);
 }
 .map-zoom-controls .map-toggle-layer:hover {
   background: var(--surface-container-low);
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 .map-toggle-layer.active {
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
   background: var(--surface-container-low);
 }
 
@@ -713,10 +721,10 @@ html, body {
   justify-content: center;
   width: 40px;
   height: 40px;
-  background: var(--ui-white);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
   border: none;
   cursor: pointer;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
   transition: background var(--transition-fast);
 }
 
@@ -734,7 +742,7 @@ html, body {
 }
 
 .map-zoom-btn + .map-zoom-btn {
-  border-top: 1px solid var(--ui-gray-200);
+  border-top: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
 }
 
 /* Coordinate Display */
@@ -743,12 +751,12 @@ html, body {
   bottom: 16px;
   left: 16px;
   background: rgba(255,255,255,0.9);
-  border: 1px solid var(--ui-gray-300);
+  border: 1px solid var(--ui-gray-300) /* -> --on-surface-variant */;
   border-radius: 4px;
   padding: 4px 10px;
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
   z-index: 1000;
   line-height: 1.6;
   pointer-events: none;
@@ -761,8 +769,8 @@ html, body {
   right: 60px;  /* 16px(缩放的right) + 36px(缩放宽度) + 8px间距 */
   width: 500px;
   height: 240px;  /* 比按钮组高一些，不强制对齐 */
-  background: var(--ui-gray-100);
-  border: 1px solid var(--ui-gray-200);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 4px;
   box-shadow: var(--shadow-md);
   z-index: 10;
@@ -782,8 +790,8 @@ html, body {
   align-items: center;
   justify-content: space-between;
   padding: 0 10px;
-  background: var(--ui-gray-200);
-  border-bottom: 1px solid var(--ui-gray-200);
+  background: var(--ui-gray-200) /* -> --outline-variant */;
+  border-bottom: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   flex-shrink: 0;
 }
 .map-layer-title {
@@ -803,27 +811,27 @@ html, body {
   align-items: center;
   gap: 3px;
   padding: 2px 6px;
-  background: var(--ui-gray-100);
-  border: 1px solid var(--ui-gray-200);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 3px;
   font-family: var(--font-headline);
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   cursor: pointer;
   transition: all var(--transition-fast);
   white-space: nowrap;
 }
 .map-layer-btn:hover {
   background: var(--surface-container-low);
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 .map-layer-btn.primary {
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
-  border-color: var(--ui-gray-900);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
+  border-color: var(--ui-gray-900) /* -> --on-surface */;
 }
 .map-layer-btn.primary:hover {
   opacity: 0.85;
@@ -845,9 +853,9 @@ html, body {
   justify-content: center;
   gap: 8px;
   padding: 32px 16px;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
   font-size: 13px;
-  background: var(--ui-gray-100);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
 }
 .map-layer-empty svg { opacity: 0.4; }
 
@@ -856,7 +864,7 @@ html, body {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
-  background: var(--ui-gray-100);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
 }
 /* 表头左侧 */
 .map-layer-table thead tr {
@@ -869,8 +877,8 @@ html, body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--ui-gray-400);
-  border-bottom: 1px solid var(--ui-gray-200);
+  color: var(--ui-gray-400) /* -> --on-surface */;
+  border-bottom: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
 }
 .map-layer-table thead th {
   font-weight: inherit;
@@ -890,8 +898,8 @@ html, body {
   gap: 0;
   padding: 7px 10px;
   cursor: default;
-  background: var(--ui-gray-100);
-  border-bottom: 1px solid var(--ui-gray-200);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
+  border-bottom: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   transition: background var(--transition-fast);
 }
 .map-layer-table tbody tr:hover {
@@ -899,7 +907,7 @@ html, body {
 }
 .map-layer-table tbody tr.dragging { opacity: 0.4; }
 .map-layer-table tbody tr.drag-over {
-  border-bottom: 2px solid var(--ui-gray-900);
+  border-bottom: 2px solid var(--ui-gray-900) /* -> --on-surface */;
 }
 .map-layer-table td {
   display: flex;
@@ -933,7 +941,7 @@ html, body {
 }
 .layer-source-upload {
   background: rgba(0, 0, 0, 0.04);
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
 }
 
 /* 操作按钮（浮窗版） */
@@ -947,7 +955,7 @@ html, body {
   height: 28px;
   border: none;
   background: transparent;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
   border-radius: 4px;
   display: flex;
   align-items: center;
@@ -957,8 +965,8 @@ html, body {
   padding: 0;
 }
 .map-layer-table .layer-action-btn:hover {
-  color: var(--ui-gray-900);
-  background: var(--ui-gray-200);
+  color: var(--ui-gray-900) /* -> --on-surface */;
+  background: var(--ui-gray-200) /* -> --outline-variant */;
 }
 .map-layer-table .layer-action-btn.btn-danger:hover {
   color: var(--error);
@@ -1020,8 +1028,8 @@ html, body {
   letter-spacing: 0.3px;
   padding: 1px 5px;
   border-radius: 3px;
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
   opacity: 0.7;
   line-height: 1.4;
   white-space: nowrap;
@@ -1055,14 +1063,12 @@ html, body {
   pointer-events: none;
 }
 
-/* ========== 浮动图层面板CSS已上移 ========== */
-
 /* Drag handle */
 .drag-handle {
   display: flex;
   align-items: center;
   cursor: grab;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   user-select: none;
 }
 
@@ -1090,13 +1096,13 @@ html, body {
 .layer-name {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
   vertical-align: middle;
 }
 
 .layer-type {
   font-size: 12px;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
 }
 
 
@@ -1117,12 +1123,12 @@ html, body {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   transition: color var(--transition-fast);
 }
 
 .layer-action-btn:hover {
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .layer-action-btn:hover.btn-danger {
@@ -1149,8 +1155,8 @@ html, body {
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: var(--ui-white);
-  border: 1px solid var(--ui-gray-200);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
 }
 
 .file-item-info {
@@ -1163,7 +1169,7 @@ html, body {
 .file-item-icon {
   width: 20px;
   height: 20px;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   flex-shrink: 0;
 }
 
@@ -1175,7 +1181,7 @@ html, body {
 .file-item-name {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1183,13 +1189,13 @@ html, body {
 
 .file-item-status {
   font-size: 10px;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
 
 .file-item-status.processing {
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .file-item-status.done {
@@ -1204,7 +1210,7 @@ html, body {
 .progress-bar {
   width: 60px;
   height: 4px;
-  background: var(--ui-gray-100);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
   overflow: hidden;
   position: relative;
 }
@@ -1212,7 +1218,7 @@ html, body {
 .progress-bar-fill {
   position: absolute;
   inset: 0;
-  background: var(--ui-gray-900);
+  background: var(--ui-gray-900) /* -> --on-surface */;
   transition: width var(--transition-normal);
 }
 
@@ -1223,8 +1229,8 @@ html, body {
   gap: 6px;
   height: 24px;
   padding: 0 8px;
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
   border: none;
   cursor: pointer;
   font-family: var(--font-body);
@@ -1236,7 +1242,7 @@ html, body {
 }
 
 .upload-btn:hover {
-  background: var(--ui-gray-400);
+  background: var(--ui-gray-400) /* -> --on-surface */;
 }
 
 .upload-btn svg {
@@ -1253,12 +1259,12 @@ html, body {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   transition: color var(--transition-fast);
 }
 
 .download-header-btn:hover {
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .download-header-btn svg {
@@ -1308,24 +1314,24 @@ html, body {
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--ui-gray-200);
+  background: var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 2px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: var(--ui-gray-300);
+  background: var(--ui-gray-300) /* -> --on-surface-variant */;
 }
 
 /* Firefox scrollbar */
 .custom-scrollbar {
   scrollbar-width: thin;
-  scrollbar-color: var(--ui-gray-200) transparent;
+  scrollbar-color: var(--ui-gray-200) transparent /* -> --outline-variant */;
 }
 
 /* ========== Selection ========== */
 ::selection {
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
 }
 
 /* ========== Loading Spinner ========== */
@@ -1333,8 +1339,8 @@ html, body {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border: 2px solid var(--ui-gray-300);
-  border-top-color: var(--ui-gray-900);
+  border: 2px solid var(--ui-gray-300) /* -> --on-surface-variant */;
+  border-top-color: var(--ui-gray-900) /* -> --on-surface */;
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
@@ -1429,7 +1435,7 @@ html, body {
   font-size: 18px;
   font-weight: 700;
   line-height: 1;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   animation: loading-dot-bounce 1.4s ease-in-out infinite;
 }
 
@@ -1532,24 +1538,24 @@ html, body {
 }
 .message-bubble-ai th,
 .message-bubble-ai td {
-  border: 1px solid var(--ui-gray-300);
+  border: 1px solid var(--ui-gray-300) /* -> --on-surface-variant */;
   padding: 5px 10px;
   text-align: left;
 }
 .message-bubble-ai th {
-  background: var(--ui-gray-100);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
   font-weight: 600;
 }
 
 .message-bubble-ai blockquote {
   margin: 8px 0;
   padding: 4px 12px;
-  border-left: 3px solid var(--ui-gray-300);
-  color: var(--ui-gray-500);
+  border-left: 3px solid var(--ui-gray-300) /* -> --on-surface-variant */;
+  color: var(--ui-gray-500) /* -> --on-surface-variant */;
 }
 .message-bubble-ai hr {
   border: none;
-  border-top: 1px solid var(--ui-gray-200);
+  border-top: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   margin: 12px 0;
 }
 
@@ -1561,10 +1567,10 @@ html, body {
   width: 26px;
   height: 26px;
   padding: 0;
-  border: 1px solid var(--ui-gray-200);
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 4px;
   background: var(--surface-container-low);
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -1578,8 +1584,8 @@ html, body {
   opacity: 1;
 }
 .btn-copy-ai:hover {
-  color: var(--ui-gray-900);
-  border-color: var(--ui-gray-300);
+  color: var(--ui-gray-900) /* -> --on-surface */;
+  border-color: var(--ui-gray-300) /* -> --on-surface-variant */;
   opacity: 1;
 }
 .btn-copy-ai.copied {
@@ -1601,8 +1607,8 @@ html, body {
   padding: 1px 6px;
   margin-left: 6px;
   border-radius: 4px;
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
   line-height: 1.5;
   opacity: 0.7;
   vertical-align: middle;
@@ -1636,7 +1642,7 @@ html, body {
 }
 
 .modal {
-  background: var(--ui-white);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
   width: 380px;
   max-width: 90vw;
   border-radius: 4px;
@@ -1649,7 +1655,7 @@ html, body {
   align-items: center;
   justify-content: space-between;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--ui-gray-200);
+  border-bottom: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
 }
 
 .modal-title {
@@ -1659,7 +1665,7 @@ html, body {
   font-family: var(--font-headline);
   font-size: 15px;
   font-weight: 600;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .modal-close-btn {
@@ -1671,15 +1677,15 @@ html, body {
   background: none;
   border: none;
   cursor: pointer;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   font-size: 16px;
   border-radius: 4px;
   transition: all var(--transition-fast);
 }
 
 .modal-close-btn:hover {
-  background: var(--ui-gray-100);
-  color: var(--ui-gray-900);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .modal-body {
@@ -1690,7 +1696,7 @@ html, body {
   display: block;
   font-size: 13px;
   font-weight: 500;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
   margin-bottom: 8px;
 }
 
@@ -1703,23 +1709,23 @@ html, body {
 .modal-input {
   width: 100%;
   padding: 10px 40px 10px 12px;
-  border: 1px solid var(--ui-gray-200);
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 4px;
   font-family: var(--font-mono);
   font-size: 13px;
-  color: var(--ui-gray-900);
-  background: var(--ui-white);
+  color: var(--ui-gray-900) /* -> --on-surface */;
+  background: var(--ui-white) /* -> --surface-container-lowest */;
   outline: none;
   transition: border-color var(--transition-fast);
 }
 
 .modal-input:focus {
-  border-color: var(--ui-gray-900);
-  box-shadow: 0 0 0 1px var(--ui-gray-900);
+  border-color: var(--ui-gray-900) /* -> --on-surface */;
+  box-shadow: 0 0 0 1px var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .modal-input::placeholder {
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
   font-family: var(--font-body);
 }
 
@@ -1740,7 +1746,7 @@ html, body {
 }
 
 .modal-toggle-vis:hover {
-  background: var(--ui-gray-100);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
 }
 
 .modal-test-result {
@@ -1760,14 +1766,14 @@ html, body {
 /* ===== 模型配置卡片 ===== */
 .model-config-card {
   background: var(--surface-container-low);
-  border: 1px solid var(--ui-gray-200);
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 6px;
   padding: 14px;
   margin-bottom: 12px;
   transition: border-color var(--transition-fast);
 }
 .model-config-card:hover {
-  border-color: var(--ui-gray-300);
+  border-color: var(--ui-gray-300) /* -> --on-surface-variant */;
 }
 
 .model-config-header {
@@ -1780,15 +1786,15 @@ html, body {
 .model-config-name {
   font-size: 13px;
   font-weight: 600;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .model-config-badge {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--ui-gray-200);
-  color: var(--ui-gray-400);
+  background: var(--ui-gray-200) /* -> --outline-variant */;
+  color: var(--ui-gray-400) /* -> --on-surface */;
   margin-left: 6px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -1821,9 +1827,9 @@ html, body {
 .modal-version-info {
   margin-top: 16px;
   padding-top: 12px;
-  border-top: 1px solid var(--ui-gray-200);
+  border-top: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   font-size: 11px;
-  color: var(--ui-gray-400);
+  color: var(--ui-gray-400) /* -> --on-surface */;
   display: flex;
   gap: 12px;
 }
@@ -1835,7 +1841,7 @@ html, body {
 
 .model-select-arrow {
   flex-shrink: 0;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
 }
 
 /* ===== 模型选择弹窗 ===== */
@@ -1848,8 +1854,8 @@ html, body {
   bottom: calc(100% + 6px);
   left: 0;
   z-index: 100;
-  background: var(--ui-white);
-  border: 1px solid var(--ui-gray-200);
+  background: var(--ui-white) /* -> --surface-container-lowest */;
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.12);
   width: 220px;
@@ -1888,17 +1894,17 @@ html, body {
 .model-picker-name {
   font-size: 13px;
   font-weight: 500;
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .model-picker-desc {
   font-size: 11px;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
 }
 
 .model-picker-hint {
   font-size: 10px;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
   opacity: 0.6;
 }
 
@@ -1915,15 +1921,15 @@ html, body {
 
 .model-picker-check {
   flex-shrink: 0;
-  color: var(--ui-gray-200);
+  color: var(--ui-gray-200) /* -> --outline-variant */;
 }
 .model-picker-option.is-selected .model-picker-check {
-  color: var(--ui-gray-900);
+  color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
 .model-picker-divider {
   height: 1px;
-  background: var(--ui-gray-100);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
   margin: 0 12px;
 }
 
@@ -1945,27 +1951,27 @@ html, body {
 }
 
 .modal-btn-test {
-  background: var(--ui-gray-100);
-  color: var(--ui-gray-900);
-  border: 1px solid var(--ui-gray-200);
+  background: var(--ui-gray-100) /* -> --surface-container-high */;
+  color: var(--ui-gray-900) /* -> --on-surface */;
+  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
 }
 
 .modal-btn-test:hover:not(:disabled) {
-  background: var(--ui-gray-200);
+  background: var(--ui-gray-200) /* -> --outline-variant */;
 }
 
 .modal-btn-save {
-  background: var(--ui-gray-900);
-  color: var(--ui-white);
+  background: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--ui-white) /* -> --surface-container-lowest */;
 }
 
 .modal-btn-save:hover:not(:disabled) {
-  background: var(--ui-gray-400);
+  background: var(--ui-gray-400) /* -> --on-surface */;
 }
 
 .modal-note {
   font-size: 11px;
-  color: var(--ui-gray-300);
+  color: var(--ui-gray-300) /* -> --on-surface-variant */;
   text-align: center;
   margin-top: 16px;
   line-height: 1.5;

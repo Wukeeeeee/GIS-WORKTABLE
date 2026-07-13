@@ -69,6 +69,34 @@
 - **数据只存临时目录**：所有生成文件在系统 temp 目录，用户主动下载才落本机
 - **架构**：chip 是人为指定的技能标签，GLM 是自动补全，两者是"补充"关系不是"替代"关系
 
+## 2026-07-13（续4）：代码质量工程化 + 单元测试
+
+### 改动清单
+
+#### 前端 — chat.js
+- `var` → `let`/`const` 统一：102 处 `var` 改为 `const`（不重新赋值）、6 处改为 `let`（需重新赋值）
+- 删除冗余 AI 生成注释（如 `// 点击选择`、`// 遍历数组`）
+
+#### 前端 — style.css
+- CSS 变量迁移标注：159 处 `--ui-*` 使用处添加 `/* -> --md3-xxx */` 注释
+- `:root` 添加变量迁移说明块
+
+#### 后端 — 新增单元测试
+- `backend/tests/test_geometry.py`：27 个测试用例覆盖 6 类几何操作
+  - buffer 4 个（正常/零距离/负数/精度）
+  - intersection 4 个（相交/相接/不相交/包含）
+  - centroid 4 个（正方形/点/线/空）
+  - area 4 个（正方形/圆形/零面积/多部件）
+  - make_valid 4 个（自相交/窄缝/环方向/已有效）
+  - simplify 3 个（拓扑保持/顶点减少/高容差）
+  - 实战 2 个（WGS-84↔UTM buffer 转投影、投影面积计算）
+- `requirements.txt` 新增 `pytest>=9.0.0`
+- 运行方式：`python -m pytest backend/tests/ -v`
+
+#### 后端 — 清理
+- `main.py`、`ai_service.py`：删除 2 条冗余注释
+- `prompt_deepseek.md`、`prompt_glm.md`：同步更新为最新 system prompt 内容
+
 ### 背景
 右键菜单十字准星存在三个 bug：① 地图拖拽到世界副本时准星定位到第一张图；② 缩放时准星偏移；③ 经度出现 1521° 荒谬值。同时空地图拖拽出现卡顿（Presentation Delay 76ms）。
 

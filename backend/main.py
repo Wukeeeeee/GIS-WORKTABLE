@@ -311,7 +311,6 @@ async def upload(file: UploadFile = File(...)):
             shp_files = [n for n in zf.namelist() if n.endswith('.shp')]
             if not shp_files:
                 return {"error": "ZIP 包中没有找到 .shp 文件"}
-            # 解压到临时目录
             with tempfile.TemporaryDirectory() as tmpdir:
                 zf.extractall(tmpdir)
                 shp_path = os.path.join(tmpdir, shp_files[0])

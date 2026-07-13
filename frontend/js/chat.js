@@ -122,14 +122,13 @@ try {
       sendBtn.addEventListener('click', function() { send(); });
     }
 
-    // 停止按钮
-    var stopBtn = document.getElementById('stopBtn');
+    const stopBtn = document.getElementById('stopBtn');
     if (stopBtn) {
       stopBtn.addEventListener('click', function() {
         window._aiRunning = false;
         _resetUIAfterStop();
         fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
-        var loadingEl = document.getElementById('ai-loading-msg');
+        const loadingEl = document.getElementById('ai-loading-msg');
         if (loadingEl) {
           if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
           if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
@@ -146,12 +145,12 @@ try {
 
   function _handleSlashInput() {
     if (!inputEl) return;
-    var val = inputEl.value;
-    var cursor = inputEl.selectionStart;
+    const val = inputEl.value;
+    const cursor = inputEl.selectionStart;
     // 获取光标前的文本，检测是否以 / 开头且没有空格（表示正在输入命令名）
-    var textBefore = val.substring(0, cursor);
+    const textBefore = val.substring(0, cursor);
     if (/^\/([a-zA-Z]*)$/.test(textBefore)) {
-      var query = textBefore.substring(1).toLowerCase();
+      const query = textBefore.substring(1).toLowerCase();
       _slashFiltered = SLASH_COMMANDS.filter(function(c) {
         return c.name.indexOf(query) === 0 || c.label.indexOf(query) === 0;
       });
@@ -206,9 +205,9 @@ try {
   }
 
   function _handleSlashClickOutside(e) {
-    var menu = _getSlashMenu();
+    const menu = _getSlashMenu();
     if (!menu) return;
-    var wrapper = inputEl && inputEl.closest('.chat-input-wrapper');
+    const wrapper = inputEl && inputEl.closest('.chat-input-wrapper');
     if (menu.style.display !== 'none' && !menu.contains(e.target) && wrapper && !wrapper.contains(e.target)) {
       _hideSlashMenu();
       _slashActive = false;
@@ -216,10 +215,10 @@ try {
   }
 
   function _renderSlashMenu() {
-    var body = _getSlashBody();
+    const body = _getSlashBody();
     if (!body) return;
     body.innerHTML = _slashFiltered.map(function(c, i) {
-      var iconSvg = SLASH_ICONS[c.name] || '';
+      const iconSvg = SLASH_ICONS[c.name] || '';
       return '<div class="slash-item" data-index="' + i + '">' +
         '<div class="slash-item-left">' +
           '<span class="slash-item-icon">' + iconSvg + '</span>' +
@@ -229,32 +228,31 @@ try {
         '<span class="slash-item-desc">' + c.desc + '</span>' +
       '</div>';
     }).join('');
-    // 点击选择
     body.querySelectorAll('.slash-item').forEach(function(el) {
       el.addEventListener('click', function() {
-        var idx = parseInt(this.dataset.index, 10);
+        const idx = parseInt(this.dataset.index, 10);
         if (_slashFiltered[idx]) _applySlashCommand(_slashFiltered[idx]);
       });
     });
   }
 
   function _highlightSlash() {
-    var body = _getSlashBody();
+    const body = _getSlashBody();
     if (!body) return;
     body.querySelectorAll('.slash-item').forEach(function(el, i) {
       el.classList.toggle('is-selected', i === _slashIndex);
     });
-    var sel = body.querySelector('.slash-item.is-selected');
+    const sel = body.querySelector('.slash-item.is-selected');
     if (sel) sel.scrollIntoView({ block: 'nearest' });
   }
 
   function _showSlashMenu() {
-    var menu = _getSlashMenu();
+    const menu = _getSlashMenu();
     if (menu) menu.style.display = '';
   }
 
   function _hideSlashMenu() {
-    var menu = _getSlashMenu();
+    const menu = _getSlashMenu();
     if (menu) menu.style.display = 'none';
   }
 
@@ -278,14 +276,14 @@ try {
 
   function _removeChip(index) {
     if (index < 0 || index >= _skillChips.length) return;
-    var chip = _skillChips[index];
+    const chip = _skillChips[index];
     // 从 textarea 中移除这个 chip 对应的 prompt 文字
     if (inputEl) {
-      var text = inputEl.value;
-      var promptIndex = text.indexOf(chip.prompt);
+      const text = inputEl.value;
+      const promptIndex = text.indexOf(chip.prompt);
       if (promptIndex >= 0) {
-        var before = text.substring(0, promptIndex);
-        var after = text.substring(promptIndex + chip.prompt.length);
+        let before = text.substring(0, promptIndex);
+        const after = text.substring(promptIndex + chip.prompt.length);
         // 如果前面有换行符，去掉它
         if (before.endsWith('\n')) before = before.slice(0, -1);
         inputEl.value = before + after;
@@ -302,20 +300,20 @@ try {
   }
 
   function _renderChips() {
-    var container = document.getElementById('chipContainer');
+    const container = document.getElementById('chipContainer');
     if (!container) return;
     container.innerHTML = '';
     if (_skillChips.length === 0) {
       container.style.display = 'none';
-      var wrapper = container.closest('.chat-input-wrapper');
+      let wrapper = container.closest('.chat-input-wrapper');
       if (wrapper) wrapper.classList.remove('has-chips');
       return;
     }
     container.style.display = 'flex';
-    var wrapper = container.closest('.chat-input-wrapper');
+    let wrapper = container.closest('.chat-input-wrapper');
     if (wrapper) wrapper.classList.add('has-chips');
     _skillChips.forEach(function(chip, i) {
-      var el = document.createElement('span');
+      const el = document.createElement('span');
       el.className = 'skill-chip';
       el.innerHTML = '/<span class="chip-name">' + chip.name + '</span><span class="chip-close" data-i="' + i + '">✕</span>';
       el.querySelector('.chip-close').addEventListener('click', function(e) {
@@ -332,9 +330,9 @@ try {
     inputEl.placeholder = '输入指令或查询...';
     inputEl.disabled = false;
     if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = '1'; }
-    var stopBtn = document.getElementById('stopBtn');
+    const stopBtn = document.getElementById('stopBtn');
     if (stopBtn) stopBtn.style.display = 'none';
-    var modelBar = document.querySelector('.chat-input-model-bar');
+    const modelBar = document.querySelector('.chat-input-model-bar');
     if (modelBar) modelBar.classList.remove('is-disabled');
     window._aiRunning = false;
     // 恢复右键菜单
@@ -351,22 +349,22 @@ try {
     if (!text) return;
 
     // 解析第二个参数：字符串=displayText，对象={displayText, badge, provider}
-    var displayText = typeof displayOpt === 'string' ? displayOpt : (displayOpt ? displayOpt.displayText : null);
-    var badge = displayOpt && displayOpt.badge ? displayOpt.badge : null;
-    var providerOverride = displayOpt && displayOpt.provider ? displayOpt.provider : null;
+    const displayText = typeof displayOpt === 'string' ? displayOpt : (displayOpt ? displayOpt.displayText : null);
+    const badge = displayOpt && displayOpt.badge ? displayOpt.badge : null;
+    const providerOverride = displayOpt && displayOpt.provider ? displayOpt.provider : null;
 
     // 检查当前选中的模型是否已配置 API Key（优先用 providerOverride）
-    var selModel = document.getElementById('modelSelector');
-    var curProvider = providerOverride || (selModel ? selModel.value : 'deepseek');
-    var hasKey = curProvider === 'glm' ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
+    const selModel = document.getElementById('modelSelector');
+    const curProvider = providerOverride || (selModel ? selModel.value : 'deepseek');
+    const hasKey = curProvider === 'glm' ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
     if (!hasKey) {
-        var modelName = curProvider === 'glm' ? 'GLM-4.7-Flash' : (curProvider === 'deepseek-routed' ? 'DeepSeek V4 Flash+' : 'DeepSeek V4 Flash');
+        const modelName = curProvider === 'glm' ? 'GLM-4.7-Flash' : (curProvider === 'deepseek-routed' ? 'DeepSeek V4 Flash+' : 'DeepSeek V4 Flash');
         addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
       // 恢复输入框（placeholder 还没被改过，不需要还原）
       inputEl.disabled = false;
       sendBtn.disabled = false;
       sendBtn.style.opacity = '1';
-      var modelBar2 = document.querySelector('.chat-input-model-bar');
+      const modelBar2 = document.querySelector('.chat-input-model-bar');
       if (modelBar2) modelBar2.classList.remove('is-disabled');
       return;
     }
@@ -377,7 +375,7 @@ try {
     if (inputEl && arguments.length === 0) {
       inputEl.value = '';
     }
-    var el = document.getElementsByClassName('chat-messages-empty')[0];
+    const el = document.getElementsByClassName('chat-messages-empty')[0];
     if (el) {
       el.style.display = 'none';
     }
@@ -388,61 +386,61 @@ try {
     sendBtn.disabled = true;
     sendBtn.style.opacity = '0.5';
     // 禁用模型选择器（请求中不允许换模型）
-    var modelBar = document.querySelector('.chat-input-model-bar');
+    const modelBar = document.querySelector('.chat-input-model-bar');
     if (modelBar) modelBar.classList.add('is-disabled');
     // 标记AI运行状态，显示停止按钮，禁用右键
     window._aiRunning = true;
-    var stopBtn = document.getElementById('stopBtn');
+    const stopBtn = document.getElementById('stopBtn');
     if (stopBtn) stopBtn.style.display = '';
     document.querySelectorAll('.context-menu-item').forEach(function(el) {
       if (el.getAttribute('data-action') !== 'copy-coords') el.classList.add('is-disabled');
     });
 
     // 获取当前模型显示名（优先用 providerOverride）
-    var modelDisplayEl = document.getElementById('modelSelectValue');
-    var modelDisplayName = modelDisplayEl ? modelDisplayEl.textContent : 'AI';
+    const modelDisplayEl = document.getElementById('modelSelectValue');
+    let modelDisplayName = modelDisplayEl ? modelDisplayEl.textContent : 'AI';
     if (providerOverride === 'deepseek-routed') modelDisplayName = 'DeepSeek V4 Flash+';
     else if (providerOverride === 'deepseek') modelDisplayName = 'DeepSeek V4 Flash';
     else if (providerOverride === 'glm') modelDisplayName = 'GLM-4.7-Flash';
 
     // 添加"模型名 思考中..."占位气泡，让用户知道 AI 正在处理
-    var isRouted = (providerOverride === 'deepseek-routed');
-    var loadingMsg = addMessage(modelDisplayName + ' 思考中...', 'ai', { noMarkdown: true });
+    const isRouted = (providerOverride === 'deepseek-routed');
+    const loadingMsg = addMessage(modelDisplayName + ' 思考中...', 'ai', { noMarkdown: true });
     loadingMsg.id = 'ai-loading-msg';
 
     // DS+ 模式：先显示 GLM 路由阶段，再切换到执行阶段
     if (isRouted) {
-      var loadingContent = loadingMsg.querySelector('.message-bubble > div');
+      const loadingContent = loadingMsg.querySelector('.message-bubble > div');
       if (loadingContent) loadingContent.textContent = 'DeepSeek V4 Flash+ GLM 路由分析中...';
     }
 
     // 给气泡文本加流光 scan 动画
-    var loadingContent = loadingMsg.querySelector('.message-bubble > div');
+    const loadingContent = loadingMsg.querySelector('.message-bubble > div');
     if (loadingContent) loadingContent.classList.add('shimmer-loading-text');
 
     // 添加翻牌计时器（实时显示 AI 思考耗时），另起一行
-    var timerEl = createFlipTimer();
-    var timerWrapper = document.createElement('div');
+    const timerEl = createFlipTimer();
+    const timerWrapper = document.createElement('div');
     timerWrapper.style.cssText = 'margin-top:6px;';
     timerWrapper.appendChild(timerEl);
-    var loadingBubble = loadingMsg.querySelector('.message-bubble');
+    const loadingBubble = loadingMsg.querySelector('.message-bubble');
     if (loadingBubble) loadingBubble.appendChild(timerWrapper);
 
-    var startTime = Date.now();
+    const startTime = Date.now();
     // DS+ 模式：1.5 秒后从"GLM 路由中"切换到"执行中"
-    var phaseTimer = null;
+    let phaseTimer = null;
     if (isRouted) {
       phaseTimer = setTimeout(function() {
-        var el = document.getElementById('ai-loading-msg');
+        const el = document.getElementById('ai-loading-msg');
         if (el) {
-          var c = el.querySelector('.message-bubble > div');
+          const c = el.querySelector('.message-bubble > div');
           if (c) c.textContent = 'DeepSeek V4 Flash+ 执行中...';
         }
       }, 1500);
     }
     loadingMsg._phaseTimer = phaseTimer;
-    var timerInterval = setInterval(function() {
-      var elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const timerInterval = setInterval(function() {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
       updateFlipTimer(timerEl, elapsed);
     }, 1000);
     updateFlipTimer(timerEl, 0);
@@ -452,31 +450,30 @@ try {
       // 读取当前选择的模型（优先用 providerOverride）
       const modelSelector = document.getElementById('modelSelector');
       const provider = providerOverride || (modelSelector ? modelSelector.value : 'deepseek');
-      // 发送到后端 API，等待回复
       const forceSkills = _skillChips.map(function(c) { return CHIP_TO_SKILL[c.name]; }).filter(Boolean);
       const result = await GIS.api.chat(text, 'default', provider, forceSkills);
       // 发送后清除 chip 标签（已消费）
       _skillChips = [];
       _renderChips();
       // 移除"思考中"占位气泡
-      var loadingEl = document.getElementById('ai-loading-msg');
+      const loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
         loadingEl.remove();
       }
 
       // 显示 AI 的文字回复
-      var msgEl = addMessage(result.response, 'ai');
+      const msgEl = addMessage(result.response, 'ai');
 
       // 如果有 AI 生成的图表图片，追加到最后一条回复下方
       if (result.images && result.images.length > 0) {
         // 如果上一步有返回 msgEl 就用它，否则新建容器
-        var imgContainer = document.createElement('div');
+        const imgContainer = document.createElement('div');
         imgContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;margin-left:32px;';
         // 通用下载函数（fetch + Blob，解决跨域下载问题）
         function downloadFile(url, filename) {
           fetch(url).then(function(res) { return res.blob(); }).then(function(blob) {
-            var a = document.createElement('a');
+            const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = filename;
             document.body.appendChild(a);
@@ -488,17 +485,17 @@ try {
 
         result.images.forEach(function(item) {
           // 兼容新旧格式：item 可能是字符串（旧）或对象（新）
-          var imgUrl = typeof item === 'string' ? item : (item.url || '');
-          var imgType = typeof item === 'string' ? (imgUrl.match(/\.html?$/i) ? 'html' : 'png') : (item.type || 'png');
-          var htmlContent = typeof item === 'string' ? null : (item.content || null);
-          var fileName = imgUrl.split('/').pop() || 'file';
-          var baseUrl = (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || 'http://localhost:8000';
-          var fullUrl = baseUrl + imgUrl;
+          const imgUrl = typeof item === 'string' ? item : (item.url || '');
+          const imgType = typeof item === 'string' ? (imgUrl.match(/\.html?$/i) ? 'html' : 'png') : (item.type || 'png');
+          const htmlContent = typeof item === 'string' ? null : (item.content || null);
+          const fileName = imgUrl.split('/').pop() || 'file';
+          const baseUrl = (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || 'http://localhost:8000';
+          const fullUrl = baseUrl + imgUrl;
 
           if (imgType === 'html') {
-            var htmlWrap = document.createElement('div');
+            const htmlWrap = document.createElement('div');
             htmlWrap.style.cssText = 'border:1px solid var(--ui-gray-200);border-radius:4px;overflow:hidden;width:100%;';
-            var iframe = document.createElement('iframe');
+            const iframe = document.createElement('iframe');
             iframe.style.cssText = 'width:100%;height:420px;border:none;display:block;';
             iframe.title = '交互式地图';
             // 优先用 srcdoc（内联 HTML，不落磁盘），其次用 src
@@ -508,13 +505,13 @@ try {
               iframe.src = fullUrl;
             }
             htmlWrap.appendChild(iframe);
-            var toolBar = document.createElement('div');
+            const toolBar = document.createElement('div');
             toolBar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid var(--ui-gray-200);background:var(--surface-container-low);font-size:12px;';
             toolBar.innerHTML =
               '<span style="flex:1;color:var(--ui-gray-400);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + fileName + '</span>' +
               '<a href="' + fullUrl + '" target="_blank" style="padding:3px 8px;border:1px solid var(--ui-gray-200);border-radius:3px;text-decoration:none;color:var(--ui-gray-900);">新标签打开</a>';
             // 下载按钮（用 fetch+blob，不会跳转）
-            var dlHtmlBtn = document.createElement('button');
+            const dlHtmlBtn = document.createElement('button');
             dlHtmlBtn.textContent = '下载';
             dlHtmlBtn.style.cssText = 'padding:3px 8px;background:var(--ui-gray-900);color:var(--ui-white);border:none;border-radius:3px;cursor:pointer;font-size:12px;';
             dlHtmlBtn.addEventListener('click', function() { downloadFile(fullUrl, fileName); });
@@ -523,16 +520,16 @@ try {
             imgContainer.appendChild(htmlWrap);
           } else {
             // 图片文件
-            var wrapper = document.createElement('div');
+            const wrapper = document.createElement('div');
             wrapper.style.cssText = 'position:relative;display:inline-block;';
-            var img = document.createElement('img');
+            const img = document.createElement('img');
             img.src = fullUrl;
             img.style.cssText = 'max-width:100%;max-height:300px;border-radius:4px;border:1px solid var(--ui-gray-200);cursor:pointer;display:block;';
             img.title = '点击放大';
             img.addEventListener('click', function() { window.open(fullUrl); });
             wrapper.appendChild(img);
             // 下载按钮（右上角悬浮，用 fetch+blob）
-            var dlImgBtn = document.createElement('button');
+            const dlImgBtn = document.createElement('button');
             dlImgBtn.title = '下载图片';
             dlImgBtn.innerHTML =
               '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
@@ -548,7 +545,7 @@ try {
         });
         // 如果 msgEl 存在，追加到它的气泡里
         if (msgEl) {
-          var bubble = msgEl.querySelector('.message-bubble');
+          const bubble = msgEl.querySelector('.message-bubble');
           if (bubble) bubble.appendChild(imgContainer);
         } else {
           // 否则单独插到聊天容器
@@ -560,7 +557,7 @@ try {
       if (result.clear_layers) {
         console.log('[GIS Chat] 收到清空图层指令');
         if (window.GIS.layers) {
-          var allLayers = window.GIS.layers.getLayers();
+          const allLayers = window.GIS.layers.getLayers();
           allLayers.forEach(function(l) {
             if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
           });
@@ -592,11 +589,11 @@ try {
           }
 
           result.layers.forEach(function(layer, idx) {
-            var layerId = 'ai_' + Date.now() + '_' + idx;
-            var layerName = layer.name || '图层' + (idx + 1);
-            var uniqueName = layerName + '_' + Date.now() + '_' + idx;
-            var geojson = layer.geojson || layer;
-            var geoType = geojson.type === 'FeatureCollection'
+            const layerId = 'ai_' + Date.now() + '_' + idx;
+            const layerName = layer.name || '图层' + (idx + 1);
+            const uniqueName = layerName + '_' + Date.now() + '_' + idx;
+            const geojson = layer.geojson || layer;
+            const geoType = geojson.type === 'FeatureCollection'
               ? ((geojson.features && geojson.features[0] && geojson.features[0].geometry && geojson.features[0].geometry.type) || '未知')
               : (geojson.geometry && geojson.geometry.type || '未知');
 
@@ -631,9 +628,9 @@ try {
             return;
           }
 
-          var layerId = 'ai_' + Date.now();
-          var uniqueName = result.layerName + '_' + Date.now();
-          var geoType = result.geojson.type === 'FeatureCollection'
+          const layerId = 'ai_' + Date.now();
+          const uniqueName = result.layerName + '_' + Date.now();
+          const geoType = result.geojson.type === 'FeatureCollection'
             ? ((result.geojson.features && result.geojson.features[0] && result.geojson.features[0].geometry && result.geojson.features[0].geometry.type) || '未知')
             : (result.geojson.geometry && result.geojson.geometry.type || '未知');
 
@@ -660,7 +657,7 @@ try {
             if (attempt < 10) { setTimeout(function() { loadHeatmapWithRetry(attempt + 1); }, 300); return; }
             return;
           }
-          var uniqueName = (result.heatmap.name || 'heatmap') + '_' + Date.now();
+          const uniqueName = (result.heatmap.name || 'heatmap') + '_' + Date.now();
           GIS.map.loadHeatmap(result.heatmap.points, uniqueName, result.heatmap.options || {});
           if (window.GIS.layers && window.GIS.layers.addLayer) {
             GIS.layers.addLayer({
@@ -677,7 +674,7 @@ try {
       }
     } catch (err) {
       // 移除"思考中"占位气泡
-      var loadingEl = document.getElementById('ai-loading-msg');
+      const loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
         loadingEl.remove();
@@ -688,7 +685,7 @@ try {
       inputEl.placeholder = originalPlaceholder;
       inputEl.focus();
       // 重新启用模型选择
-      var modelBar = document.querySelector('.chat-input-model-bar');
+      const modelBar = document.querySelector('.chat-input-model-bar');
       if (modelBar) modelBar.classList.remove('is-disabled');
     }
   }
@@ -701,7 +698,7 @@ try {
     // 系统消息：居中灰色小字条
     if (type === 'system') {
       const row = document.createElement('div');
-      var isHidden = options && options.hidden;
+      const isHidden = options && options.hidden;
       row.style.cssText = isHidden
         ? 'display:none;'
         : 'display:flex;justify-content:center;max-width:100%;';
@@ -747,13 +744,13 @@ try {
 
     // AI 消息右下角复制按钮（跳过加载气泡）
     if (type === 'ai' && !options.noMarkdown) {
-      var copyBtn = document.createElement('button');
+      const copyBtn = document.createElement('button');
       copyBtn.className = 'btn-copy-ai';
       copyBtn.title = '复制回复';
       copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
       copyBtn.addEventListener('click', function() {
         // 取纯文本（跳过 markdown HTML 标签）
-        var plainText = content.textContent || content.innerText || text;
+        const plainText = content.textContent || content.innerText || text;
         navigator.clipboard.writeText(plainText).then(function() {
           copyBtn.classList.add('copied');
           copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
@@ -763,7 +760,7 @@ try {
           }, 2000);
         }).catch(function() {
           // fallback: 用 textarea 复制
-          var ta = document.createElement('textarea');
+          const ta = document.createElement('textarea');
           ta.value = plainText;
           ta.style.position = 'fixed'; ta.style.left = '-9999px';
           document.body.appendChild(ta);
@@ -796,14 +793,14 @@ try {
    * 格式：HH:MM:SS，每个数字都是独立的翻牌单元
    */
   function createFlipTimer() {
-    var container = document.createElement('span');
+    const container = document.createElement('span');
     container.className = 'flip-timer';
 
     // 存储当前显示的 6 个数字值 [h1,h2,m1,m2,s1,s2]
     container._current = [0, 0, 0, 0, 0, 0];
 
     // 布局：HH : MM : SS
-    var layout = [
+    const layout = [
       { type: 'digit' }, { type: 'digit' },
       { type: 'sep', char: ':' },
       { type: 'digit' }, { type: 'digit' },
@@ -815,12 +812,12 @@ try {
 
     layout.forEach(function(item) {
       if (item.type === 'sep') {
-        var sep = document.createElement('span');
+        const sep = document.createElement('span');
         sep.className = 't-sep';
         sep.textContent = item.char;
         container.appendChild(sep);
       } else {
-        var digitEl = document.createElement('span');
+        const digitEl = document.createElement('span');
         digitEl.className = 't-digit';
         digitEl.innerHTML = '<span class="t-d-main">0</span>';
         container.appendChild(digitEl);
@@ -837,26 +834,26 @@ try {
    * @param {number} elapsed - 已过秒数
    */
   function updateFlipTimer(timerEl, elapsed) {
-    var h = Math.floor(elapsed / 3600);
-    var m = Math.floor((elapsed % 3600) / 60);
-    var s = elapsed % 60;
+    const h = Math.floor(elapsed / 3600);
+    const m = Math.floor((elapsed % 3600) / 60);
+    const s = elapsed % 60;
 
     // 拆成 6 个单独的数字
-    var timeDigits = [
+    const timeDigits = [
       Math.floor(h / 10) % 10, h % 10,
       Math.floor(m / 10),      m % 10,
       Math.floor(s / 10),      s % 10
     ];
 
-    var current = timerEl._current;
-    var digits  = timerEl._digits;
+    const current = timerEl._current;
+    const digits  = timerEl._digits;
 
-    for (var i = 0; i < 6; i++) {
+    for (let i = 0; i < 6; i++) {
       if (current[i] !== timeDigits[i]) {
         // 方向规则：
         //   第 6 位（秒个位 i=5）是主动计时的 → 向上翻
         //   其余位都是因为进位才触发变化 → 向下翻
-        var direction = (i === 5) ? 'up' : 'down';
+        const direction = (i === 5) ? 'up' : 'down';
         animateDigitFlip(digits[i], timeDigits[i], direction);
         current[i] = timeDigits[i];
       }
@@ -870,20 +867,20 @@ try {
    * @param {string} dir           - "up" 向上 / "down" 向下
    */
   function animateDigitFlip(digitEl, newVal, dir) {
-    var main = digitEl.querySelector('.t-d-main');
-    var oldVal = main.textContent;
+    const main = digitEl.querySelector('.t-d-main');
+    const oldVal = main.textContent;
     if (oldVal === String(newVal)) return;
 
-    var ANIM_MS = 260;
+    const ANIM_MS = 260;
 
     // 旧数字飞出
-    var outEl = document.createElement('span');
+    const outEl = document.createElement('span');
     outEl.className = 't-d-float';
     outEl.textContent = oldVal;
     outEl.style.animation = (dir === 'up' ? 't-up-out' : 't-down-out') + ' ' + ANIM_MS + 'ms ease forwards';
 
     // 新数字飞入
-    var inEl = document.createElement('span');
+    const inEl = document.createElement('span');
     inEl.className = 't-d-float';
     inEl.textContent = newVal;
     inEl.style.animation = (dir === 'up' ? 't-up-in' : 't-down-in') + ' ' + ANIM_MS + 'ms ease forwards';
