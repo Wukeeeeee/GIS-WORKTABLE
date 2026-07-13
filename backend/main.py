@@ -49,6 +49,7 @@ class ChatRequest(BaseModel):
     session_id: str = "default"           # 会话ID，用来区分不同的聊天会话
     api_key: Optional[str] = None         # API 密钥，前端 localStorage 传来，用完即弃
     provider: str = "deepseek"            # 模型提供商：deepseek 或 glm
+    force_skills: list = []              # 用户通过 chip 标签指定的技能
 
 class TestKeyRequest(BaseModel):
     api_key: str                          # 要测试的 DeepSeek API 密钥
@@ -67,7 +68,7 @@ class BaiduExtractRequest(BaseModel):
 async def chat(request: ChatRequest):
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(None, functools.partial(
-        chat_with_ai, request.message, request.session_id, request.api_key, request.provider
+        chat_with_ai, request.message, request.session_id, request.api_key, request.provider, request.force_skills
     ))
     result = {"response": response}
     # 如果有最新生成的 GeoJSON，一起返回给前端

@@ -4,7 +4,70 @@
 
 ---
 
-## 2026-07-13：十字准星重构 + 地图性能优化
+## 2026-07-13（续3）：SYSTEM_PROMPT 精简 + Skill Chip 标签系统 + force_skills
+
+### 背景
+`SYSTEM_PROMPT` 过重（10423 字符），大量领域知识（matplotlib 代码示例、pyecharts 教程、途经省份判定模板等）每次都塞进 system prompt 浪费 token。同时斜杠命令 `/` 只是文本模板，用户想要可视化 chip 标签交互。
+
+### 改动清单
+
+#### skills/*.md — 充实领域知识（从 SYSTEM_PROMPT 迁移）
+- **geometry.md**：添加坐标系规则、buffer 距离处理（投影→buffer→转回）
+- **visualization.md**：添加 matplotlib 完整代码示例、pyecharts 雷达图/中国省级地图、hexbin 六边形分箱对比图
+- **analysis.md**：添加途经省份精确判定流程（含 datav_boundary + get_layer_detail + shapely 空间分析模板）
+
+#### 后端 — ai_service.py
+- **SYSTEM_PROMPT 精简 54%**：10423 → 4826 字符，移除所有领域知识（迁移到 skills/*.md），新增"技能参考文档"节告知 AI 按需加载
+- **force_skills 参数**：`chat_with_ai()` 新增 `force_skills: list`，接收前端 chip 标签指定的技能
+- **GLM 路由 + force_skills 合并**：chip 技能作为补充（不是替代），与 GLM 路由结果合并去重，人机互补
+- **全模型支持**：force_skills 对所有三个模型生效（不局限于 deepseek-routed）
+
+#### 后端 — main.py
+- `ChatRequest` 新增 `force_skills: list = []` 字段
+
+#### 前端 — chat.js
+- **Skill Chip 标签系统**：选中 `/` 命令后在输入框上方显示黑色圆角 chip `[ /buffer ✕ ]`
+- **多 chip 叠加**：依次选中多个命令，chip 横向排列 `[ /buffer ] [ /heatmap ]`
+- **Backspace 删除**：输入框为空时按 Backspace 删除最后一个 chip
+- **✕ 按钮删除**：每个 chip 带关闭按钮
+- **CHIP_TO_SKILL 映射**：chip 命令名 → 技能标签（buffer→geometry, heatmap→heatmap 等）
+- **force_skills 传递**：发送时收集 chip 技能标签传入 API，发送后自动清空 chip
+- **SVG 图标**：每个斜杠命令菜单项左侧显示 14×14 SVG 图标（几何/热力图/图表等）
+- **选中后清 `/`**：按 Enter/Tab 选中命令后，自动移除输入框中的 `/command` 文字
+- **Enter 冲突修复**：斜杠菜单打开时，Enter 优先选择命令，不会同时触发发送
+- 新增函数：`_addChip()`, `_removeChip()`, `_removeLastChip()`, `_renderChips()`
+
+#### 前端 — index.html
+- `.chat-input-wrapper` 内新增 `.chip-container#chipContainer`（absolute 定位在输入框内部顶部）
+
+#### 前端 — style.css
+- `.chat-input-wrapper` 改为持 border，`textarea` 去掉 border，`:focus-within` 统一高亮
+- 新增 `.chip-container` 样式（absolute 定位在输入框顶部，不占文本流）
+- 新增 `.skill-chip` 样式（圆角 12px 黑色标签，chip-pop 入场动画）
+- 新增 `.chip-close` 样式（✕ 按钮，hover 高亮）
+- `.chat-input-wrapper.has-chips textarea.chat-input` 增加 `padding-top: 32px` 为 chip 留空间
+- 新增 `.slash-item-icon`（20×20 容器，14×14 SVG 图标，灰色）
+- 新增 `.slash-item-hint`（小号等宽字体显示 `/command` 快捷键提示）
+- 调整 `.slash-item-left` 布局从 `baseline` 改为 `center` 对齐
+
+#### 前端 — api.js
+- `chat()` 新增 `forceSkills` 参数，POST body 中传递 `force_skills`
+
+### 设计决策（补充）
+- **Chip 嵌入输入框内部**：chip 用 absolute 定位在 wrapper 顶部，看起来像 GitHub 标签一样嵌在输入框里，不是独立的栏
+- **无模板填充**：选中 `/` 命令后只加 chip，不往 textarea 填 prompt 模板，用户完全自由输入
+
+### Token 节省
+| 场景 | 之前 | 之后 | 节省 |
+|------|------|------|------|
+| 纯聊天（无需技能） | 10400 char/system prompt | 4800 char | **~54%** |
+| 需要 1 个技能 | 10400 | 4800 + 600 = 5400 | **~48%** |
+| 需要 2 个技能 | 10400 | 4800 + 1200 = 6000 | **~42%** |
+
+### 设计决策
+- **Chip 不跳过 GLM 路由**：chip 技能 + GLM 路由结果合并去重，人可能漏选但 GLM 兜底
+- **数据只存临时目录**：所有生成文件在系统 temp 目录，用户主动下载才落本机
+- **架构**：chip 是人为指定的技能标签，GLM 是自动补全，两者是"补充"关系不是"替代"关系
 
 ### 背景
 右键菜单十字准星存在三个 bug：① 地图拖拽到世界副本时准星定位到第一张图；② 缩放时准星偏移；③ 经度出现 1521° 荒谬值。同时空地图拖拽出现卡顿（Presentation Delay 76ms）。
@@ -32,6 +95,59 @@
 
 ### 未解决
 - 地图卡顿可能根源在 Bing CDN 瓦片加载或系统级 GPU 渲染，纯前端优化空间有限
+
+## 2026-07-13（续2）：斜杠命令系统 + 技能文件化
+
+### 背景
+AI 与地图图层联动不够直接，用户需手动写 shapely 代码 + print GeoJSON。同时内联技能存在 Python 字典中，增删改不便。
+
+### 改动清单
+
+#### 前端 — index.html
+- 输入框上方新增 `/` 斜杠命令弹出菜单容器
+- 输入框 placeholder 提示"键入 / 打开命令面板"
+
+#### 前端 — chat.js
+- 新增 `SLASH_COMMANDS` 数组，定义 13 个斜杠命令：
+  - `/buffer` / `/intersection` / `/union` / `/difference` — 几何操作
+  - `/centroid` / `/simplify` / `/make_valid` / `/area` / `/length` — 几何工具
+  - `/aoi` / `/boundary` — 边界提取
+  - `/heatmap` — 热力图
+  - `/plot` — 统计图表
+- 每个命令包含 name/label/desc/prompt（带 `{变量}` 占位符）
+- 输入`/`自动弹出菜单，支持↑↓选择、Enter确认、Esc取消
+- 选中命令后自动替换输入框内容，光标定位到 `{变量}` 处
+- 点击外部自动关闭菜单
+
+#### 前端 — style.css
+- 新增 `.slash-menu` 系列样式（底部弹出、阴影、白色背景）
+
+#### 项目根
+- 新增 `skills/` 目录，包含 6 个 Markdown 技能文件：
+  - `geometry.md` — 几何操作（含 CRS 处理规则）
+  - `aoi.md` — AOI 建筑轮廓提取
+  - `datav.md` — DataV 行政边界
+  - `heatmap.md` — 热力图参数
+  - `visualization.md` — 图表可视化
+  - `analysis.md` — 空间分析
+
+#### 后端 — ai_service.py
+- `_INLINE_SKILLS` 字典精简为回退缓存（简短描述）
+- 新增 `_load_skill_from_file()`：优先从 `skills/*.md` 加载，找不到才回退内联
+- `_read_skill_files()` 改为调用文件加载器
+- `_GLM_ROUTER_PROMPT` 新增 6 个新技能标签
+- `_SKILLS_DIR` 定位到项目根 `skills/` 目录
+
+### 架构
+```
+用户键入 /buffer
+  → 弹出命令菜单，选中
+  → 输入框填入 "为当前选中的图层创建 {距离} 米的缓冲区"
+  → 用户填参数，回车发送
+  → GLM 路由识别需要 geometry 技能
+  → 加载 skills/geometry.md → 注入 DeepSeek
+  → DeepSeek 按技能规则自动转 UTM → buffer → 结果上地图
+```
 
 ## 2026-07-13（续）：DeepSeek V4 Flash GLM 协作模式 + 技能文档系统
 

@@ -106,9 +106,8 @@ window.GIS.api = (() => {
   }
 
   // ===== 聊天 / AI =====
-  /** @param {string} message @param {string} [sessionId='default'] @param {string} [provider='deepseek'] */
-// 发送消息到后端的聊天接口，并返回 AI 的回复
-  async function chat(message, sessionId = 'default', provider = 'deepseek') {
+  /** @param {string} message @param {string} [sessionId='default'] @param {string} [provider='deepseek'] @param {string[]} [forceSkills=[]] */
+  async function chat(message, sessionId = 'default', provider = 'deepseek', forceSkills = []) {
     // 根据 provider 选择对应的 API 密钥
     const apiKey = provider === 'glm' ? getGLMApiKey() : getApiKey();
     const controller = new AbortController();
@@ -123,7 +122,8 @@ window.GIS.api = (() => {
           message,
           session_id: sessionId,
           api_key: apiKey || undefined,
-          provider
+          provider,
+          force_skills: forceSkills
         })
       });
     } finally {

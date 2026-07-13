@@ -30,6 +30,57 @@ try {
   let messagesContainer = null;
   let inputEl = null;
   let sendBtn = null;
+
+  // Chip 命令名 → 技能标签映射（用于 force_skills）
+  const CHIP_TO_SKILL = {
+    buffer: 'geometry', intersection: 'geometry', union: 'geometry',
+    difference: 'geometry', centroid: 'geometry', simplify: 'geometry',
+    make_valid: 'geometry',
+    area: 'analysis', length: 'analysis',
+    aoi: 'aoi',
+    boundary: 'datav',
+    heatmap: 'heatmap',
+    plot: 'visualization'
+  };
+  // 每个命令的 SVG icon（14x14，currentColor）
+  const SLASH_ICONS = {
+    buffer: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+    intersection: '<svg viewBox="0 0 14 14"><circle cx="5.2" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8.8" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+    union: '<svg viewBox="0 0 14 14"><path d="M4 3v5a3 3 0 006 0V3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4 3h6" stroke="currentColor" stroke-width="1.3"/></svg>',
+    difference: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 2.5v9" stroke="currentColor" stroke-width="1.3"/></svg>',
+    centroid: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="7" r="1" fill="currentColor"/></svg>',
+    simplify: '<svg viewBox="0 0 14 14"><polyline points="1,10 4,4 7,9 10,3 13,8" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="1,11 13,11" fill="none" stroke="currentColor" stroke-width="1" opacity=".4"/></svg>',
+    area: '<svg viewBox="0 0 14 14"><rect x="2" y="3" width="10" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M2 3L12 11" stroke="currentColor" stroke-width=".8" opacity=".3"/></svg>',
+    length: '<svg viewBox="0 0 14 14"><line x1="2" y1="7" x2="12" y2="7" stroke="currentColor" stroke-width="1.3"/><polyline points="9,4 12,7 9,10" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    make_valid: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="4.5,7 6.5,9 9.5,5.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+    aoi: '<svg viewBox="0 0 14 14"><path d="M2 12V3l5-2 5 2v9zm5-9v8M2 5h10M2 9h10" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    boundary: '<svg viewBox="0 0 14 14"><polygon points="7,1 12,4 12,10 7,13 2,10 2,4" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="7" r="1.5" fill="none" stroke="currentColor" stroke-width="1"/></svg>',
+    heatmap: '<svg viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="1" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="3.5" cy="3.5" r="1.2" fill="currentColor" opacity=".6"/><circle cx="10.5" cy="3.5" r=".8" fill="currentColor" opacity=".4"/><circle cx="3.5" cy="10.5" r="1.5" fill="currentColor" opacity=".8"/></svg>',
+    plot: '<svg viewBox="0 0 14 14"><rect x="2" y="8" width="2.5" height="4" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.5" y="4" width="2.5" height="8" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="6" width="2.5" height="6" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+  };
+
+  const SLASH_COMMANDS = [
+    { name: 'buffer', label: '缓冲区分析', desc: '为图层创建指定距离的缓冲区', prompt: '为当前选中的图层创建 {距离} 米的缓冲区，结果加载到地图上' },
+    { name: 'intersection', label: '空间相交', desc: '两个图层的相交分析', prompt: '对 {图层A} 和 {图层B} 做空间相交分析，结果加载到地图上' },
+    { name: 'union', label: '空间合并', desc: '合并两个图层的几何', prompt: '合并 {图层A} 和 {图层B}，结果加载到地图上' },
+    { name: 'difference', label: '空间差异', desc: '一个图层减去另一个图层', prompt: '用 {图层A} 减去 {图层B}，结果加载到地图上' },
+    { name: 'centroid', label: '提取质心', desc: '提取图层的中心点', prompt: '提取 {图层名} 的质心/中心点，结果加载到地图上' },
+    { name: 'simplify', label: '简化几何', desc: '简化图层几何，减少顶点数', prompt: '简化 {图层名} 的几何，简化容差设为 {容差}，结果加载到地图上' },
+    { name: 'area', label: '计算面积', desc: '计算图层各要素的面积', prompt: '计算 {图层名} 每个要素的面积，结果用表格显示' },
+    { name: 'length', label: '计算长度', desc: '计算线图层的长度', prompt: '计算 {图层名} 每个要素的长度，结果用表格显示' },
+    { name: 'make_valid', label: '修复几何', desc: '修复无效的几何图形', prompt: '修复 {图层名} 中无效的几何图形，将修复后的结果加载到地图上' },
+    { name: 'aoi', label: 'AOI 边界', desc: '提取地点建筑轮廓', prompt: '搜索 {地点名称} 的 AOI 建筑轮廓并提取' },
+    { name: 'boundary', label: '行政边界', desc: '获取行政区划边界', prompt: '获取 {省/市/区} 的行政边界并加载到地图' },
+    { name: 'heatmap', label: '热力图', desc: '从点数据生成热力图', prompt: '为 {图层名} 生成热力图' },
+    { name: 'plot', label: '统计图表', desc: '生成数据统计图表', prompt: '对 {图层名} 的 {字段} 生成统计图表' },
+  ];
+
+  let _slashFiltered = [];      // 当前过滤后的列表
+  let _slashIndex = -1;         // 选中索引
+  let _slashActive = false;     // 菜单是否打开
+  // ---- Skill Chip 标签系统 ----
+  let _skillChips = [];         // [{name, label, prompt}]
+
   /**
    * 初始化聊天模块
    * 绑定 DOM 元素和事件
@@ -45,11 +96,26 @@ try {
 
     if (inputEl) {
       inputEl.addEventListener('keydown', (e) => {
+        // Backspace 删除最后一个 chip
+        if (e.key === 'Backspace' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+          if (inputEl.selectionStart === 0 && inputEl.selectionEnd === 0 && _skillChips.length > 0) {
+            e.preventDefault();
+            _removeLastChip();
+            return;
+          }
+        }
+        // 斜杠菜单打开时，Enter 交给 _handleSlashKeydown 处理选择命令
+        if (_slashActive) return;
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           send();
         }
       });
+      // 斜杠命令：输入/弹出菜单，↑↓选择，Enter/Tab确认，Esc取消
+      inputEl.addEventListener('keydown', _handleSlashKeydown);
+      inputEl.addEventListener('input', _handleSlashInput);
+      // 点击外部关闭菜单
+      document.addEventListener('click', _handleSlashClickOutside);
     }
 
     if (sendBtn) {
@@ -72,6 +138,193 @@ try {
         addMessage('操作已取消', 'system');
       });
     }
+  }
+
+  // ---- 斜杠命令处理 ----
+  function _getSlashMenu() { return document.getElementById('slashMenu'); }
+  function _getSlashBody() { return document.getElementById('slashMenuBody'); }
+
+  function _handleSlashInput() {
+    if (!inputEl) return;
+    var val = inputEl.value;
+    var cursor = inputEl.selectionStart;
+    // 获取光标前的文本，检测是否以 / 开头且没有空格（表示正在输入命令名）
+    var textBefore = val.substring(0, cursor);
+    if (/^\/([a-zA-Z]*)$/.test(textBefore)) {
+      var query = textBefore.substring(1).toLowerCase();
+      _slashFiltered = SLASH_COMMANDS.filter(function(c) {
+        return c.name.indexOf(query) === 0 || c.label.indexOf(query) === 0;
+      });
+      _slashIndex = -1;
+      if (_slashFiltered.length > 0) {
+        _renderSlashMenu();
+        _showSlashMenu();
+        _slashActive = true;
+        return;
+      }
+    }
+    _hideSlashMenu();
+    _slashActive = false;
+  }
+
+  function _handleSlashKeydown(e) {
+    if (!_slashActive) {
+      // 按 / 时触发命令面板
+      if (e.key === '/' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        // 等 input 事件触发 _handleSlashInput
+        return;
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        _slashIndex = Math.min(_slashIndex + 1, _slashFiltered.length - 1);
+        _highlightSlash();
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        _slashIndex = Math.max(_slashIndex - 1, 0);
+        _highlightSlash();
+        break;
+      case 'Enter':
+      case 'Tab':
+        e.preventDefault();
+        if (_slashIndex >= 0 && _slashFiltered[_slashIndex]) {
+          _applySlashCommand(_slashFiltered[_slashIndex]);
+        } else if (_slashFiltered[0]) {
+          _applySlashCommand(_slashFiltered[0]);
+        }
+        break;
+      case 'Escape':
+        e.preventDefault();
+        _hideSlashMenu();
+        _slashActive = false;
+        break;
+    }
+  }
+
+  function _handleSlashClickOutside(e) {
+    var menu = _getSlashMenu();
+    if (!menu) return;
+    var wrapper = inputEl && inputEl.closest('.chat-input-wrapper');
+    if (menu.style.display !== 'none' && !menu.contains(e.target) && wrapper && !wrapper.contains(e.target)) {
+      _hideSlashMenu();
+      _slashActive = false;
+    }
+  }
+
+  function _renderSlashMenu() {
+    var body = _getSlashBody();
+    if (!body) return;
+    body.innerHTML = _slashFiltered.map(function(c, i) {
+      var iconSvg = SLASH_ICONS[c.name] || '';
+      return '<div class="slash-item" data-index="' + i + '">' +
+        '<div class="slash-item-left">' +
+          '<span class="slash-item-icon">' + iconSvg + '</span>' +
+          '<span class="slash-item-name">' + c.label + '</span>' +
+          '<span class="slash-item-hint">/' + c.name + '</span>' +
+        '</div>' +
+        '<span class="slash-item-desc">' + c.desc + '</span>' +
+      '</div>';
+    }).join('');
+    // 点击选择
+    body.querySelectorAll('.slash-item').forEach(function(el) {
+      el.addEventListener('click', function() {
+        var idx = parseInt(this.dataset.index, 10);
+        if (_slashFiltered[idx]) _applySlashCommand(_slashFiltered[idx]);
+      });
+    });
+  }
+
+  function _highlightSlash() {
+    var body = _getSlashBody();
+    if (!body) return;
+    body.querySelectorAll('.slash-item').forEach(function(el, i) {
+      el.classList.toggle('is-selected', i === _slashIndex);
+    });
+    var sel = body.querySelector('.slash-item.is-selected');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+
+  function _showSlashMenu() {
+    var menu = _getSlashMenu();
+    if (menu) menu.style.display = '';
+  }
+
+  function _hideSlashMenu() {
+    var menu = _getSlashMenu();
+    if (menu) menu.style.display = 'none';
+  }
+
+  function _applySlashCommand(cmd) {
+    _hideSlashMenu();
+    _slashActive = false;
+    if (!inputEl) return;
+    // 移除输入框中的 /命令名（只保留用户已输入的其他文字）
+    inputEl.value = inputEl.value.replace(/^\/[a-zA-Z]*/, '');
+    _addChip(cmd);
+  }
+
+  // ===== Skill Chip 管理 =====
+  function _addChip(cmd) {
+    // 不重复添加同名 chip
+    if (_skillChips.some(function(c) { return c.name === cmd.name; })) return;
+    _skillChips.push({name: cmd.name, label: cmd.label, prompt: cmd.prompt});
+    _renderChips();
+    if (inputEl) inputEl.focus();
+  }
+
+  function _removeChip(index) {
+    if (index < 0 || index >= _skillChips.length) return;
+    var chip = _skillChips[index];
+    // 从 textarea 中移除这个 chip 对应的 prompt 文字
+    if (inputEl) {
+      var text = inputEl.value;
+      var promptIndex = text.indexOf(chip.prompt);
+      if (promptIndex >= 0) {
+        var before = text.substring(0, promptIndex);
+        var after = text.substring(promptIndex + chip.prompt.length);
+        // 如果前面有换行符，去掉它
+        if (before.endsWith('\n')) before = before.slice(0, -1);
+        inputEl.value = before + after;
+      }
+    }
+    _skillChips.splice(index, 1);
+    _renderChips();
+  }
+
+  function _removeLastChip() {
+    if (_skillChips.length === 0) return;
+    _removeChip(_skillChips.length - 1);
+    if (inputEl) inputEl.focus();
+  }
+
+  function _renderChips() {
+    var container = document.getElementById('chipContainer');
+    if (!container) return;
+    container.innerHTML = '';
+    if (_skillChips.length === 0) {
+      container.style.display = 'none';
+      var wrapper = container.closest('.chat-input-wrapper');
+      if (wrapper) wrapper.classList.remove('has-chips');
+      return;
+    }
+    container.style.display = 'flex';
+    var wrapper = container.closest('.chat-input-wrapper');
+    if (wrapper) wrapper.classList.add('has-chips');
+    _skillChips.forEach(function(chip, i) {
+      var el = document.createElement('span');
+      el.className = 'skill-chip';
+      el.innerHTML = '/<span class="chip-name">' + chip.name + '</span><span class="chip-close" data-i="' + i + '">✕</span>';
+      el.querySelector('.chip-close').addEventListener('click', function(e) {
+        e.stopPropagation();
+        _removeChip(i);
+        if (inputEl) inputEl.focus();
+      });
+      container.appendChild(el);
+    });
   }
 
   function _resetUIAfterStop() {
@@ -200,7 +453,11 @@ try {
       const modelSelector = document.getElementById('modelSelector');
       const provider = providerOverride || (modelSelector ? modelSelector.value : 'deepseek');
       // 发送到后端 API，等待回复
-      const result = await GIS.api.chat(text, 'default', provider);
+      const forceSkills = _skillChips.map(function(c) { return CHIP_TO_SKILL[c.name]; }).filter(Boolean);
+      const result = await GIS.api.chat(text, 'default', provider, forceSkills);
+      // 发送后清除 chip 标签（已消费）
+      _skillChips = [];
+      _renderChips();
       // 移除"思考中"占位气泡
       var loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
