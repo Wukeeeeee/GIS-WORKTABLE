@@ -41,18 +41,15 @@
             <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="#1A1A1A">GIS</text>
             <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="#444444">WORKTABLE</text>
           </svg>
-          <!-- header 右侧按钮组：版本标签 + AOI提取 + 齿轮(设置) + +(新建会话) -->
+          <!-- header 右侧按钮组 -->
           <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
-            <!-- 版本标签：显示 Git 提交号与后端启动时间，让用户知道当前运行的是哪个版本 -->
             <span id="versionBadge" title="后端版本信息" style="font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;">载入中...</span>
-            <!-- 齿轮 ⚙ 按钮 → 打开设置弹窗，配置 DeepSeek API 密钥 -->
             <button id="settingsBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="设置">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="3"/>
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
               </svg>
             </button>
-            <!-- + 按钮 → 清除当前会话的对话记忆，类似"新建会话" -->
             <button id="clearMemoryBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="新建会话">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round">
               <line x1="12" y1="5" x2="12" y2="19"/>
@@ -276,6 +273,23 @@
   </div>
 
   <!-- ========================================================= -->
+  <!-- 图层检查器面板（浮窗）                                      -->
+  <!-- ========================================================= -->
+  <div class="inspector-overlay" id="layerInspector" style="display:none;">
+    <div class="inspector-panel">
+      <div class="inspector-header">
+        <span class="inspector-title" id="inspectorTitle">图层检查</span>
+        <button class="inspector-close" id="inspectorClose" title="关闭">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="inspector-body custom-scrollbar" id="inspectorBody">
+        <!-- 由 JS 填充 -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================= -->
   <!-- 隐藏的文件输入（用于上传）                                  -->
   <!-- ========================================================= -->
   <input
@@ -312,6 +326,12 @@
               <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
             </svg>
             <span>API 密钥</span>
+          </div>
+          <div class="modal-sidenav-item" data-panel="history">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span>历史记录</span>
           </div>
         </div>
         <button class="modal-sidenav-save" id="saveSettingsBtn">保存设置</button>
@@ -412,7 +432,39 @@
             </div>
           </div>
 
+          <!-- 高德地图 Web API -->
+          <div class="model-config-card">
+            <div class="model-config-header">
+              <span class="model-config-name">高德地图 Web API</span>
+              <span class="model-config-badge" id="amapKeyStatus">未配置</span>
+            </div>
+            <div class="modal-input-wrapper">
+              <input type="password" class="modal-input" id="amapApiKeyInput" placeholder="高德 Web 服务 Key" />
+              <button class="modal-toggle-vis" id="toggleAmapKeyVis" title="显示/隐藏密钥">
+                <svg id="amapEyeIcon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+            </div>
+            <div class="modal-test-result" id="amapTestResult"></div>
+            <div class="model-config-actions">
+              <button class="modal-btn modal-btn-save" id="saveAmapKeyBtn">保存</button>
+            </div>
+          </div>
+
           <p class="modal-note">密钥仅保存在您的浏览器中，不会上传到服务器</p>
+        </div>
+
+        <!-- === 面板4：历史记录 === -->
+        <div class="modal-panel" id="panelHistory">
+          <h3>历史记录</h3>
+          <div class="history-toolbar">
+            <span class="history-count" id="historyCount"></span>
+            <button class="history-clear-btn" id="historyClearBtn">清除全部</button>
+          </div>
+          <div class="history-list custom-scrollbar" id="historyList">
+            <div class="task-empty">暂无分析任务</div>
+          </div>
         </div>
       </div>
     </div>
@@ -433,6 +485,7 @@
   <script src="js/map.js"></script>
   <script src="js/chat.js"></script>
   <script src="js/layers.js"></script>
+  <script src="js/task.js"></script>
   <script src="js/upload.js"></script>
   <script src="js/aoi.js"></script>
   <script src="js/app.js"></script>
@@ -510,7 +563,10 @@
               if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
             });
           }
-          // 处理结果面板已移除
+          // 保留用户主动保存的任务，清除未保存的任务
+          if (window.GIS.task && typeof window.GIS.task.clearUnsaved === 'function') {
+            window.GIS.task.clearUnsaved();
+          }
           if (typeof updateGreeting === 'function') updateGreeting();
         } catch (e) {
           window.GIS.chat.addMessage('操作失败: ' + e.message, 'system');
@@ -533,6 +589,10 @@
       var saveGlmKeyBtn = document.getElementById('saveGlmKeyBtn');
       var toggleKeyVis = document.getElementById('toggleKeyVis');
       var toggleGlmKeyVis = document.getElementById('toggleGlmKeyVis');
+      var amapApiKeyInput = document.getElementById('amapApiKeyInput');
+      var amapKeyStatus = document.getElementById('amapKeyStatus');
+      var amapTestResult = document.getElementById('amapTestResult');
+      var toggleAmapKeyVis = document.getElementById('toggleAmapKeyVis');
 
       // ---- 侧边栏切换 ----
       var sidenavItems = document.querySelectorAll('.modal-sidenav-item');
@@ -540,6 +600,7 @@
         version: document.getElementById('panelVersion'),
         appearance: document.getElementById('panelAppearance'),
         apikey: document.getElementById('panelApiKey'),
+        history: document.getElementById('panelHistory'),
       };
       sidenavItems.forEach(function(item) {
         item.addEventListener('click', function() {
@@ -618,6 +679,10 @@
         glmApiKeyInput.value = savedGlmKey;
         updateGlmKeyStatus(savedGlmKey);
         glmTestResult.innerHTML = '';
+        var savedAmapKey = window.GIS.api.getAmapKey();
+        amapApiKeyInput.value = savedAmapKey;
+        updateAmapKeyStatus(savedAmapKey);
+        amapTestResult.innerHTML = '';
         settingsModal.style.display = 'flex';
       });
 
@@ -657,6 +722,18 @@
         }
       });
 
+      // 高德密钥显隐切换
+      toggleAmapKeyVis.addEventListener('click', function() {
+        var eyeIcon = document.getElementById('amapEyeIcon');
+        if (amapApiKeyInput.type === 'password') {
+          amapApiKeyInput.type = 'text';
+          eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>';
+        } else {
+          amapApiKeyInput.type = 'password';
+          eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+        }
+      });
+
       // 更新配置状态显示：badge 绿色/灰色
       function updateKeyStatus(key) {
         apiKeyStatus.textContent = key ? '已配置' : '未配置';
@@ -665,6 +742,10 @@
       function updateGlmKeyStatus(key) {
         glmApiKeyStatus.textContent = key ? '已配置' : '未配置';
         glmApiKeyStatus.className = 'model-config-badge' + (key ? ' configured' : '');
+      }
+      function updateAmapKeyStatus(key) {
+        amapKeyStatus.textContent = key ? '已配置' : '未配置';
+        amapKeyStatus.className = 'model-config-badge' + (key ? ' configured' : '');
       }
 
 	      // ---- 测速按钮 ----
@@ -763,6 +844,17 @@
         var orig = saveGlmKeyBtn.textContent;
         saveGlmKeyBtn.textContent = '已保存 ✓';
         setTimeout(function() { saveGlmKeyBtn.textContent = orig; }, 2000);
+      });
+
+      // ---- 高德密钥保存按钮 ----
+      var saveAmapKeyBtn = document.getElementById('saveAmapKeyBtn');
+      saveAmapKeyBtn.addEventListener('click', function() {
+        var key = amapApiKeyInput.value.trim();
+        window.GIS.api.setAmapKey(key);
+        updateAmapKeyStatus(key);
+        var orig = saveAmapKeyBtn.textContent;
+        saveAmapKeyBtn.textContent = '已保存 ✓';
+        setTimeout(function() { saveAmapKeyBtn.textContent = orig; }, 2000);
       });
 
       // ---- 模型选择器持久化 + 状态圆点 ----

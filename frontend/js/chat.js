@@ -40,7 +40,8 @@ try {
     aoi: 'aoi',
     boundary: 'datav',
     heatmap: 'heatmap',
-    plot: 'visualization'
+    plot: 'visualization',
+    amap: 'amap'
   };
   // 每个命令的 SVG icon（14x14，currentColor）
   const SLASH_ICONS = {
@@ -57,6 +58,7 @@ try {
     boundary: '<svg viewBox="0 0 14 14"><polygon points="7,1 12,4 12,10 7,13 2,10 2,4" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="7" r="1.5" fill="none" stroke="currentColor" stroke-width="1"/></svg>',
     heatmap: '<svg viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="1" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="3.5" cy="3.5" r="1.2" fill="currentColor" opacity=".6"/><circle cx="10.5" cy="3.5" r=".8" fill="currentColor" opacity=".4"/><circle cx="3.5" cy="10.5" r="1.5" fill="currentColor" opacity=".8"/></svg>',
     plot: '<svg viewBox="0 0 14 14"><rect x="2" y="8" width="2.5" height="4" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.5" y="4" width="2.5" height="8" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="6" width="2.5" height="6" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    amap: '<svg viewBox="0 0 14 14"><path d="M7 1a5 5 0 00-5 5c0 3.5 5 7 5 7s5-3.5 5-7a5 5 0 00-5-5zm0 7a2 2 0 110-4 2 2 0 010 4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
   };
 
   const SLASH_COMMANDS = [
@@ -73,6 +75,7 @@ try {
     { name: 'boundary', label: '行政边界', desc: '获取行政区划边界', prompt: '获取 {省/市/区} 的行政边界并加载到地图' },
     { name: 'heatmap', label: '热力图', desc: '从点数据生成热力图', prompt: '为 {图层名} 生成热力图' },
     { name: 'plot', label: '统计图表', desc: '生成数据统计图表', prompt: '对 {图层名} 的 {字段} 生成统计图表' },
+    { name: 'amap', label: '高德POI搜索', desc: '搜索POI/查天气/地址转坐标', prompt: '搜索 {关键词} 的 POI 数据，每页25条最多200条，结果加载到地图' },
   ];
 
   let _slashFiltered = [];      // 当前过滤后的列表
@@ -369,8 +372,12 @@ try {
       return;
     }
 
+    // 捕获当前 chips 显示在用户消息气泡中
+    var chipsSnapshot = _skillChips.slice();
     // 渲染用户消息（如果传了 displayText 就显示它）
-    addMessage(displayText || text, 'user', badge ? {badge: badge} : {});
+    var msgOpts = badge ? {badge: badge} : {};
+    if (chipsSnapshot.length > 0) msgOpts.chips = chipsSnapshot;
+    addMessage(displayText || text, 'user', msgOpts);
     // 只有从输入框发送时才清空输入框
     if (inputEl && arguments.length === 0) {
       inputEl.value = '';
@@ -455,6 +462,20 @@ try {
       const modelSelector = document.getElementById('modelSelector');
       const rawProvider = providerOverride || (modelSelector ? modelSelector.value : 'deepseek'); const provider = rawProvider;
       const forceSkills = _skillChips.map(function(c) { return CHIP_TO_SKILL[c.name]; }).filter(Boolean);
+      // 解析 displayOpt 中的任务信息
+      var taskId = displayOpt && displayOpt._taskId ? displayOpt._taskId : null;
+      var taskProvider = displayOpt && displayOpt.provider ? displayOpt.provider : curProvider;
+      if (!taskId) {
+        var inputLayers = (window.GIS.layers && typeof window.GIS.layers.getLayers === 'function')
+          ? window.GIS.layers.getLayers() : [];
+        var task = window.GIS.task && window.GIS.task.createTask(text, taskProvider, inputLayers);
+        if (task) taskId = task.id;
+      }
+      // 更新任务状态为规划中
+      if (taskId && window.GIS.task) {
+        window.GIS.task.updateTask(taskId, { status: 'planning' });
+      }
+
       const result = await GIS.api.chat(text, 'default', provider, forceSkills);
       // 发送后清除 chip 标签（已消费）
       _skillChips = [];
@@ -464,6 +485,32 @@ try {
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
         loadingEl.remove();
+      }
+
+      // 更新任务卡状态
+      if (taskId && window.GIS.task) {
+        var taskUpdate = { status: 'success' };
+        // 收集结果图层信息
+        var resultLayers = [];
+        if (result.layers && result.layers.length > 0) {
+          result.layers.forEach(function(l) {
+            resultLayers.push({ name: l.name || '分析结果', geojson: l.geojson || l, layerId: 'task_result_' + Date.now() });
+          });
+        } else if (result.geojson && result.layerName) {
+          resultLayers.push({ name: result.layerName, geojson: result.geojson, layerId: 'task_result_' + Date.now() });
+        }
+        taskUpdate.resultLayers = resultLayers;
+
+        // 提取 AI 回复中的代码块作为执行代码
+        var codeMatch = result.response && result.response.match(/```(?:python)?\s*([\s\S]*?)```/);
+        if (codeMatch) {
+          taskUpdate.code = codeMatch[1].trim();
+        }
+        // 提取前 300 字作为摘要
+        var plainText = result.response ? result.response.replace(/<[^>]+>/g, '').replace(/```[\s\S]*?```/g, '') : '';
+        taskUpdate.resultSummary = plainText.slice(0, 300) + (plainText.length > 300 ? '...' : '');
+        taskUpdate.completedAt = Date.now();
+        window.GIS.task.updateTask(taskId, taskUpdate);
       }
 
       // 显示 AI 的文字回复
@@ -683,6 +730,10 @@ try {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
         loadingEl.remove();
       }
+      // 更新任务状态为失败
+      if (taskId && window.GIS.task) {
+        window.GIS.task.updateTask(taskId, { status: 'failed', error: err.message, completedAt: Date.now() });
+      }
       addMessage('请求失败: ' + err.message, 'system');
     } finally {
       _resetUIAfterStop();
@@ -738,6 +789,19 @@ try {
       content.innerHTML = text;
     }
     bubble.appendChild(content);
+
+    // 用户消息：在气泡底部显示 skill chip 标签
+    if (type === 'user' && options.chips && options.chips.length > 0) {
+      var chipsRow = document.createElement('div');
+      chipsRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;';
+      options.chips.forEach(function(chip) {
+        var chipEl = document.createElement('div');
+        chipEl.style.cssText = 'display:inline-flex;align-items:center;padding:0 8px;height:22px;border-radius:11px;background:var(--primary-container,#1c1b1b);color:var(--on-primary,#fff);font-size:11px;font-weight:600;line-height:1;user-select:none;';
+        chipEl.textContent = '/' + chip.name;
+        chipsRow.appendChild(chipEl);
+      });
+      bubble.appendChild(chipsRow);
+    }
 
     if (options.code) {
       const codeBlock = document.createElement('div');

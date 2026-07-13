@@ -378,30 +378,32 @@ window.GIS = window.GIS || {};
   var _lastRightClickLatLng = null;
 
   function initContextMenu() {
-    mapInstance.on('contextmenu', function(e) {
-      // 归一化坐标到标准 -180~180 范围
-      var lat = Math.min(90, Math.max(-90, e.latlng.lat));
-      var lng = ((e.latlng.lng + 180) % 360 + 360) % 360 - 180;
-      _lastRightClickLatLng = { lat: lat, lng: lng };
-      e.originalEvent.preventDefault();
-      _showContextMenu(e.originalEvent.clientX, e.originalEvent.clientY, _lastRightClickLatLng);
-    });
-    document.addEventListener('click', function(e) {
-      if (!e.target.closest('.map-context-menu')) _hideContextMenu();
-    });
-    var menuEl = document.getElementById('mapContextMenu');
-    if (menuEl) {
-      menuEl.addEventListener('click', function(e) {
-        e.stopPropagation();
-        var item = e.target.closest('.context-menu-item');
-        if (!item) return;
-        var action = item.getAttribute('data-action');
-        var latlng = _lastRightClickLatLng;
-        _hideContextMenu();
-        if (!latlng) return;
-        _handleCtxAction(action, latlng);
+      mapInstance.on('contextmenu', function(e) {
+        // 归一化坐标到标准 -180~180 范围
+        var lat = Math.min(90, Math.max(-90, e.latlng.lat));
+        var lng = ((e.latlng.lng + 180) % 360 + 360) % 360 - 180;
+        _lastRightClickLatLng = { lat: lat, lng: lng };
+        e.originalEvent.preventDefault();
+        _showContextMenu(e.originalEvent.clientX, e.originalEvent.clientY, _lastRightClickLatLng);
       });
-    }
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest('.map-context-menu')) _hideContextMenu();
+      });
+      var menuEl = document.getElementById('mapContextMenu');
+      if (menuEl) {
+        menuEl.addEventListener('click', function(e) {
+          e.stopPropagation();
+          var item = e.target.closest('.context-menu-item');
+          if (!item) return;
+          var action = item.getAttribute('data-action');
+          var latlng = _lastRightClickLatLng;
+          // 只隐藏菜单，十字准星保留在地图上（发送后不消失）
+          var el = document.getElementById('mapContextMenu');
+          if (el) el.style.display = 'none';
+          if (!latlng) return;
+          _handleCtxAction(action, latlng);
+        });
+      }
   }
 
   function _showContextMenu(x, y, latlng) {
@@ -426,36 +428,27 @@ window.GIS = window.GIS || {};
     _hideCrosshair();
     var lat = latlng.lat, lng = latlng.lng;
 
-    var mapEl = document.getElementById('map');
-    if (!mapEl) return;
-    var rect = mapEl.getBoundingClientRect();
-
-    // Container 固定在"地图区域"的视口位置上，overflow:hidden 裁剪掉超出地图的范围
     var container = document.createElement('div');
     container.id = 'crosshair-overlay';
-    container.style.cssText = 'position:fixed;left:' + rect.left + 'px;top:' + rect.top + 'px;width:' + rect.width + 'px;height:' + rect.height + 'px;pointer-events:none;z-index:9999;overflow:hidden;';
+    container.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:9999;';
 
-    // 将视口坐标转成地图区域相对坐标
-    var rx = x - rect.left;
-    var ry = y - rect.top;
-
-    // 竖线（被 overflow:hidden 裁剪，只在地图区域内显示）
+    // 竖线
     var vLine = document.createElement('div');
-    vLine.style.cssText = 'position:absolute;left:' + rx + 'px;top:0;width:1px;height:100%;background:#666;opacity:0.5;';
+    vLine.style.cssText = 'position:fixed;left:' + x + 'px;top:0;width:1px;height:100%;background:#666;opacity:0.5;pointer-events:none;';
     // 横线
     var hLine = document.createElement('div');
-    hLine.style.cssText = 'position:absolute;left:0;top:' + ry + 'px;width:100%;height:1px;background:#666;opacity:0.5;';
+    hLine.style.cssText = 'position:fixed;left:0;top:' + y + 'px;width:100%;height:1px;background:#666;opacity:0.5;pointer-events:none;';
     // 中心圆点
     var dot = document.createElement('div');
-    dot.style.cssText = 'position:absolute;left:' + (rx - 5) + 'px;top:' + (ry - 5) + 'px;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #333;box-sizing:border-box;';
+    dot.style.cssText = 'position:fixed;left:' + (x - 5) + 'px;top:' + (y - 5) + 'px;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #333;box-sizing:border-box;pointer-events:none;';
     // 坐标标签
     var label = document.createElement('div');
     label.textContent = lat.toFixed(5) + ', ' + lng.toFixed(5);
-    var labelStyle = 'position:absolute;font-size:11px;font-family:monospace;padding:2px 6px;border-radius:3px;white-space:nowrap;line-height:1.5;color:#fff;background:rgba(0,0,0,0.75);';
-    if (ry > 40) {
-      label.style.cssText = labelStyle + 'left:' + (rx + 10) + 'px;top:' + (ry - 22) + 'px;';
+    var labelStyle = 'position:fixed;font-size:11px;font-family:monospace;padding:2px 6px;border-radius:3px;white-space:nowrap;line-height:1.5;color:#fff;background:rgba(0,0,0,0.75);pointer-events:none;';
+    if (y - 22 > 0) {
+      label.style.cssText = labelStyle + 'left:' + (x + 10) + 'px;top:' + (y - 22) + 'px;';
     } else {
-      label.style.cssText = labelStyle + 'left:' + (rx + 10) + 'px;top:' + (ry + 10) + 'px;';
+      label.style.cssText = labelStyle + 'left:' + (x + 10) + 'px;top:' + (y + 10) + 'px;';
     }
 
     container.appendChild(vLine);

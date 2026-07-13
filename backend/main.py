@@ -50,6 +50,7 @@ class ChatRequest(BaseModel):
     api_key: Optional[str] = None         # API 密钥，前端 localStorage 传来，用完即弃
     provider: str = "deepseek"            # 模型提供商：deepseek 或 glm
     force_skills: list = []              # 用户通过 chip 标签指定的技能
+    amap_key: Optional[str] = None        # 高德地图 Web API 密钥
 
 class TestKeyRequest(BaseModel):
     api_key: str                          # 要测试的 DeepSeek API 密钥
@@ -68,7 +69,7 @@ class BaiduExtractRequest(BaseModel):
 async def chat(request: ChatRequest):
     loop = asyncio.get_event_loop()
     response = await loop.run_in_executor(None, functools.partial(
-        chat_with_ai, request.message, request.session_id, request.api_key, request.provider, request.force_skills
+        chat_with_ai, request.message, request.session_id, request.api_key, request.provider, request.force_skills, request.amap_key
     ))
     result = {"response": response}
     # 如果有最新生成的 GeoJSON，一起返回给前端
@@ -368,3 +369,16 @@ async def upload(file: UploadFile = File(...)):
             return {"error": f"CSV 读取失败: {str(e)[:200]}"}
 
     return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .zip(含shp)"}
+
+
+# ===== 图层检测接口 =====
+class InspectLayerRequest(BaseModel):
+    geojson: dict
+    name: str = ""
+
+@app.post("/api/layer/inspect")
+async def inspect_layer(request: InspectLayerRequest):
+    from backend.services.layer_service import inspect_geojson
+    result = inspect_geojson(request.geojson)
+    result["name"] = request.name
+    return result

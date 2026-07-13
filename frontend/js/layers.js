@@ -70,6 +70,11 @@ window.GIS = window.GIS || {};
         <td class="col-type"><span class="layer-type">${escapeHtml(layer.geometry_type || '未知')}</span></td>
         <td class="col-actions">
           <div class="layer-actions">
+            <button class="layer-action-btn" data-action="inspect" data-id="${layer.layer_id || ''}" title="检查图层">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+            </button>
             <button class="layer-action-btn" data-action="analyze" data-id="${layer.layer_id || ''}" title="发送给AI分析">
               <svg><use href="assets/icons.svg#icon-ai-send"/></svg>
             </button>
@@ -315,6 +320,7 @@ window.GIS = window.GIS || {};
       if (action === 'delete') removeLayer(id);
       if (action === 'download') downloadLayer(id);
       if (action === 'analyze') analyzeLayer(id);
+      if (action === 'inspect') showLayerInspector(id);
     });
   }
 
@@ -324,8 +330,143 @@ window.GIS = window.GIS || {};
     return div.innerHTML;
   }
 
+  // ===== 图层检查器 =====
+
+  /** 前端快速统计 GeoJSON 基础信息 */
+  function _fastInspect(geojson) {
+    var info = { featureCount: 0, geometryType: '', attrFields: {}, bbox: null, nullGeom: 0 };
+    if (!geojson) return info;
+    var features = [];
+    if (geojson.type === 'FeatureCollection') features = geojson.features || [];
+    else if (geojson.type === 'Feature') features = [geojson];
+    else return info;
+
+    info.featureCount = features.length;
+    var types = new Set();
+    var allLngs = [], allLats = [];
+
+    features.forEach(function(f) {
+      var geom = f.geometry;
+      var props = f.properties || {};
+
+      for (var k in props) {
+        if (!info.attrFields[k]) info.attrFields[k] = typeof props[k];
+      }
+
+      if (!geom) { info.nullGeom++; return; }
+      if (geom.type) types.add(geom.type);
+
+      // 提取坐标
+      function collect(c) {
+        if (!c || !c.length) return;
+        if (typeof c[0] === 'number') { allLngs.push(c[0]); allLats.push(c[1]); }
+        else c.forEach(collect);
+      }
+      collect(geom.coordinates);
+    });
+
+    info.geometryType = types.size ? Array.from(types).join(', ') : '无几何';
+    if (allLngs.length) {
+      info.bbox = [
+        Math.min.apply(null, allLngs),
+        Math.min.apply(null, allLats),
+        Math.max.apply(null, allLngs),
+        Math.max.apply(null, allLats),
+      ];
+    }
+    return info;
+  }
+
+  /** 打开图层检查器面板 */
+  async function showLayerInspector(layerId) {
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+
+    var geojson = layer.geojson;
+    if (!geojson && GIS.map && GIS.map.getGeoJSON) {
+      geojson = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+    }
+    if (!geojson) {
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+        window.GIS.chat.addMessage('图层「' + (layer.filename || '未命名') + '」无可用数据', 'system');
+      }
+      return;
+    }
+
+    // 前端快速统计
+    var local = _fastInspect(geojson);
+
+    // 后端补充检查 CRS
+    var remote = {};
+    try {
+      if (window.GIS.api && typeof window.GIS.api.inspectLayer === 'function') {
+        remote = await window.GIS.api.inspectLayer(geojson, layer.filename || '');
+      }
+    } catch(e) {
+      console.warn('[GIS Layers] 后端检测失败:', e);
+    }
+
+    // 组装检查结果
+    var crsStr = remote.crs || '未知（仅前端检测）';
+    var crsKnown = remote.crs_known !== false;
+    var crsBadge = crsKnown
+      ? '<span style="color:#2e7d32;font-weight:600;">✓</span>'
+      : '<span style="color:#d32f2f;font-weight:600;">?</span>';
+
+    var attrHtml = '';
+    var attrFields = remote.attr_fields || local.attrFields || {};
+    var attrKeys = Object.keys(attrFields);
+    if (attrKeys.length > 0) {
+      attrHtml = '<table class="inspector-attr-table"><tr><th>字段</th><th>类型</th></tr>';
+      attrKeys.forEach(function(k) {
+        attrHtml += '<tr><td>' + escapeHtml(k) + '</td><td>' + escapeHtml(attrFields[k]) + '</td></tr>';
+      });
+      attrHtml += '</table>';
+    } else {
+      attrHtml = '<span style="color:var(--ui-gray-300);">无属性字段</span>';
+    }
+
+    var bbox = remote.bbox || local.bbox;
+    var bboxStr = bbox
+      ? bbox.map(function(v) { return v.toFixed(6); }).join(', ')
+      : '无法计算';
+
+    var invalidCount = remote.invalid_geom_count !== undefined ? remote.invalid_geom_count : '未检测';
+
+    var panel = document.getElementById('layerInspector');
+    var body = document.getElementById('inspectorBody');
+    var title = document.getElementById('inspectorTitle');
+    if (!panel || !body) return;
+
+    if (title) title.textContent = layer.filename || '图层检查';
+
+    body.innerHTML =
+      '<div class="inspector-section">' +
+        '<div class="inspector-row"><span class="inspector-label">要素数</span><span class="inspector-value">' + (remote.feature_count ?? local.featureCount) + '</span></div>' +
+        '<div class="inspector-row"><span class="inspector-label">几何类型</span><span class="inspector-value">' + escapeHtml(remote.geometry_type || local.geometryType) + '</span></div>' +
+        '<div class="inspector-row"><span class="inspector-label">来源</span><span class="inspector-value">' + escapeHtml(layer.source || '未知') + '</span></div>' +
+        '<div class="inspector-row"><span class="inspector-label">CRS</span><span class="inspector-value">' + crsBadge + ' ' + escapeHtml(crsStr) + '</span></div>' +
+        '<div class="inspector-row"><span class="inspector-label">边界 (minX, minY, maxX, maxY)</span><span class="inspector-value" style="font-family:var(--font-mono);font-size:var(--fs-11);">' + escapeHtml(bboxStr) + '</span></div>' +
+        '<div class="inspector-row"><span class="inspector-label">空几何</span><span class="inspector-value">' + (remote.null_geom_count ?? local.nullGeom) + '</span></div>' +
+        '<div class="inspector-row"><span class="inspector-label">无效几何</span><span class="inspector-value">' + invalidCount + '</span></div>' +
+      '</div>' +
+      '<div class="inspector-section">' +
+        '<div class="inspector-section-title">属性字段 (' + attrKeys.length + ')</div>' +
+        attrHtml +
+      '</div>';
+
+    panel.style.display = 'flex';
+  }
+
+  /** 关闭图层检查器 */
+  function closeInspector() {
+    var panel = document.getElementById('layerInspector');
+    if (panel) panel.style.display = 'none';
+  }
+
   GIS.layers = {
-    init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer, analyzeLayer,
+    init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer,
+    analyzeLayer, showLayerInspector, closeInspector,
     getLayers: () => [...layerData],
   };
 })();

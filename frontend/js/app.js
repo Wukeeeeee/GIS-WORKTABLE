@@ -54,7 +54,14 @@ window.GIS = window.GIS || {};
       console.warn('[GIS] AOI模块未加载');
     }
 
-    // 6. 绑定全局快捷键 / 事件
+    // 6. 初始化任务模块
+    if (GIS.task && typeof GIS.task.init === 'function') {
+      GIS.task.init();
+    } else {
+      console.warn('[GIS] 任务模块未加载');
+    }
+
+    // 7. 绑定全局快捷键 / 事件
     bindGlobalEvents();
 
     console.log('[GIS] 应用初始化完成');
@@ -78,6 +85,26 @@ window.GIS = window.GIS || {};
       toggleBtn.addEventListener('click', function() {
         layerPanel.classList.toggle('collapsed');
         toggleBtn.classList.toggle('active');
+      });
+    }
+
+    // 图层检查器关闭按钮
+    var inspectorClose = document.getElementById('inspectorClose');
+    if (inspectorClose) {
+      inspectorClose.addEventListener('click', function() {
+        if (GIS.layers && typeof GIS.layers.closeInspector === 'function') {
+          GIS.layers.closeInspector();
+        }
+      });
+    }
+
+    // 设置弹窗打开时，如果切换到历史记录面板则刷新列表
+    var settingsBtn = document.getElementById('settingsBtn');
+    if (settingsBtn) {
+      settingsBtn.addEventListener('click', function() {
+        if (window.GIS.task && typeof window.GIS.task.getTasks === 'function') {
+          // re-render will happen via renderAll on next open
+        }
       });
     }
   }

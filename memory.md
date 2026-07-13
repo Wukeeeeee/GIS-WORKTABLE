@@ -4,6 +4,87 @@
 
 ---
 
+## 2026-07-13（续10）：接入高德地图 Web API
+
+### 改动清单
+
+#### 前端 — index.html
+- **设置弹窗新增高德 API Key 输入**：在 API 密钥面板 GLM 下方新增"高德地图 Web API"配置卡片（`amapApiKeyInput`），含密钥输入框、显隐切换、保存按钮、状态 badge。
+
+#### 前端 — js/api.js
+- **新增 getAmapKey/setAmapKey**：用 `gis_amap_api_key` localStorage key 存储高德密钥。
+- **chat() 自动附带 amap_key**：发送聊天请求时，自动将高德密钥字段 `amap_key` 传给后端。
+
+#### 后端 — main.py
+- **ChatRequest 新增 amap_key 字段**：`Optional[str]`，接收前端传来的高德密钥。
+
+#### 后端 — services/ai_service.py
+- **`_current_amap_key` 全局变量**：在 chat_with_ai 中接收并存储高德密钥。
+- **execute_python 注入 AMAP_KEY 环境变量**：子进程通过 `os.environ.get('AMAP_KEY', '')` 获取高德密钥，AI 编写的 Python 代码可直接调用高德 Web API。
+- **SYSTEM_PROMPT 新增高德章节**：说明 AMAP_KEY 获取方式、GCJ-02→WGS-84 转换约束、offset 每页 25 条/最多 200 条、API 端点示例。
+- **SYSTEM_PROMPT GLM 版同样更新**。
+- **GLM 路由新增 amap 标签**。
+- **execute_python 可用库添加 requests**。
+
+#### 技能文件
+- **skills/amap.md**：完整高德 Web API 文档，包含：
+  - GCJ-02→WGS-84 转换代码
+  - 关键字/周边/多边形搜索 POI 参数说明
+  - 天气查询（实况+预报）
+  - 地理/逆地理编码
+  - 行政区域查询
+  - POI 分类编码表
+  - 使用工作流（调用→转坐标→加载地图）
+
+### 额度参考
+| 服务 | 月配额 |
+|------|--------|
+| 搜索 POI（关键字/周边/多边形/ID） | 5000 次 |
+| 天气查询 | 5000 次 |
+| 地理/逆地理编码 | 大量 |
+| 行政区域查询 | 大量 |
+
+---
+
+## 2026-07-13（续9）：skill chip 在已发送消息中保留
+
+### 改动清单
+
+#### 前端 — chat.js
+- **send() 捕获 chips 快照**：发送前将 `_skillChips.slice()` 存入 `chipsSnapshot`，传给 `addMessage` 的 options.chips。之后芯片在发送框中清除（API 返回后），但已发送气泡中仍显示。
+- **addMessage() 渲染芯片**：用户消息气泡底部新增 chip 行，显示 `/buffer` 等黑色圆角标签，与输入框中的 chip 风格一致。
+
+---
+
+## 2026-07-13（续8）：十字准星发送后保留 + heatmap 用 DataV 非百度爬取
+
+### 改动清单
+
+#### 前端 — map.js
+- **十字准星发送后保留**：右键菜单点击发送后，不再调用 `_hideContextMenu()`（该函数同时隐藏菜单和十字准星），改为只隐藏菜单，十字准星继续留在地图上供用户参考。点击地图其他位置时正常消失。
+
+#### 后端 — ai_service.py
+- **SYSTEM_PROMPT 修正**：第 402 行「任何数据都先 search_web」改为「统计数据才 search_web，行政边界优先用 datav_boundary」，避免 AI 用百度爬取替代 DataV。
+- **新增热力图工作流**：SYSTEM_PROMPT 新增「热力图生成」章节，明确：datav_boundary 拿边界 → search_web 搜统计 → execute_python 在边界内采样 → create_heatmap。禁止用百度/高德 AOI 替代。
+
+#### 技能文件
+- `skills/heatmap.md`：新增「从城市名生成热力图的工作流」章节，明确 datav_boundary 优先，禁止 web 爬取百度地图。
+
+---
+
+## 2026-07-13（续7）：十字准星 viewport 固定 + 历史面板注册
+
+### 改动清单
+
+#### 前端 — map.js
+- **十字准星重写**：所有子元素（竖线/横线/圆点/标签）从 `position:absolute` 相对于容器改为 `position:fixed` 直接使用视口坐标 `(x, y)`。移除对地图容器 `getBoundingClientRect()` 的依赖，缩放/拖拽时不再偏移。
+- 容器 `#crosshair-overlay` 改为 `position:fixed; left:0; top:0; width:100%; height:100%` 全屏占位，仅作为统一移除的父节点。
+
+#### 前端 — index.html
+- **`panels` 映射表新增 `history`**：`var panels = {...}` 缺少 `history: document.getElementById('panelHistory')`，导致侧边栏"历史记录"点击无对应面板显示。
+
+---
+
 ## 2026-07-13（续6）：布局修复 + 连续绘制 + 图层AI分析 + 删除优化
 
 ### 改动清单

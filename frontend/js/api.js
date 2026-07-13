@@ -16,6 +16,7 @@ window.GIS.api = (() => {
   // 密钥存在浏览器本地，每次发请求时带上，后端用完就丢不存盘
   const DS_STORAGE_KEY = 'gis_deepseek_api_key';
   const GLM_STORAGE_KEY = 'gis_glm_api_key';
+  const AMAP_STORAGE_KEY = 'gis_amap_api_key';
   const MODEL_STORAGE_KEY = 'gis_selected_model';
   const MODEL_STATUS_KEY = 'gis_model_status';
 
@@ -44,6 +45,20 @@ window.GIS.api = (() => {
       localStorage.setItem(GLM_STORAGE_KEY, key);
     } else {
       localStorage.removeItem(GLM_STORAGE_KEY);
+    }
+  }
+
+  /** 从 localStorage 读取保存的高德地图密钥 */
+  function getAmapKey() {
+    return localStorage.getItem(AMAP_STORAGE_KEY) || '';
+  }
+
+  /** 把高德地图密钥保存到 localStorage */
+  function setAmapKey(key) {
+    if (key) {
+      localStorage.setItem(AMAP_STORAGE_KEY, key);
+    } else {
+      localStorage.removeItem(AMAP_STORAGE_KEY);
     }
   }
 
@@ -123,7 +138,8 @@ window.GIS.api = (() => {
           session_id: sessionId,
           api_key: apiKey || undefined,
           provider,
-          force_skills: forceSkills
+          force_skills: forceSkills,
+          amap_key: getAmapKey() || undefined
         })
       });
     } finally {
@@ -165,6 +181,17 @@ window.GIS.api = (() => {
   async function getLayers()        { /* TODO: GET /layers */ }
   async function getLayer(layerId)  { /* TODO: GET /layers/:id */ }
   async function deleteLayer(layerId) { /* TODO: DELETE /layers/:id */ }
+
+  /** 检查图层元数据（前端可先算基础信息，后端补充 CRS 等） */
+  async function inspectLayer(geojson, name) {
+    const res = await fetch(`${BASE_URL}/api/layer/inspect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ geojson, name }),
+    });
+    if (!res.ok) throw new Error(`Inspect API error: ${res.status}`);
+    return res.json();
+  }
 
   // ===== 下载导出 =====
   /** @param {string} layerId @param {'geojson'|'shp'|'gpkg'} [format='geojson'] */
@@ -223,9 +250,11 @@ window.GIS.api = (() => {
     saveProject, loadProject, listProjects,
     healthCheck, testApiKey, testGLMApiKey,
     getApiKey, setApiKey, getGLMApiKey, setGLMApiKey,
+    getAmapKey, setAmapKey,
     getSelectedModel, setSelectedModel,
     getModelStatus, setModelStatus, clearModelStatus,
-    BASE_URL, DS_STORAGE_KEY, GLM_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
+    inspectLayer,
+    BASE_URL, DS_STORAGE_KEY, GLM_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };
 })();
 
