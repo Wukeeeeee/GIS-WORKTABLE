@@ -130,8 +130,7 @@ backend/              # 后端服务
     amap_service.py   # 高德 Web API（POI搜索/坐标转换）
     datav_service.py  # DataV 行政边界（省市区三级/WGS-84直出）
     log_service.py    # 问答日志
-    gaode_aoi_service.py  # 高德 AOI 建筑轮廓
-    baidu_aoi_service.py  # 百度 AOI 建筑轮廓
+    baidu_aoi_service.py  # 百度 AOI 建筑轮廓（已被 unified 替代，保留源文件备用）
   tests/
     test_geometry.py  # 27 个几何操作单元测试
     test_layer_inspect.py  # 图层检查器测试
@@ -154,6 +153,14 @@ prompt_glm.md         # GLM 系统提示词文档
 AGPL v3 — 详见 [LICENSE](LICENSE)。你可以自由使用、修改和分发，但任何修改后的版本必须同样以 AGPL v3 开源。
 
 ## 更新日志
+
+**2026-07-15**
+- 重构 AOI 提取工具，删除 gaode_aoi 和 baidu_aoi 独立工具，统一为 unified_aoi_search 和 unified_aoi_extract
+- 五个图层控制工具合并为 layer_control，按 action 参数区分操作
+- 工具总数从 25 降到 18，功能不变
+- 抽出辅助函数简化 execute_python（文件重命名、chart 清理）
+- 新增 skills/arcpy.md 技能文档，AI 用 GeoPandas/Shapely 写 ArcPy 风格代码
+- 补上 backend __init__.py，修复包导入报错
 
 **2026-07-14**
 - 新增 measure_area 精确面积测量工具（自动 UTM 投影 + Albers 交叉验证）
