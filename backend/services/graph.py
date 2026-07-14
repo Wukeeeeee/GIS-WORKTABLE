@@ -200,13 +200,19 @@ def run_agent(
     try:
         result = agent.invoke(
             {"messages": messages},
-            {"recursion_limit": 50},
+            {"recursion_limit": 120},
         )
     except Exception as e:
         import traceback
         traceback.print_exc()
+        error_msg = str(e)
+        if "recursion_limit" in error_msg or "RecursionError" in error_msg:
+            friendly = "AI 在处理复杂任务时超限。已优化限制，请重试。如仍有问题，请简化请求描述。"
+            print(f"[GIS] 递归超限: {error_msg}", flush=True)
+        else:
+            friendly = f"AI 服务调用失败: {error_msg}"
         return {
-            "response": f"AI 服务调用失败: {str(e)}",
+            "response": friendly,
             "layers": [],
             "images": [],
             "heatmap": None,
@@ -244,7 +250,7 @@ def run_agent(
                 )
                 corrected = agent.invoke(
                     {"messages": final_messages + [fix_msg]},
-                    {"recursion_limit": 30},
+                    {"recursion_limit": 40},
                 )
                 corr_msgs = corrected.get("messages", [])
                 for msg in reversed(corr_msgs):
@@ -304,7 +310,7 @@ def run_agent_stream(
     try:
         for step in agent.stream(
             {"messages": messages},
-            {"recursion_limit": 50},
+            {"recursion_limit": 120},
             stream_mode="values",
         ):
             msgs = step.get("messages", [])
@@ -369,7 +375,7 @@ def run_agent_stream(
                 )
                 corrected = agent.invoke(
                     {"messages": msgs + [fix_msg]},
-                    {"recursion_limit": 30},
+                    {"recursion_limit": 40},
                 )
                 corr_msgs = corrected.get("messages", [])
                 for msg in reversed(corr_msgs):

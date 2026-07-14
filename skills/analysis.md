@@ -10,6 +10,22 @@
 - `gdf.to_crs(epsg=4326)` — 投影转换
 - `gdf.overlay(gdf2, how='intersection')` — 叠置分析
 
+## 字段计算器（field_calculate）
+AI 对已有图层添加计算字段时，**优先用 field_calculate 工具**，不要写裸 pandas。
+
+### 适用场景
+- 添加面积字段（如"面积*0.0015"将亩转平方公里）
+- 计算人口密度（"人口/面积"）
+- 类型转换（int/float/str）
+- 属性合并（"列A + 列B"）
+
+### 字段计算器规则
+1. 先调 `get_registered_layers()` 确认图层名存在
+2. 调 `field_calculate(layer_name="图层名", expression="人口/面积", new_field="人口密度", field_type="float")`
+3. field_calculate 会自动执行表达式、自动更新地图图层，**不需要再打印 GeoJSON**
+4. 表达式语法就是 Python 表达式，直接引用字段名
+5. 如果字段计算器失败（如字段名不存在），查 `get_layer_detail` 确认字段名后重试
+
 ## 图层联动
 1. `get_registered_layers()` 查看当前图层列表
 2. `get_layer_detail("图层名")` 查看具体数据

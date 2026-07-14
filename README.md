@@ -151,6 +151,20 @@ prompt_glm.md         # GLM 系统提示词文档
 ## 更新日志
 
 **2026-07-14**
+- 新增 field_calculate 字段计算器工具（AI 专用，避免裸写 pandas 错误）
+- 修复 pyproj 沙箱白名单缺失（已被 AI 在提示词中引用但实际被拦截）
+- 新增 rasterio 沙箱白名单（为后续栅格支持准备）
+- 更新 skills/analysis.md 字段计算器使用指南
+
+**2026-07-14**
+- 修复 fetch_webpage 处理 None 返回导致的崩溃（_html_to_markdown 不再剥离 `<a>` 标签，搜索结果可正常提取）
+- 增大 LangGraph recursion_limit：主 Agent 50→120，修正 Agent 30→40
+- 简化沙箱安全加固（移除 builtins.open 路径覆盖），避免 matplotlib 字体加载失败
+- 新增搜索防死循环保护（超过 30 次自动停止）
+- 优化提示词：搜索节制、国际搜索尝试当地语言
+- 右键发送位置新增「这是新的坐标，和之前的问题无关」防止 AI 混淆历史坐标
+
+**2026-07-14**
 - 修复 Bug、聊天框溢出、架构冗余清理
 - 新增 Self-Verifying Agent（执行 → 校验 → 自动修正）
 - 新增 KV 缓存优化（首 token 从 10-30s 降至 0.5-1s）
