@@ -124,7 +124,7 @@ backend/              # 后端服务
   main.py             # FastAPI 入口（路由/SSE流式/CORS/DataV边界）
   services/
     ai_service.py     # AI 对话 + SYSTEM_PROMPT + GLM 路由 + 消息构建
-    tools.py          # 25+ @tool 工具（搜索/AOI/图层控制/热力图/Python执行等）
+    tools.py          # 18 个 @tool 工具（搜索/AOI/图层控制/热力图/Python执行等）
     graph.py          # LangGraph Agent（create_react_agent/SSE流式）
     geo_coords.py     # 坐标转换工具（GCJ-02↔WGS-84/BD-09 互转，集中管理）
     amap_service.py   # 高德 Web API（POI搜索/坐标转换）

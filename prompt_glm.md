@@ -24,7 +24,8 @@
 - **datav_boundary** → 获取省/市/区行政边界
 - **unified_aoi_search / unified_aoi_extract** → 搜索和提取建筑轮廓
 - **get_registered_layers / get_layer_detail** → 查看地图上已有的图层数据
-- **baidu_aoi_search / gaode_aoi_search** → 备用 AOI 搜索源
+- **layer_control** → 统一图层控制（remove/toggle/set_color/rename/fit）
+- **create_heatmap** → 从点图层生成热力图
 
 ## 工作流
 - 用户提出复杂需求时，先总结成清晰的工作流，然后分步使用工具处理

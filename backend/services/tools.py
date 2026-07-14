@@ -492,6 +492,52 @@ def _ast_sandbox_check(code: str) -> str | None:
 
 
 # ============================================================
+# 辅助函数 —— 图片/HTML 重命名 & chart 清理
+# ============================================================
+
+def _rename_output_files(new_files: set, suffix: str, temp_dir: str):
+    """为输出目录中新生成的文件加时间戳前缀，避免文件名冲突。"""
+    ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+    for fname in sorted(new_files):
+        if not fname.lower().endswith(suffix):
+            continue
+        src = os.path.join(temp_dir, fname)
+        dest_name = f'{ts}_{fname}'
+        dest = os.path.join(temp_dir, dest_name)
+        try:
+            os.rename(src, dest)
+        except Exception:
+            shutil.copy2(src, dest)
+            try:
+                os.remove(src)
+            except Exception:
+                pass
+        _add_pending_item(f'/output/{dest_name}', dest)
+
+
+def _cleanup_charts(temp_dir: str, max_charts: int = 20):
+    """按 mtime 清理旧 chart，保留最近 max_charts 张。"""
+    charts = glob.glob(os.path.join(temp_dir, 'chart_*.png'))
+    if len(charts) <= max_charts:
+        return
+    charts.sort(key=os.path.getmtime)
+    for old in charts[:-max_charts]:
+        try:
+            os.remove(old)
+        except Exception:
+            pass
+
+
+def _extract_geojson(name: str, data: dict):
+    """推送并注册一个 GeoJSON 图层，返回要素数量。"""
+    _push_layer(name, data)
+    _register_layer(name, data)
+    if data.get('type') == 'FeatureCollection':
+        return len(data.get('features', []))
+    return 1
+
+
+# ============================================================
 # 工具: execute_python — 执行 GIS 代码（三层轻量沙箱）
 # ============================================================
 
@@ -522,8 +568,8 @@ def execute_python(code: str) -> str:
     start_time = time.time()
 
     try:
-        # OSM 国内镜像配置（osmnx 默认连德国被墙，改用镜像）
-        _font_setup = r"""
+        # 环境初始化：OSM 镜像 + matplotlib 中文字体
+        _setup_blocks = r"""
 try:
     import osmnx as _ox
     _ox.settings.overpass_url = 'https://overpass-api.surly.dev/api/interpreter'
@@ -546,13 +592,13 @@ for _fp in [
         plt.rcParams['font.family'] = 'sans-serif'
         plt.rcParams['axes.unicode_minus'] = False
         break
-    except:
+    except Exception:
         continue
 plt.style.use("ggplot")
 """
 
         _amap_injection = f'_AMAP_KEY = {_current_amap_key!r}\n\n'
-        _final_code = _amap_injection + _font_setup.rstrip() + '\n\n' + code
+        _final_code = _amap_injection + _setup_blocks.rstrip() + '\n\n' + code
 
         temp_path = os.path.join(exec_dir, '_user_code_.py')
         with open(temp_path, 'w', encoding='utf-8') as f:
@@ -607,46 +653,16 @@ plt.style.use("ggplot")
             after_files = set(os.listdir(_temp_output_dir))
             new_files = after_files - before_files
 
-            new_images = {f for f in new_files if f.lower().endswith('.png')}
-            if new_images:
-                ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-                for img_name in sorted(new_images):
-                    img_path = os.path.join(_temp_output_dir, img_name)
-                    dest_name = f'{ts}_{img_name}'
-                    dest = os.path.join(_temp_output_dir, dest_name)
-                    try:
-                        os.rename(img_path, dest)
-                    except Exception:
-                        shutil.copy2(img_path, dest)
-                        try: os.remove(img_path)
-                        except: pass
-                    _add_pending_item(f'/output/{dest_name}', dest)
-                all_charts = sorted(glob.glob(os.path.join(_temp_output_dir, 'chart_*.png')))
-                while len(all_charts) > 20:
-                    try: os.remove(all_charts.pop(0))
-                    except: pass
-
-            new_html = {f for f in new_files if f.lower().endswith('.html')}
-            if new_html:
-                ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-                for h_name in sorted(new_html):
-                    h_path = os.path.join(_temp_output_dir, h_name)
-                    dest_name = f'{ts}_{h_name}'
-                    dest = os.path.join(_temp_output_dir, dest_name)
-                    try:
-                        os.rename(h_path, dest)
-                    except Exception:
-                        shutil.copy2(h_path, dest)
-                        try: os.remove(h_path)
-                        except: pass
-                    _add_pending_item(f'/output/{dest_name}', dest)
+            _rename_output_files(new_files, '.png', _temp_output_dir)
+            _rename_output_files(new_files, '.html', _temp_output_dir)
+            _cleanup_charts(_temp_output_dir)
         except Exception:
             pass
 
         if not output:
             return f'代码执行成功（{elapsed:.1f}s，无输出）'
 
-        # 检测 GeoJSON
+        # 检测 GeoJSON（先逐行扫，再整体解析）
         geojson_found = False
         feature_count = 0
         output_lines = output.split('\n')
@@ -659,12 +675,7 @@ plt.style.use("ggplot")
                 if isinstance(data, dict) and data.get('type') in ('FeatureCollection', 'Feature'):
                     now_str = datetime.datetime.now().strftime('%H%M%S')
                     name = data.get('name', f'分析结果_{now_str}')
-                    _push_layer(name, data)
-                    _register_layer(name, data)
-                    if data['type'] == 'FeatureCollection':
-                        feature_count = len(data.get('features', []))
-                    else:
-                        feature_count = 1
+                    feature_count = _extract_geojson(name, data)
                     geojson_found = True
                     break
             except (json.JSONDecodeError, ValueError):
@@ -676,9 +687,7 @@ plt.style.use("ggplot")
                 if isinstance(data, dict) and data.get('type') in ('FeatureCollection', 'Feature'):
                     now_str = datetime.datetime.now().strftime('%H%M%S')
                     name = data.get('name', f'分析结果_{now_str}')
-                    _push_layer(name, data)
-                    _register_layer(name, data)
-                    feature_count = len(data.get('features', [])) if data['type'] == 'FeatureCollection' else 1
+                    feature_count = _extract_geojson(name, data)
                     geojson_found = True
             except (json.JSONDecodeError, ValueError):
                 pass
@@ -758,12 +767,12 @@ def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: i
 
 
 # ============================================================
-# 工具: baidu_aoi_search / baidu_aoi_extract（AOI 建筑轮廓）
+# 工具: unified_aoi_search / unified_aoi_extract（百度 AOI）
 # ============================================================
 
 @tool
-def baidu_aoi_search(query: str) -> str:
-    """搜索百度地图地点，返回候选列表供用户选择（AOI建筑轮廓提取的第一步）"""
+def unified_aoi_search(query: str) -> str:
+    """搜索地点轮廓，返回候选列表在聊天框显示"""
     try:
         from backend.services.baidu_aoi_service import search_suggestions
         suggestions = search_suggestions(query)
@@ -771,19 +780,19 @@ def baidu_aoi_search(query: str) -> str:
             return "搜索失败：未找到候选地点"
         tagged = [{"name": s["name"], "address": s.get("address", ""), "id": s["uid"], "source": "baidu"} for s in suggestions]
         _pending_aoi_suggestions["latest"] = {"suggestions": tagged, "sent": False}
-        lines = [f"已搜索到 {len(tagged)} 个候选："]
-        for i, s in enumerate(tagged[:10], 1):
+        lines = [f"共 {len(tagged)} 个候选地点："]
+        for i, s in enumerate(tagged[:15], 1):
             addr = f" ({s['address']})" if s.get("address") else ""
             lines.append(f"  {i}. {s['name']}{addr}")
-        lines.append("用户会在聊天框中点击选择，发来『已选择AOI候选: 名称 | ID: xxx | 来源: baidu』格式的消息")
+        lines.append("候选已显示在聊天框，等待用户点击选择")
         return "\n".join(lines)
     except Exception as e:
         return f"搜索失败: {str(e)}"
 
 
 @tool
-def baidu_aoi_extract(uid: str, name: str) -> str:
-    """根据百度UID提取建筑轮廓，转WGS84，加载到地图（AOI建筑轮廓提取的第二步）"""
+def unified_aoi_extract(uid: str, name: str) -> str:
+    """根据用户选择的候选提取建筑轮廓（百度数据源），转WGS84加载到地图"""
     try:
         from backend.services.baidu_aoi_service import extract_boundary
         geojson = extract_boundary(uid, name)
@@ -794,108 +803,6 @@ def baidu_aoi_extract(uid: str, name: str) -> str:
         return f"未能提取 {name} 的AOI轮廓"
     except Exception as e:
         return f"提取失败: {str(e)}"
-
-
-# ============================================================
-# 工具: gaode_aoi_search / gaode_aoi_extract（高德 AOI）
-# ============================================================
-
-@tool
-def gaode_aoi_search(query: str) -> str:
-    """搜索高德地图地点（备用源，仅限中国），返回候选列表供用户选择（AOI建筑轮廓提取的第一步）"""
-    try:
-        from backend.services.gaode_aoi_service import search_suggestions
-        suggestions = search_suggestions(query)
-        if not suggestions:
-            return "搜索失败：未找到候选地点"
-        tagged = [{"name": s["name"], "address": s.get("address", ""), "id": s["id"], "source": "gaode"} for s in suggestions]
-        _pending_aoi_suggestions["latest"] = {"suggestions": tagged, "sent": False}
-        lines = [f"已搜索到 {len(tagged)} 个候选（备用源）："]
-        for i, s in enumerate(tagged[:10], 1):
-            addr = f" ({s['address']})" if s.get("address") else ""
-            lines.append(f"  {i}. {s['name']}{addr}")
-        lines.append("用户会在聊天框中点击选择")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"搜索失败: {str(e)}"
-
-
-@tool
-def gaode_aoi_extract(poi_id: str, name: str) -> str:
-    """根据高德ID提取建筑轮廓，转WGS84（备用源，AOI建筑轮廓提取的第二步）"""
-    try:
-        from backend.services.gaode_aoi_service import extract_boundary
-        geojson = extract_boundary(poi_id, name)
-        if geojson:
-            _push_layer(name, geojson)
-            _register_layer(name + "_AOI", geojson)
-            return f"成功提取 {name} 的AOI轮廓，已加载到地图"
-        return f"未能提取 {name} 的AOI轮廓"
-    except Exception as e:
-        return f"提取失败: {str(e)}"
-
-
-# ============================================================
-# 工具: unified_aoi_search / unified_aoi_extract（双源合一）
-# ============================================================
-
-@tool
-def unified_aoi_search(query: str) -> str:
-    """搜索地点轮廓（多数据源），返回合并候选列表在聊天框显示"""
-    all_suggestions = []
-    errors = []
-    lock = threading.Lock()
-
-    def search_baidu():
-        try:
-            from backend.services.baidu_aoi_service import search_suggestions as bd_search
-            for s in bd_search(query):
-                with lock:
-                    all_suggestions.append({"name": s["name"], "address": s.get("address", ""), "id": s["uid"], "source": "baidu"})
-        except Exception as e:
-            with lock: errors.append(f"源A: {str(e)[:60]}")
-
-    def search_gaode():
-        try:
-            from backend.services.gaode_aoi_service import search_suggestions as gd_search
-            for s in gd_search(query):
-                with lock:
-                    all_suggestions.append({"name": s["name"], "address": s.get("address", ""), "id": s["id"], "source": "gaode"})
-        except Exception as e:
-            with lock: errors.append(f"源B: {str(e)[:60]}")
-
-    search_baidu()
-    search_gaode()
-
-    if not all_suggestions:
-        err_str = "；".join(errors) if errors else "未知错误"
-        return f"搜索失败（{err_str}），可以换关键词重试"
-
-    seen = set()
-    unique = []
-    for s in all_suggestions:
-        key = f"{s['name']}|{s['source']}"
-        if key not in seen and s['name']:
-            seen.add(key); unique.append(s)
-
-    _pending_aoi_suggestions["latest"] = {"suggestions": unique, "sent": False}
-    lines = [f"共 {len(unique)} 个候选地点："]
-    for i, s in enumerate(unique[:15], 1):
-        addr = f" ({s['address']})" if s.get("address") else ""
-        lines.append(f"  {i}. {s['name']}{addr}")
-    lines.append("候选已显示在聊天框，等待用户点击选择")
-    return "\n".join(lines)
-
-
-@tool
-def unified_aoi_extract(poi_id: str, name: str, source: str) -> str:
-    """根据用户选择的候选提取轮廓（多数据源自动调度）"""
-    if source == "baidu":
-        return baidu_aoi_extract(poi_id, name)
-    elif source == "gaode":
-        return gaode_aoi_extract(poi_id, name)
-    else:
-        return f"未知来源: {source}"
 
 
 # ============================================================
@@ -1220,38 +1127,35 @@ def get_session_logs(n: int = 20) -> str:
 
 
 # ============================================================
-# 工具: 图层控制（返回前端指令）
+# 工具: layer_control — 统一图层控制
 # ============================================================
 
 @tool
-def remove_layer(name: str) -> str:
-    """从地图和图层面板移除指定图层。参数：图层名（必须是已注册的图层名之一）"""
-    _pending_layer_ops.append({"action": "remove", "name": name})
-    return f"已标记移除图层: {name}"
+def layer_control(action: str, name: str = "", new_name: str = "", color: str = "") -> str:
+    """控制地图上的图层。action 为操作类型：
+    - remove：删除指定图层（只需 name）
+    - toggle：切换显隐（只需 name）
+    - set_color：修改颜色（需 name + color，如 #ff0000）
+    - rename：重命名（需 name + new_name）
+    - fit：缩放到图层范围（只需 name）"""
+    if action == "remove":
+        _pending_layer_ops.append({"action": "remove", "name": name})
+        return f"已标记移除图层: {name}"
+    elif action == "toggle":
+        _pending_layer_ops.append({"action": "toggle", "name": name})
+        return f"已标记切换图层显隐: {name}"
+    elif action == "set_color":
+        _pending_layer_ops.append({"action": "set_color", "name": name, "color": color})
+        return f"已标记修改图层颜色: {name} → {color}"
+    elif action == "rename":
+        _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
+        return f"已标记重命名图层: {name} → {new_name}"
+    elif action == "fit":
+        _pending_layer_ops.append({"action": "fit", "name": name})
+        return f"已标记缩放到图层: {name}"
+    else:
+        return f"未知操作: {action}，可选：remove / toggle / set_color / rename / fit"
 
-@tool
-def toggle_layer(name: str) -> str:
-    """切换指定图层的显隐（显示/隐藏）。参数：图层名（必须是已注册的图层名之一）"""
-    _pending_layer_ops.append({"action": "toggle", "name": name})
-    return f"已标记切换图层显隐: {name}"
-
-@tool
-def set_layer_color(name: str, color: str) -> str:
-    """修改指定图层的颜色。参数：图层名、颜色（十六进制如 #ff0000）"""
-    _pending_layer_ops.append({"action": "set_color", "name": name, "color": color})
-    return f"已标记修改图层颜色: {name} → {color}"
-
-@tool
-def rename_layer(name: str, new_name: str) -> str:
-    """重命名指定图层。参数：原图层名、新图层名"""
-    _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
-    return f"已标记重命名图层: {name} → {new_name}"
-
-@tool
-def fit_layer(name: str) -> str:
-    """缩放地图视图到指定图层的范围。参数：图层名（必须是已注册的图层名之一）"""
-    _pending_layer_ops.append({"action": "fit", "name": name})
-    return f"已标记缩放到图层: {name}"
 
 # ============================================================
 # 工具列表（供 LangGraph Agent 注册）
@@ -1265,10 +1169,6 @@ tools = [
     save_file,
     execute_python,
     amap_poi_search,
-    baidu_aoi_search,
-    baidu_aoi_extract,
-    gaode_aoi_search,
-    gaode_aoi_extract,
     unified_aoi_search,
     unified_aoi_extract,
     get_registered_layers,
@@ -1279,9 +1179,5 @@ tools = [
     measure_area,
     clear_layers,
     get_session_logs,
-    remove_layer,
-    toggle_layer,
-    set_layer_color,
-    rename_layer,
-    fit_layer,
+    layer_control,
 ]

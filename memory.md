@@ -4,6 +4,18 @@
 
 ---
 
+## 2026-07-14（续）
+
+- 重构 AOI 提取工具，删除废弃的 baidu_aoi_search 和 gaode_aoi_search，统一为 unified_aoi_search 和 unified_aoi_extract
+- 五个图层控制工具合并为 layer_control，按 action 参数区分操作类型
+- 工具总数从 25 个降到 18 个，功能不变，减少 AI 选择困惑
+- 抽出文件重命名和 chart 清理等辅助函数，简化 execute_python
+- 扩展 skills/arcpy.md 编写指南，增加 GeoPandas/Shapely 写 ArcPy 风格代码的完整映射表和工作流模板
+- 更新 SYSTEM_PROMPT 引用 arcpy.md，对齐新工具结构
+- 更新 skills/aoi.md、prompt_deepseek.md、prompt_glm.md 保持一致
+
+---
+
 ## 2026-07-14
 
 - 属性表改为可编辑 input，支持保存、添加行、删除行、空值填充、空行警告
@@ -23,6 +35,7 @@
 - 设置弹窗新增关于面板，含 SVG Logo、项目介绍、GitHub 链接
 - 移除设置弹窗保存设置按钮
 - 代码审查修复：phaseTimer 清理、placeholder 竞争、marked 全局覆盖、conversation_history 截断、SHP 返回名去 .zip、escapeHtml 统一、main.py 内联 import 上提、graph.py 未使用 import 清理、app.js 超时检测、toQuadkey 边界检查、代理环境变量大小写兼容、Gaode URL 编码、_add_pending_item 初始化
+- ArcPy 整合：创建 `backend/services/arcpy/` 包结构（analysis/management/conversion/da/sa/mp/stats 等 17 个模块），后取消手动实现，改为仅保留 `skills/arcpy.md` 作为代码编写指南。不注册冗余 LangChain 工具，AI 通过 `execute_python` + GeoPandas/Shapely 自行写 arcpy 风格代码。
 
 ---
 
