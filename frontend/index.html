@@ -573,7 +573,6 @@
           if (window.GIS.task && typeof window.GIS.task.clearUnsaved === 'function') {
             window.GIS.task.clearUnsaved();
           }
-          if (typeof updateGreeting === 'function') updateGreeting();
         } catch (e) {
           window.GIS.chat.addMessage('操作失败: ' + e.message, 'system');
         }

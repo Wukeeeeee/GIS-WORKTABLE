@@ -1,11 +1,12 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
 import subprocess, datetime, time, os, asyncio, functools
-from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, request_cancel, get_boundary, _TEMP_OUTPUT_DIR
+from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, request_cancel, _TEMP_OUTPUT_DIR
 from backend.services.tools import _register_layer
 from backend.services.layer_service import inspect_geojson
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
@@ -114,7 +115,46 @@ async def chat(request: ChatRequest):
             "options": heatmap.get("options", {}),
         }
 
+    # 图层控制操作
+    layer_ops = result.get("layer_ops", [])
+    if layer_ops:
+        output["layer_ops"] = layer_ops
+
     return output
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """SSE 流式聊天接口，实时推送 Agent 执行进度"""
+    from backend.services.graph import run_agent_stream
+    from backend.services.tools import reset_state
+    from backend.services.ai_service import _build_system_content, _build_langgraph_messages, _get_or_create_history
+
+    provider = request.provider or "deepseek"
+    amap_key = request.amap_key or ""
+    reset_state(amap_key)
+
+    # 构建 system prompt + 消息（复用 ai_service 的构建逻辑）
+    force_skills = request.force_skills or []
+    history = _get_or_create_history(request.session_id or "default", request.message)
+    system_content, skill_text, _ = _build_system_content(provider, request.message, force_skills)
+    langgraph_messages = _build_langgraph_messages(system_content, history)
+
+    return StreamingResponse(
+        run_agent_stream(
+            messages=langgraph_messages,
+            api_key=request.api_key or "",
+            provider=provider,
+            amap_key=amap_key,
+            skill_text=skill_text,
+            original_message=request.message,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 @app.post("/api/cancel")
 async def cancel_request():
@@ -157,14 +197,13 @@ async def test_key_glm(request: TestKeyRequest):
 
 @app.get('/api/boundary')
 async def get_boundary_api(place: str = "长沙市"):
-    """从OSM获取行政边界，返回GeoJSON"""
-    import json, os
+    """从阿里云 DataV 获取行政边界（国内可访问），返回 GeoJSON"""
     try:
-        import osmnx as ox
-        ox.settings.timeout = 30
-        gdf = ox.geocode_to_gdf(place)
-        geojson = json.loads(gdf.to_json())
-        return {"geojson": geojson, "name": f"{place}边界"}
+        from backend.services.datav_service import fetch_boundary
+        data = fetch_boundary(place)
+        if data is None:
+            return {"error": f"DataV 未找到「{place}」的边界数据"}
+        return {"geojson": data, "name": f"{place}边界"}
     except Exception as e:
         return {"error": str(e)}
 

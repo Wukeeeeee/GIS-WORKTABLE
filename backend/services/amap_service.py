@@ -8,54 +8,10 @@
 API 文档: skills/amap.md
 """
 
-import math
 import json
 from typing import Optional, List
 
-
-# ============================================================
-# 坐标转换: GCJ-02 → WGS-84（高德火星 → 全球标准）
-# ============================================================
-
-def _transform_lat(lng: float, lat: float) -> float:
-    ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat + 0.1 * lng * lat + 0.2 * math.sqrt(abs(lng))
-    ret += (20.0 * math.sin(6.0 * lng * math.pi) + 20.0 * math.sin(2.0 * lng * math.pi)) * 2.0 / 3.0
-    ret += (20.0 * math.sin(lat * math.pi) + 40.0 * math.sin(lat / 3.0 * math.pi)) * 2.0 / 3.0
-    ret += (160.0 * math.sin(lat / 12.0 * math.pi) + 320.0 * math.sin(lat * math.pi / 30.0)) * 2.0 / 3.0
-    return ret
-
-
-def _transform_lng(lng: float, lat: float) -> float:
-    ret = 300.0 + lng + 2.0 * lat + 0.1 * lng * lng + 0.1 * lng * lat + 0.1 * math.sqrt(abs(lng))
-    ret += (20.0 * math.sin(6.0 * lng * math.pi) + 20.0 * math.sin(2.0 * lng * math.pi)) * 2.0 / 3.0
-    ret += (20.0 * math.sin(lng * math.pi) + 40.0 * math.sin(lng / 3.0 * math.pi)) * 2.0 / 3.0
-    ret += (150.0 * math.sin(lng / 12.0 * math.pi) + 300.0 * math.sin(lng / 30.0 * math.pi)) * 2.0 / 3.0
-    return ret
-
-
-def _is_out_of_china(lng: float, lat: float) -> bool:
-    return not (72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271)
-
-
-def gcj02_to_wgs84(lng: float, lat: float) -> tuple:
-    """GCJ-02 → WGS-84，迭代法精度 0.1m"""
-    if _is_out_of_china(lng, lat):
-        return lng, lat
-    a = 6378245.0
-    ee = 0.00669342162296594323
-    wgs_lng, wgs_lat = lng, lat
-    for _ in range(5):
-        dlat = _transform_lat(wgs_lng - 105.0, wgs_lat - 35.0)
-        dlng = _transform_lng(wgs_lng - 105.0, wgs_lat - 35.0)
-        radlat = wgs_lat / 180.0 * math.pi
-        magic = math.sin(radlat)
-        magic = 1 - ee * magic * magic
-        sqrtmagic = math.sqrt(magic)
-        dlat = (dlat * 180.0) / ((a * (1 - ee)) / (magic * sqrtmagic) * math.pi)
-        dlng = (dlng * 180.0) / (a / sqrtmagic * math.cos(radlat) * math.pi)
-        wgs_lng -= dlng
-        wgs_lat -= dlat
-    return wgs_lng, wgs_lat
+from backend.services.geo_coords import gcj02_to_wgs84
 
 
 # ============================================================

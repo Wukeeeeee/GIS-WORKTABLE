@@ -19,7 +19,14 @@ window.GIS.utils = {
   }
 };
 window.GIS.api = (() => {
-  const BASE_URL = window.location.origin || 'http://localhost:8000';
+  const BASE_URL = (function() {
+    try {
+      // 优先使用 localStorage 覆盖（方便部署到其他域名时配置）
+      var stored = localStorage.getItem('gis_api_base_url');
+      if (stored) return stored;
+    } catch(e) { /* localStorage 不可用（如 Safari 无痕模式） */ }
+    return 'http://localhost:8000';
+  })();
 
   // ===== API 密钥管理 (localStorage) =====
   // 密钥存在浏览器本地，每次发请求时带上，后端用完就丢不存盘
@@ -29,63 +36,55 @@ window.GIS.api = (() => {
   const MODEL_STORAGE_KEY = 'gis_selected_model';
   const MODEL_STATUS_KEY = 'gis_model_status';
 
+  function _lsGet(key) { try { return localStorage.getItem(key); } catch(e) { return null; } }
+  function _lsSet(key, val) { try { localStorage.setItem(key, val); } catch(e) {} }
+  function _lsRemove(key) { try { localStorage.removeItem(key); } catch(e) {} }
+
   /** 从 localStorage 读取保存的 DeepSeek 密钥 */
   function getApiKey() {
-    return localStorage.getItem(DS_STORAGE_KEY) || '';
+    return _lsGet(DS_STORAGE_KEY) || '';
   }
 
   /** 把 DeepSeek 密钥保存到 localStorage（关掉浏览器再打开还在） */
   function setApiKey(key) {
-    if (key) {
-      localStorage.setItem(DS_STORAGE_KEY, key);
-    } else {
-      localStorage.removeItem(DS_STORAGE_KEY);
-    }
+    if (key) { _lsSet(DS_STORAGE_KEY, key); } else { _lsRemove(DS_STORAGE_KEY); }
   }
 
   /** 从 localStorage 读取保存的 GLM 密钥 */
   function getGLMApiKey() {
-    return localStorage.getItem(GLM_STORAGE_KEY) || '';
+    return _lsGet(GLM_STORAGE_KEY) || '';
   }
 
   /** 把 GLM 密钥保存到 localStorage */
   function setGLMApiKey(key) {
-    if (key) {
-      localStorage.setItem(GLM_STORAGE_KEY, key);
-    } else {
-      localStorage.removeItem(GLM_STORAGE_KEY);
-    }
+    if (key) { _lsSet(GLM_STORAGE_KEY, key); } else { _lsRemove(GLM_STORAGE_KEY); }
   }
 
   /** 从 localStorage 读取保存的高德地图密钥 */
   function getAmapKey() {
-    return localStorage.getItem(AMAP_STORAGE_KEY) || '';
+    return _lsGet(AMAP_STORAGE_KEY) || '';
   }
 
   /** 把高德地图密钥保存到 localStorage */
   function setAmapKey(key) {
-    if (key) {
-      localStorage.setItem(AMAP_STORAGE_KEY, key);
-    } else {
-      localStorage.removeItem(AMAP_STORAGE_KEY);
-    }
+    if (key) { _lsSet(AMAP_STORAGE_KEY, key); } else { _lsRemove(AMAP_STORAGE_KEY); }
   }
 
   /** 获取保存的模型偏好 */
   function getSelectedModel() {
-    return localStorage.getItem(MODEL_STORAGE_KEY) || 'deepseek-routed';
+    return _lsGet(MODEL_STORAGE_KEY) || 'deepseek-routed';
   }
 
   /** 保存模型偏好 */
   function setSelectedModel(model) {
-    localStorage.setItem(MODEL_STORAGE_KEY, model);
+    _lsSet(MODEL_STORAGE_KEY, model);
   }
 
   // ===== 模型状态追踪 =====
   /** 获取指定模型的测速状态: 'untested' | 'online' | 'offline' */
   function getModelStatus(provider) {
     try {
-      var stored = JSON.parse(localStorage.getItem(MODEL_STATUS_KEY)) || {};
+      var stored = JSON.parse(_lsGet(MODEL_STATUS_KEY)) || {};
       return stored[provider] || 'untested';
     } catch (e) {
       return 'untested';
@@ -95,21 +94,31 @@ window.GIS.api = (() => {
   /** 设置指定模型的测速状态 */
   function setModelStatus(provider, status) {
     try {
-      var stored = JSON.parse(localStorage.getItem(MODEL_STATUS_KEY)) || {};
+      var stored = JSON.parse(_lsGet(MODEL_STATUS_KEY)) || {};
       stored[provider] = status;
-      localStorage.setItem(MODEL_STATUS_KEY, JSON.stringify(stored));
-    } catch (e) {
-      // ignore
-    }
+      _lsSet(MODEL_STATUS_KEY, JSON.stringify(stored));
+    } catch (e) {}
   }
 
   /** 清除所有模型的测速状态 */
   function clearModelStatus() {
-    localStorage.removeItem(MODEL_STATUS_KEY);
+    _lsRemove(MODEL_STATUS_KEY);
   }
 
   async function request(endpoint, options = {}) {
-    // TODO: 通用 fetch — 拼接 URL、headers、错误处理
+    // 通用 fetch 请求（暂未使用）
+    const url = `${BASE_URL}${endpoint}`;
+    try {
+      const res = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      console.warn(`[GIS API] 请求失败: ${endpoint}`, e);
+      throw e;
+    }
   }
 
   // ===== 文件上传 =====

@@ -6,9 +6,10 @@
 import json, os, hashlib, time
 from typing import Optional
 from playwright.sync_api import sync_playwright
-import transbigdata
 from shapely.geometry import Polygon
 import geopandas as gpd
+
+from backend.services.geo_coords import bd09mc_to_wgs84
 
 # ===== 缓存 =====
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "cache", "aoi")
@@ -41,15 +42,6 @@ def parse_geo_to_points(geo_str):
         try: points.append((float(tokens[i]), float(tokens[i+1])))
         except: pass
     return points
-
-def bd09mc_to_wgs84(points):
-    result = []
-    for x, y in points:
-        bd09_lon, bd09_lat = transbigdata.bd09mctobd09(x, y)
-        gcj02_lon, gcj02_lat = transbigdata.bd09togcj02(bd09_lon, bd09_lat)
-        wgs84_lon, wgs84_lat = transbigdata.gcj02towgs84(gcj02_lon, gcj02_lat)
-        result.append((round(wgs84_lon,6), round(wgs84_lat,6)))
-    return result
 
 def points_to_geojson(points, name):
     if len(points) < 3: return None

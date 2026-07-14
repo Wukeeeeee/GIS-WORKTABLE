@@ -359,9 +359,8 @@ _linkRenderer.link = function(token) {
         const modelName = (curProvider === 'glm-routed' || curProvider === 'glm') ? 'GLM-4.7-Flash+' : 'DeepSeek V4 Flash+';
         addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
       // 恢复输入框（placeholder 还没被改过，不需要还原）
-      inputEl.disabled = false;
-      sendBtn.disabled = false;
-      sendBtn.style.opacity = '1';
+      if (inputEl) inputEl.disabled = false;
+      if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = '1'; }
       const modelBar2 = document.querySelector('.chat-input-model-bar');
       if (modelBar2) modelBar2.classList.remove('is-disabled');
       return;
@@ -382,10 +381,14 @@ _linkRenderer.link = function(token) {
       el.style.display = 'none';
     }
     // 显示加载状态：输入框显示提示文字，禁用按钮和模型选择
-    inputEl.placeholder = 'AI正在回复中...';
-    inputEl.disabled = true;
-    sendBtn.disabled = true;
-    sendBtn.style.opacity = '0.5';
+    if (inputEl) {
+      inputEl.placeholder = 'AI正在回复中...';
+      inputEl.disabled = true;
+    }
+    if (sendBtn) {
+      sendBtn.disabled = true;
+      sendBtn.style.opacity = '0.5';
+    }
     // 禁用模型选择器（请求中不允许换模型）
     const modelBar = document.querySelector('.chat-input-model-bar');
     if (modelBar) modelBar.classList.add('is-disabled');
@@ -470,7 +473,100 @@ _linkRenderer.link = function(token) {
         window.GIS.task.updateTask(taskId, { status: 'planning' });
       }
 
-      const result = await GIS.api.chat(text, 'default', provider, forceSkills);
+      // === 流式执行：通过 SSE 实时获取 Agent 进度 ===
+      var result = null;
+      var streamUrl = GIS.api.BASE_URL + '/api/chat/stream';
+      try {
+        const streamRes = await fetch(streamUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: text,
+            session_id: 'default',
+            api_key: (provider === 'glm' || provider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey(),
+            provider: provider,
+            force_skills: forceSkills,
+            amap_key: window.GIS.api.getAmapKey() || undefined
+          }),
+        });
+        if (!streamRes.ok) throw new Error('Stream API error: ' + streamRes.status);
+
+        // 实时进度：保留模型名 + 流光，下方累积工具步骤
+        var stepLog = document.createElement('div');
+        stepLog.className = 'step-log';
+        stepLog.style.cssText = 'margin-top:4px;font-size:11px;line-height:1.7;';
+        if (loadingBubble) loadingBubble.insertBefore(stepLog, loadingBubble.lastChild);
+
+        var reader = streamRes.body.getReader();
+        var decoder = new TextDecoder();
+        var buffer = '';
+        var lastStepEl = null;
+
+        while (true) {
+          var chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+
+          var lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (var _i = 0; _i < lines.length; _i++) {
+            var line = lines[_i];
+            if (!line.startsWith('data: ')) continue;
+            var evt = JSON.parse(line.slice(6));
+            try {
+              if (evt.type === 'tool_start') {
+                var toolLabel = evt.name + (evt.input ? '(' + evt.input.slice(0, 60) + ')' : '');
+                var stepEl = document.createElement('div');
+                stepEl.className = 'step-item step-running';
+                stepEl.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align:-2px;margin-right:4px;"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg><strong>' + GIS.utils.escapeHtml(toolLabel) + '</strong>';
+                stepLog.appendChild(stepEl);
+                // 滚动到最新
+                if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                lastStepEl = stepEl;
+              } else if (evt.type === 'tool_end') {
+                if (lastStepEl) {
+                  lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);">✓</span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
+                  lastStepEl.style.fontWeight = 'normal';
+                  lastStepEl.style.color = 'var(--ui-gray-400)';
+                }
+              } else if (evt.type === 'error') {
+                throw new Error(evt.message || 'Agent 执行失败');
+              } else if (evt.type === 'verifying') {
+                if (lastStepEl) {
+                  lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);">✓</span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
+                  lastStepEl.style.fontWeight = 'normal';
+                  lastStepEl.style.color = 'var(--ui-gray-400)';
+                }
+                var verifyEl = document.createElement('div');
+                verifyEl.className = 'step-item step-running';
+                verifyEl.innerHTML = '<span style="color:#ff9800;">⟳</span> <strong>校验结果...</strong>';
+                stepLog.appendChild(verifyEl);
+                lastStepEl = verifyEl;
+                if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+              } else if (evt.type === 'done') {
+                result = evt;
+                // 完成后折叠步骤日志
+                if (stepLog && stepLog.children.length > 1) {
+                  stepLog.style.maxHeight = '44px';
+                  stepLog.style.overflow = 'hidden';
+                  stepLog.style.cursor = 'pointer';
+                  stepLog.style.transition = 'max-height 0.25s';
+                  stepLog.title = '点击展开执行步骤';
+                  stepLog.addEventListener('click', function toggleLog() {
+                    var isCollapsed = stepLog.style.maxHeight === '44px';
+                    stepLog.style.maxHeight = isCollapsed ? stepLog.scrollHeight + 'px' : '44px';
+                  });
+                }
+              }
+            } catch (parseErr) {}
+          }
+        }
+      } catch (streamErr) {
+        // SSE 流失败时，降级到普通 API
+        console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
+        result = await GIS.api.chat(text, 'default', provider, forceSkills);
+      }
+
       // 发送后清除 chip 标签（已消费）
       _skillChips = [];
       _renderChips();
@@ -609,6 +705,46 @@ _linkRenderer.link = function(token) {
           });
         }
         addMessage('已清空所有图层', 'system');
+      }
+
+      // 如果 AI 返回了图层操作指令（移除/显隐/改色/重命名/缩放），逐个执行
+      if (result.layer_ops && result.layer_ops.length > 0) {
+        console.log('[GIS Chat] 收到图层操作指令:', result.layer_ops.length, '条');
+        result.layer_ops.forEach(function(op) {
+          var allLayers = window.GIS.layers && window.GIS.layers.getLayers ? window.GIS.layers.getLayers() : [];
+          var target = allLayers.find(function(l) {
+            return l._rawName === op.name || l.filename === op.name || l.layer_id === op.name;
+          });
+          switch (op.action) {
+            case 'remove':
+              if (target && window.GIS.layers) window.GIS.layers.removeLayer(target.layer_id);
+              break;
+            case 'toggle':
+              if (target && window.GIS.layers) window.GIS.layers.toggleVisibility(target.layer_id);
+              break;
+            case 'set_color':
+              if (target && window.GIS.layers) {
+                target.color = op.color;
+                window.GIS.layers.renderList();
+                if (GIS.map && GIS.map.setLayerColor) {
+                  GIS.map.setLayerColor(target._rawName || target.layer_id, op.color);
+                }
+              }
+              break;
+            case 'rename':
+              if (target && window.GIS.layers) {
+                target.filename = op.new_name;
+                target._rawName = op.new_name;
+                window.GIS.layers.renderList();
+              }
+              break;
+            case 'fit':
+              if (window.GIS.map && window.GIS.map.fitLayer) {
+                window.GIS.map.fitLayer(op.name);
+              }
+              break;
+          }
+        });
       }
 
       // 如果有待处理的 AOI 候选列表，显示在聊天框供点击选择

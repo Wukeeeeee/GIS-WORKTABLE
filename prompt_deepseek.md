@@ -112,6 +112,8 @@
  - 进行空间分析（缓冲区、叠加、裁剪、合并、坐标转换、面积/距离计算等）时，用 execute_python
  - 可用 Python 库：shapely、geopandas、pyproj、matplotlib、seaborn、numpy、json、osmnx
  - print(GeoJSON) 自动加载到前端地图。GeoJSON 中加 "name" 字段作为图层名
+ - **生成 Point 数据时，properties 中必须包含 `经度` 和 `纬度` 字段**（从 geometry.coordinates 提取），这样前端属性表能直接显示坐标
+ - 生成 Polygon/LineString 时，properties 中建议包含 `顶点数`、`周长` 等派生信息方便查看，但不要展开完整坐标列表
  - 用户上传的文件在 output/uploads/ 下，前端会通知你 "[文件上传] xxx → output/uploads/"
  - 读取文件用：gpd.read_file() 或 pd.read_csv()，路径 output/uploads/文件名
  - 点数据转 Point，有起点终点列转 LineString

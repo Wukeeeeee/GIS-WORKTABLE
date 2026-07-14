@@ -233,6 +233,7 @@ html, body {
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--margin-md);
   display: flex;
   flex-direction: column;
@@ -255,6 +256,7 @@ html, body {
   display: flex;
   gap: 8px;
   max-width: 90%;
+  min-width: 0;
 }
 
 .message-user {
@@ -294,6 +296,9 @@ html, body {
   line-height: 1.6;
   position: relative;
   white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  min-width: 0;
 }
 
 .message-bubble-ai {
@@ -953,9 +958,9 @@ html, body {
 .map-layer-table .col-vis { flex: 0 0 auto; width: 30px; display: flex; justify-content: center; }
 .map-layer-table .col-name { flex: 1; min-width: 0; padding-left: 2px; overflow: hidden; }
 .map-layer-table .col-name .layer-name { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.map-layer-table .col-type { flex: 0 0 auto; width: 50px; text-align: center; overflow: hidden; }
+.map-layer-table .col-type { flex: 0 0 auto; width: 70px; text-align: center; overflow: hidden; }
+.map-layer-table .col-actions { flex: 0 0 auto; width: 100px; display: flex; justify-content: center; gap: 1px; }
 .map-layer-table .col-type .layer-type { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.map-layer-table .col-actions { flex: 0 0 auto; width: 88px; display: flex; justify-content: center; gap: 2px; }
 
 /* 来源标识 */
 .layer-source {
@@ -1503,6 +1508,10 @@ html, body {
   0% { background-position: -200% center; }
   100% { background-position: 200% center; }
 }
+.step-log { font-size:11px; color:var(--ui-gray-600); font-family:var(--font-mono); border-left:2px solid var(--ui-gray-200); padding-left:8px; margin-top:4px; }
+.step-item { padding:1px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.step-running { color:var(--ui-gray-900); font-weight:500; }
+html.theme-dark .step-running { color:var(--on-surface); }
 
 /* ========== AI 回复 Markdown 样式 ========== */
 .message-bubble-ai h1,
@@ -1631,7 +1640,6 @@ html, body {
   width: 14px;
   height: 14px;
 }
-
 /* ========== 模型标记徽章（右上角圆角矩形） ========== */
 .msg-badge {
   display: inline-block;
@@ -2559,6 +2567,17 @@ html.theme-dark {
   background: var(--ui-white);
   outline: none;
 }
+.attr-cell-readonly {
+  background: var(--ui-gray-100);
+  color: var(--ui-gray-600);
+  cursor: default;
+  font-style: italic;
+  border-color: var(--ui-gray-150);
+}
+.attr-cell-readonly:hover {
+  border-color: var(--ui-gray-150);
+  background: var(--ui-gray-100);
+}
 .attr-del-btn {
   background: none;
   border: none;
@@ -2739,6 +2758,12 @@ html.theme-dark .upload-cancel-btn:hover {
 .inspector-data-table th {
   font-weight: 600;
   color: var(--ui-gray-400);
+  position: relative;
+}
+.col-resizer:hover {
+  background: var(--ui-gray-900);
+  opacity: 0.3;
+}
   font-size: var(--fs-10);
   text-transform: uppercase;
   font-family: var(--font-ui);
@@ -2810,6 +2835,15 @@ html.theme-dark .attr-cell:hover {
 html.theme-dark .attr-cell:focus {
   border-color: var(--on-surface);
   background: var(--surface-container-lowest);
+}
+html.theme-dark .attr-cell-readonly {
+  background: var(--surface-container-low);
+  color: var(--ui-gray-500);
+  border-color: var(--ui-gray-700);
+}
+html.theme-dark .attr-cell-readonly:hover {
+  background: var(--surface-container-low);
+  border-color: var(--ui-gray-700);
 }
 html.theme-dark .attr-del-btn {
   color: var(--on-surface-variant);

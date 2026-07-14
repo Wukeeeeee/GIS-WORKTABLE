@@ -144,7 +144,7 @@ window.GIS = window.GIS || {};
       geojson = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
     }
     if (!geojson) {
-      if (typeof addMessage === 'function') addMessage('无数据可下载', 'system');
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') window.GIS.chat.addMessage('无数据可下载', 'system');
       return;
     }
     var blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/geo+json;charset=utf-8' });
@@ -372,6 +372,28 @@ window.GIS = window.GIS || {};
     return window.GIS.utils ? window.GIS.utils.escapeHtml(str) : ('' + (str || ''));
   }
 
+  // ---- 几何坐标辅助函数 ----
+
+  /** 递归统计几何图形的顶点数 */
+  function _countCoords(c) {
+    if (!c || !c.length) return 0;
+    return typeof c[0] === 'number' ? 1 : c.reduce(function(s, v) { return s + _countCoords(v); }, 0);
+  }
+
+  /** 虚拟坐标列显示名映射 */
+  var VIRTUAL_DISPLAY = {
+    '_经度': '经度',
+    '_纬度': '纬度',
+    '_几何类型': '几何类型',
+    '_顶点数': '顶点数'
+  };
+  var VIRTUAL_KEYS_ALL = ['_经度', '_纬度', '_几何类型', '_顶点数'];
+
+  /** 判断图层是否为纯点图层 */
+  function _isPointLayer(features) {
+    return features.length > 0 && features.every(function(f) { return f.geometry && f.geometry.type === 'Point'; });
+  }
+
   // ===== 图层检查器 =====
 
   /** 前端快速统计 GeoJSON 基础信息 */
@@ -487,9 +509,22 @@ window.GIS = window.GIS || {};
     if (geojson.type === 'FeatureCollection') features = geojson.features || [];
     else if (geojson.type === 'Feature') features = [geojson];
 
+  // ---- 虚拟坐标列 ----
+    var virtualKeys = [];
+    if (features.length > 0) {
+      if (_isPointLayer(features)) {
+        virtualKeys.push('_经度');
+        virtualKeys.push('_纬度');
+      } else {
+        virtualKeys.push('_几何类型');
+        virtualKeys.push('_顶点数');
+      }
+    }
+    var displayKeys = virtualKeys.concat(attrKeys);
+
     // 构建可编辑属性数据表
     var dataHtml = '';
-    if (features.length > 0 && attrKeys.length > 0) {
+    if (features.length > 0 && displayKeys.length > 0) {
       dataHtml += '<div class="attr-toolbar">' +
         '<span class="inspector-section-title" style="margin-bottom:0;border:none;">属性数据 (' + features.length + ' 条)</span>' +
         '<div class="attr-toolbar-btns">' +
@@ -530,16 +565,27 @@ window.GIS = window.GIS || {};
         '<span class="attr-filter-count" id="attrFilterCount"></span>' +
       '</div>' +
       '<div class="inspector-data-wrap"><table class="inspector-data-table" id="attrDataTable"><thead><tr><th>#</th>';
-      attrKeys.forEach(function(k) { dataHtml += '<th>' + escapeHtml(k) + '</th>'; });
+      displayKeys.forEach(function(k) { dataHtml += '<th>' + escapeHtml(VIRTUAL_DISPLAY[k] || k) + '</th>'; });
       dataHtml += '<th style="width:32px;"></th></tr></thead><tbody>';
       features.forEach(function(f, i) {
         var props = f.properties || {};
         dataHtml += '<tr data-idx="' + i + '">';
         dataHtml += '<td class="data-idx">' + (i + 1) + '</td>';
-        attrKeys.forEach(function(k) {
-          var v = props[k];
-          var display = (v === null || v === undefined) ? '' : String(v);
-          dataHtml += '<td><input class="attr-cell" data-field="' + escapeHtml(k) + '" value="' + escapeHtml(display) + '" /></td>';
+        displayKeys.forEach(function(k) {
+          var isVirtual = VIRTUAL_KEYS_ALL.indexOf(k) !== -1;
+          var cellValue = '';
+          if (isVirtual) {
+            // 从 geometry 提取坐标/几何信息
+            if (k === '_经度') cellValue = (f.geometry && f.geometry.coordinates) ? f.geometry.coordinates[0].toFixed(6) : '';
+            else if (k === '_纬度') cellValue = (f.geometry && f.geometry.coordinates) ? f.geometry.coordinates[1].toFixed(6) : '';
+            else if (k === '_几何类型') cellValue = f.geometry ? f.geometry.type : 'null';
+            else if (k === '_顶点数') cellValue = f.geometry ? _countCoords(f.geometry.coordinates) : 0;
+          } else {
+            var v = props[k];
+            cellValue = (v === null || v === undefined) ? '' : String(v);
+          }
+          var readonlyAttr = isVirtual ? ' readonly class="attr-cell attr-cell-readonly"' : ' class="attr-cell"';
+          dataHtml += '<td><input' + readonlyAttr + ' data-field="' + escapeHtml(k) + '" value="' + escapeHtml(cellValue) + '" /></td>';
         });
         dataHtml += '<td><button class="attr-del-btn" data-idx="' + i + '" title="删除此行">×</button></td>';
         dataHtml += '</tr>';
@@ -604,7 +650,67 @@ window.GIS = window.GIS || {};
       });
     }
 
+    // 初始化列宽拖拽
+    _enableColumnResize('attrDataTable');
+
     panel.style.display = 'flex';
+  }
+
+  // ---- 属性表列宽拖拽 ----
+
+  function _enableColumnResize(tableId) {
+    var table = document.getElementById(tableId);
+    if (!table) return;
+    var thead = table.querySelector('thead');
+    if (!thead) return;
+    var ths = thead.querySelectorAll('th');
+    if (ths.length < 2) return;
+
+    ths.forEach(function(th, colIdx) {
+      // 跳过序号列和删除列
+      if (colIdx === 0) return;
+      if (colIdx === ths.length - 1) return;
+
+      var resizer = document.createElement('div');
+      resizer.className = 'col-resizer';
+      resizer.style.cssText = 'position:absolute;right:0;top:0;bottom:0;width:4px;cursor:col-resize;z-index:1;';
+      th.style.position = 'relative';
+      th.appendChild(resizer);
+
+      var startX = 0, startWidth = 0;
+      resizer.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+        startX = e.clientX;
+        startWidth = th.offsetWidth;
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+      });
+
+      function onMove(e) {
+        var diff = e.clientX - startX;
+        var newWidth = Math.max(30, startWidth + diff);
+        // 设置表头宽度
+        th.style.width = newWidth + 'px';
+        th.style.minWidth = newWidth + 'px';
+        // 同步设置该列所有数据格
+        table.querySelectorAll('tbody tr').forEach(function(tr) {
+          var cell = tr.querySelectorAll('td, th')[colIdx];
+          if (cell) {
+            cell.style.width = newWidth + 'px';
+            cell.style.minWidth = newWidth + 'px';
+          }
+        });
+      }
+
+      function onUp() {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
   }
 
   // ---- 属性表编辑函数 ----
@@ -641,6 +747,7 @@ window.GIS = window.GIS || {};
       var inputs = row.querySelectorAll('.attr-cell');
       var allEmpty = true;
       inputs.forEach(function(inp) {
+        if (inp.readOnly) return; // 跳过只读列（坐标/几何信息）
         var field = inp.dataset.field;
         var val = inp.value;
         if (fillVal && val === '') val = fillVal;
@@ -682,6 +789,17 @@ window.GIS = window.GIS || {};
     attrKeys.forEach(function(k) { props[k] = fillVal; });
 
     var newFeat = { type: 'Feature', geometry: null, properties: props };
+
+    // 新行默认取第一个要素的几何（让新行能显示在地图上）
+    if (features.length > 0 && features[0].geometry) {
+      var src = features[0].geometry;
+      if (src.type === 'Point') {
+        newFeat.geometry = { type: 'Point', coordinates: [src.coordinates[0], src.coordinates[1]] };
+      } else {
+        newFeat.geometry = JSON.parse(JSON.stringify(src));
+      }
+    }
+
     features.push(newFeat);
 
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });

@@ -266,8 +266,8 @@ window.GIS = window.GIS || {};
       style: mergedStyle,
       pointToLayer: function(feature, latlng) {
         return L.circleMarker(latlng, {
-          radius: 6, fillColor: mergedStyle.fillColor,
-          color: mergedStyle.color, weight: 2, opacity: 1, fillOpacity: 0.6,
+          radius: 2.5, fillColor: mergedStyle.fillColor,
+          color: mergedStyle.fillColor, weight: 0, opacity: 1, fillOpacity: 1,
         });
       },
       coordsToLatLng: function(coords) {

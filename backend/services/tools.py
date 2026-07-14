@@ -37,6 +37,7 @@ _pending_images: list = []          # 待推送到前端的图片/HTML
 _pending_aoi_suggestions: dict = {} # AOI 候选列表
 _pending_heatmap: dict = {"latest": None}
 _clear_layers_flag: bool = False
+_pending_layer_ops: list = []
 _current_amap_key: str = ""
 _temp_output_dir: str = ""          # 在 reset_state 时设置
 _workspace_dir: str = ""
@@ -51,6 +52,7 @@ def get_pending_state():
         "heatmap": _pending_heatmap.get("latest"),
         "clear_layers": _clear_layers_flag,
         "registered_layers": dict(_registered_layers),
+        "layer_ops": list(_pending_layer_ops),
     }
 
 
@@ -62,6 +64,7 @@ def reset_state(amap_key: str = ""):
     _pending_aoi_suggestions.clear()
     _pending_heatmap["latest"] = None
     _clear_layers_flag = False
+    _pending_layer_ops.clear()
     _current_amap_key = amap_key
 
 
@@ -266,7 +269,7 @@ def search_platform(platform: str, query: str) -> str:
     """搜索中国互联网平台的内容（B站/bilibili 等），零配置国内直连"""
     platform = platform.lower().strip()
 
-    if platform in ('bilibili', 'b站', 'b站'):
+    if platform in ('bilibili', 'b站'):
         try:
             import urllib.request, urllib.parse
             params = urllib.parse.urlencode({
@@ -567,13 +570,14 @@ def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: i
     if count == 0:
         return f"未找到「{keywords}」相关 POI"
 
-    # 自动推送到地图
-    _push_layer(f"{keywords}_POI", geojson, {"color": "#e74c3c", "fillColor": "#e74c3c"})
-    _register_layer(f"{keywords}_POI", geojson)
+    # 自动推送到地图（名称标注"高德已转WGS84"，说明坐标已转换）
+    layer_name = f"{keywords}_POI(高德已转WGS84)"
+    _push_layer(layer_name, geojson, {"color": "#e74c3c", "fillColor": "#e74c3c"})
+    _register_layer(layer_name, geojson)
 
     source_desc = "关键字搜索" if source == "text" else "周边搜索"
     feat_count = len(geojson.get("features", []))
-    return f"高德 {source_desc} 完成：找到 {count} 个「{keywords}」POI，已加载 {feat_count} 个点到地图"
+    return f"高德 {source_desc} 完成：找到 {count} 个「{keywords}」POI，原始坐标 GCJ-02 已转 WGS-84，已加载 {feat_count} 个点到地图（图层名已标注）"
 
 
 # ============================================================
@@ -880,6 +884,40 @@ def get_session_logs(n: int = 20) -> str:
 
 
 # ============================================================
+# 工具: 图层控制（返回前端指令）
+# ============================================================
+
+@tool
+def remove_layer(name: str) -> str:
+    """从地图和图层面板移除指定图层。参数：图层名（必须是已注册的图层名之一）"""
+    _pending_layer_ops.append({"action": "remove", "name": name})
+    return f"已标记移除图层: {name}"
+
+@tool
+def toggle_layer(name: str) -> str:
+    """切换指定图层的显隐（显示/隐藏）。参数：图层名（必须是已注册的图层名之一）"""
+    _pending_layer_ops.append({"action": "toggle", "name": name})
+    return f"已标记切换图层显隐: {name}"
+
+@tool
+def set_layer_color(name: str, color: str) -> str:
+    """修改指定图层的颜色。参数：图层名、颜色（十六进制如 #ff0000）"""
+    _pending_layer_ops.append({"action": "set_color", "name": name, "color": color})
+    return f"已标记修改图层颜色: {name} → {color}"
+
+@tool
+def rename_layer(name: str, new_name: str) -> str:
+    """重命名指定图层。参数：原图层名、新图层名"""
+    _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
+    return f"已标记重命名图层: {name} → {new_name}"
+
+@tool
+def fit_layer(name: str) -> str:
+    """缩放地图视图到指定图层的范围。参数：图层名（必须是已注册的图层名之一）"""
+    _pending_layer_ops.append({"action": "fit", "name": name})
+    return f"已标记缩放到图层: {name}"
+
+# ============================================================
 # 工具列表（供 LangGraph Agent 注册）
 # ============================================================
 
@@ -903,4 +941,9 @@ tools = [
     create_heatmap,
     clear_layers,
     get_session_logs,
+    remove_layer,
+    toggle_layer,
+    set_layer_color,
+    rename_layer,
+    fit_layer,
 ]
