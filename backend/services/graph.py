@@ -62,6 +62,15 @@ def build_llm(api_key: str, provider: str) -> ChatOpenAI:
             base_url="https://open.bigmodel.cn/api/paas/v4/",
             temperature=0.7,
         )
+    elif provider == "agnes":
+        return ChatOpenAI(
+            model="agnes-2.0-flash",
+            api_key=api_key,
+            base_url="https://apihub.agnes-ai.com/v1",
+            temperature=0.7,
+            max_tokens=4096,
+            timeout=60,
+        )
     else:
         return ChatOpenAI(
             model="deepseek-chat",

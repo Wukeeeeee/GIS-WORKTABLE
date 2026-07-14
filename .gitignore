@@ -36,3 +36,6 @@ cache/
 # AI 生成文件
 output/
 *.geojson
+
+# 开发阶段跟踪（本地，不提交）
+CURRENT

@@ -93,11 +93,13 @@ window.GIS = window.GIS || {};
     var modelNames = {
       'deepseek-routed': 'DeepSeek V4 Flash+',
       'glm-routed': 'GLM-4.7-Flash+',
+      'deepseek': 'DeepSeek V4 Flash',
+      'agnes': 'Agnes 2.0 Flash+',
     };
     var task = {
       id: String(_nextId++),
       goal: goal || '',
-      provider: provider || 'deepseek-routed',
+      provider: provider || 'glm-routed',
       model: modelNames[provider] || 'DeepSeek V4 Flash+',
       timestamp: Date.now(),
       completedAt: null,

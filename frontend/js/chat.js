@@ -404,10 +404,10 @@ _linkRenderer.link = function(token) {
 
     // 检查当前选中的模型是否已配置 API Key（优先用 providerOverride）
     const selModel = document.getElementById('modelSelector');
-    const curProvider = providerOverride || (selModel ? selModel.value : 'deepseek');
-    const hasKey = (curProvider === 'glm' || curProvider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
+    const curProvider = providerOverride || (selModel ? selModel.value : 'glm-routed');
+    const hasKey = curProvider === 'agnes' ? window.GIS.api.getAgnesApiKey() : (curProvider === 'glm' || curProvider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
     if (!hasKey) {
-        const modelName = (curProvider === 'glm-routed' || curProvider === 'glm') ? 'GLM-4.7-Flash+' : 'DeepSeek V4 Flash+';
+        const modelName = curProvider === 'agnes' ? 'Agnes 2.0 Flash+' : (curProvider === 'glm-routed' || curProvider === 'glm') ? 'GLM-4.7-Flash+' : 'DeepSeek V4 Flash+';
         addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
       // 恢复输入框（placeholder 还没被改过，不需要还原）
       if (inputEl) inputEl.disabled = false;
@@ -460,18 +460,20 @@ _linkRenderer.link = function(token) {
     let modelDisplayName = modelDisplayEl ? modelDisplayEl.textContent : 'AI';
     if (providerOverride === 'deepseek-routed') modelDisplayName = 'DeepSeek V4 Flash+'; else if (providerOverride === 'glm-routed') modelDisplayName = 'GLM-4.7-Flash+';
     else if (providerOverride === 'deepseek') modelDisplayName = 'DeepSeek V4 Flash';
+    else if (providerOverride === 'agnes') modelDisplayName = 'Agnes 2.0 Flash+';
     
 
     // 添加"模型名 思考中..."占位气泡，让用户知道 AI 正在处理
-    const isRouted = (providerOverride === 'deepseek-routed' || providerOverride === 'glm-routed');
+    const isRouted = (providerOverride === 'deepseek-routed' || providerOverride === 'glm-routed' || providerOverride === 'agnes');
     const loadingMsg = addMessage(modelDisplayName + ' 思考中...', 'ai', { noMarkdown: true });
     loadingMsg.id = 'ai-loading-msg';
 
-    // DS+ 模式：先显示 GLM 路由阶段，再切换到执行阶段
+    // 路由模式：先显示路由阶段，再切换到执行阶段
     if (isRouted) {
       const loadingContent = loadingMsg.querySelector('.message-bubble > div');
       if (loadingContent) {
         if (providerOverride === 'glm-routed') loadingContent.textContent = 'GLM-4.7-Flash+ 路由分析中...';
+        else if (providerOverride === 'agnes') loadingContent.textContent = 'Agnes 2.0 Flash+ GLM 路由分析中...';
         else loadingContent.textContent = 'DeepSeek V4 Flash+ GLM 路由分析中...';
       }
     }
@@ -489,7 +491,7 @@ _linkRenderer.link = function(token) {
     if (loadingBubble) loadingBubble.appendChild(timerWrapper);
 
     const startTime = Date.now();
-    // DS+ 模式：1.5 秒后从"GLM 路由中"切换到"执行中"
+    // 路由模式：1.5 秒后从"路由中"切换到"执行中"
     let phaseTimer = null;
     if (isRouted) {
       phaseTimer = setTimeout(function() {
@@ -497,6 +499,7 @@ _linkRenderer.link = function(token) {
         if (el) {
           const c = el.querySelector('.message-bubble > div');
           if (providerOverride === 'glm-routed') c.textContent = 'GLM-4.7-Flash+ 执行中...';
+          else if (providerOverride === 'agnes') c.textContent = 'Agnes 2.0 Flash+ 执行中...';
           else c.textContent = 'DeepSeek V4 Flash+ 执行中...';
         }
       }, 1500);
@@ -512,7 +515,7 @@ _linkRenderer.link = function(token) {
     try {
       // 读取当前选择的模型（优先用 providerOverride）
       const modelSelector = document.getElementById('modelSelector');
-      const rawProvider = providerOverride || (modelSelector ? modelSelector.value : 'deepseek'); const provider = rawProvider;
+      const rawProvider = providerOverride || (modelSelector ? modelSelector.value : 'glm-routed'); const provider = rawProvider;
       const forceSkills = _skillChips.map(function(c) { return CHIP_TO_SKILL[c.name]; }).filter(Boolean);
       // 解析 displayOpt 中的任务信息
       var taskId = displayOpt && displayOpt._taskId ? displayOpt._taskId : null;
@@ -541,7 +544,7 @@ _linkRenderer.link = function(token) {
           body: JSON.stringify({
             message: text,
             session_id: 'default',
-            api_key: (provider === 'glm' || provider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey(),
+            api_key: provider === 'agnes' ? window.GIS.api.getAgnesApiKey() : (provider === 'glm' || provider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey(),
             provider: provider,
             force_skills: forceSkills,
             amap_key: window.GIS.api.getAmapKey() || undefined,

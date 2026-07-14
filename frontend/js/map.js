@@ -559,9 +559,9 @@ window.GIS = window.GIS || {};
     if (msg && window.GIS && window.GIS.chat && window.GIS.chat.send) {
       // 右键发送 → 使用当前选中的模型
       var selEl = document.getElementById('modelSelector');
-      var curProvider = selEl ? selEl.value : 'deepseek-routed';
+      var curProvider = selEl ? selEl.value : 'glm-routed';
       var valEl = document.getElementById('modelSelectValue');
-      var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+' };
+      var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
       if (valEl) valEl.textContent = names[curProvider] || curProvider;
       window.GIS.chat.send(msg, { displayText: displayMsg || undefined, provider: curProvider });
     }

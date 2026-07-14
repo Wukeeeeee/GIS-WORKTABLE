@@ -115,14 +115,15 @@
                 <svg class="model-status-dot" id="modelStatusDot" viewBox="0 0 8 8" width="8" height="8">
                   <circle cx="4" cy="4" r="4" fill="#d32f2f"/>
                 </svg>
-                <span id="modelSelectValue">DeepSeek V4 Flash+</span>
+                <span id="modelSelectValue">GLM-4.7-Flash+</span>
                 <svg class="model-select-arrow" viewBox="0 0 10 6" width="10" height="6">
                   <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                 </svg>
                 <!-- 隐藏的原生 select（保持 JS 兼容） -->
                 <select id="modelSelector" title="选择AI模型" style="display:none;">
-                  <option value="deepseek-routed" selected>DeepSeek V4 Flash+</option>
+                  <option value="glm-routed" selected>GLM-4.7-Flash+</option>
                   <option value="glm-routed">GLM-4.7-Flash+</option>
+                  <option value="agnes">Agnes 2.0 Flash+</option>
                 </select>
               </div>
               <!-- 模型选择器（向上弹出） -->
@@ -142,6 +143,18 @@
                 <div class="model-picker-info">
                   <span class="model-picker-name">GLM-4.7-Flash+</span>
                   <span class="model-picker-desc">本地路由 + 技能文档</span>
+                </div>
+                <span class="model-picker-free">免费</span>
+                <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
+                  <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M5 8l2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div class="model-picker-divider"></div>
+              <div class="model-picker-option" data-value="agnes">
+                <div class="model-picker-info">
+                  <span class="model-picker-name">Agnes 2.0 Flash+</span>
+                  <span class="model-picker-desc">GLM 路由 + AGNES</span>
                 </div>
                 <span class="model-picker-free">免费</span>
                 <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
@@ -444,6 +457,27 @@
             </div>
           </div>
 
+          <!-- Agnes 2.0 Flash+ -->
+          <div class="model-config-card">
+            <div class="model-config-header">
+              <span class="model-config-name">Agnes 2.0 Flash+</span>
+              <span class="model-config-badge" id="agnesApiKeyStatus">未配置</span>
+            </div>
+            <div class="modal-input-wrapper">
+              <input type="password" class="modal-input" id="agnesApiKeyInput" placeholder="ags_..." />
+              <button class="modal-toggle-vis" id="toggleAgnesKeyVis" title="显示/隐藏密钥">
+                <svg id="agnesEyeIcon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+                </svg>
+              </button>
+            </div>
+            <div class="modal-test-result" id="agnesTestResult"></div>
+            <div class="model-config-actions">
+              <button class="modal-btn modal-btn-test" id="testAgnesKeyBtn">测速</button>
+              <button class="modal-btn modal-btn-save" id="saveAgnesKeyBtn">保存</button>
+            </div>
+          </div>
+
           <!-- 高德地图 Web API -->
           <div class="model-config-card">
             <div class="model-config-header">
@@ -627,6 +661,12 @@
       var amapKeyStatus = document.getElementById('amapKeyStatus');
       var amapTestResult = document.getElementById('amapTestResult');
       var toggleAmapKeyVis = document.getElementById('toggleAmapKeyVis');
+      var agnesApiKeyInput = document.getElementById('agnesApiKeyInput');
+      var agnesApiKeyStatus = document.getElementById('agnesApiKeyStatus');
+      var agnesTestResult = document.getElementById('agnesTestResult');
+      var testAgnesKeyBtn = document.getElementById('testAgnesKeyBtn');
+      var saveAgnesKeyBtn = document.getElementById('saveAgnesKeyBtn');
+      var toggleAgnesKeyVis = document.getElementById('toggleAgnesKeyVis');
 
       // ---- 侧边栏切换 ----
       var sidenavItems = document.querySelectorAll('.modal-sidenav-item');
@@ -706,6 +746,10 @@
         amapApiKeyInput.value = savedAmapKey;
         updateAmapKeyStatus(savedAmapKey);
         amapTestResult.innerHTML = '';
+        var savedAgnesKey = window.GIS.api.getAgnesApiKey();
+        agnesApiKeyInput.value = savedAgnesKey;
+        updateAgnesKeyStatus(savedAgnesKey);
+        agnesTestResult.innerHTML = '';
         settingsModal.style.display = 'flex';
       });
 
@@ -745,6 +789,18 @@
         }
       });
 
+      // Agnes 密钥显隐切换
+      toggleAgnesKeyVis.addEventListener('click', function() {
+        var eyeIcon = document.getElementById('agnesEyeIcon');
+        if (agnesApiKeyInput.type === 'password') {
+          agnesApiKeyInput.type = 'text';
+          eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>';
+        } else {
+          agnesApiKeyInput.type = 'password';
+          eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+        }
+      });
+
       // 高德密钥显隐切换
       toggleAmapKeyVis.addEventListener('click', function() {
         var eyeIcon = document.getElementById('amapEyeIcon');
@@ -769,6 +825,10 @@
       function updateAmapKeyStatus(key) {
         amapKeyStatus.textContent = key ? '已配置' : '未配置';
         amapKeyStatus.className = 'model-config-badge' + (key ? ' configured' : '');
+      }
+      function updateAgnesKeyStatus(key) {
+        agnesApiKeyStatus.textContent = key ? '已配置' : '未配置';
+        agnesApiKeyStatus.className = 'model-config-badge' + (key ? ' configured' : '');
       }
 
 	      // ---- 测速按钮 ----
@@ -861,12 +921,58 @@
       saveGlmKeyBtn.addEventListener('click', function() {
         var key = glmApiKeyInput.value.trim();
         window.GIS.api.setGLMApiKey(key);
-        window.GIS.api.setModelStatus('glm', 'untested');  // 重置状态，让警告重新判断
+        window.GIS.api.setModelStatus('glm', 'untested');
         updateGlmKeyStatus(key);
-        updateModelWarning();  // 更新红色警告状态
+        updateModelWarning();
         var orig = saveGlmKeyBtn.textContent;
         saveGlmKeyBtn.textContent = '已保存 ✓';
         setTimeout(function() { saveGlmKeyBtn.textContent = orig; }, 2000);
+      });
+
+      // ---- Agnes 测速按钮 ----
+      var isTestingAgnes = false;
+      testAgnesKeyBtn.addEventListener('click', async function() {
+        var key = agnesApiKeyInput.value.trim();
+        if (!key) {
+          agnesTestResult.textContent = '请先输入 API 密钥';
+          agnesTestResult.className = 'modal-test-result modal-test-error';
+          return;
+        }
+        if (isTestingAgnes) return;
+        isTestingAgnes = true;
+        testAgnesKeyBtn.textContent = '测速中...';
+        testAgnesKeyBtn.disabled = true;
+        agnesTestResult.innerHTML = '<span class="loading-spinner"></span> 正在连接...';
+        agnesTestResult.className = 'modal-test-result';
+
+        try {
+          var res = await window.GIS.api.testAgnesApiKey(key);
+          agnesTestResult.textContent = res.message;
+          agnesTestResult.className = 'modal-test-result ' + (res.success ? 'modal-test-success' : 'modal-test-error');
+          window.GIS.api.setModelStatus('agnes', res.success ? 'online' : 'offline');
+          if (modelSelector && modelSelector.value === 'agnes') updateModelStatusDot();
+        } catch (e) {
+          window.GIS.api.setModelStatus('agnes', 'offline');
+          if (modelSelector && modelSelector.value === 'agnes') updateModelStatusDot();
+          agnesTestResult.textContent = '连接失败: ' + e.message;
+          agnesTestResult.className = 'modal-test-result modal-test-error';
+        } finally {
+          isTestingAgnes = false;
+          testAgnesKeyBtn.textContent = '测速';
+          testAgnesKeyBtn.disabled = false;
+        }
+      });
+
+      // ---- Agnes 保存按钮 ----
+      saveAgnesKeyBtn.addEventListener('click', function() {
+        var key = agnesApiKeyInput.value.trim();
+        window.GIS.api.setAgnesApiKey(key);
+        window.GIS.api.setModelStatus('agnes', 'untested');
+        updateAgnesKeyStatus(key);
+        updateModelWarning();
+        var orig = saveAgnesKeyBtn.textContent;
+        saveAgnesKeyBtn.textContent = '已保存 ✓';
+        setTimeout(function() { saveAgnesKeyBtn.textContent = orig; }, 2000);
       });
 
       // ---- 高德密钥保存按钮 ----
@@ -905,22 +1011,24 @@
         updateModelWarning();
       }
 
-      /** 检查两个模型是否都未配置，显示警告 */
+      /** 检查所有模型是否都未配置/离线，显示警告 */
       function updateModelWarning() {
         var warn = document.getElementById('modelWarning');
         if (!warn) return;
         var dsKey = window.GIS.api.getApiKey();
         var glmKey = window.GIS.api.getGLMApiKey();
+        var agnesKey = window.GIS.api.getAgnesApiKey();
         var dsStatus = window.GIS.api.getModelStatus('deepseek');
         var glmStatus = window.GIS.api.getModelStatus('glm');
-        // 两个都未配置或都离线时显示警告
-        var bothOffline = (!dsKey && !glmKey) || (dsStatus === 'offline' && glmStatus === 'offline');
-        if (bothOffline) {
+        var agnesStatus = window.GIS.api.getModelStatus('agnes');
+        var anyConfigured = dsKey || glmKey || agnesKey;
+        var anyOnline = dsStatus === 'online' || glmStatus === 'online' || agnesStatus === 'online';
+        if (!anyConfigured) {
           warn.style.display = 'block';
-          var msg = '';
-          if (!dsKey && !glmKey) msg = 'DeepSeek 和 GLM 均未配置 API Key，请点击齿轮按钮设置';
-          else msg = 'DeepSeek 和 GLM 均连接失败，请检查 API Key 配置';
-          warn.querySelector('span').textContent = msg;
+          warn.querySelector('span').textContent = '请配置 API Key（DeepSeek / GLM / Agnes 任一即可），点击齿轮按钮设置';
+        } else if (!anyOnline && (dsStatus !== 'untested' || glmStatus !== 'untested' || agnesStatus !== 'untested')) {
+          warn.style.display = 'block';
+          warn.querySelector('span').textContent = '配置的 API Key 均连接失败，请检查密钥配置';
         } else {
           warn.style.display = 'none';
         }
@@ -942,7 +1050,7 @@
       function selectModel(value) {
         if (value === modelSelector.value) { modelPicker.classList.remove('is-open'); return; }
         modelSelector.value = value;
-        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+' };
+        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
         modelSelectValue.textContent = names[value] || value;
         window.GIS.api.setSelectedModel(value);
         updateModelStatusDot();
@@ -975,7 +1083,7 @@
       if (modelSelector) {
         var savedModel = window.GIS.api.getSelectedModel();
         modelSelector.value = savedModel;
-        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+' };
+        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
         modelSelectValue.textContent = names[savedModel] || savedModel;
         modelPickerOptions.forEach(function(opt) {
           opt.classList.toggle('is-selected', opt.dataset.value === savedModel);
@@ -997,28 +1105,25 @@
           setTimeout(autoDetectModelStatus, 1000);
           return;
         }
-        var providers = ['deepseek', 'glm'];
+        var providers = ['deepseek', 'glm', 'agnes'];
+        var keyMap = { 'deepseek': 'getApiKey', 'glm': 'getGLMApiKey', 'agnes': 'getAgnesApiKey' };
+        var testMap = { 'deepseek': 'testApiKey', 'glm': 'testGLMApiKey', 'agnes': 'testAgnesApiKey' };
         providers.forEach(function(provider) {
-          var key = provider === 'glm' ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
+          var key = window.GIS.api[keyMap[provider]]();
           if (!key) {
-            // 没有密钥，标记为 offline
             window.GIS.api.setModelStatus(provider, 'offline');
-            // 如果是当前选中的模型，更新圆点
             if (modelSelector && modelSelector.value === provider) {
               updateModelStatusDot();
             }
             return;
           }
 
-          // 有密钥，显示检测中
           if (modelSelector && modelSelector.value === provider && modelStatusDot) {
             modelStatusDot.classList.remove('online', 'offline');
             modelStatusDot.classList.add('checking');
           }
 
-          // 发测速请求
-          var testFn = provider === 'glm' ? window.GIS.api.testGLMApiKey : window.GIS.api.testApiKey;
-          testFn(key).then(function(result) {
+          window.GIS.api[testMap[provider]](key).then(function(result) {
             window.GIS.api.setModelStatus(provider, result.success ? 'online' : 'offline');
             if (modelSelector && modelSelector.value === provider) {
               updateModelStatusDot();

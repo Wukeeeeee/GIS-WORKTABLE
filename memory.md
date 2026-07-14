@@ -2,6 +2,28 @@
 
 > 记录每次开发会话的关键决策、改动和待办事项。
 
+## 当前状态（AI 每次启动时读取）
+
+- **阶段**: `WAITING`（下一个: `plan` → `build` → `test` → `land`）
+- **功能/主题**: （空）
+- **最后改动**: 2026-07-15 — Agnes 接入 + GLM 路由统一 + 默认模型改 GLM
+- **待定**: （空 — 等开新 cycle）
+- **CURRENT 文件**: 见项目根 `CURRENT`（不提交 git）
+
+---
+
+## 2026-07-15
+
+- 新增 Agnes 2.0 Flash+ 作为第三模型提供商（`apihub.agnes-ai.com/v1`，免费）
+- 移除 Agnes 自路由（`_agnes_route_skills()`），统一用 GLM 路由（减少跨洋往返）
+- 为所有 Agnes OpenAI 客户端加 timeout（graph.py 60s / routing 15s / client 30s）
+- 删除废弃的 gaode AOI 路由（`main.py` 中 model + endpoint + import 全清理）
+- 前端模型选择器：新增 Agnes 选项，加「免费」标签，描述为「GLM 路由 + AGNES」
+- 前端显示名统一为 Agnes 2.0 Flash+（含 + 后缀与 DS/GLM 对齐）
+- 处理中加载消息适配 Agnes 模型名（路由分析中 / 执行中）
+- 默认模型从 deepseek-routed 改为 glm-routed
+- model-picker 各选项初始值和 JS 回退默认值统一为 glm-routed
+
 ---
 
 ## 2026-07-14（续）

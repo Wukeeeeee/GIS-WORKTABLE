@@ -544,7 +544,7 @@ def _extract_geojson(name: str, data: dict):
 @tool
 def execute_python(code: str) -> str:
     """执行Python GIS代码（沙箱隔离），返回执行结果及耗时。
-    可用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, json, math, re, datetime, io, tempfile, requests, pyproj, rasterio
+    可用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, json, math, re, datetime, io, tempfile, requests, pyproj, rasterio, osmnx
     要在地图上显示结果，print出GeoJSON字符串即可。
     要生成图表，用 plt.savefig('chart_xxx.png')（相对路径）。
     AMAP_KEY 通过 _AMAP_KEY 变量直接获取。"""
@@ -568,11 +568,26 @@ def execute_python(code: str) -> str:
     start_time = time.time()
 
     try:
-        # 环境初始化：OSM 镜像 + matplotlib 中文字体
+        # 环境初始化：OSM 镜像（多镜像自动切换）+ matplotlib 中文字体
         _setup_blocks = r"""
 try:
     import osmnx as _ox
-    _ox.settings.overpass_url = 'https://overpass-api.surly.dev/api/interpreter'
+    import urllib.request, json
+    _OVERPass_MIRRORS = [
+        'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+        'https://overpass.osm.ch/api/interpreter',
+        'https://overpass-api.de/api/interpreter',
+        'https://overpass.kumi.systems/api/interpreter',
+        'https://overpass.openstreetmap.ie/api/interpreter',
+    ]
+    for _url in _OVERPass_MIRRORS:
+        try:
+            _test = urllib.request.urlopen(_url + '?data=[out:json];node(0,0,1,1);out;', timeout=5)
+            if _test.status == 200:
+                _ox.settings.overpass_url = _url
+                break
+        except Exception:
+            continue
 except Exception:
     pass
 
@@ -619,7 +634,7 @@ plt.style.use("ggplot")
         # ================================================================
         result = subprocess.run(
             [sys.executable, temp_path],
-            capture_output=True, timeout=30, encoding='utf-8', errors='replace',
+            capture_output=True, timeout=120, encoding='utf-8', errors='replace',
             cwd=exec_dir,
             env=env,
         )
@@ -699,7 +714,7 @@ plt.style.use("ggplot")
 
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
-        return f'代码执行超时（{elapsed:.1f}s > 30s），已强制终止进程。请简化操作或分批处理。'
+        return f'代码执行超时（{elapsed:.1f}s > 120s），已强制终止进程。请简化操作或分批处理。'
     except Exception as e:
         return f'执行异常：{str(e)[:500]}'
     finally:

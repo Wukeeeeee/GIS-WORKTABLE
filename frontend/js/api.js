@@ -32,6 +32,7 @@ window.GIS.api = (() => {
   // 密钥存在浏览器本地，每次发请求时带上，后端用完就丢不存盘
   const DS_STORAGE_KEY = 'gis_deepseek_api_key';
   const GLM_STORAGE_KEY = 'gis_glm_api_key';
+  const AGNES_STORAGE_KEY = 'gis_agnes_api_key';
   const AMAP_STORAGE_KEY = 'gis_amap_api_key';
   const MODEL_STORAGE_KEY = 'gis_selected_model';
   const MODEL_STATUS_KEY = 'gis_model_status';
@@ -60,6 +61,16 @@ window.GIS.api = (() => {
     if (key) { _lsSet(GLM_STORAGE_KEY, key); } else { _lsRemove(GLM_STORAGE_KEY); }
   }
 
+  /** 从 localStorage 读取保存的 Agnes 密钥 */
+  function getAgnesApiKey() {
+    return _lsGet(AGNES_STORAGE_KEY) || '';
+  }
+
+  /** 把 Agnes 密钥保存到 localStorage */
+  function setAgnesApiKey(key) {
+    if (key) { _lsSet(AGNES_STORAGE_KEY, key); } else { _lsRemove(AGNES_STORAGE_KEY); }
+  }
+
   /** 从 localStorage 读取保存的高德地图密钥 */
   function getAmapKey() {
     return _lsGet(AMAP_STORAGE_KEY) || '';
@@ -72,7 +83,7 @@ window.GIS.api = (() => {
 
   /** 获取保存的模型偏好 */
   function getSelectedModel() {
-    return _lsGet(MODEL_STORAGE_KEY) || 'deepseek-routed';
+    return _lsGet(MODEL_STORAGE_KEY) || 'glm-routed';
   }
 
   /** 保存模型偏好 */
@@ -140,9 +151,9 @@ window.GIS.api = (() => {
 
   // ===== 聊天 / AI =====
   /** @param {string} message @param {string} [sessionId='default'] @param {string} [provider='deepseek'] @param {string[]} [forceSkills=[]] */
-  async function chat(message, sessionId = 'default', provider = 'deepseek', forceSkills = []) {
+  async function chat(message, sessionId = 'default', provider = 'glm', forceSkills = []) {
     // 根据 provider 选择对应的 API 密钥
-    const apiKey = (provider === 'glm' || provider === 'glm-routed') ? getGLMApiKey() : getApiKey();
+    const apiKey = provider === 'agnes' ? getAgnesApiKey() : (provider === 'glm' || provider === 'glm-routed') ? getGLMApiKey() : getApiKey();
     const controller = new AbortController();
     const timeoutId = setTimeout(function() { controller.abort(); }, 600000);
     let res;
@@ -187,6 +198,17 @@ window.GIS.api = (() => {
   /** 向后端发一个测试请求，验证 GLM 密钥能不能用 */
   async function testGLMApiKey(apiKey) {
     const res = await fetch(`${BASE_URL}/api/test-key-glm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key: apiKey }),
+    });
+    if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
+    return res.json();
+  }
+
+  /** 向后端发一个测试请求，验证 Agnes 密钥能不能用 */
+  async function testAgnesApiKey(apiKey) {
+    const res = await fetch(`${BASE_URL}/api/test-key-agnes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ api_key: apiKey }),
@@ -266,13 +288,14 @@ window.GIS.api = (() => {
     getLayers, getLayer, deleteLayer,
     downloadLayer, executeGISAction, getBoundary,
     saveProject, loadProject, listProjects,
-    healthCheck, testApiKey, testGLMApiKey,
+    healthCheck, testApiKey, testGLMApiKey, testAgnesApiKey,
     getApiKey, setApiKey, getGLMApiKey, setGLMApiKey,
+    getAgnesApiKey, setAgnesApiKey,
     getAmapKey, setAmapKey,
     getSelectedModel, setSelectedModel,
     getModelStatus, setModelStatus, clearModelStatus,
     inspectLayer,
-    BASE_URL, DS_STORAGE_KEY, GLM_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
+    BASE_URL, DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };
 })();
 

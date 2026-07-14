@@ -6,13 +6,12 @@ from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
 import subprocess, datetime, time, os, asyncio, functools
-from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, request_cancel, _TEMP_OUTPUT_DIR
+from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, test_agnes_key, request_cancel, _TEMP_OUTPUT_DIR
 from backend.services.tools import _register_layer
 from backend.services.layer_service import inspect_geojson
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
 from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
-from backend.services.gaode_aoi_service import search_suggestions as gaode_search_suggestions
-from backend.services.gaode_aoi_service import extract_boundary as gaode_extract_boundary
+
 
 # ===== 版本信息（服务器启动时自动生成） =====
 _SERVER_START_TIME = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
@@ -243,6 +242,11 @@ async def test_key_glm(request: TestKeyRequest):
     success, message = test_glm_key(request.api_key)
     return {"success": success, "message": message}
 
+@app.post("/api/test-key-agnes")
+async def test_key_agnes(request: TestKeyRequest):
+    success, message = test_agnes_key(request.api_key)
+    return {"success": success, "message": message}
+
 @app.get('/api/boundary')
 async def get_boundary_api(place: str = "长沙市"):
     """从阿里云 DataV 获取行政边界（国内可访问），返回 GeoJSON"""
@@ -305,67 +309,6 @@ async def baidu_extract(request: BaiduExtractRequest):
         )
     except Exception as e:
         return BaiduExtractResponse(
-            message=f"提取失败: {str(e)}",
-            success=False
-        )
-
-# ===== 高德地图 AOI 提取接口 =====
-
-class GaodeSearchRequest(BaseModel):
-    query: str
-
-class GaodeExtractRequest(BaseModel):
-    id: str
-    name: str = "未命名"
-
-class GaodeSearchResponse(BaseModel):
-    suggestions: list
-    message: str = ""
-
-class GaodeExtractResponse(BaseModel):
-    geojson: Optional[dict] = None
-    name: str = ""
-    message: str = ""
-    success: bool = False
-
-@app.post("/api/gaode/search", response_model=GaodeSearchResponse)
-async def gaode_search(request: GaodeSearchRequest):
-    """搜索高德地图，返回候选地点列表"""
-    try:
-        suggestions = gaode_search_suggestions(request.query)
-        if not suggestions:
-            return GaodeSearchResponse(
-                suggestions=[],
-                message="未找到候选地点，可以尝试其他关键词"
-            )
-        return GaodeSearchResponse(
-            suggestions=suggestions,
-            message=f"找到 {len(suggestions)} 个候选地点"
-        )
-    except Exception as e:
-        return GaodeSearchResponse(
-            suggestions=[],
-            message=f"搜索失败: {str(e)}"
-        )
-
-@app.post("/api/gaode/extract", response_model=GaodeExtractResponse)
-async def gaode_extract(request: GaodeExtractRequest):
-    """根据 POI ID 提取 AOI 边界，返回 GeoJSON"""
-    try:
-        geojson = gaode_extract_boundary(request.id, request.name)
-        if geojson:
-            return GaodeExtractResponse(
-                geojson=geojson,
-                name=request.name,
-                message="提取成功",
-                success=True
-            )
-        return GaodeExtractResponse(
-            message="未能提取到边界数据，该地点可能没有建筑轮廓数据",
-            success=False
-        )
-    except Exception as e:
-        return GaodeExtractResponse(
             message=f"提取失败: {str(e)}",
             success=False
         )
