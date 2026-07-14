@@ -484,6 +484,92 @@ html, body {
   box-shadow: 0 0 0 1px var(--ui-gray-900) /* -> --on-surface */;
 }
 
+/* ===== 图层附件预览条（输入框上方） ===== */
+.layer-attach-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 2px;
+  background: var(--ui-gray-50, #f8f9fa);
+  animation: attach-slide-in 0.2s ease;
+}
+@keyframes attach-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.layer-attach-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 2px;
+  background: var(--primary-container, #1c1b1b);
+  color: var(--on-primary, #fff);
+}
+.layer-attach-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.layer-attach-name {
+  font-size: var(--fs-12);
+  font-weight: 600;
+  color: var(--ui-gray-900);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.layer-attach-meta {
+  font-size: var(--fs-11);
+  color: var(--ui-gray-300);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.layer-attach-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.attach-badge-type,
+.attach-badge-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: var(--fs-10);
+  font-weight: 600;
+  line-height: 1.4;
+  background: var(--ui-gray-200);
+  color: var(--ui-gray-500);
+}
+.layer-attach-close {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--ui-gray-300);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.layer-attach-close:hover {
+  background: rgba(0,0,0,0.06);
+  color: var(--ui-gray-900);
+}
+
 /* ===== Skill Chip 标签容器（嵌入输入框内部） ===== */
 .chip-container {
   display: flex;
@@ -975,8 +1061,9 @@ html, body {
   vertical-align: middle;
 }
 .layer-source-ai {
-  background: rgba(103, 58, 183, 0.12);
-  color: #7c4dff;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(59, 130, 246, 0.10));
+  color: #8B5CF6;
+  border: 1px solid rgba(139, 92, 246, 0.2);
 }
 .layer-source-upload {
   background: rgba(0, 0, 0, 0.04);
@@ -1072,6 +1159,16 @@ html, body {
   opacity: 0.7;
   line-height: 1.4;
   white-space: nowrap;
+}
+.map-context-menu .context-menu-item .ctx-badge-ai {
+  background: linear-gradient(135deg, #8B5CF6, #3B82F6);
+  color: #fff;
+  opacity: 1;
+}
+.map-context-menu .context-menu-item .ctx-badge-ds {
+  background: linear-gradient(135deg, #4F6BED, #2563EB);
+  color: #fff;
+  opacity: 1;
 }
 
 /* Leaflet 十字准星坐标标签 */

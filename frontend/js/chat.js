@@ -76,6 +76,8 @@ _linkRenderer.link = function(token) {
   let _slashActive = false;     // 菜单是否打开
   // ---- Skill Chip 标签系统 ----
   let _skillChips = [];         // [{name, label, prompt}]
+  // ---- 图层附件（分析按钮→暂存到输入框上方） ----
+  let _pendingLayer = null;     // { name, type, coords, count, geojson, ... }
 
   /**
    * 初始化聊天模块
@@ -131,7 +133,17 @@ _linkRenderer.link = function(token) {
           loadingEl.remove();
         }
         addMessage('操作已取消', 'system');
+        // 更新任务状态
+        if (window.GIS.task && window._currentTaskId) {
+          window.GIS.task.updateTask(window._currentTaskId, { status: 'failed', error: '用户取消', completedAt: Date.now() });
+        }
       });
+    }
+
+    // 图层附件关闭按钮
+    var attachClose = document.getElementById('attachLayerClose');
+    if (attachClose) {
+      attachClose.addEventListener('click', function() { _clearPendingLayer(); if (inputEl) inputEl.focus(); });
     }
   }
 
@@ -321,6 +333,33 @@ _linkRenderer.link = function(token) {
     });
   }
 
+  // ===== 图层附件管理 =====
+  function _clearPendingLayer() {
+    _pendingLayer = null;
+    const bar = document.getElementById('layerAttachBar');
+    if (bar) bar.style.display = 'none';
+  }
+
+  /** 设置待发送的图层附件（在输入框上方显示） */
+  function setPendingLayer(info) {
+    _pendingLayer = info;
+    const bar = document.getElementById('layerAttachBar');
+    const nameEl = document.getElementById('attachLayerName');
+    const metaEl = document.getElementById('attachLayerMeta');
+    const badgeType = document.getElementById('attachBadgeType');
+    const badgeCount = document.getElementById('attachBadgeCount');
+    if (!bar || !nameEl) return;
+
+    nameEl.textContent = info.name || '未命名图层';
+    metaEl.textContent = info.coords
+      ? 'WGS-84 · ' + info.coords
+      : 'WGS-84';
+    badgeType.textContent = info.type || '未知';
+    badgeCount.textContent = (info.count !== undefined) ? info.count + ' 要素' : '';
+    bar.style.display = 'flex';
+    if (inputEl) { inputEl.placeholder = '输入你对 ' + (info.name || '图层') + ' 的分析指令...'; inputEl.focus(); }
+  }
+
   function _resetUIAfterStop() {
     if (!inputEl) return;
     inputEl.placeholder = '输入指令或查询...';
@@ -343,8 +382,20 @@ _linkRenderer.link = function(token) {
       text = inputEl ? inputEl.value.trim() : '';
     }
     if (!text) return;
-    // 防止快速双击/重复点击，避免创建重复计时器和加载气泡
-    if (window._aiRunning) return;
+
+    // 如果有正在跑的 AI 请求，先取消
+    if (window._aiRunning) {
+      if (window._aiAbortController) {
+        window._aiAbortController.abort();
+      }
+      fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
+      var oldLoading = document.getElementById('ai-loading-msg');
+      if (oldLoading) {
+        if (oldLoading._timerInterval) clearInterval(oldLoading._timerInterval);
+        if (oldLoading._phaseTimer) clearTimeout(oldLoading._phaseTimer);
+        oldLoading.remove();
+      }
+    }
 
     // 解析第二个参数：字符串=displayText，对象={displayText, badge, provider}
     const displayText = typeof displayOpt === 'string' ? displayOpt : (displayOpt ? displayOpt.displayText : null);
@@ -366,12 +417,16 @@ _linkRenderer.link = function(token) {
       return;
     }
 
-    // 捕获当前 chips 显示在用户消息气泡中
+    // 捕获当前 chips 和待发送的图层附件
     var chipsSnapshot = _skillChips.slice();
+    var layerSnapshot = _pendingLayer ? Object.assign({}, _pendingLayer) : null;
     // 渲染用户消息（如果传了 displayText 就显示它）
     var msgOpts = badge ? {badge: badge} : {};
     if (chipsSnapshot.length > 0) msgOpts.chips = chipsSnapshot;
+    if (layerSnapshot) msgOpts.attachLayer = layerSnapshot;
     addMessage(displayText || text, 'user', msgOpts);
+    // 清除图层附件条
+    _clearPendingLayer();
     // 只有从输入框发送时才清空输入框
     if (inputEl && arguments.length === 0) {
       inputEl.value = '';
@@ -471,22 +526,32 @@ _linkRenderer.link = function(token) {
       // 更新任务状态为规划中
       if (taskId && window.GIS.task) {
         window.GIS.task.updateTask(taskId, { status: 'planning' });
+        window._currentTaskId = taskId; // 存全局，供停止按钮用
       }
 
       // === 流式执行：通过 SSE 实时获取 Agent 进度 ===
       var result = null;
       var streamUrl = GIS.api.BASE_URL + '/api/chat/stream';
+      window._aiAbortController = new AbortController();
       try {
         const streamRes = await fetch(streamUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: window._aiAbortController.signal,
           body: JSON.stringify({
             message: text,
             session_id: 'default',
             api_key: (provider === 'glm' || provider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey(),
             provider: provider,
             force_skills: forceSkills,
-            amap_key: window.GIS.api.getAmapKey() || undefined
+            amap_key: window.GIS.api.getAmapKey() || undefined,
+            pending_layer: layerSnapshot ? {
+              name: layerSnapshot.name,
+              type: layerSnapshot.type,
+              coords: layerSnapshot.coords,
+              count: layerSnapshot.count,
+              geojson: layerSnapshot.geojson,
+            } : undefined,
           }),
         });
         if (!streamRes.ok) throw new Error('Stream API error: ' + streamRes.status);
@@ -531,6 +596,8 @@ _linkRenderer.link = function(token) {
                 }
               } else if (evt.type === 'error') {
                 throw new Error(evt.message || 'Agent 执行失败');
+              } else if (evt.type === 'cancelled') {
+                throw new Error('用户取消');
               } else if (evt.type === 'verifying') {
                 if (lastStepEl) {
                   lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);">✓</span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
@@ -580,6 +647,7 @@ _linkRenderer.link = function(token) {
 
       // 更新任务卡状态
       if (taskId && window.GIS.task) {
+        window._currentTaskId = null;
         var taskUpdate = { status: 'success' };
         // 收集结果图层信息
         var resultLayers = [];
@@ -864,6 +932,7 @@ _linkRenderer.link = function(token) {
       }
       // 更新任务状态为失败
       if (taskId && window.GIS.task) {
+        window._currentTaskId = null;
         window.GIS.task.updateTask(taskId, { status: 'failed', error: err.message, completedAt: Date.now() });
       }
       // 恢复默认 placeholder（防止并发发送覆盖）
@@ -934,6 +1003,18 @@ _linkRenderer.link = function(token) {
         chipsRow.appendChild(chipEl);
       });
       bubble.appendChild(chipsRow);
+    }
+
+    // 用户消息：显示附带的图层信息
+    if (type === 'user' && options.attachLayer) {
+      var layerInfo = options.attachLayer;
+      var attachRow = document.createElement('div');
+      attachRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;padding:6px 10px;border:1px solid var(--ui-gray-200);border-radius:2px;background:var(--ui-gray-50,#f8f9fa);';
+      attachRow.innerHTML =
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="flex-shrink:0;"><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16v-2"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>' +
+        '<span style="font-size:12px;font-weight:600;color:var(--ui-gray-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">' + (layerInfo.name || '图层') + '</span>' +
+        '<span style="font-size:11px;color:var(--ui-gray-300);margin-left:auto;">' + (layerInfo.type || '') + (layerInfo.count !== undefined ? ' · ' + layerInfo.count + ' 要素' : '') + '</span>';
+      bubble.appendChild(attachRow);
     }
 
     if (options.code) {
@@ -1101,5 +1182,5 @@ _linkRenderer.link = function(token) {
     }, ANIM_MS + 40);
   }
 
-  GIS.chat = { init, send, addMessage, clear, sendMessage: send };
+  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send };
 })();

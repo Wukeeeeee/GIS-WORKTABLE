@@ -42,6 +42,7 @@ _clear_layers_flag: bool = False
 _pending_layer_ops: list = []
 _current_amap_key: str = ""
 _search_call_count: int = 0    # 搜索次数计数，每次请求重置
+_exec_call_count: int = 0       # Python 执行次数计数，每次请求重置
 _temp_output_dir: str = ""          # 在 reset_state 时设置
 _workspace_dir: str = ""
 _registered_layers: dict = {}       # 已注册的图层信息
@@ -61,7 +62,7 @@ def get_pending_state():
 
 def reset_state(amap_key: str = ""):
     """每次请求开始时调用，清空所有共享状态"""
-    global _current_amap_key, _clear_layers_flag, _search_call_count
+    global _current_amap_key, _clear_layers_flag, _search_call_count, _exec_call_count
     _pending_layers.clear()
     _pending_images.clear()
     _pending_aoi_suggestions.clear()
@@ -70,6 +71,7 @@ def reset_state(amap_key: str = ""):
     _pending_layer_ops.clear()
     _current_amap_key = amap_key
     _search_call_count = 0
+    _exec_call_count = 0
 
 
 def init_temp_dir():
@@ -141,16 +143,39 @@ def search_web(query: str) -> str:
     if _search_call_count > 30:
         return "【搜索过热】已搜索太多次，请基于已有信息继续处理。"
 
+    # 搜 Bing
+    content = ""
     try:
         url = f"https://cn.bing.com/search?q={query.replace(' ', '+')}"
         content = fetch_webpage_impl(url)
-        if content.startswith("错误"):
-            return content
-        if len(content) > 5000:
-            content = content[:5000] + "\n\n...(内容过长，已截断)"
-        return content
-    except Exception as e:
-        return f"错误：{str(e)}"
+        if content.startswith("错误") or len(content) < 200:
+            content = ""
+    except Exception:
+        content = ""
+
+    # 也搜 Yandex，结果合并
+    yandex_content = ""
+    try:
+        url = f"https://yandex.com/search/?text={query.replace(' ', '+')}"
+        yandex_content = fetch_webpage_impl(url)
+        if yandex_content.startswith("错误") or len(yandex_content) < 200:
+            yandex_content = ""
+    except Exception:
+        pass
+
+    # 合并两个结果
+    if yandex_content:
+        if content:
+            content = content + "\n\n--- Yandex 搜索结果 ---\n" + yandex_content
+        else:
+            content = yandex_content
+
+    if not content:
+        return "错误：搜索失败（Bing 和 Yandex 均未返回有效结果）"
+
+    if len(content) > 6000:
+        content = content[:6000] + "\n\n...(内容过长，已截断)"
+    return content
 
 
 # ============================================================
@@ -477,6 +502,10 @@ def execute_python(code: str) -> str:
     要在地图上显示结果，print出GeoJSON字符串即可。
     要生成图表，用 plt.savefig('chart_xxx.png')（相对路径）。
     AMAP_KEY 通过 _AMAP_KEY 变量直接获取。"""
+    global _exec_call_count
+    _exec_call_count += 1
+    if _exec_call_count > 5:
+        return f"【执行过热】本次请求已执行 {_exec_call_count} 次 Python 代码，请基于已有结果继续，不要再执行了。"
     init_temp_dir()
 
     # ================================================================
@@ -493,8 +522,14 @@ def execute_python(code: str) -> str:
     start_time = time.time()
 
     try:
-        # matplotlib 中文配置（无沙箱限制，仅初始化绘图环境）
+        # OSM 国内镜像配置（osmnx 默认连德国被墙，改用镜像）
         _font_setup = r"""
+try:
+    import osmnx as _ox
+    _ox.settings.overpass_url = 'https://overpass-api.surly.dev/api/interpreter'
+except Exception:
+    pass
+
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -767,7 +802,7 @@ def baidu_aoi_extract(uid: str, name: str) -> str:
 
 @tool
 def gaode_aoi_search(query: str) -> str:
-    """搜索高德地图地点（备用源），返回候选列表供用户选择（AOI建筑轮廓提取的第一步）"""
+    """搜索高德地图地点（备用源，仅限中国），返回候选列表供用户选择（AOI建筑轮廓提取的第一步）"""
     try:
         from backend.services.gaode_aoi_service import search_suggestions
         suggestions = search_suggestions(query)
@@ -974,6 +1009,90 @@ def create_heatmap(layer_name: str, weight_field: str = "", radius: int = 20, gr
 
 
 # ============================================================
+# 工具: measure_area — 精确面积测量（自动选投影）
+# ============================================================
+
+@tool
+def measure_area(layer_name: str) -> str:
+    """精确测量指定图层的面积（平方公里），自动选择最佳 UTM 投影带，支持多要素汇总"""
+    try:
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        import geopandas as gpd
+        import numpy as np
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层 {layer_name} 为空"
+
+        # 计算几何中心，选择最佳 UTM 投影带
+        centroid = gdf.dissolve().centroid.iloc[0]
+        lon, lat = centroid.x, centroid.y
+
+        # UTM 带号：zone = floor((lon + 180) / 6) + 1
+        utm_zone = int(np.floor((lon + 180) / 6)) + 1
+        # 北/南半球 EPSG 编号
+        if lat >= 0:
+            epsg_code = 32600 + utm_zone  # 32601~32660
+            hemi = "北"
+        else:
+            epsg_code = 32700 + utm_zone  # 32701~32760
+            hemi = "南"
+
+        # 投影到 UTM 并计算面积（平方米）
+        gdf_proj = gdf.to_crs(f"EPSG:{epsg_code}")
+        area_m2 = gdf_proj.geometry.area.sum()
+        area_km2 = area_m2 / 1_000_000
+
+        # 同时用 Albers Equal Area（Krasovsky 1940 Albers）做交叉验证，用于提醒
+        try:
+            # 自定义 Albers Equal Area 投影参数（适合中国中低纬度）
+            albers_crs = (
+                f"+proj=aea +lat_1={max(lat - 2, 0)} +lat_2={min(lat + 2, 50)} "
+                f"+lat_0={lat} +lon_0={lon} +x_0=0 +y_0=0 "
+                "+ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+            )
+            gdf_albers = gdf.to_crs(albers_crs)
+            area_m2_albers = gdf_albers.geometry.area.sum()
+            area_km2_albers = area_m2_albers / 1_000_000
+            cross_check = f"（Albers 等面积交叉验证：{area_km2_albers:.2f} km²）"
+        except Exception:
+            cross_check = ""
+
+        feat_count = len(gdf)
+        geom_types = gdf.geometry.type.unique().tolist()
+
+        result = (
+            f"图层「{layer_name}」面积测量结果：\n"
+            f"- 面积：{area_km2:.2f} 平方公里\n"
+            f"- 投影：UTM {utm_zone}{hemi}（EPSG:{epsg_code}）"
+        )
+        if cross_check:
+            result += f"\n- 交叉验证：{cross_check}"
+        result += (
+            f"\n- 几何类型：{', '.join(geom_types)}"
+            f"\n- 要素数：{feat_count}"
+            f"\n- 中心点：{lat:.4f}°, {lon:.4f}°"
+            f"\n- 坐标系：WGS-84 → 投影后计算"
+        )
+
+        return result
+
+    except Exception as e:
+        import traceback
+        return f"面积测量失败: {str(e)}\n{traceback.format_exc()}"
+
+
+# ============================================================
 # 工具: field_calculate — 字段计算器
 # ============================================================
 
@@ -1157,6 +1276,7 @@ tools = [
     datav_boundary,
     create_heatmap,
     field_calculate,
+    measure_area,
     clear_layers,
     get_session_logs,
     remove_layer,

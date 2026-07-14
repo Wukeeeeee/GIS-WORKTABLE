@@ -78,6 +78,27 @@
               <!-- 由 JS 动态渲染 -->
             </div>
           </div>
+          <!-- 图层附件预览条（分析按钮点击后显示） -->
+          <div class="layer-attach-bar" id="layerAttachBar" style="display:none;">
+            <div class="layer-attach-icon" id="attachLayerIcon">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16v-2"/>
+                <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                <line x1="12" y1="22.08" x2="12" y2="12"/>
+              </svg>
+            </div>
+            <div class="layer-attach-body">
+              <div class="layer-attach-name" id="attachLayerName"></div>
+              <div class="layer-attach-meta" id="attachLayerMeta"></div>
+            </div>
+            <div class="layer-attach-badge" id="attachLayerBadge">
+              <span class="attach-badge-type" id="attachBadgeType"></span>
+              <span class="attach-badge-count" id="attachBadgeCount"></span>
+            </div>
+            <button class="layer-attach-close" id="attachLayerClose" title="移除附件">
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+            </button>
+          </div>
           <div class="chat-input-wrapper">
             <div class="chip-container" id="chipContainer" style="display:none;"></div>
             <textarea
@@ -254,16 +275,24 @@
   <!-- ========================================================= -->
   <!-- 地图右键菜单                                              -->
   <!-- ========================================================= -->
+  <svg style="display:none;" aria-hidden="true">
+    <defs>
+      <linearGradient id="ctx-ai-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#8B5CF6"/>
+        <stop offset="100%" stop-color="#3B82F6"/>
+      </linearGradient>
+    </defs>
+  </svg>
   <div id="mapContextMenu" class="map-context-menu" style="display:none;">
     <div class="context-menu-item" data-action="send-location-routed">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="url(#ctx-ai-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
       <span>发送此位置给AI</span>
-      <span class="ctx-badge" style="background:#1a1a2e;">AI</span>
+      <span class="ctx-badge ctx-badge-ai">AI</span>
     </div>
     <div class="context-menu-item" data-action="get-dem" style="display:none;">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l6-9 4 5 4-7 4 11"/><circle cx="16" cy="7" r="2"/></svg>
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="url(#ctx-ai-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l6-9 4 5 4-7 4 11"/><circle cx="16" cy="7" r="2"/></svg>
       <span>获取此区域DEM数据</span>
-      <span class="ctx-badge">DeepSeek</span>
+      <span class="ctx-badge ctx-badge-ds">DeepSeek</span>
     </div>
     <div class="context-menu-item" data-action="copy-coords">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>

@@ -62,7 +62,7 @@ window.GIS = window.GIS || {};
           <span class="layer-color-dot" style="background:${layer.color || '#1c1b1b'}" data-color="${layer.color || '#1c1b1b'}" data-id="${layer.layer_id || ''}"></span>
           <span class="layer-source layer-source-${layer.source || 'upload'}">
             ${layer.source === 'ai'
-              ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
+              ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#8B5CF6" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
               : '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'}
           </span>
           <span class="layer-name" data-id="${layer.layer_id || ''}" title="双击重命名">${escapeHtml(layer.filename || '未命名')}</span>
@@ -92,6 +92,19 @@ window.GIS = window.GIS || {};
     `).join('');
   }
 
+  /** 同步地图叠放顺序与列表一致：列表最上面 = 地图最前面 */
+  function _syncLayerOrder() {
+    if (!GIS.map || typeof GIS.map.getLayer !== 'function') return;
+    // 从后往前 bringToFront，让 layerData[0]（列表最上面）最终在地图最前
+    for (let i = layerData.length - 1; i >= 0; i--) {
+      const layer = layerData[i];
+      const leafletLayer = GIS.map.getLayer(layer._rawName || layer.layer_id);
+      if (leafletLayer && typeof leafletLayer.bringToFront === 'function') {
+        leafletLayer.bringToFront();
+      }
+    }
+  }
+
   // 添加图层：加入列表 + 渲染
   function addLayer(layer) {
     const colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
@@ -106,6 +119,7 @@ window.GIS = window.GIS || {};
     }
     layerData.push({ ...layer, filename: name, _rawName, visible: true, color });
     renderList();
+    _syncLayerOrder();
   }
 
   // 删除图层：从列表移除 + 从地图清除
@@ -130,6 +144,8 @@ window.GIS = window.GIS || {};
       renderList();
       if (GIS.map && GIS.map.setLayerVisible) {
         GIS.map.setLayerVisible(layer._rawName || layer.layer_id, layer.visible);
+        // 显示图层后 Leaflet 会把它放到最上层，重新同步叠放顺序
+        if (layer.visible) _syncLayerOrder();
       }
     }
   }
@@ -208,14 +224,8 @@ window.GIS = window.GIS || {};
       layerData.splice(target, 0, moved);
       renderList();
       dragSrcIndex = null;
-      // 更新地图图层的叠放顺序
-      if (GIS.map && GIS.map.getLayer) {
-        for (let i = layerData.length - 1; i >= 0; i--) {
-          const layer = layerData[i];
-          const leafletLayer = GIS.map.getLayer(layer._rawName || layer.layer_id);
-          if (leafletLayer) leafletLayer.bringToFront();
-        }
-      }
+      // 同步地图叠放顺序
+      _syncLayerOrder();
     });
   }
 
@@ -244,13 +254,10 @@ window.GIS = window.GIS || {};
     } catch(e) { return null; }
   }
 
-  /** 将图层发送给 AI 分析 */
+  /** 将图层暂存到输入框附件栏，让用户自己输入分析指令 */
   function analyzeLayer(layerId) {
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (!layer) return;
-    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
-      window.GIS.chat.addMessage('正在准备图层数据发送给 AI...', 'system');
-    }
     var geojson = layer.geojson;
     if (!geojson && GIS.map && GIS.map.getGeoJSON) {
       geojson = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
@@ -262,21 +269,21 @@ window.GIS = window.GIS || {};
       return;
     }
     var center = getGeoJSONCenter(geojson);
-    var coordsStr = center ? center.lat.toFixed(6) + ', ' + center.lng.toFixed(6) : '未知';
-    var msg = '我会分析以下图层的地理信息并向地图添加结果标记。\n\n';
-    msg += '**位置信息**\n';
-    msg += '- 坐标: ' + coordsStr + '\n';
-    msg += '- 图层名称: ' + (layer.filename || '未命名') + '\n';
-    msg += '- 几何类型: ' + (layer.geometry_type || '未知') + '\n\n';
-    msg += '请完成以下任务：\n';
-    msg += '1. 先搜索确定这个位置属于哪个省/市/区/县\n';
-    msg += '2. 查询附近的地理特征（山脉、河流、湖泊、地形等）\n';
-    msg += '3. 查询该区域的气候类型、典型海拔、植被等地理信息\n';
-    msg += '4. 最后用 execute_python 在地图上该位置加一个点标记，只加一个点\n';
-    msg += '5. 用 markdown 表格回复\n\n';
-    msg += '**GeoJSON 数据**\n```json\n' + JSON.stringify(geojson, null, 2) + '\n```';
-    if (window.GIS.chat && typeof window.GIS.chat.send === 'function') {
-      window.GIS.chat.send(msg, { displayText: '分析图层: ' + (layer.filename || '图层') });
+    var coordsStr = center ? center.lat.toFixed(6) + ', ' + center.lng.toFixed(6) : null;
+
+    // 要素数
+    var featCount = 0;
+    if (geojson.type === 'FeatureCollection') featCount = (geojson.features || []).length;
+    else if (geojson.type === 'Feature') featCount = 1;
+
+    if (window.GIS.chat && typeof window.GIS.chat.setPendingLayer === 'function') {
+      window.GIS.chat.setPendingLayer({
+        name: layer.filename || '未命名',
+        type: layer.geometry_type || geojson.type || '未知',
+        coords: coordsStr,
+        count: featCount,
+        geojson: geojson,
+      });
     }
   }
 
@@ -771,6 +778,7 @@ window.GIS = window.GIS || {};
       var layer = layerData.find(function(l) { return l.layer_id === layerId; });
       if (layer && GIS.map && GIS.map.loadGeoJSON) {
         GIS.map.loadGeoJSON(gj, layer._rawName || layer.layer_id, { color: layer.color });
+        _syncLayerOrder();
       }
       showLayerInspector(layerId);
     }
@@ -805,6 +813,7 @@ window.GIS = window.GIS || {};
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (layer && GIS.map && GIS.map.loadGeoJSON) {
       GIS.map.loadGeoJSON(gj, layer._rawName || layer.layer_id, { color: layer.color });
+      _syncLayerOrder();
     }
     showLayerInspector(layerId);
   }
@@ -823,6 +832,7 @@ window.GIS = window.GIS || {};
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (layer && GIS.map && GIS.map.loadGeoJSON) {
       GIS.map.loadGeoJSON(gj, layer._rawName || layer.layer_id, { color: layer.color });
+      _syncLayerOrder();
     }
     showLayerInspector(layerId);
   }
@@ -1025,6 +1035,7 @@ window.GIS = window.GIS || {};
   GIS.layers = {
     init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer,
     analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
+    syncLayerOrder: _syncLayerOrder,
     getLayers: () => [...layerData],
   };
 })();

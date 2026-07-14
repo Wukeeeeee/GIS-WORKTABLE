@@ -54,6 +54,7 @@ class ChatRequest(BaseModel):
     provider: str = "deepseek"            # 模型提供商：deepseek 或 glm
     force_skills: list = []              # 用户通过 chip 标签指定的技能
     amap_key: Optional[str] = None        # 高德地图 Web API 密钥
+    pending_layer: Optional[dict] = None  # 待分析的图层附件（前端输入框上方暂存）
 
 class TestKeyRequest(BaseModel):
     api_key: str                          # 要测试的 DeepSeek API 密钥
@@ -70,9 +71,29 @@ class BaiduExtractRequest(BaseModel):
 # 前端发消息到这里，用 LangGraph Agent 处理
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
+    # 如果前端附带了待分析图层，注入到消息中
+    msg = request.message
+    pending = request.pending_layer
+    if pending and pending.get("geojson"):
+        import json
+        layer_name = pending.get("name", "未命名图层")
+        layer_type = pending.get("type", "未知")
+        layer_coords = pending.get("coords", "")
+        layer_count = pending.get("count", 0)
+        geo_json_str = json.dumps(pending["geojson"], ensure_ascii=False, indent=2)
+        max_geo_len = 8000
+        if len(geo_json_str) > max_geo_len:
+            geo_json_str = geo_json_str[:max_geo_len] + "\n  // ... (已截断)"
+        msg = (
+            f"[附图层: {layer_name}]\n"
+            f"类型: {layer_type}\n"
+            f"坐标: {layer_coords}\n"
+            f"要素数: {layer_count}\n\n"
+            f"GeoJSON:\n```json\n{geo_json_str}\n```\n\n"
+        ) + msg
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, functools.partial(
-        chat_with_ai, request.message, request.session_id, request.api_key, request.provider, request.force_skills, request.amap_key
+        chat_with_ai, msg, request.session_id, request.api_key, request.provider, request.force_skills, request.amap_key
     ))
     # result 已包含 layers / images / heatmap / clear_layers / pending_suggestions
     # 从 chat_with_ai 直接返回给前端，不需要再读全局变量
@@ -137,6 +158,33 @@ async def chat_stream(request: ChatRequest):
     force_skills = request.force_skills or []
     history = _get_or_create_history(request.session_id or "default", request.message)
     system_content, skill_text, _ = _build_system_content(provider, request.message, force_skills)
+
+    # 如果前端附带了待分析图层，将 GeoJSON 注入到用户消息中（同时进入 agent 上下文和校验器）
+    original_message = request.message
+    pending = request.pending_layer
+    if pending and pending.get("geojson"):
+        import json
+        layer_name = pending.get("name", "未命名图层")
+        layer_type = pending.get("type", "未知")
+        layer_coords = pending.get("coords", "")
+        layer_count = pending.get("count", 0)
+        geo_json_str = json.dumps(pending["geojson"], ensure_ascii=False, indent=2)
+        max_geo_len = 8000
+        if len(geo_json_str) > max_geo_len:
+            geo_json_str = geo_json_str[:max_geo_len] + "\n  // ... (已截断，完整数据共 " + str(len(geo_json_str)) + " 字符)"
+        layer_ctx = (
+            f"[用户附带了图层「{layer_name}」等待分析]\n"
+            f"类型: {layer_type}\n"
+            f"坐标: {layer_coords}\n"
+            f"要素数: {layer_count}\n\n"
+            f"图层 GeoJSON 数据:\n```json\n{geo_json_str}\n```\n\n"
+        )
+        # 注入到 history 最后一条用户消息（给 agent 上下文）
+        if history and history[-1].get("role") == "user":
+            history[-1]["content"] = layer_ctx + history[-1]["content"]
+        # 也注入到 original_message（给校验器）
+        original_message = layer_ctx + original_message
+
     langgraph_messages = _build_langgraph_messages(system_content, history)
 
     return StreamingResponse(
@@ -146,7 +194,7 @@ async def chat_stream(request: ChatRequest):
             provider=provider,
             amap_key=amap_key,
             skill_text=skill_text,
-            original_message=request.message,
+            original_message=original_message,
         ),
         media_type="text/event-stream",
         headers={

@@ -46,6 +46,7 @@ from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
 from backend.services.tools import tools, reset_state, get_pending_state
+import backend.services.ai_service as _ai_svc
 
 
 # ============================================================
@@ -193,6 +194,26 @@ def run_agent(
     # 构建 LLM
     llm = build_llm(api_key, provider)
 
+    # 简单文本对话（无关键词）直接调 LLM，不走 LangGraph 省掉框架开销
+    _simple = True
+    if messages and len(messages) > 1:
+        _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
+        _need_tools = any(kw in _last for kw in ['搜索','搜','查','画','图','分析','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','求','多少','什么','哪','?','？'])
+        if _need_tools or len(_last) > 80:
+            _simple = False
+    if _simple:
+        try:
+            _resp = llm.invoke(messages)
+            return {
+                "response": _resp.content,
+                "layers": [], "images": [], "heatmap": None,
+                "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+            }
+        except Exception as e:
+            return {"response": f"AI 回复失败: {str(e)[:200]}",
+                "layers": [], "images": [], "heatmap": None,
+                "clear_layers": False, "layer_ops": [], "pending_suggestions": None}
+
     # 构建 LangGraph ReAct Agent
     agent = create_react_agent(llm, tools)
 
@@ -301,7 +322,24 @@ def run_agent_stream(
         {"type":"done","response":"...","layers":[...],...}
     """
     reset_state(amap_key)
+    # 重置取消标志（每次新请求开始）
+    import backend.services.ai_service as _ai_svc
+    _ai_svc._request_cancelled = False
     llm = build_llm(api_key, provider)
+
+    # 简单问题快速 bypass
+    _simple = True
+    if messages and len(messages) > 1:
+        _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
+        _need_tools = any(kw in _last for kw in ['搜索','搜','查','画','图','分析','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','求','多少','什么','哪','?','？'])
+        if _need_tools or len(_last) > 80:
+            _simple = False
+    if _simple:
+        _resp = llm.invoke(messages)
+        yield f"data: {{\"type\":\"thinking\"}}\n\n"
+        yield f"data: {{\"type\":\"done\",\"response\":{json.dumps(_resp.content, ensure_ascii=False)},\"layers\":[],\"images\":[],\"heatmap\":null,\"clear_layers\":false,\"layer_ops\":[],\"pending_suggestions\":null}}\n\n"
+        return
+
     agent = create_react_agent(llm, tools)
 
     global _cached_graph
@@ -313,6 +351,11 @@ def run_agent_stream(
             {"recursion_limit": 120},
             stream_mode="values",
         ):
+            # 每次循环检查是否被取消
+            if _ai_svc._request_cancelled:
+                yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
+                return
+
             msgs = step.get("messages", [])
             if not msgs:
                 continue

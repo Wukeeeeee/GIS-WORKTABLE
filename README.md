@@ -151,38 +151,26 @@ prompt_glm.md         # GLM 系统提示词文档
 ## 更新日志
 
 **2026-07-14**
-- 新增 field_calculate 字段计算器工具（AI 专用，避免裸写 pandas 错误）
-- 修复 pyproj 沙箱白名单缺失（已被 AI 在提示词中引用但实际被拦截）
-- 新增 rasterio 沙箱白名单（为后续栅格支持准备）
-- 更新 skills/analysis.md 字段计算器使用指南
-
-**2026-07-14**
-- 修复 fetch_webpage 处理 None 返回导致的崩溃（_html_to_markdown 不再剥离 `<a>` 标签，搜索结果可正常提取）
+- 新增 measure_area 精确面积测量工具（自动 UTM 投影 + Albers 交叉验证）
+- 新增图层附件暂存机制：分析按钮改为暂存到输入框上方，用户自定义 prompt 后附带 GeoJSON 发送给 AI
+- 修复图层叠放顺序不同步（`_syncLayerOrder`，列表顺序与地图 z-order 一致）
+- 重构架构为 LangGraph create_react_agent，新增 Self-Verifying Agent（执行 → 校验 → 自动修正）
+- 新增 field_calculate 字段计算器工具，更新 skills/analysis.md 使用指南
+- 新增 amap_service（高德 Web API 集成），抽取 geo_coords.py 消除坐标转换重复代码
+- 属性表支持可编辑、筛选导出、内联重命名、列宽拖拽、上传气泡、坐标列
+- 修复 execute_python 中文乱码（PYTHONIOENCODING=utf-8）
+- 修复 fetch_webpage 处理 None 返回导致的崩溃（恢复 `<a>` 标签提取，搜索结果正常）
 - 增大 LangGraph recursion_limit：主 Agent 50→120，修正 Agent 30→40
-- 简化沙箱安全加固（移除 builtins.open 路径覆盖），避免 matplotlib 字体加载失败
-- 新增搜索防死循环保护（超过 30 次自动停止）
-- 优化提示词：搜索节制、国际搜索尝试当地语言
-- 右键发送位置新增「这是新的坐标，和之前的问题无关」防止 AI 混淆历史坐标
-
-**2026-07-14**
-- 修复 Bug、聊天框溢出、架构冗余清理
-- 新增 Self-Verifying Agent（执行 → 校验 → 自动修正）
-- 新增 KV 缓存优化（首 token 从 10-30s 降至 0.5-1s）
-- 抽取 geo_coords.py 消除坐标转换重复代码
-- 属性表可编辑、筛选导出、内联重命名、上传气泡
-- 修复 execute_python 中文乱码
-- 更新 GLM 模型名
-- 将绘制 marker 自动转为 circleMarker，统一颜色系统
-- 改用 setLayerColor 的 setStyle 直接改色
-- 移除 header 版本信息
-- 在设置弹窗新增关于面板
-- 移除保存设置按钮
+- 简化沙箱安全（移除 builtins.open 路径覆盖），新增 pyproj/rasterio 沙箱白名单
+- 新增搜索防死循环（30 次自动截停）和 execute_python 防循环保护（5 次）
+- 右键发送位置新增「这是新的坐标，和之前的问题无关」防止 AI 混淆
+- 优化提示词：搜索节制、国际搜索尝试当地语言、工具失败不反复重试
+- 将绘制 marker 统一为 circleMarker，改用 setStyle 直接改色
+- 消除 GLM 地理幻觉（统一使用 DeepSeek SYSTEM_PROMPT），更新 GLM 模型名
+- 修复暗黑模式 SVG Logo，放大设置弹窗布局，新增关于面板
 - 修复代码审查问题：phaseTimer 清理、placeholder 竞争、marked 局部渲染、conversation_history 截断写入、SHP 去 .zip、import 优化、模块超时检测、escapeHtml 集中、toQuadkey 校验、代理变量大小写兼容、高德 URL 编码
-- 重构架构为 LangGraph create_react_agent
-- 新增 amap_service
-- 让 GLM 统一使用 DeepSeek SYSTEM_PROMPT 解决地理幻觉
-- 放大设置弹窗布局
-- 修复暗黑模式 SVG Logo
+- 移除 header 版本信息、保存设置按钮
+- 全部 icon-* 整理至 icons.svg
 
 **2026-07-13**
 - 修复 body 8px 偏移和 100vw 溢出和 Leaflet 版权裁切
