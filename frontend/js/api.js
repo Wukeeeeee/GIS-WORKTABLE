@@ -9,8 +9,17 @@
 
 //创建一个空对象
 window.GIS = window.GIS || {};
+// 全局工具函数
+window.GIS.utils = {
+  escapeHtml: function(str) {
+    if (typeof str !== 'string' && typeof str !== 'number') return '';
+    var d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+  }
+};
 window.GIS.api = (() => {
-  const BASE_URL = 'http://localhost:8000';
+  const BASE_URL = window.location.origin || 'http://localhost:8000';
 
   // ===== API 密钥管理 (localStorage) =====
   // 密钥存在浏览器本地，每次发请求时带上，后端用完就丢不存盘

@@ -59,7 +59,7 @@ window.GIS = window.GIS || {};
           </button>
         </td>
         <td class="col-name">
-          <span class="layer-color-dot" style="background:${layer.color || '#1c1b1b'}" data-id="${layer.layer_id || ''}"></span>
+          <span class="layer-color-dot" style="background:${layer.color || '#1c1b1b'}" data-color="${layer.color || '#1c1b1b'}" data-id="${layer.layer_id || ''}"></span>
           <span class="layer-source layer-source-${layer.source || 'upload'}">
             ${layer.source === 'ai'
               ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
@@ -98,27 +98,25 @@ window.GIS = window.GIS || {};
     const color = layer.color || colors[layerData.length % colors.length];
     // 重名自动加 (1) (2)
     var name = layer.filename || '未命名';
+    var _rawName = layer.filename || layer.layer_id || '未命名'; // 保留原始名称用于地图模块查找
     if (layerData.some(function(l) { return l.filename === name; })) {
       var suffix = 1;
       while (layerData.some(function(l) { return l.filename === name + '(' + suffix + ')'; })) { suffix++; }
       name = name + '(' + suffix + ')';
     }
-    layerData.push({ ...layer, filename: name, visible: true, color });
+    layerData.push({ ...layer, filename: name, _rawName, visible: true, color });
     renderList();
   }
 
   // 删除图层：从列表移除 + 从地图清除
   function removeLayer(layerId) {
-    // 先找到要删的图层，拿到它的名称（地图模块是按文件名存的）
     const target = layerData.find(l => l.layer_id === layerId);
-    const mapName = target ? (target.filename || target.layer_id) : null;
-    // 更新列表数据，将指定的图层删除
+    const mapName = target ? (target._rawName || target.layer_id) : null;
     layerData = layerData.filter(l => l.layer_id !== layerId);
     renderList();
     if (mapName && GIS.map && GIS.map.removeLayer) {
-      GIS.map.removeLayer(mapName);  // 传正确的文件名，不是 layerId
+      GIS.map.removeLayer(mapName);
     }
-    // 删除提示
     if (target && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system');
     }
@@ -131,7 +129,7 @@ window.GIS = window.GIS || {};
       layer.visible = !layer.visible;
       renderList();
       if (GIS.map && GIS.map.setLayerVisible) {
-        GIS.map.setLayerVisible(layer.filename || layer.layer_id, layer.visible);
+        GIS.map.setLayerVisible(layer._rawName || layer.layer_id, layer.visible);
       }
     }
   }
@@ -143,7 +141,7 @@ window.GIS = window.GIS || {};
     var geojson = layer.geojson;
     // 如果没有独立 geojson，尝试从地图模块拿
     if (!geojson && GIS.map && GIS.map.getGeoJSON) {
-      geojson = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+      geojson = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
     }
     if (!geojson) {
       if (typeof addMessage === 'function') addMessage('无数据可下载', 'system');
@@ -214,7 +212,7 @@ window.GIS = window.GIS || {};
       if (GIS.map && GIS.map.getLayer) {
         for (let i = layerData.length - 1; i >= 0; i--) {
           const layer = layerData[i];
-          const leafletLayer = GIS.map.getLayer(layer.filename || layer.layer_id);
+          const leafletLayer = GIS.map.getLayer(layer._rawName || layer.layer_id);
           if (leafletLayer) leafletLayer.bringToFront();
         }
       }
@@ -255,7 +253,7 @@ window.GIS = window.GIS || {};
     }
     var geojson = layer.geojson;
     if (!geojson && GIS.map && GIS.map.getGeoJSON) {
-      geojson = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+      geojson = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
     }
     if (!geojson) {
       if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
@@ -292,18 +290,19 @@ window.GIS = window.GIS || {};
         const id = dot.dataset.id;
         const input = document.createElement('input');
         input.type = 'color';
-        input.value = dot.style.backgroundColor || '#1c1b1b';
+        input.value = dot.dataset.color || '#1c1b1b';
         input.addEventListener('input', function() {
           const layer = layerData.find(l => l.layer_id === id);
           if (layer) {
             layer.color = this.value;
             dot.style.background = this.value;
+            dot.dataset.color = this.value;
             if (GIS.map && GIS.map.setLayerColor) {
-              GIS.map.setLayerColor(layer.filename || layer.layer_id, this.value);
+              GIS.map.setLayerColor(layer._rawName || layer.layer_id, this.value);
             }
             // 改颜色后如果原来隐藏就继续保持隐藏
             if (!layer.visible && GIS.map && GIS.map.setLayerVisible) {
-              GIS.map.setLayerVisible(layer.filename || layer.layer_id, false);
+              GIS.map.setLayerVisible(layer._rawName || layer.layer_id, false);
             }
           }
         });
@@ -370,9 +369,7 @@ window.GIS = window.GIS || {};
   }
 
   function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    return window.GIS.utils ? window.GIS.utils.escapeHtml(str) : ('' + (str || ''));
   }
 
   // ===== 图层检查器 =====
@@ -429,7 +426,7 @@ window.GIS = window.GIS || {};
 
     var geojson = layer.geojson;
     if (!geojson && GIS.map && GIS.map.getGeoJSON) {
-      geojson = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+      geojson = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
     }
     if (!geojson) {
       if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
@@ -617,7 +614,7 @@ window.GIS = window.GIS || {};
     if (!layer) return null;
     var gj = layer.geojson;
     if (!gj && GIS.map && GIS.map.getGeoJSON) {
-      gj = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+      gj = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
     }
     return gj;
   }
@@ -666,7 +663,7 @@ window.GIS = window.GIS || {};
     function doSave() {
       var layer = layerData.find(function(l) { return l.layer_id === layerId; });
       if (layer && GIS.map && GIS.map.loadGeoJSON) {
-        GIS.map.loadGeoJSON(gj, layer.filename || layer.layer_id, { color: layer.color });
+        GIS.map.loadGeoJSON(gj, layer._rawName || layer.layer_id, { color: layer.color });
       }
       showLayerInspector(layerId);
     }
@@ -689,7 +686,7 @@ window.GIS = window.GIS || {};
 
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (layer && GIS.map && GIS.map.loadGeoJSON) {
-      GIS.map.loadGeoJSON(gj, layer.filename || layer.layer_id, { color: layer.color });
+      GIS.map.loadGeoJSON(gj, layer._rawName || layer.layer_id, { color: layer.color });
     }
     showLayerInspector(layerId);
   }
@@ -707,14 +704,14 @@ window.GIS = window.GIS || {};
 
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (layer && GIS.map && GIS.map.loadGeoJSON) {
-      GIS.map.loadGeoJSON(gj, layer.filename || layer.layer_id, { color: layer.color });
+      GIS.map.loadGeoJSON(gj, layer._rawName || layer.layer_id, { color: layer.color });
     }
     showLayerInspector(layerId);
   }
 
   // ---- 筛选函数 ----
 
-  var _filteredIndices = null;
+  var _filteredIndicesMap = new Map();
 
   function applyFilter(layerId) {
     var gj = getLayerGeoJSON(layerId);
@@ -744,7 +741,7 @@ window.GIS = window.GIS || {};
       if (match) matched.push(i);
     });
 
-    _filteredIndices = matched;
+    _filteredIndicesMap.set(layerId, matched);
 
     // 高亮表格行
     var table = document.getElementById('attrDataTable');
@@ -759,8 +756,12 @@ window.GIS = window.GIS || {};
     if (countEl) countEl.textContent = '匹配 ' + matched.length + ' / ' + features.length;
   }
 
-  function clearFilter() {
-    _filteredIndices = null;
+  function clearFilter(layerId) {
+    if (layerId) {
+      _filteredIndicesMap.delete(layerId);
+    } else {
+      _filteredIndicesMap.clear();
+    }
     var table = document.getElementById('attrDataTable');
     if (table) {
       table.querySelectorAll('tbody tr').forEach(function(row) {
@@ -773,7 +774,8 @@ window.GIS = window.GIS || {};
 
   /** 筛选结果导出为新图层 */
   function exportFilteredLayer(layerId) {
-    if (!_filteredIndices || _filteredIndices.length === 0) {
+    var indices = _filteredIndicesMap.get(layerId);
+    if (!indices || indices.length === 0) {
       if (window.GIS.chat) window.GIS.chat.addMessage('请先设置筛选条件', 'system');
       return;
     }
@@ -786,7 +788,7 @@ window.GIS = window.GIS || {};
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     var name = (layer ? layer.filename || layer.layer_id : '图层') + '_筛选结果';
 
-    var newFeatures = _filteredIndices.map(function(i) { return features[i]; });
+    var newFeatures = indices.map(function(i) { return features[i]; });
     var newGJ = { type: 'FeatureCollection', features: newFeatures };
 
     var color = layer ? layer.color : '#1c1b1b';
@@ -810,7 +812,7 @@ window.GIS = window.GIS || {};
     if (window.GIS.chat) {
       window.GIS.chat.addMessage('已从筛选结果创建新图层「' + name + '」（' + newFeatures.length + ' 个要素）', 'system');
     }
-    clearFilter();
+    clearFilter(layerId);
     closeInspector();
   }
 
@@ -820,7 +822,7 @@ window.GIS = window.GIS || {};
     if (!layer) return;
     var gj = layer.geojson;
     if (!gj && GIS.map && GIS.map.getGeoJSON) {
-      gj = GIS.map.getGeoJSON(layer.filename || layer.layer_id);
+      gj = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
     }
     if (!gj) return;
     var features = [];

@@ -100,9 +100,7 @@ window.GIS = window.GIS || {};
   }
 
   function escapeHtml(str) {
-    var div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    return window.GIS.utils ? window.GIS.utils.escapeHtml(str) : ('' + (str || ''));
   }
 
   GIS.aoi = {

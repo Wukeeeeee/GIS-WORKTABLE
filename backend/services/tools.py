@@ -109,6 +109,7 @@ def _register_layer(name: str, geojson: dict):
 
 def _add_pending_item(url: str, file_path: str = None):
     """添加到待发送的图片/HTML 列表"""
+    init_temp_dir()
     if file_path and file_path.lower().endswith(".html"):
         try:
             with open(file_path, "r", encoding="utf-8") as _f:

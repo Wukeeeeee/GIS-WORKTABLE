@@ -5,8 +5,9 @@ from pydantic import BaseModel
 from typing import Optional
 from io import BytesIO
 import subprocess, datetime, time, os, asyncio, functools
-from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, _TEMP_OUTPUT_DIR
+from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, request_cancel, get_boundary, _TEMP_OUTPUT_DIR
 from backend.services.tools import _register_layer
+from backend.services.layer_service import inspect_geojson
 from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
 from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
 from backend.services.gaode_aoi_service import search_suggestions as gaode_search_suggestions
@@ -118,7 +119,6 @@ async def chat(request: ChatRequest):
 @app.post("/api/cancel")
 async def cancel_request():
     """取消当前 AI 请求"""
-    from backend.services.ai_service import request_cancel
     result = request_cancel()
     return {"status": "ok", "message": result}
 
@@ -158,7 +158,6 @@ async def test_key_glm(request: TestKeyRequest):
 @app.get('/api/boundary')
 async def get_boundary_api(place: str = "长沙市"):
     """从OSM获取行政边界，返回GeoJSON"""
-    from backend.services.ai_service import get_boundary
     import json, os
     try:
         import osmnx as ox
@@ -323,7 +322,7 @@ async def upload(file: UploadFile = File(...)):
                 geojson_data = json.loads(gdf.to_json())
                 name = os.path.splitext(shp_files[0])[0]
                 _register_layer(name, geojson_data)
-                return {"geojson": geojson_data, "name": name + ".zip"}
+                return {"geojson": geojson_data, "name": name}
 
     # ===== GPKG / KML 等（geopandas 支持的单文件格式） =====
     supported = {'.gpkg', '.kml', '.kmz', '.gpx', '.dxf'}
@@ -379,7 +378,6 @@ class InspectLayerRequest(BaseModel):
 
 @app.post("/api/layer/inspect")
 async def inspect_layer(request: InspectLayerRequest):
-    from backend.services.layer_service import inspect_geojson
     result = inspect_geojson(request.geojson)
     result["name"] = request.name
     return result

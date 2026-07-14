@@ -4,51 +4,25 @@
 
 ---
 
-## 2026-07-14：可编辑属性表 + 筛选导出 + 图层重命名 + 上传修复
+## 2026-07-14
 
-### 改动清单
-
-#### 后端 — tools.py
-- **修复中文乱码**：`execute_python` 子进程添加 `env['PYTHONIOENCODING'] = 'utf-8'`，解决 Windows GBK 编码下中文变 `��` 的问题
-
-#### 后端 — ai_service.py / graph.py
-- **GLM 模型名更新**：`glm-4-flash` → `glm-4.7-flash`（4 处），对齐最新 API
-
-#### 前端 — layers.js
-- **可编辑属性表**：图层检查器中的属性数据改为可编辑 `<input>`，支持直接修改单元格值
-- **保存按钮**：读取所有 input 值 → 更新 GeoJSON → 刷新地图图层
-- **添加行**：点击"+行"按钮添加新要素（空几何），默认值优先用"空值填充"输入框
-- **删除行**：每行末尾 × 按钮删除
-- **空行警告**：保存时检测完全空行，弹窗提示行号，确认后才保存
-- **空值填充**：表格上方新增输入框，保存时自动填充空白单元格，新增行也使用此默认值
-- **筛选导出**：筛选栏（字段+运算符+值），匹配行高亮，不匹配行隐藏 → "导出为新图层"一键创建筛选结果图层
-- **CSV 导出**：保留原有 CSV 导出功能
-- **图层重命名**：双击图层名 → 内联编辑 → Enter/blur 确认，ESC 取消，自动去重重名加 (1)(2)
-- **重名自动去重**：`addLayer()` 检测重名自动追加 (1)(2) 后缀
-
-#### 前端 — upload.js
-- **上传按钮修复**：`querySelectorAll('[id="..."]')` → `getElementById` 直接绑定
-- **上传状态气泡**：改为在 AI 对话区居中显示对话框样式气泡（无头像）
-  - 导入中：弹跳 SVG + "导入中: 文件名" + **取消导入按钮**
-  - 成功：绿色勾 + "上传成功"，3 秒自动消失
-  - 失败：红色叉 + "上传失败"，5 秒自动消失
-- **取消导入**：`AbortController` 中断 fetch，点击取消按钮后消息变为"导入已取消"
-
-#### 前端 — api.js
-- `upload()` 新增 `signal` 参数，支持 AbortController 取消
-
-#### 前端 — index.html
-- 移除上传按钮旁的 `upload-indicator` 元素（改用对话区气泡）
-
-#### 前端 — style.css
-- 新增 `.attr-toolbar`、`.attr-btn`、`.attr-cell`、`.attr-del-btn`、`.attr-filter-bar`、`.attr-fill-row` 等属性表相关样式
-- 新增 `.confirm-overlay`、`.confirm-dialog` 弹窗样式
-- 新增 `@keyframes upload-bounce` 导入动画
-- 新增 `.upload-cancel-btn` 深色主题适配
-- 移除旧的上传 toast 样式
-
-#### README.md
-- 更新时间戳、新增更新日志
+- 属性表改为可编辑 input，支持保存、添加行、删除行、空值填充、空行警告
+- 筛选栏支持字段+运算符+值匹配，高亮匹配行，导出筛选结果为新图层
+- 图层名双击内联编辑，Enter/blur 确认，ESC 取消，重名自动追加 (1)(2)
+- 上传按钮绑定改用 getElementById 修复
+- 上传状态改为居中对话气泡，支持取消导入（AbortController）、成功/失败图标
+- upload() 新增 signal 参数支持中断
+- execute_python 子进程添加 PYTHONIOENCODING=utf-8 修复中文乱码
+- GLM 模型名 glm-4-flash 更新为 glm-4.7-flash
+- 地图删除模式改用 e.layer 修复点击无效
+- map.removeLayer 同时清理 drawnItems 解决 marker 残留
+- 绘制 marker 自动转为 circleMarker 统一颜色系统
+- setLayerColor 改用 setStyle 直接修改 Leaflet 图层，支持所有类型改色
+- 颜色选择器改用 data-color 属性避免 RGB/Hex 转换问题
+- 移除 header 版本信息 badge 和设置弹窗版本信息面板
+- 设置弹窗新增关于面板，含 SVG Logo、项目介绍、GitHub 链接
+- 移除设置弹窗保存设置按钮
+- 代码审查修复：phaseTimer 清理、placeholder 竞争、marked 全局覆盖、conversation_history 截断、SHP 返回名去 .zip、escapeHtml 统一、main.py 内联 import 上提、graph.py 未使用 import 清理、app.js 超时检测、toQuadkey 边界检查、代理环境变量大小写兼容、Gaode URL 编码、_add_pending_item 初始化
 
 ---
 

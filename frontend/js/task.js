@@ -291,10 +291,7 @@ window.GIS = window.GIS || {};
   // ===== 工具函数 =====
 
   function escapeHtml(str) {
-    if (typeof str !== 'string') return '';
-    var div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
+    return window.GIS.utils ? window.GIS.utils.escapeHtml(str) : ('' + (str || ''));
   }
 
   function truncate(str, maxLen) {

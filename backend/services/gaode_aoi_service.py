@@ -387,9 +387,9 @@ from contextlib import contextmanager
 
 @contextmanager
 def _no_proxy():
-    """临时清除代理环境变量，执行完后恢复原样"""
+    """临时清除代理环境变量（含 Windows 大小写变体），执行完后恢复原样"""
     saved = {}
-    for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'):
+    for key in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'):
         saved[key] = _os.environ.pop(key, None)
     try:
         yield
@@ -412,8 +412,9 @@ def _direct_search(query: str) -> list:
         sess = _req.Session()
         sess.headers.update(headers)
         sess.get("https://ditu.amap.com/", timeout=8)
-        # 高德搜索
-        url = f"https://www.amap.com/service/poi/search?keywords={query}&type=search&platform=0&s=show"
+        # 高德搜索（urllib 编码 query 防止特殊字符破坏 URL）
+        import urllib.parse as _urlparse
+        url = f"https://www.amap.com/service/poi/search?keywords={_urlparse.quote(query)}&type=search&platform=0&s=show"
         resp = sess.get(url, timeout=10)
         if resp.status_code == 200:
             results = extract_suggestions_from_search(resp.json())

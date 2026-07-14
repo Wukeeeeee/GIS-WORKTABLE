@@ -429,8 +429,9 @@ def _history_path(session_id: str) -> str:
 def _sanitize_history(history: list) -> list:
     """清洗历史记录，确保每条消息格式符合 API 要求"""
     sanitized = []
-    for msg in history:
+    for i, msg in enumerate(history):
         if not isinstance(msg, dict):
+            print(f"[GIS] 警告: 历史记录第 {i} 条格式异常，已跳过 (type={type(msg).__name__})", flush=True)
             continue
         role = msg.get("role", "user")
         new_msg = {"role": role}
@@ -470,6 +471,24 @@ def _save_history(session_id: str, history: list):
             json.dump(history, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+def _clean_old_history(max_days: int = 7):
+    """删除超过 max_days 的历史文件"""
+    import time as time_module
+    now = time_module.time()
+    cutoff = now - max_days * 86400
+    if not os.path.isdir(_HISTORY_DIR):
+        return
+    for fname in os.listdir(_HISTORY_DIR):
+        if fname.startswith("session_") and fname.endswith(".json"):
+            fpath = os.path.join(_HISTORY_DIR, fname)
+            try:
+                mtime = os.path.getmtime(fpath)
+                if mtime < cutoff:
+                    os.remove(fpath)
+            except Exception:
+                pass
 
 
 # ============================================================
@@ -665,9 +684,14 @@ def chat_with_ai(message: str, session_id: str = "default", api_key: str = None,
 
     # 限制历史长度
     if len(history) > MAX_HISTORY:
-        history = history[-MAX_HISTORY:]
+        conversation_history[session_id] = history[-MAX_HISTORY:]
+        history = conversation_history[session_id]
 
     _save_history(session_id, history)
+
+    # 定期清理过期历史文件
+    if len(conversation_history) > 100:
+        _clean_old_history(7)
 
     # 记录日志
     try:
@@ -764,15 +788,16 @@ def browser_operate(task: str, url: str = "") -> str:
     if not _current_api_key:
         return "错误：未配置 API Key，browser_operate 需要 API Key 驱动 AI 决策"
 
-    script = rf'''
+    script = r'''
 import asyncio, sys, os
 os.environ["ANONYMIZED_TELEMETRY"] = "false"
 from browser_use import Agent
 from langchain_openai import ChatOpenAI
 async def main():
+    api_key = os.environ.get("_BROWSER_API_KEY", "")
     llm = ChatOpenAI(
         model="deepseek-chat",
-        api_key="{_current_api_key}",
+        api_key=api_key,
         base_url="https://api.deepseek.com",
         temperature=0,
     )
@@ -787,13 +812,14 @@ if __name__ == "__main__":
     try:
         print(asyncio.run(main()))
     except Exception as e:
-        print(f"Browser-Use 执行错误: {{str(e)}}")
+        print(f"Browser-Use 执行错误: {str(e)}")
 '''
 
     try:
         result = subprocess.run(
             [sys.executable, '-c', script, task],
-            capture_output=True, timeout=120, env={**os.environ.copy(), 'PYTHONIOENCODING': 'utf-8'},
+            capture_output=True, timeout=120,
+            env={**os.environ.copy(), 'PYTHONIOENCODING': 'utf-8', '_BROWSER_API_KEY': _current_api_key},
         )
         stdout = result.stdout.decode('utf-8', errors='replace')
         stderr = result.stderr.decode('utf-8', errors='replace')

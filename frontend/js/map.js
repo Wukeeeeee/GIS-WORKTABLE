@@ -49,8 +49,8 @@ window.GIS = window.GIS || {};
 
   /** 点击删除回调 */
   function _onDeleteClick(e) {
-    var layer = e.target;
-    if (!layer || !drawnItems) return;
+    var layer = e.layer || e.target;
+    if (!layer || !drawnItems || layer === drawnItems) return;
     // 从地图上的 FeatureGroup 移除
     drawnItems.removeLayer(layer);
     // 从 GIS 图层系统移除
@@ -113,8 +113,13 @@ window.GIS = window.GIS || {};
 
     // ResizeObserver：地图容器尺寸变化时自动重算
     if (typeof ResizeObserver !== 'undefined') {
+      if (_resizeObserver) _resizeObserver.disconnect(); // 防止重复 init
       _resizeObserver = new ResizeObserver(function() { doInvalidate(); });
-      _resizeObserver.observe(el.parentElement);
+      _resizeObserver.observe(el); // 观察地图元素自身，而非父元素
+      // 页面关闭时断开，防止内存泄漏
+      window.addEventListener('beforeunload', function _cleanupRO() {
+        if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null; }
+      });
     }
 
     // ---- 绘制工具（顶部工具栏 + Leaflet.Draw 引擎）----
@@ -125,12 +130,21 @@ window.GIS = window.GIS || {};
       // 绘制完成事件
       mapInstance.on(L.Draw.Event.CREATED, function(e) {
         var layer = e.layer;
+        // 把 marker 换成 circleMarker（统一颜色系统）
+        if (layer instanceof L.Marker && !(layer instanceof L.CircleMarker)) {
+          var latlng = layer.getLatLng();
+          var color = '#1c1b1b';
+          layer = L.circleMarker(latlng, {
+            radius: 6, fillColor: color, color: color,
+            weight: 2, opacity: 1, fillOpacity: 0.6,
+          });
+        }
         drawnItems.addLayer(layer);
         var name = '绘制_' + Date.now().toString(36);
         layer._name = name;
         if (window.GIS && window.GIS.layers && window.GIS.layers.addLayer) {
           window.GIS.layers.addLayer({
-            layer_id: name, name: name, checked: true,
+            layer_id: name, name: name, filename: name, checked: true,
             geojson: layer.toGeoJSON(), source: '绘制'
           });
         }
@@ -216,6 +230,7 @@ window.GIS = window.GIS || {};
   }
 
   function toQuadkey(x, y, z) {
+    if (z < 0 || z > 23 || x < 0 || y < 0) return '';
     var q = '';
     for (var i = z; i > 0; i--) {
       var d = 0; var m = 1 << (i - 1);
@@ -277,6 +292,13 @@ window.GIS = window.GIS || {};
 
   function removeLayer(name) {
     if (layers[name]) { mapInstance.removeLayer(layers[name]); delete layers[name]; delete geoStore[name]; }
+    if (drawnItems) {
+      var toRemove = [];
+      drawnItems.eachLayer(function(l) {
+        if (l._name === name) toRemove.push(l);
+      });
+      toRemove.forEach(function(l) { drawnItems.removeLayer(l); });
+    }
   }
 
   /** 切换图层显隐 */
@@ -296,11 +318,18 @@ window.GIS = window.GIS || {};
 
   /** 修改图层颜色 */
   function setLayerColor(name, color) {
-    if (!layers[name] || !geoStore[name]) return;
-    // 重新用新颜色加载
-    var geo = geoStore[name].geojson;
-    removeLayer(name);
-    loadGeoJSON(geo, name, { color: color, fillColor: color });
+    var layer = layers[name];
+    if (!layer && drawnItems) {
+      drawnItems.eachLayer(function(l) {
+        if (l._name === name) layer = l;
+      });
+      if (layer) layers[name] = layer; // 缓存到 layers 方便下次查找
+    }
+    if (!layer) return;
+    if (typeof layer.setStyle === 'function') {
+      layer.setStyle({ color: color, fillColor: color });
+    }
+    if (geoStore[name]) geoStore[name].style = { color: color, fillColor: color };
   }
 
   function toggleLayer(name) {

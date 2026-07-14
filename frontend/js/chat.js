@@ -10,18 +10,11 @@ window.GIS = window.GIS || {};
 (function() {
   'use strict';
 
-// marked Markdown 渲染：所有外部链接新标签打开，不丢失当前界面
-try {
-  if (typeof marked !== 'undefined') {
-    marked.use({
-      renderer: {
-        link: function(token) {
-          return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer">' + token.text + '</a>';
-        }
-      }
-    });
-  }
-} catch(e) { /* marked 版本兼容性兜底 */ }
+// 所有外部链接新标签打开
+var _linkRenderer = new marked.Renderer();
+_linkRenderer.link = function(token) {
+  return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer">' + token.text + '</a>';
+};
 
 //将GIS命名空间赋值给常量GIS，相当于全局变量
   const GIS = window.GIS;
@@ -350,6 +343,8 @@ try {
       text = inputEl ? inputEl.value.trim() : '';
     }
     if (!text) return;
+    // 防止快速双击/重复点击，避免创建重复计时器和加载气泡
+    if (window._aiRunning) return;
 
     // 解析第二个参数：字符串=displayText，对象={displayText, badge, provider}
     const displayText = typeof displayOpt === 'string' ? displayOpt : (displayOpt ? displayOpt.displayText : null);
@@ -387,7 +382,6 @@ try {
       el.style.display = 'none';
     }
     // 显示加载状态：输入框显示提示文字，禁用按钮和模型选择
-    const originalPlaceholder = inputEl.placeholder;
     inputEl.placeholder = 'AI正在回复中...';
     inputEl.disabled = true;
     sendBtn.disabled = true;
@@ -484,6 +478,7 @@ try {
       const loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
+        if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
         loadingEl.remove();
       }
 
@@ -728,16 +723,18 @@ try {
       const loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
+        if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
         loadingEl.remove();
       }
       // 更新任务状态为失败
       if (taskId && window.GIS.task) {
         window.GIS.task.updateTask(taskId, { status: 'failed', error: err.message, completedAt: Date.now() });
       }
-      addMessage('请求失败: ' + err.message, 'system');
+      // 恢复默认 placeholder（防止并发发送覆盖）
+      inputEl.placeholder = '输入指令或查询...';
     } finally {
       _resetUIAfterStop();
-      inputEl.placeholder = originalPlaceholder;
+      inputEl.placeholder = '输入指令或查询...';
       inputEl.focus();
       // 重新启用模型选择
       const modelBar = document.querySelector('.chat-input-model-bar');
@@ -784,7 +781,7 @@ try {
     const content = document.createElement('div');
     // AI 消息渲染 Markdown（跳过加载气泡，避免 <p> 包裹破坏流光动画）
     if (type === 'ai' && !options.noMarkdown && typeof marked !== 'undefined') {
-      content.innerHTML = marked.parse(text, { breaks: true, gfm: true });
+      content.innerHTML = marked.parse(text, { breaks: true, gfm: true, renderer: _linkRenderer });
     } else {
       content.innerHTML = text;
     }

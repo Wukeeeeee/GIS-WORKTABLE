@@ -37,13 +37,11 @@ FC vs LangGraph 对比:
     └──────────────────────┴──────────────────────────────┘
 """
 
-from typing import Any, Literal
+from typing import Any
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
-from langgraph.graph import StateGraph, END, MessagesState
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import create_react_agent, ToolNode
+from langgraph.prebuilt import create_react_agent
 
 from backend.services.tools import tools, reset_state, get_pending_state
 

@@ -43,7 +43,6 @@
           </svg>
           <!-- header 右侧按钮组 -->
           <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
-            <span id="versionBadge" title="后端版本信息" style="font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;">载入中...</span>
             <button id="settingsBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="设置">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="3"/>
@@ -309,13 +308,7 @@
       <!-- ===== 左侧导航 ===== -->
       <div class="modal-sidenav">
         <div class="modal-sidenav-items">
-          <div class="modal-sidenav-item active" data-panel="version">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            <span>版本信息</span>
-          </div>
-          <div class="modal-sidenav-item" data-panel="appearance">
+          <div class="modal-sidenav-item active" data-panel="appearance">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M4.93 19.07l1.41-1.41"/><path d="M17.66 6.34l1.41-1.41"/>
             </svg>
@@ -333,8 +326,13 @@
             </svg>
             <span>历史记录</span>
           </div>
+          <div class="modal-sidenav-item" data-panel="about">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            <span>关于</span>
+          </div>
         </div>
-        <button class="modal-sidenav-save" id="saveSettingsBtn">保存设置</button>
       </div>
 
       <!-- ===== 右侧内容面板 ===== -->
@@ -343,22 +341,7 @@
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
 
-        <!-- === 面板1：版本信息 === -->
-        <div class="modal-panel active" id="panelVersion">
-          <h3>版本信息</h3>
-          <div class="version-info">
-            <div class="version-row">
-              <span class="version-label">Git 提交</span>
-              <span class="version-value" id="modalVersionCommit">-</span>
-            </div>
-            <div class="version-row">
-              <span class="version-label">后端启动</span>
-              <span class="version-value" id="modalVersionTime">-</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- === 面板2：界面设置 === -->
+        <!-- === 面板1：界面设置 === -->
         <div class="modal-panel" id="panelAppearance">
           <h3>界面设置</h3>
           <div class="setting-group">
@@ -464,6 +447,29 @@
           </div>
           <div class="history-list custom-scrollbar" id="historyList">
             <div class="task-empty">暂无分析任务</div>
+          </div>
+        </div>
+
+        <!-- === 面板5：关于 === -->
+        <div class="modal-panel" id="panelAbout">
+          <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:20px;">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" style="height:52px;width:auto;margin-bottom:16px;">
+              <g transform="translate(10, 10)">
+                <rect x="0" y="0" width="40" height="40" fill="none" stroke="var(--ui-gray-900)" stroke-width="2.5" rx="4"/>
+                <line x1="20" y1="5" x2="20" y2="35" stroke="var(--ui-gray-900)" stroke-width="1.5" stroke-dasharray="2 2"/>
+                <line x1="5" y1="20" x2="35" y2="20" stroke="var(--ui-gray-900)" stroke-width="1.5" stroke-dasharray="2 2"/>
+                <circle cx="20" cy="20" r="4" fill="var(--ui-gray-900)"/>
+              </g>
+              <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="var(--ui-gray-900)">GIS</text>
+              <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="var(--ui-gray-900)">WORKTABLE</text>
+            </svg>
+            <p style="font-size:13px;color:var(--ui-gray-500);line-height:1.6;margin:0 0 12px;max-width:300px;">
+              GIS WorkTable 是一个基于 Web 的 GIS 数据处理可视化工作台， 内置 AI 助手（DeepSeek V4 Flash+/ GLM-4.7-Flash+）， 支持自然语言交互。
+            </p>
+            <a href="https://github.com/Wukeeeeee/GIS-WORKTABLE" target="_blank" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ui-gray-600);text-decoration:none;padding:6px 14px;border:1px solid var(--ui-gray-300);border-radius:6px;">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              GitHub
+            </a>
           </div>
         </div>
       </div>
@@ -597,10 +603,10 @@
       // ---- 侧边栏切换 ----
       var sidenavItems = document.querySelectorAll('.modal-sidenav-item');
       var panels = {
-        version: document.getElementById('panelVersion'),
         appearance: document.getElementById('panelAppearance'),
         apikey: document.getElementById('panelApiKey'),
         history: document.getElementById('panelHistory'),
+        about: document.getElementById('panelAbout'),
       };
       sidenavItems.forEach(function(item) {
         item.addEventListener('click', function() {
@@ -612,17 +618,6 @@
           });
         });
       });
-
-      // ---- 保存设置按钮 ----
-      var saveSettingsBtn = document.getElementById('saveSettingsBtn');
-      if (saveSettingsBtn) {
-        saveSettingsBtn.addEventListener('click', function() {
-          var orig = this.textContent;
-          this.textContent = '已保存';
-          var that = this;
-          setTimeout(function() { that.textContent = orig; }, 1500);
-        });
-      }
 
       // ---- 字号设置（通过 --font-scale 统一缩放）----
       var fontSizeSlider = document.getElementById('fontSizeSlider');
@@ -662,14 +657,14 @@
         });
       }
 
-      // 打开弹窗（重置到版本信息面板）
+      // 打开弹窗（重置到界面设置面板）
       settingsBtn.addEventListener('click', function() {
-        // 重置到版本信息面板
+        // 重置到界面设置面板
         sidenavItems.forEach(function(s) { s.classList.remove('active'); });
-        var firstNav = document.querySelector('.modal-sidenav-item[data-panel="version"]');
+        var firstNav = document.querySelector('.modal-sidenav-item[data-panel="appearance"]');
         if (firstNav) firstNav.classList.add('active');
         Object.keys(panels).forEach(function(k) {
-          if (panels[k]) panels[k].classList.toggle('active', k === 'version');
+          if (panels[k]) panels[k].classList.toggle('active', k === 'appearance');
         });
         var savedKey = window.GIS.api.getApiKey();
         apiKeyInput.value = savedKey;
@@ -967,37 +962,6 @@
           el.addEventListener('mouseup', function() { this.style.opacity = '1'; });
           el.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
         });
-
-      // ---- 加载版本信息 ----
-      (function loadVersion() {
-        var badge = document.getElementById('versionBadge');
-        if (!badge) return;
-        if (window.GIS && window.GIS.api && window.GIS.api.getVersion) {
-          window.GIS.api.getVersion().then(function(ver) {
-            if (ver && ver.commit) {
-              var dirty = ver.dirty ? '*' : '';
-              badge.textContent = ver.commit + dirty + ' | ' + (ver.start_time || '');
-              badge.style.cssText = 'font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;background:var(--ui-gray-100);color:var(--ui-gray-400);';
-              badge.title = '提交: ' + ver.commit + (ver.dirty ? ' (有未提交的改动)' : '') + ' | 后端启动: ' + (ver.start_time || '未知');
-              // 同步更新设置弹窗里的版本信息
-              var mc = document.getElementById('modalVersionCommit');
-              var mt = document.getElementById('modalVersionTime');
-              if (mc) mc.textContent = ver.commit + (ver.dirty ? '*' : '');
-              if (mt) mt.textContent = ver.start_time || '未知';
-            } else {
-              badge.textContent = '无法连接';
-              badge.style.cssText = 'font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;background:#ffebee;color:#c62828;';
-              badge.title = '后端未响应，请确认服务已启动';
-            }
-          }).catch(function() {
-            badge.textContent = '无法连接';
-            badge.style.cssText = 'font-size:10px;padding:2px 6px;border-radius:3px;white-space:nowrap;cursor:default;background:#ffebee;color:#c62828;';
-            badge.title = '后端未响应，请确认服务已启动';
-          });
-        } else {
-          setTimeout(loadVersion, 1000);
-        }
-      })();
 
       // ---- 自动检测模型状态（页面加载后检测已保存密钥的模型） ----
       (function autoDetectModelStatus() {

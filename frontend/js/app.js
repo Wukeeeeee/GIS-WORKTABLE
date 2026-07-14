@@ -19,6 +19,29 @@ window.GIS = window.GIS || {};
   function init() {
     console.log('[GIS] 应用初始化...');
 
+    // 启动超时检测（10秒后检查关键模块是否就绪）
+    var _startTime = Date.now();
+    var _checkLoaded = setInterval(function() {
+      if (Date.now() - _startTime > 10000) {
+        clearInterval(_checkLoaded);
+        var missing = [];
+        if (!GIS.map || typeof GIS.map.init !== 'function') missing.push('地图');
+        if (!GIS.chat || typeof GIS.chat.init !== 'function') missing.push('聊天');
+        if (!GIS.layers || typeof GIS.layers.init !== 'function') missing.push('图层');
+        if (missing.length) {
+          var errMsg = '模块加载失败: ' + missing.join(', ') + '。请检查网络连接后刷新页面。';
+          console.error('[GIS] ' + errMsg);
+          var chatArea = document.querySelector('.chat-messages');
+          if (chatArea) {
+            var el = document.createElement('div');
+            el.style.cssText = 'padding:20px;text-align:center;color:#c62828;font-size:14px;';
+            el.textContent = errMsg;
+            chatArea.appendChild(el);
+          }
+        }
+      }
+    }, 1000);
+
     // 1. 初始化地图
     if (GIS.map && typeof GIS.map.init === 'function') {
       GIS.map.init('map');

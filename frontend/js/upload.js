@@ -61,9 +61,10 @@ window.GIS = window.GIS || {};
   async function startUpload(file) {
     showUploadToast('importing', file.name);
 
-    // 可取消
-    _uploadAbortController = new AbortController();
-    var signal = _uploadAbortController.signal;
+    // 可取消：每个文件独立 AbortController，防止并发上传互相覆盖
+    var controller = new AbortController();
+    _uploadAbortControllers.set(file.name, controller);
+    var signal = controller.signal;
 
     try {
       const result = await GIS.api.upload(file, signal);
@@ -112,7 +113,7 @@ window.GIS = window.GIS || {};
       if (err.name === 'AbortError') return; // 用户取消，不显示错误
       showUploadToast('error', err.message);
     } finally {
-      _uploadAbortController = null;
+      _uploadAbortControllers.delete(file.name);
     }
   }
 
@@ -120,7 +121,7 @@ window.GIS = window.GIS || {};
 
   var _uploadMsgEl = null;
   var _uploadStatusTimer = null;
-  var _uploadAbortController = null;
+  var _uploadAbortControllers = new Map();
   var _currentFileName = '';
 
   function showUploadToast(status, msg) {
@@ -159,7 +160,9 @@ window.GIS = window.GIS || {};
       var cancelBtn = row.querySelector('#uploadCancelBtn');
       if (cancelBtn) {
         cancelBtn.addEventListener('click', function() {
-          if (_uploadAbortController) _uploadAbortController.abort();
+          var ctrl = _uploadAbortControllers.get(_currentFileName);
+          if (ctrl) ctrl.abort();
+          _uploadAbortControllers.delete(_currentFileName);
           var bubbleDiv = cancelBtn.closest('div[style]');
           if (bubbleDiv) {
             bubbleDiv.innerHTML = '<span style="color:var(--ui-gray-400);font-size:12px;">导入已取消</span>';
@@ -212,9 +215,7 @@ window.GIS = window.GIS || {};
   }
 
   function escapeHtml(str) {
-    var d = document.createElement('div');
-    d.textContent = str;
-    return d.innerHTML;
+    return window.GIS.utils ? window.GIS.utils.escapeHtml(str) : ('' + (str || ''));
   }
 
   // 打开文件选择对话框
