@@ -211,6 +211,10 @@ def run_agent(
         if _need_tools or len(_last) > 80:
             _simple = False
     if _simple:
+        if _ai_svc._request_cancelled:
+            return {"response": "用户已取消", "layers": [], "images": [],
+                    "heatmap": None, "clear_layers": False, "layer_ops": [],
+                    "pending_suggestions": None}
         try:
             _resp = llm.invoke(messages)
             return {
@@ -228,6 +232,10 @@ def run_agent(
 
     # 运行 Agent
     try:
+        if _ai_svc._request_cancelled:
+            return {"response": "用户已取消", "layers": [], "images": [],
+                    "heatmap": None, "clear_layers": False, "layer_ops": [],
+                    "pending_suggestions": None}
         result = agent.invoke(
             {"messages": messages},
             {"recursion_limit": 120},

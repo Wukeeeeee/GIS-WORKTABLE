@@ -121,8 +121,8 @@
                 </svg>
                 <!-- 隐藏的原生 select（保持 JS 兼容） -->
                 <select id="modelSelector" title="选择AI模型" style="display:none;">
+                  <option value="deepseek-routed">DeepSeek V4 Flash+</option>
                   <option value="glm-routed" selected>GLM-4.7-Flash+</option>
-                  <option value="glm-routed">GLM-4.7-Flash+</option>
                   <option value="agnes">Agnes 2.0 Flash+</option>
                 </select>
               </div>
@@ -302,11 +302,6 @@
       <span>发送此位置给AI</span>
       <span class="ctx-badge ctx-badge-ai">AI</span>
     </div>
-    <div class="context-menu-item" data-action="get-dem" style="display:none;">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="url(#ctx-ai-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21l6-9 4 5 4-7 4 11"/><circle cx="16" cy="7" r="2"/></svg>
-      <span>获取此区域DEM数据</span>
-      <span class="ctx-badge ctx-badge-ds">DeepSeek</span>
-    </div>
     <div class="context-menu-item" data-action="copy-coords">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
       <span>复制坐标</span>
@@ -356,11 +351,17 @@
             </svg>
             <span>界面设置</span>
           </div>
-          <div class="modal-sidenav-item" data-panel="apikey">
+          <div class="modal-sidenav-item" data-panel="ai-api">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+              <path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0 4 4 4 4 0 0 0 4-4V6a4 4 0 0 0-4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><circle cx="12" cy="6" r="1"/>
             </svg>
-            <span>API 密钥</span>
+            <span>AI 模型</span>
+          </div>
+          <div class="modal-sidenav-item" data-panel="geo-api">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
+            </svg>
+            <span>地理服务</span>
           </div>
           <div class="modal-sidenav-item" data-panel="history">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -410,9 +411,9 @@
           </div>
         </div>
 
-        <!-- === 面板3：API 密钥 === -->
-        <div class="modal-panel" id="panelApiKey">
-          <h3>API 密钥</h3>
+        <!-- === AI 模型 === -->
+        <div class="modal-panel" id="panelAiApi">
+          <h3>AI 模型</h3>
 
           <!-- DeepSeek -->
           <div class="model-config-card">
@@ -478,7 +479,14 @@
             </div>
           </div>
 
-          <!-- 高德地图 Web API -->
+          <p class="modal-note">密钥仅保存在您的浏览器中，不会上传到服务器</p>
+        </div>
+
+        <!-- === 地理服务 === -->
+        <div class="modal-panel" id="panelGeoApi">
+          <h3>地理服务</h3>
+
+          <!-- 高德地图 Web API（POI + 高程通用） -->
           <div class="model-config-card">
             <div class="model-config-header">
               <span class="model-config-name">高德地图 Web API</span>
@@ -527,7 +535,7 @@
               <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="var(--ui-gray-900)">WORKTABLE</text>
             </svg>
             <p style="font-size:13px;color:var(--ui-gray-500);line-height:1.6;margin:0 0 12px;max-width:300px;">
-              GIS WorkTable 是一个基于 Web 的 GIS 数据处理可视化工作台， 内置 AI 助手（DeepSeek V4 Flash+/ GLM-4.7-Flash+）， 支持自然语言交互。
+              GIS WorkTable 是一个基于 Web 的 GIS 数据处理可视化工作台，可接入 DeepSeek、GLM、Agnes 等多种 AI Model，支持自然语言交互。
             </p>
             <a href="https://github.com/Wukeeeeee/GIS-WORKTABLE" target="_blank" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ui-gray-600);text-decoration:none;padding:6px 14px;border:1px solid var(--ui-gray-300);border-radius:6px;">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
@@ -672,7 +680,8 @@
       var sidenavItems = document.querySelectorAll('.modal-sidenav-item');
       var panels = {
         appearance: document.getElementById('panelAppearance'),
-        apikey: document.getElementById('panelApiKey'),
+        'ai-api': document.getElementById('panelAiApi'),
+        'geo-api': document.getElementById('panelGeoApi'),
         history: document.getElementById('panelHistory'),
         about: document.getElementById('panelAbout'),
       };
@@ -734,6 +743,7 @@
         Object.keys(panels).forEach(function(k) {
           if (panels[k]) panels[k].classList.toggle('active', k === 'appearance');
         });
+        // 填充 AI Key 值
         var savedKey = window.GIS.api.getApiKey();
         apiKeyInput.value = savedKey;
         updateKeyStatus(savedKey);
@@ -746,10 +756,6 @@
         amapApiKeyInput.value = savedAmapKey;
         updateAmapKeyStatus(savedAmapKey);
         amapTestResult.innerHTML = '';
-        var savedAgnesKey = window.GIS.api.getAgnesApiKey();
-        agnesApiKeyInput.value = savedAgnesKey;
-        updateAgnesKeyStatus(savedAgnesKey);
-        agnesTestResult.innerHTML = '';
         settingsModal.style.display = 'flex';
       });
 

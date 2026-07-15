@@ -97,7 +97,14 @@ window.GIS = window.GIS || {};
     // ESC 关闭可能存在的弹出层
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        // TODO: 关闭弹窗/下拉菜单
+        var settingsModal = document.getElementById('settingsModal');
+        if (settingsModal && settingsModal.style.display === 'flex') {
+          settingsModal.style.display = 'none';
+        }
+        var contextMenu = document.getElementById('mapContextMenu');
+        if (contextMenu) contextMenu.style.display = 'none';
+        var inspector = document.getElementById('layerInspector');
+        if (inspector) inspector.style.display = 'none';
       }
     });
 

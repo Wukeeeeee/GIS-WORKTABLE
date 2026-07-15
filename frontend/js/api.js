@@ -222,6 +222,32 @@ window.GIS.api = (() => {
   async function getLayer(layerId)  { /* TODO: GET /layers/:id */ }
   async function deleteLayer(layerId) { /* TODO: DELETE /layers/:id */ }
 
+  /** 通知后端取消注册已删除的图层 */
+  async function unregisterLayer(name) {
+    try {
+      await fetch(`${BASE_URL}/api/layer/unregister`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+    } catch (e) {
+      console.warn('[GIS API] 取消注册图层失败', e);
+    }
+  }
+
+  /** 通知后端注册新加载的图层（名字 + GeoJSON） */
+  async function registerLayer(name, geojson) {
+    try {
+      await fetch(`${BASE_URL}/api/layer/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, geojson }),
+      });
+    } catch (e) {
+      console.warn('[GIS API] 注册图层失败', e);
+    }
+  }
+
   /** 检查图层元数据（前端可先算基础信息，后端补充 CRS 等） */
   async function inspectLayer(geojson, name) {
     const res = await fetch(`${BASE_URL}/api/layer/inspect`, {
@@ -294,7 +320,7 @@ window.GIS.api = (() => {
     getAmapKey, setAmapKey,
     getSelectedModel, setSelectedModel,
     getModelStatus, setModelStatus, clearModelStatus,
-    inspectLayer,
+    inspectLayer, unregisterLayer, registerLayer,
     BASE_URL, DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };
 })();

@@ -535,13 +535,18 @@ window.GIS = window.GIS || {};
       return;
     }
 
-    // AI 相关功能
-    if (window._aiRunning) return;
-    var hasKey = window.GIS && window.GIS.api && window.GIS.api.getApiKey();
-    if (!hasKey) {
-      if (window.GIS && window.GIS.chat && window.GIS.chat.addMessage)
-        window.GIS.chat.addMessage('请先配置 DeepSeek API Key', 'system');
-      return;
+    // AI 相关功能 — 如果被卡死但无 loading 气泡则自动复位
+    if (window._aiRunning) {
+      // 强制恢复：超过 90 秒无 loading 气泡 → 复位；无 loading 气泡 → 复位
+      if (!document.getElementById('ai-loading-msg')) {
+        window._aiRunning = false;
+        // 也移除 is-disabled 类，确保右键菜单可用
+        document.querySelectorAll('.context-menu-item').forEach(function(el) {
+          if (el.getAttribute('data-action') !== 'copy-coords') el.classList.remove('is-disabled');
+        });
+      } else {
+        return; // AI 正在运行且有加载提示，不打断
+      }
     }
 
     var msg = '', displayMsg = '';
@@ -551,19 +556,35 @@ window.GIS = window.GIS || {};
         displayMsg = lat + ', ' + lng + ' - 查询地理信息';
         msg = '纬度' + lat + '，经度' + lng + '。\n这是新的坐标，和之前的问题无关。\n请完成以下任务：\n1. 先 search_web 搜索这个位置属于哪个省/市/区/县\n2. 查询附近的地理特征（山脉、河流、湖泊、地形等）\n3. 查询该区域的气候类型、典型海拔、植被等地理信息\n4. 最后用 execute_python 在地图该位置加一个点标记，只加一个点，不要生成多个点位\n5. 回复时用表格形式（markdown 表格），格式如下：\n\n| 项目 | 内容 |\n|------|------|\n| 经度 | 具体数值 |\n| 纬度 | 具体数值 |\n| 所属省份 | XX省 |\n| 所属城市 | XX市 |\n| 所属区县 | XX区/县 |\n| 附近河流 | XXX |\n| 附近山脉 | XXX |\n| 地形特征 | XXX |\n| 气候类型 | XXX |\n| 典型海拔 | XXX米 |\n| 备注 | 其他补充信息 |\n\n尽量多提供该位置的地理相关信息，回复要详细。不要用aoi相关工具，不要提取边界轮廓。';
         break;
-      case 'get-dem':
-        displayMsg = lat + ', ' + lng + ' - DEM';
-        msg = '获取DEM数据：bbox=' + (lng - 0.075).toFixed(4) + ',' + (lat - 0.075).toFixed(4) + ',' + (lng + 0.075).toFixed(4) + ',' + (lat + 0.075).toFixed(4) + ' step=0.0001';
-        break;
     }
     if (msg && window.GIS && window.GIS.chat && window.GIS.chat.send) {
-      // 右键发送 → 使用当前选中的模型
       var selEl = document.getElementById('modelSelector');
       var curProvider = selEl ? selEl.value : 'glm-routed';
+
+      // 检查 API Key
+      var _api = window.GIS.api;
+      var _key = curProvider === 'agnes' ? (_api ? _api.getAgnesApiKey() : '') : (curProvider === 'glm' || curProvider === 'glm-routed') ? (_api ? _api.getGLMApiKey() : '') : (_api ? _api.getApiKey() : '');
+      if (!_key) {
+        var _names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
+        if (window.GIS.chat.addMessage) window.GIS.chat.addMessage((_names[curProvider] || curProvider) + ' 未配置 API Key，请点击齿轮按钮配置', 'system');
+        return;
+      }
+
       var valEl = document.getElementById('modelSelectValue');
       var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
       if (valEl) valEl.textContent = names[curProvider] || curProvider;
-      window.GIS.chat.send(msg, { displayText: displayMsg || undefined, provider: curProvider });
+      try {
+        var _sendResult = window.GIS.chat.send(msg, { displayText: displayMsg || undefined, provider: curProvider });
+        if (_sendResult && typeof _sendResult.catch === 'function') {
+          _sendResult.catch(function(_err) {
+            if (window.GIS.chat && window.GIS.chat.addMessage)
+              window.GIS.chat.addMessage('DEM 发送失败: ' + (_err.message || _err), 'system');
+          });
+        }
+      } catch(_e) {
+        if (window.GIS.chat && window.GIS.chat.addMessage)
+          window.GIS.chat.addMessage('DEM 触发异常: ' + (_e.message || _e), 'system');
+      }
     }
   }
 

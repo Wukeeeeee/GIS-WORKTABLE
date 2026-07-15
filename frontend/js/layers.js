@@ -120,6 +120,9 @@ window.GIS = window.GIS || {};
     layerData.push({ ...layer, filename: name, _rawName, visible: true, color });
     renderList();
     _syncLayerOrder();
+    if (window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
+      window.GIS.api.registerLayer(name, layer.geojson);
+    }
   }
 
   // 删除图层：从列表移除 + 从地图清除
@@ -131,8 +134,13 @@ window.GIS = window.GIS || {};
     if (mapName && GIS.map && GIS.map.removeLayer) {
       GIS.map.removeLayer(mapName);
     }
-    if (target && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
-      window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system');
+    if (target) {
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+        window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system');
+      }
+      if (window.GIS.api && typeof window.GIS.api.unregisterLayer === 'function') {
+        window.GIS.api.unregisterLayer(target.filename || target.layer_id || '');
+      }
     }
   }
 

@@ -36,7 +36,7 @@ def _is_out_of_china(lng: float, lat: float) -> bool:
 # GCJ-02 ↔ WGS-84（高德火星 → 全球标准）
 # ============================================================
 
-def _wgs84_to_gcj02(lng: float, lat: float) -> tuple:
+def wgs84_to_gcj02(lng: float, lat: float) -> tuple:
     """WGS-84 → GCJ-02（内部用）"""
     a = 6378245.0
     ee = 0.00669342162296594323
@@ -57,7 +57,7 @@ def gcj02_to_wgs84(lng: float, lat: float) -> tuple:
         return lng, lat
     wgs_lng, wgs_lat = lng, lat
     for _ in range(5):
-        calc_gcj = _wgs84_to_gcj02(wgs_lng, wgs_lat)
+        calc_gcj = wgs84_to_gcj02(wgs_lng, wgs_lat)
         wgs_lng -= calc_gcj[0] - lng
         wgs_lat -= calc_gcj[1] - lat
     return wgs_lng, wgs_lat

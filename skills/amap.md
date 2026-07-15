@@ -132,6 +132,17 @@ GET https://restapi.amap.com/v3/config/district
 130000=政府机构, 140000=科教文化服务, 150000=交通设施服务, 160000=金融保险服务,
 170000=公司企业, 180000=道路附属设施, 190000=地名地址信息, 200000=公共设施
 
+### 9. 高程查询（DEM）
+```
+GET https://restapi.amap.com/v3/elevation
+```
+参数：
+- `key` — API Key（必填）
+- `locations` — 经纬度坐标，格式 `lng,lat` 或 `lng,lat|lng,lat|...`，**最多 20 个点**
+返回：`elevation[]` 中每个元素包含 `location`（经度,纬度）和 `elevation`（海拔高度，米）
+
+注：高程查询已在 `get_elevation` 工具中封装，AI 可直接调用，支持按 bbox 范围生成网格批量查询。
+
 ## 使用工作流
 1. 将用户需求对应到上述 API
 2. 用 `requests.get(url, params)` 调用，API Key 用 `__AMAP_KEY__` 变量

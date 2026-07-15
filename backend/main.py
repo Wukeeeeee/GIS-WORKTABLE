@@ -7,10 +7,8 @@ from typing import Optional
 from io import BytesIO
 import subprocess, datetime, time, os, asyncio, functools
 from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, test_agnes_key, request_cancel, _TEMP_OUTPUT_DIR
-from backend.services.tools import _register_layer
+from backend.services.tools import _register_layer, _unregister_layer
 from backend.services.layer_service import inspect_geojson
-from backend.services.baidu_aoi_service import search_suggestions as baidu_search_suggestions
-from backend.services.baidu_aoi_service import extract_boundary as baidu_extract_boundary
 
 
 # ===== 版本信息（服务器启动时自动生成） =====
@@ -57,14 +55,6 @@ class ChatRequest(BaseModel):
 
 class TestKeyRequest(BaseModel):
     api_key: str                          # 要测试的 DeepSeek API 密钥
-
-# ===== 百度 AOI 提取请求体 =====
-class BaiduSearchRequest(BaseModel):
-    query: str                            # 搜索关键词
-
-class BaiduExtractRequest(BaseModel):
-    uid: str                              # POI 的 UID
-    name: str = "未命名"                  # 地点名称
 
 # ===== 聊天接口 =====
 # 前端发消息到这里，用 LangGraph Agent 处理
@@ -259,60 +249,6 @@ async def get_boundary_api(place: str = "长沙市"):
     except Exception as e:
         return {"error": str(e)}
 
-# ===== 百度地图 AOI 提取接口 =====
-
-class BaiduSearchResponse(BaseModel):
-    suggestions: list
-    message: str = ""
-
-class BaiduExtractResponse(BaseModel):
-    geojson: Optional[dict] = None
-    name: str = ""
-    message: str = ""
-    success: bool = False
-
-@app.post("/api/baidu/search", response_model=BaiduSearchResponse)
-async def baidu_search(request: BaiduSearchRequest):
-    """搜索百度地图，返回候选地点列表"""
-    try:
-        suggestions = baidu_search_suggestions(request.query)
-        if not suggestions:
-            return BaiduSearchResponse(
-                suggestions=[],
-                message="未找到候选地点，可以尝试其他关键词"
-            )
-        return BaiduSearchResponse(
-            suggestions=suggestions,
-            message=f"找到 {len(suggestions)} 个候选地点"
-        )
-    except Exception as e:
-        return BaiduSearchResponse(
-            suggestions=[],
-            message=f"搜索失败: {str(e)}"
-        )
-
-@app.post("/api/baidu/extract", response_model=BaiduExtractResponse)
-async def baidu_extract(request: BaiduExtractRequest):
-    """根据 UID 提取 AOI 边界，返回 GeoJSON"""
-    try:
-        geojson = baidu_extract_boundary(request.uid, request.name)
-        if geojson:
-            return BaiduExtractResponse(
-                geojson=geojson,
-                name=request.name,
-                message="提取成功",
-                success=True
-            )
-        return BaiduExtractResponse(
-            message="未能提取到边界数据，该地点可能没有建筑轮廓数据",
-            success=False
-        )
-    except Exception as e:
-        return BaiduExtractResponse(
-            message=f"提取失败: {str(e)}",
-            success=False
-        )
-
 @app.post('/api/upload')
 async def upload(file: UploadFile = File(...)):
     import json, os, tempfile, zipfile
@@ -411,3 +347,22 @@ async def inspect_layer(request: InspectLayerRequest):
     result = inspect_geojson(request.geojson)
     result["name"] = request.name
     return result
+
+
+class UnregisterLayerRequest(BaseModel):
+    name: str
+
+@app.post("/api/layer/unregister")
+async def unregister_layer(request: UnregisterLayerRequest):
+    _unregister_layer(request.name)
+    return {"success": True, "message": f"已取消注册图层: {request.name}"}
+
+
+class RegisterLayerRequest(BaseModel):
+    name: str
+    geojson: dict
+
+@app.post("/api/layer/register")
+async def register_layer(request: RegisterLayerRequest):
+    _register_layer(request.name, request.geojson)
+    return {"success": True, "message": f"已注册图层: {request.name}"}

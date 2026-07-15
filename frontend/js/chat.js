@@ -124,6 +124,7 @@ _linkRenderer.link = function(token) {
     if (stopBtn) {
       stopBtn.addEventListener('click', function() {
         window._aiRunning = false;
+        if (window._aiAbortController) window._aiAbortController.abort();
         _resetUIAfterStop();
         fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
         const loadingEl = document.getElementById('ai-loading-msg');
@@ -146,6 +147,9 @@ _linkRenderer.link = function(token) {
       attachClose.addEventListener('click', function() { _clearPendingLayer(); if (inputEl) inputEl.focus(); });
     }
   }
+
+  // 初始化 AI 运行状态
+  window._aiRunning = false;
 
   // ---- 斜杠命令处理 ----
   function _getSlashMenu() { return document.getElementById('slashMenu'); }
@@ -338,6 +342,7 @@ _linkRenderer.link = function(token) {
     _pendingLayer = null;
     const bar = document.getElementById('layerAttachBar');
     if (bar) bar.style.display = 'none';
+    if (inputEl) inputEl.placeholder = '输入指令或查询... 键入 / 打开命令面板';
   }
 
   /** 设置待发送的图层附件（在输入框上方显示） */
@@ -361,6 +366,7 @@ _linkRenderer.link = function(token) {
   }
 
   function _resetUIAfterStop() {
+    window._aiRunning = false;
     if (!inputEl) return;
     inputEl.placeholder = '输入指令或查询...';
     inputEl.disabled = false;
@@ -369,7 +375,6 @@ _linkRenderer.link = function(token) {
     if (stopBtn) stopBtn.style.display = 'none';
     const modelBar = document.querySelector('.chat-input-model-bar');
     if (modelBar) modelBar.classList.remove('is-disabled');
-    window._aiRunning = false;
     // 恢复右键菜单
     document.querySelectorAll('.context-menu-item').forEach(function(el) {
       if (el.getAttribute('data-action') !== 'copy-coords') el.classList.remove('is-disabled');
@@ -466,10 +471,10 @@ _linkRenderer.link = function(token) {
     // 添加"模型名 思考中..."占位气泡，让用户知道 AI 正在处理
     const isRouted = (providerOverride === 'deepseek-routed' || providerOverride === 'glm-routed' || providerOverride === 'agnes');
     const loadingMsg = addMessage(modelDisplayName + ' 思考中...', 'ai', { noMarkdown: true });
-    loadingMsg.id = 'ai-loading-msg';
+    if (loadingMsg) loadingMsg.id = 'ai-loading-msg';
 
     // 路由模式：先显示路由阶段，再切换到执行阶段
-    if (isRouted) {
+    if (isRouted && loadingMsg) {
       const loadingContent = loadingMsg.querySelector('.message-bubble > div');
       if (loadingContent) {
         if (providerOverride === 'glm-routed') loadingContent.textContent = 'GLM-4.7-Flash+ 路由分析中...';
@@ -479,15 +484,17 @@ _linkRenderer.link = function(token) {
     }
 
     // 给气泡文本加流光 scan 动画
-    const loadingContent = loadingMsg.querySelector('.message-bubble > div');
-    if (loadingContent) loadingContent.classList.add('shimmer-loading-text');
+    if (loadingMsg) {
+      const loadingContent = loadingMsg.querySelector('.message-bubble > div');
+      if (loadingContent) loadingContent.classList.add('shimmer-loading-text');
+    }
 
     // 添加翻牌计时器（实时显示 AI 思考耗时），另起一行
     const timerEl = createFlipTimer();
     const timerWrapper = document.createElement('div');
     timerWrapper.style.cssText = 'margin-top:6px;';
     timerWrapper.appendChild(timerEl);
-    const loadingBubble = loadingMsg.querySelector('.message-bubble');
+    const loadingBubble = loadingMsg ? loadingMsg.querySelector('.message-bubble') : null;
     if (loadingBubble) loadingBubble.appendChild(timerWrapper);
 
     const startTime = Date.now();
@@ -504,13 +511,13 @@ _linkRenderer.link = function(token) {
         }
       }, 1500);
     }
-    loadingMsg._phaseTimer = phaseTimer;
+    if (loadingMsg) loadingMsg._phaseTimer = phaseTimer;
     const timerInterval = setInterval(function() {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       updateFlipTimer(timerEl, elapsed);
     }, 1000);
     updateFlipTimer(timerEl, 0);
-    loadingMsg._timerInterval = timerInterval;
+    if (loadingMsg) loadingMsg._timerInterval = timerInterval;
 
     try {
       // 读取当前选择的模型（优先用 providerOverride）
@@ -536,6 +543,13 @@ _linkRenderer.link = function(token) {
       var result = null;
       var streamUrl = GIS.api.BASE_URL + '/api/chat/stream';
       window._aiAbortController = new AbortController();
+      // 120 秒超时，防止请求永久挂起导致 _aiRunning 卡死
+      var _streamTimeout = setTimeout(function() {
+        if (window._aiAbortController && !window._aiAbortController.signal.aborted) {
+          window._aiAbortController.abort();
+          console.warn('[GIS Chat] SSE 流请求超时（120s），已强制终止');
+        }
+      }, 120000);
       try {
         const streamRes = await fetch(streamUrl, {
           method: 'POST',
@@ -615,6 +629,8 @@ _linkRenderer.link = function(token) {
                 if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
               } else if (evt.type === 'done') {
                 result = evt;
+                // 清除超时计时器（正常完成）
+                if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
                 // 完成后折叠步骤日志
                 if (stepLog && stepLog.children.length > 1) {
                   stepLog.style.maxHeight = '44px';
@@ -632,8 +648,14 @@ _linkRenderer.link = function(token) {
           }
         }
       } catch (streamErr) {
+        // 清除超时计时器
+        if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
         // SSE 流失败时，降级到普通 API
         console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
+        // 超时终止 → 直接报错，不再降级重试
+        if (streamErr.name === 'AbortError') {
+          throw new Error('AI 请求超时（120s），请简化操作或重试');
+        }
         result = await GIS.api.chat(text, 'default', provider, forceSkills);
       }
 
@@ -926,6 +948,8 @@ _linkRenderer.link = function(token) {
         })(0);
       }
     } catch (err) {
+      // 清除超时计时器
+      if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
       // 移除"思考中"占位气泡
       const loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
@@ -938,13 +962,25 @@ _linkRenderer.link = function(token) {
         window._currentTaskId = null;
         window.GIS.task.updateTask(taskId, { status: 'failed', error: err.message, completedAt: Date.now() });
       }
+      // 显示错误消息
+      addMessage('请求失败: ' + (err.message || err), 'system');
       // 恢复默认 placeholder（防止并发发送覆盖）
-      inputEl.placeholder = '输入指令或查询...';
+      if (inputEl) inputEl.placeholder = '输入指令或查询...';
     } finally {
+      // 清除超时计时器
+      if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
       _resetUIAfterStop();
-      inputEl.placeholder = '输入指令或查询...';
-      inputEl.focus();
-      // 重新启用模型选择
+      if (inputEl) {
+        inputEl.placeholder = '输入指令或查询...';
+        inputEl.focus();
+      }
+      // 恢复模型选择器显示名
+      var selEl = document.getElementById('modelSelector');
+      var valEl = document.getElementById('modelSelectValue');
+      if (selEl && valEl) {
+        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'deepseek': 'DeepSeek V4 Flash', 'glm-routed': 'GLM-4.7-Flash+', 'glm': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
+        valEl.textContent = names[selEl.value] || selEl.value;
+      }
       const modelBar = document.querySelector('.chat-input-model-bar');
       if (modelBar) modelBar.classList.remove('is-disabled');
     }
@@ -963,7 +999,7 @@ _linkRenderer.link = function(token) {
         ? 'display:none;'
         : 'display:flex;justify-content:center;max-width:100%;';
       const bubble = document.createElement('div');
-      bubble.style.cssText = 'font-size:12px;color:var(--ui-gray-400);background:var(--ui-gray-100);padding:4px 12px;border-radius:10px;text-align:center;';
+      bubble.style.cssText = 'font-size:12px;color:var(--ui-gray-400);text-align:center;';
       bubble.innerHTML = text;
       row.appendChild(bubble);
       messagesContainer.appendChild(row);
