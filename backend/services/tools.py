@@ -1178,64 +1178,6 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
 
 
 # ============================================================
-# 工具: get_elevation — 高程/DEM 数据查询
-# ============================================================
-
-@tool
-def get_elevation(bbox: str = "", step: float = 0.001, lng: float = None, lat: float = None) -> str:
-    """
-    获取指定区域或单点的高程数据（DEM）。
-    两种模式：
-    1. 区域查询：传入 bbox（格式 "minLng,minLat,maxLng,maxLat"）+ step（步长，度）
-    2. 单点查询：传入 lng + lat
-    返回高程点 GeoJSON 图层并自动加载到地图。
-    """
-    global _current_amap_key
-    if not _current_amap_key:
-        return "错误：高德 API Key 未配置，请先在设置 → 地理服务中配置高德 Key"
-
-    from backend.services.dem_service import query_bbox, query_single_point, _empty_geojson
-
-    try:
-        if lng is not None and lat is not None:
-            result = query_single_point(lng, lat, _current_amap_key)
-            if result is None:
-                return "错误：高程查询失败（高德 API 返回错误）"
-            elev = result["elevation"]
-            geojson = {
-                "type": "FeatureCollection",
-                "name": f"DEM_{lng:.4f}_{lat:.4f}",
-                "features": [{
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [result["lng"], result["lat"]]},
-                    "properties": {"elevation": elev},
-                }],
-            }
-            _push_layer(f"高程_{lng:.2f}_{lat:.2f}", geojson, {"color": "#8B4513", "fillColor": "#8B4513"})
-            return f"该点海拔约 {elev} 米，已在地图上标记"
-
-        if not bbox:
-            return "错误：请提供 bbox（格式 minLng,minLat,maxLng,maxLat）或 lng+lat"
-
-        result = query_bbox(bbox, step, _current_amap_key)
-        if "error" in result:
-            return f"错误：{result['error']}"
-
-        geojson = result["geojson"]
-        stats = result["stats"]
-        _push_layer(f"DEM_{result['count']}点", geojson, {"color": "#8B4513", "fillColor": "#8B4513"})
-
-        if stats:
-            return (f"高程数据已加载到地图（共 {stats['count']} 个采样点）\n"
-                    f"- 最高海拔：{stats['max']} 米\n"
-                    f"- 最低海拔：{stats['min']} 米\n"
-                    f"- 平均海拔：{stats['avg']} 米")
-        return "该区域未获取到高程数据"
-    except Exception as e:
-        return f"错误：高程查询异常 [{type(e).__name__}] {str(e)[:200]}"
-
-
-# ============================================================
 # 工具列表（供 LangGraph Agent 注册）
 # ============================================================
 
@@ -1258,5 +1200,4 @@ tools = [
     clear_layers,
     get_session_logs,
     layer_control,
-    get_elevation,
 ]

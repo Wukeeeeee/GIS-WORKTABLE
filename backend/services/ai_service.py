@@ -262,7 +262,6 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
   - **field_calculate** → 字段计算器，为图层添加新字段（计算面积、人口密度等）
   - **datav_boundary** → 获取省/市/区行政边界
   - **unified_aoi_search / unified_aoi_extract** → 建筑轮廓
-  - **get_elevation** → 获取高程数据（DEM），支持单点查询（lng+lat）和区域网格查询（bbox+step）
 
  图层查询：
  - **get_registered_layers** → 查看地图上所有图层
@@ -417,11 +416,10 @@ SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
   - subplots 多子图：fig, axes = plt.subplots(2, 2, figsize=(12, 10))
   - 保存：plt.savefig("chart.png", dpi=200, bbox_inches='tight')
 - **amap_poi_search** → 高德 POI 搜索（独立工具，自动转坐标加载到地图）
-- **datav_boundary** → 获取省/市/区行政边界
-- **unified_aoi_search / unified_aoi_extract** → 搜索和提取建筑轮廓
-- **get_registered_layers / get_layer_detail** → 查看地图上已有的图层数据
-- **get_elevation** → 获取高程数据（DEM），支持单点查询（lng+lat）和区域网格查询（bbox+step）
-- **create_heatmap** → 从点图层生成热力图
+- **datav_boundary** -> 获取省/市/区行政边界
+- **unified_aoi_search / unified_aoi_extract** -> 搜索和提取建筑轮廓
+- **get_registered_layers / get_layer_detail** -> 查看地图上已有的图层数据
+- **create_heatmap** -> 从点图层生成热力图
 
 
 
