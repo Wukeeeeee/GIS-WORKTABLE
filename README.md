@@ -91,6 +91,97 @@ skills/               # 技能文档
   visualization.md / analysis.md / amap.md / gdal.md / remote_sensing.md
 ```
 
+## 更新日志
+
+### 2026-07-16
+- Add 高程查询工具（随后移除）
+- Remove 高程查询工具、百度 AOI 服务、高德高程查询服务
+- Fix AI 服务清理引用残留
+
+### 2026-07-15
+- Add Agnes 2.0 Flash+ 模型
+- Add 道路网络提取工具（OSMnx + Overpass）
+- Remove 独立高德/百度 AOI 路由（合并为统一工具）
+- Fix Agnes 路由统一走 GLM
+
+### 2026-07-14
+- Add 图层属性表编辑与筛选导出
+- Add 字段计算器
+- Add 自校验 Agent 架构
+- Add 高德 POI 搜索
+- Add 上传取消（AbortController）与状态气泡
+- Add AGPL v3 许可证
+- Fix execute_python 子进程中文乱码
+- Fix 代理环境变量大小写兼容
+- Fix Gaode URL 编码
+
+### 2026-07-13
+- Add 图层检查器（GeoJSON 分析面板）
+- Add 任务管理系统（localStorage）
+- Add 斜杠命令面板（/buffer /intersection /aoi 等）
+- Add 技能文档系统（geometry/aoi/datav/heatmap 等 6 个）
+- Add 连续绘制模式
+- Add 图层 AI 分析入口
+- Add 27 个几何单元测试
+- Add GLM 协作模式（免费规划 + DS 执行）
+- Add 十字准星 CSS fixed 定位
+- Add 设置弹窗三栏重构
+- Add 全局字号缩放
+- Fix 十字准星偏移
+- Fix 地图顶部白框与右侧空白溢出
+- Fix 右键发送只加一个点
+
+### 2026-07-12
+- Add 网页抓取（Scrapling）
+- Add 平台搜索（B站）
+- Add 模型 Key 未配置警告
+- Add 地图自动缩放至数据范围
+- Remove Toast 通知
+- Fix JS 错误改为聊天框系统消息
+
+### 2026-07-11
+- Add GLM-4.7-Flash+ 免费模型
+- Add Markdown 渲染与复制按钮
+- Add 流光动画
+- Add GLM 时间感知
+- Add Matplotlib/PyEcharts 绘图
+- Add 浮动图层面板
+- Remove 旧底部面板
+
+### 2026-07-10
+- Add AOI 边界抓取工具
+- Add 翻牌计时器
+- Add 问答日志系统
+- Add AI 回复时间戳
+- Remove Bing 暗色图层
+- Fix 底图统一为 Bing 卫星图（WGS84）
+
+### 2026-07-06
+- Add Bing 搜索工具
+- Add OSM 行政边界提取
+- Add 图层导出功能
+- Add AI 空间操作能力
+- Add 多文件格式支持（SHP/GPKG/KML）
+
+### 2026-07-04
+- Add API 密钥设置界面
+- Add 绘制 HTML Demo 功能
+
+### 2026-07-03
+- Add AI Function Calling 工具系统
+- Add 清除记忆按钮
+- Add 新会话按钮（SVG 加号）
+- Add 时间感知功能
+- Fix 事件重复绑定
+- Fix Live Server 刷新冲突
+
+### 2026-07-02
+- Add 前端原型 + FastAPI 后端
+- Add AI 对话接入
+- Add Bing Maps 底图切换
+- Add 定位按钮与脉冲蓝点
+- Add 文件上传与图层列表（显隐/颜色/删除）
+
 ## 许可证
 
 AGPL v3 — 详见 [LICENSE](LICENSE)。
