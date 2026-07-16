@@ -53,6 +53,21 @@ python -m uvicorn backend.main:app --port 8000
 
 ## 技术栈
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" />
+  <img src="https://img.shields.io/badge/HTML5-E34F26?style=flat-square&logo=html5&logoColor=white" />
+  <img src="https://img.shields.io/badge/CSS3-1572B6?style=flat-square&logo=css3&logoColor=white" />
+  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" />
+  <img src="https://img.shields.io/badge/Leaflet-199900?style=flat-square&logo=leaflet&logoColor=white" />
+  <img src="https://img.shields.io/badge/DeepSeek-4F6BED?style=flat-square&logo=deepseek&logoColor=white" />
+  <img src="https://img.shields.io/badge/GLM-2563EB?style=flat-square&logo=zhipu&logoColor=white" />
+  <img src="https://img.shields.io/badge/GeoPandas-139C5A?style=flat-square&logo=geopandas&logoColor=white" />
+  <img src="https://img.shields.io/badge/Shapely-333333?style=flat-square&logo=shapely&logoColor=white" />
+  <img src="https://img.shields.io/badge/Playwright-2EAD33?style=flat-square&logo=playwright&logoColor=white" />
+  <img src="https://img.shields.io/badge/License-AGPL%20v3-1a1a2e?style=flat-square" />
+</p>
+
 | 类别 | 技术 |
 |------|------|
 | 前端 | HTML + CSS + JavaScript |
@@ -61,6 +76,27 @@ python -m uvicorn backend.main:app --port 8000
 | AI | GLM-4.7-Flash+ / DeepSeek V4 Flash+ / Agnes 2.0 Flash+ |
 | GIS | GeoPandas + Shapely + PyProj |
 | 抓取 | Scrapling + markdownify |
+
+### 使用的开源项目
+
+| 项目 | 用途 | GitHub |
+|------|------|--------|
+| Firecrawl | 网页抓取 API（自托管） | [nicholasgriffintn/firecrawl](https://github.com/nicholasgriffintn/firecrawl) |
+| browser_use | 浏览器自动化 AI 代理 | [nicholasgriffintn/browser-use](https://github.com/nicholasgriffintn/browser-use) |
+| Scrapling | 隐身网页抓取（TLS 指纹混淆） | [niespodd/scrapling](https://github.com/niespodd/scrapling) |
+
+### 开放平台
+
+| 平台 | 用途 | 链接 |
+|------|------|------|
+| 高德开放平台 | POI 搜索、地理编码、行政区域查询 | [lbs.amap.com](https://lbs.amap.com/) |
+| 百度地图开放平台 | AOI 建筑轮廓提取 | [lbsyun.baidu.com](https://lbsyun.baidu.com/) |
+| DataV 地理工具 | 省市区行政边界 GeoJSON | [datav.aliyun.com](https://datav.aliyun.com/portal/school/atlas/area_selector) |
+| Bing Maps 中国区 | 地图底图（卫星图） | [bingmapsportal.com](https://www.bingmapsportal.com/) |
+| DeepSeek 开放平台 | AI 推理模型 | [platform.deepseek.com](https://platform.deepseek.com/) |
+| 智谱开放平台 | GLM AI 模型（免费） | [open.bigmodel.cn](https://open.bigmodel.cn/) |
+| Agnes API | Agnes 2.0 Flash+ AI 模型 | [apihub.agnes-ai.com](https://apihub.agnes-ai.com/) |
+| Firecrawl | 网页抓取 API | [firecrawl.dev](https://www.firecrawl.dev/) |
 
 ## 项目结构
 
