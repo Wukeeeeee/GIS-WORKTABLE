@@ -43,6 +43,14 @@
           </svg>
           <!-- header 右侧按钮组 -->
           <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
+            <button id="historyBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="历史会话">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+                <polyline points="3 4 5 2 7 4"/>
+                <path d="M5 2v3h3"/>
+              </svg>
+            </button>
             <button id="settingsBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="设置">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="3"/>
@@ -62,6 +70,35 @@
       <div class="chat-messages custom-scrollbar" id="chatMessages">
         <div class="chat-messages-empty">
 
+        </div>
+      </div>
+
+      <!-- 历史会话面板（默认隐藏，点击历史按钮显示） -->
+      <div class="chat-history" id="chatHistory" style="display:none;">
+        <div class="chat-history-header">
+          <button class="chat-history-back" id="historyCloseBtn">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="19" y1="12" x2="5" y2="12"/>
+              <polyline points="12 19 5 12 12 5"/>
+            </svg>
+            返回
+          </button>
+          <span class="chat-history-title">历史会话</span>
+          <button class="chat-history-clearall" id="historyClearAllBtn" title="全部删除">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              <line x1="10" y1="11" x2="10" y2="17"/>
+              <line x1="14" y1="11" x2="14" y2="17"/>
+            </svg>
+          </button>
+        </div>
+        <div class="chat-history-list custom-scrollbar" id="projectHistoryList">
+          <div class="history-empty">
+            <svg width="48" height="48" opacity="0.3"><use href="assets/icons.svg#icon-history"/></svg>
+            <div class="history-empty-text">暂无历史会话</div>
+            <div class="history-empty-hint">开始新对话后自动保存</div>
+          </div>
         </div>
       </div>
 
@@ -271,7 +308,6 @@
               </table>
             </div>
           </div>
-
           <!-- 坐标显示 -->
           <div class="map-coords" id="mapCoords">
             --
@@ -563,6 +599,7 @@
   <script src="js/chat.js"></script>
   <script src="js/layers.js"></script>
   <script src="js/task.js"></script>
+  <script src="js/project.js"></script>
   <script src="js/upload.js"></script>
   <script src="js/aoi.js"></script>
   <script src="js/app.js"></script>
@@ -628,25 +665,58 @@
       });
 
       document.getElementById('clearMemoryBtn').addEventListener('click', async function() {
-        try {
-          await window.GIS.api.clearMemory();
-          // 清掉聊天记录，但保留空状态提示元素
-          var container = document.getElementById('chatMessages');
-          container.innerHTML = '<div class="chat-messages-empty"></div>';
-          // 清掉地图上的所有图层
-          if (window.GIS.layers) {
-            var allLayers = window.GIS.layers.getLayers();
-            allLayers.forEach(function(l) {
-              if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
-            });
+        // 0. 先中止正在进行的 AI 请求，恢复 UI 交互能力
+        if (window._aiRunning) {
+          window._aiRunning = false;
+          if (window._aiAbortController) {
+            window._aiAbortController.abort();
+            window._aiAbortController = null;
           }
-          // 保留用户主动保存的任务，清除未保存的任务
-          if (window.GIS.task && typeof window.GIS.task.clearUnsaved === 'function') {
-            window.GIS.task.clearUnsaved();
+          fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
+          var loadingEl = document.getElementById('ai-loading-msg');
+          if (loadingEl) {
+            if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
+            if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
+            loadingEl.remove();
           }
-        } catch (e) {
-          window.GIS.chat.addMessage('操作失败: ' + e.message, 'system');
+          var stopBtn = document.getElementById('stopBtn');
+          if (stopBtn) stopBtn.style.display = 'none';
+          var sendBtn = document.getElementById('sendBtn');
+          if (sendBtn) sendBtn.disabled = false;
+          var inputEl = document.getElementById('chatInput');
+          if (inputEl) inputEl.disabled = false;
+          var modelBar = document.querySelector('.chat-input-model-bar');
+          if (modelBar) modelBar.classList.remove('is-disabled');
+          document.querySelectorAll('.context-menu-item').forEach(function(el) {
+            if (el.getAttribute('data-action') !== 'copy-coords') el.classList.remove('is-disabled');
+          });
         }
+
+        // 1. 清 UI
+        var container = document.getElementById('chatMessages');
+        container.innerHTML = '<div class="chat-messages-empty"></div>';
+        container.style.display = '';
+        var historyPanel = document.getElementById('chatHistory');
+        if (historyPanel) historyPanel.style.display = 'none';
+        if (window.GIS.layers) {
+          var allLayers = window.GIS.layers.getLayers();
+          allLayers.forEach(function(l) {
+            if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
+          });
+        }
+        if (window.GIS.task && typeof window.GIS.task.clearUnsaved === 'function') {
+          window.GIS.task.clearUnsaved();
+        }
+        if (typeof updateGreeting === 'function') {
+          updateGreeting();
+        }
+
+        // 2. 异步调 API
+        if (window.GIS.project) {
+          window.GIS.project.save().catch(function() {});
+          window.GIS.project.setCurrentProjectId(null);
+        }
+        window.GIS.api.clearMemory().catch(function() {});
       });
 
       // ---- 设置弹窗逻辑（三栏侧边栏布局）----
@@ -757,7 +827,31 @@
         updateAmapKeyStatus(savedAmapKey);
         amapTestResult.innerHTML = '';
         settingsModal.style.display = 'flex';
-      });
+
+        // 检查浏览器自动填充（Edge 等可能自动填写密码/密钥字段）
+        setTimeout(function() {
+          [apiKeyInput, glmApiKeyInput, amapApiKeyInput, agnesApiKeyInput].forEach(function(input) {
+            if (input && input.value.trim()) {
+              var map = {};
+              map[apiKeyInput.id]    = { get: 'getApiKey',    set: 'setApiKey',    status: 'deepseek' };
+              map[glmApiKeyInput.id] = { get: 'getGLMApiKey', set: 'setGLMApiKey', status: 'glm' };
+              map[amapApiKeyInput.id]= { get: 'getAmapKey',   set: 'setAmapKey',   status: null };
+              map[agnesApiKeyInput.id]= { get: 'getAgnesApiKey',set: 'setAgnesApiKey',status: 'agnes' };
+              var info = map[input.id];
+              if (info && !window.GIS.api[info.get]()) {
+                window.GIS.api[info.set](input.value.trim());
+                if (info.status === 'deepseek') { updateKeyStatus(input.value.trim()); }
+                if (info.status === 'glm')      { updateGlmKeyStatus(input.value.trim()); }
+                if (info.status === 'agnes')    { updateAgnesKeyStatus(input.value.trim()); }
+                // amap 无状态圆点
+              }
+            }
+          });
+          // 自动填充保存后刷新状态显示
+          updateModelWarning();
+          if (typeof updateModelStatusDot === 'function') updateModelStatusDot();
+      });  // 关闭 setTimeout
+      });  // 关闭 settingsBtn 点击处理器
 
       // 关闭弹窗（✕、遮罩、ESC）
       function closeModal() {

@@ -94,6 +94,16 @@ skills/               # 技能文档
 ## 更新日志
 
 ### 2026-07-16
+- Add 新建会话按钮改进：先中止 AI 请求再清 UI
+- Add 历史会话面板全部删除按钮（垃圾桶 SVG）
+- Add 浏览器自动填充密钥检测（Edge）
+- Add AI 流式超时可配置（sessionStorage gis_timeout）
+- Fix 历史面板右括号缺失导致所有按钮无响应（SyntaxError）
+- Fix AOI 候选列表不显示：SSE 流式 pending_suggestions 格式修复
+- Fix 百度 AOI 服务文件被误删，恢复 baidu_aoi_service.py
+- Fix 点击"+"时 AI 仍在后台运行导致图层删不掉
+- Fix 工程加载时 AI 消息不显示（_hideHistory 顺序问题）
+- Fix 默认超时 120s → 600s
 - Add 高程查询工具（随后移除）
 - Remove 高程查询工具、百度 AOI 服务、高德高程查询服务
 - Fix AI 服务清理引用残留

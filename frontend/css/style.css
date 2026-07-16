@@ -3155,3 +3155,209 @@ html.theme-dark #panelHistory .task-badge-planning { background: #4e3500; color:
 html.theme-dark #panelHistory .task-badge-executing { background: #0d2b45; color: #64b5f6; }
 html.theme-dark #panelHistory .task-badge-success { background: #1b3a1b; color: #81c784; }
 html.theme-dark #panelHistory .task-badge-failed { background: #3a1b1b; color: #ef9a9a; }
+
+/* ============================================================
+   历史会话面板（替代聊天消息区域）
+   ============================================================ */
+
+.chat-history {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.chat-history-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 8px;
+  border-bottom: 1px solid var(--ui-gray-200);
+  flex-shrink: 0;
+}
+
+.chat-history-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 4px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ui-gray-400);
+  line-height: 1;
+}
+.chat-history-back:hover {
+  color: var(--ui-gray-900);
+  border-color: var(--ui-gray-300);
+}
+
+.chat-history-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ui-gray-900);
+}
+
+.chat-history-clearall {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--ui-gray-400);
+  padding: 0;
+  transition: color 0.1s, background 0.1s;
+}
+.chat-history-clearall:hover {
+  color: #c62828;
+  background: #fce4ec;
+}
+
+.chat-history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  min-height: 0;
+}
+
+.history-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: var(--ui-gray-300);
+}
+.history-empty-text {
+  margin-top: 12px;
+  font-size: 14px;
+  color: var(--ui-gray-400);
+}
+.history-empty-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ui-gray-300);
+}
+
+.history-date-group {
+  margin-bottom: 12px;
+}
+.history-date-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ui-gray-400);
+  padding: 4px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.history-item {
+  display: flex;
+  align-items: flex-start;
+  padding: 10px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s;
+  border-bottom: 1px solid var(--ui-gray-100);
+  gap: 8px;
+}
+.history-item:hover {
+  background: var(--ui-gray-100);
+}
+
+.history-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ui-gray-900);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+.history-item-preview {
+  font-size: 12px;
+  color: var(--ui-gray-400);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.history-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--ui-gray-300);
+  margin-top: 4px;
+}
+
+.history-item-dot {
+  color: var(--ui-gray-200);
+}
+
+.history-item-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.1s;
+  align-items: center;
+}
+.history-item:hover .history-item-actions {
+  opacity: 1;
+}
+
+.history-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--ui-gray-400);
+  padding: 0;
+  transition: color 0.1s, background 0.1s;
+}
+.history-action-btn:hover {
+  color: var(--ui-gray-900);
+  background: var(--ui-gray-200);
+}
+.history-action-delete:hover {
+  color: #c62828;
+  background: #fce4ec;
+}
+
+html.theme-dark .history-item:hover {
+  background: var(--surface-container);
+}
+html.theme-dark .history-item-name {
+  color: var(--on-surface);
+}
+html.theme-dark .history-item-preview {
+  color: var(--on-surface-variant);
+}
+html.theme-dark .history-item-meta {
+  color: var(--on-surface-variant);
+}
+html.theme-dark .history-empty-text {
+  color: var(--on-surface-variant);
+}

@@ -6,9 +6,24 @@
 
 - **阶段**: `WAITING`（下一个: `plan` → `build` → `test` → `land`）
 - **功能/主题**: （空）
-- **最后改动**: 2026-07-15 — Agnes 接入 + GLM 路由统一 + 默认模型改 GLM
+- **最后改动**: 2026-07-16 — 加号修复 + AOI 格式修复 + 全部删除按钮 + 超时可配
 - **待定**: （空 — 等开新 cycle）
 - **CURRENT 文件**: 见项目根 `CURRENT`（不提交 git）
+
+---
+
+## 2026-07-16
+
+- Add 新建会话按钮改进：先中止 AI 请求再清 UI，防止图层卡死
+- Add 历史会话面板全部删除按钮（垃圾桶 SVG）
+- Add 浏览器自动填充密钥检测（Edge 自动保存）
+- Add AI 流式超时可配置（`sessionStorage.setItem('gis_timeout', '0')` 取消限制）
+- Fix 历史面板右括号缺失导致所有按钮无响应（SyntaxError，整段 IIFE 不执行）
+- Fix AOI 候选列表不显示：SSE 流式 `pending_suggestions` 传对象而非数组
+- Fix 百度 AOI 服务文件被误删，恢复 `baidu_aoi_service.py`
+- Fix 点击"+"时 AI 仍在后台运行导致 UI 卡死、图层删不掉
+- Fix 工程加载时 AI 消息不显示（`_hideHistory` 未在消息加载前调用）
+- Fix 默认超时 120s → 600s
 
 ---
 

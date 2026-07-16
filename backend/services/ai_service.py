@@ -819,7 +819,33 @@ def chat_with_ai(message: str, session_id: str = "default", api_key: str = None,
     except Exception:
         pass
 
+    # 自动保存工程快照（不阻塞主流程）
+    try:
+        from backend.services.project_service import auto_save
+        map_state = {}
+        auto_save(
+            session_id=session_id,
+            provider=provider,
+            map_state=map_state,
+        )
+    except Exception:
+        pass
+
     return result
+
+
+# ============================================================
+# 会话状态导出（供工程持久化使用）
+# ============================================================
+
+def get_session_state(session_id: str = "default") -> dict:
+    """返回当前会话的快照：消息、图层、provider"""
+    from backend.services.tools import get_registered_layers_snapshot
+    history = conversation_history.get(session_id, [])
+    return {
+        "messages": history,
+        "layers": get_registered_layers_snapshot(),
+    }
 
 
 # ============================================================

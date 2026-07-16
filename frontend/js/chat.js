@@ -543,13 +543,18 @@ _linkRenderer.link = function(token) {
       var result = null;
       var streamUrl = GIS.api.BASE_URL + '/api/chat/stream';
       window._aiAbortController = new AbortController();
-      // 120 秒超时，防止请求永久挂起导致 _aiRunning 卡死
-      var _streamTimeout = setTimeout(function() {
-        if (window._aiAbortController && !window._aiAbortController.signal.aborted) {
-          window._aiAbortController.abort();
-          console.warn('[GIS Chat] SSE 流请求超时（120s），已强制终止');
-        }
-      }, 120000);
+      // 超时保护：默认 600s（10分钟），可通过 sessionStorage 的 gis_timeout 覆盖（单位秒，设为 0 则不限时）
+      var _timeoutSetting = parseInt(sessionStorage.getItem('gis_timeout'), 10);
+      var _timeoutMs = _timeoutSetting > 0 ? _timeoutSetting * 1000 : (_timeoutSetting === 0 ? Infinity : 600000);
+      var _streamTimeout = null;
+      if (_timeoutMs < Infinity) {
+        _streamTimeout = setTimeout(function() {
+          if (window._aiAbortController && !window._aiAbortController.signal.aborted) {
+            window._aiAbortController.abort();
+            console.warn('[GIS Chat] SSE 流请求超时（' + (_timeoutMs/1000) + 's），已强制终止');
+          }
+        }, _timeoutMs);
+      }
       try {
         const streamRes = await fetch(streamUrl, {
           method: 'POST',
@@ -654,7 +659,7 @@ _linkRenderer.link = function(token) {
         console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
         // 超时终止 → 直接报错，不再降级重试
         if (streamErr.name === 'AbortError') {
-          throw new Error('AI 请求超时（120s），请简化操作或重试');
+          throw new Error('AI 请求超时（' + (_timeoutMs === Infinity ? '不限时' : _timeoutMs/1000 + 's') + '），请简化操作或重试');
         }
         result = await GIS.api.chat(text, 'default', provider, forceSkills);
       }
@@ -946,6 +951,11 @@ _linkRenderer.link = function(token) {
             });
           }
         })(0);
+      }
+
+      // 自动保存工程快照（异步，不阻塞）
+      if (window.GIS.project && typeof window.GIS.project.autoSave === 'function') {
+        window.GIS.project.autoSave();
       }
     } catch (err) {
       // 清除超时计时器

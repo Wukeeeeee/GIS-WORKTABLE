@@ -84,7 +84,14 @@ window.GIS = window.GIS || {};
       console.warn('[GIS] 任务模块未加载');
     }
 
-    // 7. 绑定全局快捷键 / 事件
+    // 7. 初始化工程管理模块
+    if (GIS.project && typeof GIS.project.init === 'function') {
+      GIS.project.init();
+    } else {
+      console.warn('[GIS] 工程模块未加载');
+    }
+
+    // 8. 绑定全局快捷键 / 事件
     bindGlobalEvents();
 
     console.log('[GIS] 应用初始化完成');

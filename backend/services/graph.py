@@ -311,7 +311,7 @@ def run_agent(
         "heatmap": pending["heatmap"],
         "clear_layers": pending["clear_layers"],
         "layer_ops": pending["layer_ops"],
-        "pending_suggestions": pending["aoi_suggestions"],
+        "pending_suggestions": (pending["aoi_suggestions"] or {}).get("suggestions"),
     }
 
 
@@ -456,6 +456,6 @@ def run_agent_stream(
         "heatmap": pending["heatmap"],
         "clear_layers": pending["clear_layers"],
         "layer_ops": pending["layer_ops"],
-        "pending_suggestions": pending["aoi_suggestions"],
+        "pending_suggestions": (pending["aoi_suggestions"] or {}).get("suggestions"),
     }
     yield f"data: {json.dumps({'type': 'done', **result}, ensure_ascii=False)}\n\n"

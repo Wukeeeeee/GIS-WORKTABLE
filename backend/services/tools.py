@@ -121,6 +121,20 @@ def _register_layer(name: str, geojson: dict):
         pass
 
 
+def get_registered_layers_snapshot() -> list:
+    """返回当前所有注册图层的快照 [{name, geojson, geometry_types, feature_count, color?, visible?}]"""
+    result = []
+    for name, info in list(_registered_layers.items()):
+        result.append({
+            "filename": name,
+            "geojson": info.get("geojson"),
+            "geometry_type": ", ".join(info.get("geometry_types", [])),
+            "feature_count": info.get("feature_count", 0),
+            "source": "ai",
+        })
+    return result
+
+
 def _add_pending_item(url: str, file_path: str = None):
     """添加到待发送的图片/HTML 列表"""
     init_temp_dir()

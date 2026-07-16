@@ -4,11 +4,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
+import io
 from io import BytesIO
 import subprocess, datetime, time, os, asyncio, functools
 from backend.services.ai_service import chat_with_ai, clear_memory, test_deepseek_key, test_glm_key, test_agnes_key, request_cancel, _TEMP_OUTPUT_DIR
 from backend.services.tools import _register_layer, _unregister_layer
 from backend.services.layer_service import inspect_geojson
+from backend.services import project_service
 
 
 # ===== 版本信息（服务器启动时自动生成） =====
@@ -100,11 +102,14 @@ async def chat(request: ChatRequest):
             output["geojson"] = layers[0].get("geojson")
             output["layerName"] = layers[0].get("name", "")
 
-    # 如果有待处理的 AOI 候选列表
+    # 如果有待处理的 AOI 候选列表（兼容新旧格式）
     suggest_data = result.get("pending_suggestions")
-    if suggest_data and suggest_data.get("sent") != True:
-        output["pending_suggestions"] = suggest_data["suggestions"]
-        suggest_data["sent"] = True
+    if suggest_data:
+        if isinstance(suggest_data, dict):
+            output["pending_suggestions"] = suggest_data.get("suggestions")
+            suggest_data["sent"] = True
+        else:
+            output["pending_suggestions"] = suggest_data
 
     # 如果 AI 调用了 clear_layers
     if result.get("clear_layers"):
@@ -335,6 +340,95 @@ async def upload(file: UploadFile = File(...)):
             return {"error": f"CSV 读取失败: {str(e)[:200]}"}
 
     return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .zip(含shp)"}
+
+
+# ===== 工程保存/加载 =====
+class ProjectSaveRequest(BaseModel):
+    project_id: Optional[str] = None
+    name: str = ""
+    session_id: str = "default"
+    provider: str = "glm-routed"
+    map_state: dict = {}
+    messages: list = []
+    layers: list = []
+
+class ProjectRenameRequest(BaseModel):
+    name: str
+
+@app.post("/api/projects/auto-save")
+async def auto_save_project():
+    """由前端在对话完成后调用，自动保存当前工程"""
+    from backend.services.ai_service import get_session_state, conversation_history
+    session_id = "default"
+    state = get_session_state(session_id)
+    result = project_service.auto_save(
+        session_id=session_id,
+    )
+    if result is None:
+        return {"id": None, "note": "无消息，跳过保存"}
+    return result
+
+@app.get("/api/projects")
+async def list_projects():
+    projs = project_service.list_projects()
+    return {"projects": projs}
+
+@app.post("/api/projects")
+async def save_project(req: ProjectSaveRequest):
+    result = project_service.save_project(
+        project_id=req.project_id,
+        name=req.name or "未命名工程",
+        session_id=req.session_id,
+        provider=req.provider,
+        map_state=req.map_state,
+        messages=req.messages,
+        layers=req.layers,
+    )
+    return result
+
+@app.get("/api/projects/{project_id}")
+async def load_project(project_id: str):
+    result = project_service.load_project(project_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    return result
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    project_service.delete_project(project_id)
+    return {"success": True}
+
+@app.delete("/api/projects")
+async def delete_all_projects():
+    project_service.delete_all_projects()
+    return {"success": True}
+
+@app.post("/api/projects/{project_id}/rename")
+async def rename_project(project_id: str, req: ProjectRenameRequest):
+    result = project_service.rename_project(project_id, req.name)
+    if result is None:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    return result
+
+@app.get("/api/projects/{project_id}/export")
+async def export_project(project_id: str):
+    data = project_service.export_project(project_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="工程不存在")
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=project_{project_id}.giswork"},
+    )
+
+@app.post("/api/projects/import")
+async def import_project(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        result = project_service.import_project(content)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ===== 图层检测接口 =====

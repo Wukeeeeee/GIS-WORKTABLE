@@ -282,9 +282,57 @@ window.GIS.api = (() => {
   }
 
   // ===== 项目保存/加载 =====
-  async function saveProject(data)  { /* TODO: POST /projects */ }
-  async function loadProject(id)    { /* TODO: GET /projects/:id */ }
-  async function listProjects()     { /* TODO: GET /projects */ }
+  async function saveProject(data) {
+    const res = await fetch(`${BASE_URL}/api/projects`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`保存工程失败: ${res.status}`);
+    return res.json();
+  }
+  async function loadProject(id) {
+    const res = await fetch(`${BASE_URL}/api/projects/${id}`);
+    if (!res.ok) throw new Error(`加载工程失败: ${res.status}`);
+    return res.json();
+  }
+  async function listProjects() {
+    const res = await fetch(`${BASE_URL}/api/projects`);
+    if (!res.ok) throw new Error(`获取工程列表失败: ${res.status}`);
+    return res.json();
+  }
+  async function deleteProject(id) {
+    const res = await fetch(`${BASE_URL}/api/projects/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`删除工程失败: ${res.status}`);
+    return res.json();
+  }
+  async function renameProject(id, name) {
+    const res = await fetch(`${BASE_URL}/api/projects/${id}/rename`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name}),
+    });
+    if (!res.ok) throw new Error(`重命名工程失败: ${res.status}`);
+    return res.json();
+  }
+  async function exportProject(id) {
+    const res = await fetch(`${BASE_URL}/api/projects/${id}/export`);
+    if (!res.ok) throw new Error(`导出工程失败: ${res.status}`);
+    return res.blob();
+  }
+  async function deleteAllProjects() {
+    const res = await fetch(`${BASE_URL}/api/projects`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`删除全部工程失败: ${res.status}`);
+    return res.json();
+  }
+  async function autoSaveProject() {
+    const res = await fetch(`${BASE_URL}/api/projects/auto-save`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+    });
+    if (!res.ok) throw new Error(`自动保存失败: ${res.status}`);
+    return res.json();
+  }
 
   // ===== 清除记忆 =====
   async function clearMemory(sessionId = 'default') {
@@ -314,6 +362,7 @@ window.GIS.api = (() => {
     getLayers, getLayer, deleteLayer,
     downloadLayer, executeGISAction, getBoundary,
     saveProject, loadProject, listProjects,
+    deleteProject, deleteAllProjects, renameProject, exportProject, autoSaveProject,
     healthCheck, testApiKey, testGLMApiKey, testAgnesApiKey,
     getApiKey, setApiKey, getGLMApiKey, setGLMApiKey,
     getAgnesApiKey, setAgnesApiKey,
