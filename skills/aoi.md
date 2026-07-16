@@ -4,7 +4,7 @@
 
 ## 数据源
 - **unified_aoi_search("地点名")** → 选候选 → **unified_aoi_extract(uid, name)**
-- DataV（行政边界）: `datav_boundary("广东省")`
+- 行政边界用 `datav_boundary`，不用 AOI 工具
 
 ## 流程规则
 1. 行政边界用 `datav_boundary`，不用 AOI 工具

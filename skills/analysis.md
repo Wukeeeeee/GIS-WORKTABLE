@@ -7,65 +7,37 @@
 - `gdf.clip(mask_geodf)` — 按范围裁剪
 - `gdf.dissolve(by='字段')` — 按属性合并
 - `gdf.explode()` — 拆分多部件
-- `gdf.to_crs(epsg=4326)` — 投影转换
 - `gdf.overlay(gdf2, how='intersection')` — 叠置分析
 
 ## 字段计算器（field_calculate）
-AI 对已有图层添加计算字段时，**优先用 field_calculate 工具**，不要写裸 pandas。
-
-### 适用场景
-- 添加面积字段（如"面积*0.0015"将亩转平方公里）
-- 计算人口密度（"人口/面积"）
-- 类型转换（int/float/str）
-- 属性合并（"列A + 列B"）
-
-### 字段计算器规则
+AI 对已有图层添加计算字段时，**优先用 field_calculate 工具**。
 1. 先调 `get_registered_layers()` 确认图层名存在
-2. 调 `field_calculate(layer_name="图层名", expression="人口/面积", new_field="人口密度", field_type="float")`
-3. field_calculate 会自动执行表达式、自动更新地图图层，**不需要再打印 GeoJSON**
-4. 表达式语法就是 Python 表达式，直接引用字段名
-5. 如果字段计算器失败（如字段名不存在），查 `get_layer_detail` 确认字段名后重试
+2. 调 `field_calculate(layer_name, expression, new_field, field_type)`
+3. **不需要再打印 GeoJSON**，field_calculate 自动更新地图图层
+4. 如果失败，查 `get_layer_detail` 确认字段名后重试
 
-## 图层联动
-1. `get_registered_layers()` 查看当前图层列表
-2. `get_layer_detail("图层名")` 查看具体数据
-3. 分析结果 print GeoJSON 自动加载到地图
+## 途经省份/城市路线查询（安全模板）
+当用户问从A到B经过哪些省份/城市时，**必须用空间分析精确判定，严禁凭知识列省份**。
 
-## 途经省份/城市路线查询
-当用户问从A到B经过哪些省份/城市时，必须通过 execute_python 做**空间分析**精确判定，**严禁凭自己的知识列省份**。
-
-### 画直线的代码模板
-```python
-import json
-geojson = {"type":"FeatureCollection","features":[{"type":"Feature","properties":{"name":"路线"},"geometry":{"type":"LineString","coordinates":[[起点经度,起点纬度],[终点经度,终点纬度]]}}]}
-print(json.dumps(geojson, ensure_ascii=False))
-```
-
-### 精确判定途经省份的方法（必须按此流程）
-1. 先调用 datav_boundary 获取沿途可能经过的省份边界
-2. 调 get_layer_detail("省份名") 获取每个省份的 GeoJSON 数据
-3. 调 execute_python，把 get_layer_detail 拿到的 GeoJSON 数据嵌入到代码里，用 shapely 做空间分析：
+### 安全代码模板（直接套用）
 ```python
 import json, shapely.geometry as geom
+# 用 get_layer_detail 拿到的省份 GeoJSON 嵌入到这里
 line = geom.LineString([[起点经度, 起点纬度], [终点经度, 终点纬度]])
-provinces = {
-    "广东省": {"type":"FeatureCollection","features":[...]},
-    "湖南省": {"type":"FeatureCollection","features":[...]},
-}
+provinces = {"广东省": {...}, "湖南省": {...}}  # 从 get_layer_detail 获取
 crossed = []
 for name, gj in provinces.items():
     for feat in gj["features"]:
-        try:
-            poly = geom.shape(feat["geometry"])
-            if line.crosses(poly) or line.intersects(poly) or line.touches(poly):
-                crossed.append(name)
-                break
-        except:
-            pass
+        poly = geom.shape(feat["geometry"])
+        if line.crosses(poly) or line.intersects(poly):
+            crossed.append(name)
+            break
 print("经过的省份:", crossed)
 ```
-**注意：** 起点和终点所在的省份也计入途经省份。
+**注意：** 起点和终点所在的省份也计入途经省份
 
-4. 空间分析完成后，逐个调用 datav_boundary 获取边界（如果还没加载过的话）
-5. **不要合并成一个图层**，每个省/市单独一个图层，名称就是省/市名
-6. 每个省/市用不同的颜色区分（红橙黄绿青蓝紫循环）
+### 安全规则
+1. 先调 datav_boundary 获取沿途可能经过的省份边界
+2. 调 get_layer_detail 获取每个省份的 GeoJSON
+3. **必须用 shapely 做空间分析**，不能凭自己的知识判断
+4. 结果每个省单独一个图层，不同颜色区分
