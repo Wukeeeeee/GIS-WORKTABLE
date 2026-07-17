@@ -225,38 +225,298 @@
 
         <!-- 地图区域 -->
         <div class="map-area map-grid" id="mapArea">
+
+          <!-- === 顶部菜单栏 === -->
+          <div class="map-menu-bar" id="mapMenuBar">
+            <!-- 文件 -->
+            <div class="map-menu-trigger" data-menu="file">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span>文件</span>
+              <div class="map-menu-dropdown">
+                <button class="map-menu-item" data-action="import">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <span>导入图层</span>
+                </button>
+                <button class="map-menu-item" data-action="export">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  <span>导出</span>
+                </button>
+                <button class="map-menu-item" data-action="save-project">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                  <span>保存工程</span>
+                </button>
+                <button class="map-menu-item" data-action="load-project">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><polyline points="12 11 12 17"/><polyline points="9 14 12 17 15 14"/></svg>
+                  <span>加载工程</span>
+                </button>
+              </div>
+            </div>
+            <!-- 绘制 -->
+            <div class="map-menu-trigger" data-menu="draw">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              <span>绘制</span>
+              <div class="map-menu-dropdown">
+                <button class="map-menu-item map-menu-item-shortcut" data-action="shortcut-draw">
+                  <svg class="shortcut-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                  <span>添加至快捷栏</span>
+                </button>
+                <div class="map-menu-sep"></div>
+                <button class="map-menu-item" data-action="tool-polygon">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
+                  <span>多边形</span>
+                </button>
+                <button class="map-menu-item" data-action="tool-rectangle">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                  <span>矩形</span>
+                </button>
+                <button class="map-menu-item" data-action="tool-circle">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>
+                  <span>圆</span>
+                </button>
+                <button class="map-menu-item" data-action="tool-polyline">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  <span>线</span>
+                </button>
+                <button class="map-menu-item" data-action="tool-marker">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                  <span>标记</span>
+                </button>
+              </div>
+            </div>
+            <!-- 视图 -->
+            <div class="map-menu-trigger" data-menu="view">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span>视图</span>
+              <div class="map-menu-dropdown">
+                <button class="map-menu-item" data-action="toggle-layer-panel">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+                  <span>图层面板</span>
+                </button>
+                <button class="map-menu-item map-menu-item-toggle" data-action="toggle-coords">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="11"/></svg>
+                  <span>坐标信息</span>
+                  <svg class="toggle-check off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                </button>
+              </div>
+            </div>
+            <!-- 工具 -->
+            <div class="map-menu-trigger" data-menu="tools">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              <span>工具</span>
+              <div class="map-menu-dropdown">
+                <button class="map-menu-item map-menu-item-shortcut" data-action="shortcut-tools">
+                  <svg class="shortcut-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                  <span>添加至快捷栏</span>
+                </button>
+                <div class="map-menu-sep"></div>
+                <button class="map-menu-item" data-action="tool-feature-info">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                  <span>选择要素</span>
+                </button>
+                <button class="map-menu-item" data-action="tool-delete">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  <span>删除要素</span>
+                </button>
+                <button class="map-menu-item" data-action="toggle-attr-table">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                  <span>属性表</span>
+                </button>
+              </div>
+            </div>
+            <!-- 帮助 -->
+            <div class="map-menu-trigger" data-menu="help">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span>帮助</span>
+              <div class="map-menu-dropdown">
+                <button class="map-menu-item" data-action="manual">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                  <span>操作手册</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- === 操作手册弹窗 === -->
+          <div class="manual-overlay" id="manualOverlay" style="display:none;">
+            <div class="manual-modal">
+              <div class="manual-header">
+                <span class="manual-title">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                  操作手册
+                </span>
+                <button class="manual-close" id="manualClose">&times;</button>
+              </div>
+              <div class="manual-body">
+                <nav class="manual-nav" id="manualNav">
+                  <button class="manual-nav-item active" data-section="map">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    地图操作
+                  </button>
+                  <button class="manual-nav-item" data-section="draw">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    绘制工具
+                  </button>
+                  <button class="manual-nav-item" data-section="layer">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
+                    图层管理
+                  </button>
+                  <button class="manual-nav-item" data-section="menu">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                    顶部菜单
+                  </button>
+                  <button class="manual-nav-item" data-section="ai">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    AI 对话
+                  </button>
+                </nav>
+                <div class="manual-content" id="manualContent">
+                  <!-- 地图操作 -->
+                  <div class="manual-section" id="section-map">
+                    <h2>地图基础操作</h2>
+                    <h3>缩放与移动</h3>
+                    <ul>
+                      <li><strong>滚轮缩放</strong> — 滚动鼠标滚轮放大/缩小地图</li>
+                      <li><strong>拖拽平移</strong> — 按住鼠标左键拖拽移动地图</li>
+                      <li><strong>右键菜单</strong> — 右键点击地图弹出操作菜单</li>
+                    </ul>
+                    <h3>坐标信息</h3>
+                    <ul>
+                      <li>移动鼠标时底部状态栏显示当前经纬度</li>
+                      <li><strong>视图 → 坐标信息</strong> 可开启/关闭左下角常驻坐标显示</li>
+                      <li>底部坐标文字点击可复制到剪贴板</li>
+                    </ul>
+                  </div>
+                  <!-- 绘制工具 -->
+                  <div class="manual-section" id="section-draw" style="display:none;">
+                    <h2>绘制工具</h2>
+                    <h3>几何图形绘制</h3>
+                    <ul>
+                      <li>点击右侧快捷栏的绘图按钮（多边形/矩形/圆/线/标记）进入绘制模式</li>
+                      <li>在地图上依次点击生成图形，完成后自动添加到图层列表</li>
+                      <li>绘制按钮右下角 <strong>绿色 ✓</strong> 表示当前选中</li>
+                      <li>按 <kbd>Esc</kbd> 取消绘制</li>
+                      <li>也可通过顶部菜单 <strong>绘制</strong> 操作</li>
+                    </ul>
+                    <h3>选择要素</h3>
+                    <ul>
+                      <li>点击 <strong>选择要素</strong> 按钮激活工具</li>
+                      <li>光标变为十字准星，点击已绘制的图形弹出属性卡片</li>
+                      <li>再次点击按钮或按 <kbd>Esc</kbd> 退出</li>
+                    </ul>
+                    <h3>删除要素</h3>
+                    <ul>
+                      <li>点击 <strong>删除要素</strong> 按钮进入删除模式</li>
+                      <li>点击图形将其从地图和图层面板中移除</li>
+                      <li>再次点击按钮或按 <kbd>Esc</kbd> 退出删除模式</li>
+                    </ul>
+                  </div>
+                  <!-- 图层管理 -->
+                  <div class="manual-section" id="section-layer" style="display:none;">
+                    <h2>图层管理</h2>
+                    <h3>图层面板</h3>
+                    <ul>
+                      <li>点击快捷栏底部的 <strong>图层图标</strong> 打开/关闭图层面板</li>
+                      <li>面板位于地图右上角，列出所有已加载的图层</li>
+                      <li>每行显示图层名称、类型、可见性开关</li>
+                    </ul>
+                    <h3>上传文件</h3>
+                    <ul>
+                      <li>支持格式：<strong>GeoJSON、SHP、GPKG、KML</strong></li>
+                      <li>可通过图层面板的「上传」按钮或输入框旁的附件按钮上传</li>
+                    </ul>
+                    <h3>属性表</h3>
+                    <ul>
+                      <li>在图层面板选中图层后，点击 <strong>属性表</strong> 查看要素属性</li>
+                      <li>支持编辑、筛选、导出功能</li>
+                      <li>每行末的 ◎ 按钮可定位到地图对应要素</li>
+                    </ul>
+                  </div>
+                  <!-- 顶部菜单 -->
+                  <div class="manual-section" id="section-menu" style="display:none;">
+                    <h2>顶部菜单栏</h2>
+                    <p>地图顶部的菜单栏提供系统所有功能的入口。</p>
+                    <h3>文件</h3>
+                    <ul>
+                      <li><strong>导入图层</strong> — 上传文件到地图</li>
+                      <li><strong>导出</strong> — 导出当前图层为 GeoJSON</li>
+                      <li><strong>保存工程</strong> — 保存当前会话为工程文件</li>
+                      <li><strong>加载工程</strong> — 加载已保存的工程</li>
+                    </ul>
+                    <h3>绘制</h3>
+                    <ul>
+                      <li>列出所有绘图工具，点击自动激活对应工具</li>
+                      <li>第一行 <strong>添加至快捷栏</strong> 开关控制右侧工具栏是否显示绘图按钮</li>
+                    </ul>
+                    <h3>视图</h3>
+                    <ul>
+                      <li><strong>图层面板</strong> — 切换面板显隐</li>
+                      <li><strong>坐标信息</strong> — 持久开关，控制左下角坐标显示</li>
+                    </ul>
+                    <h3>工具</h3>
+                    <ul>
+                      <li><strong>选择要素</strong> — 点击地图要素查看属性</li>
+                      <li><strong>删除要素</strong> — 删除已绘制的图形</li>
+                      <li><strong>属性表</strong> — 查看/编辑图层属性</li>
+                      <li>第一行 <strong>添加至快捷栏</strong> 开关控制选择要素/删除按钮显隐</li>
+                    </ul>
+                  </div>
+                  <!-- AI 对话 -->
+                  <div class="manual-section" id="section-ai" style="display:none;">
+                    <h2>AI 对话</h2>
+                    <h3>发送消息</h3>
+                    <ul>
+                      <li>在左侧聊天面板输入问题，按 Enter 或点击发送按钮</li>
+                      <li>支持斜杠命令（输入 <code>/</code> 弹出命令面板）</li>
+                      <li>AI 可生成地图数据、分析地理信息等</li>
+                    </ul>
+                    <h3>模型选择</h3>
+                    <ul>
+                      <li>聊天面板顶部下拉框选择 AI 模型</li>
+                      <li>支持 DeepSeek V4 Flash+、GLM-4.7-Flash+、Agnes 2.0 Flash+</li>
+                      <li>齿轮按钮可配置各模型的 API Key</li>
+                    </ul>
+                    <h3>历史与工程</h3>
+                    <ul>
+                      <li>点击聊天面板右上角时钟按钮查看历史会话</li>
+                      <li>支持新建会话、全部清除</li>
+                      <li>工程功能可保存/恢复完整工作状态（含地图图层和对话）</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="map-placeholder">地图区域</div>
           <div id="map"></div>
 
           <!-- === 右上角：绘制 + 缩放控件 === -->
           <div class="map-zoom-controls" id="mapZoomControls">
-            <button class="map-zoom-btn" id="zoomIn" title="放大">
-              <svg><use href="assets/icons.svg#icon-zoom-in"/></svg>
-            </button>
-            <button class="map-zoom-btn" id="zoomOut" title="缩小">
-              <svg><use href="assets/icons.svg#icon-zoom-out"/></svg>
-            </button>
-            <button class="map-zoom-btn" id="zoomLocate" title="定位">
-              <svg><use href="assets/icons.svg#icon-locate"/></svg>
-            </button>
-            <div class="map-ctrl-divider"></div>
             <button class="map-zoom-btn map-draw-btn" data-tool="select" title="选择/移动">
               <svg><use href="assets/icons.svg#icon-select"/></svg>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="polygon" title="绘制多边形">
+            <div class="map-ctrl-divider" data-shortcut-group="draw"></div>
+            <button class="map-zoom-btn map-draw-btn" data-tool="polygon" data-shortcut-group="draw" title="绘制多边形">
               <svg><use href="assets/icons.svg#icon-draw-polygon"/></svg>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="rectangle" title="绘制矩形">
+            <button class="map-zoom-btn map-draw-btn" data-tool="rectangle" data-shortcut-group="draw" title="绘制矩形">
               <svg><use href="assets/icons.svg#icon-draw-rect"/></svg>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="circle" title="绘制圆">
+            <button class="map-zoom-btn map-draw-btn" data-tool="circle" data-shortcut-group="draw" title="绘制圆">
               <svg><use href="assets/icons.svg#icon-draw-circle"/></svg>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="polyline" title="绘制线">
+            <button class="map-zoom-btn map-draw-btn" data-tool="polyline" data-shortcut-group="draw" title="绘制线">
               <svg><use href="assets/icons.svg#icon-draw-line"/></svg>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="marker" title="添加标记点">
+            <button class="map-zoom-btn map-draw-btn" data-tool="marker" data-shortcut-group="draw" title="添加标记点">
               <svg><use href="assets/icons.svg#icon-draw-marker"/></svg>
+            </button>
+            <div class="map-ctrl-divider" data-shortcut-group="tools"></div>
+            <button class="map-zoom-btn map-draw-btn" data-tool="feature-info" data-shortcut-group="tools" title="选择要素（点击地图要素查看属性）">
+              <svg><use href="assets/icons.svg#icon-info"/></svg>
+            </button>
+            <button class="map-zoom-btn map-draw-btn" data-tool="delete" data-shortcut-group="tools" title="删除要素（点击即删）">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
             <div class="map-ctrl-divider"></div>
             <button class="map-zoom-btn map-toggle-layer" id="toggleLayerPanel" title="切换图层面板">
@@ -602,16 +862,16 @@
   <script src="js/project.js"></script>
   <script src="js/upload.js"></script>
   <script src="js/aoi.js"></script>
+  <script src="js/settings.js"></script>
   <script src="js/app.js"></script>
   <script src="js/time.js"></script>
 
 
-  <!-- ===== 内联启动脚本（缩放控件绑定等） ===== -->
+  <!-- ===== 内联启动脚本（缩放控件绑定 + 清会话） ===== -->
   <script>
     (function() {
       'use strict';
 
-      // 显示布局
       document.getElementById('app').classList.add('ready');
 
       // ---- 地图缩放控件绑定 ----
@@ -638,12 +898,10 @@
               var lng = pos.coords.longitude;
               window.GIS.map.setView([lat, lng], 15);
 
-              // 移除旧的定位标记
               if (locateMarker) {
                 window.GIS.map.getMap().removeLayer(locateMarker);
               }
 
-              // 创建脉冲蓝点
               var icon = L.divIcon({
                 className: '',
                 html: '<div class="map-locate-dot"></div>',
@@ -664,578 +922,12 @@
         }
       });
 
+      // ---- 清会话（调用 chat.js 的 clearSession） ----
       document.getElementById('clearMemoryBtn').addEventListener('click', async function() {
-        // 0. 先中止正在进行的 AI 请求，恢复 UI 交互能力
-        if (window._aiRunning) {
-          window._aiRunning = false;
-          if (window._aiAbortController) {
-            window._aiAbortController.abort();
-            window._aiAbortController = null;
-          }
-          fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
-          var loadingEl = document.getElementById('ai-loading-msg');
-          if (loadingEl) {
-            if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
-            if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
-            loadingEl.remove();
-          }
-          var stopBtn = document.getElementById('stopBtn');
-          if (stopBtn) stopBtn.style.display = 'none';
-          var sendBtn = document.getElementById('sendBtn');
-          if (sendBtn) sendBtn.disabled = false;
-          var inputEl = document.getElementById('chatInput');
-          if (inputEl) inputEl.disabled = false;
-          var modelBar = document.querySelector('.chat-input-model-bar');
-          if (modelBar) modelBar.classList.remove('is-disabled');
-          document.querySelectorAll('.context-menu-item').forEach(function(el) {
-            if (el.getAttribute('data-action') !== 'copy-coords') el.classList.remove('is-disabled');
-          });
-        }
-
-        // 1. 清 UI
-        var container = document.getElementById('chatMessages');
-        container.innerHTML = '<div class="chat-messages-empty"></div>';
-        container.style.display = '';
-        var historyPanel = document.getElementById('chatHistory');
-        if (historyPanel) historyPanel.style.display = 'none';
-        if (window.GIS.layers) {
-          var allLayers = window.GIS.layers.getLayers();
-          allLayers.forEach(function(l) {
-            if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
-          });
-        }
-        if (window.GIS.task && typeof window.GIS.task.clearUnsaved === 'function') {
-          window.GIS.task.clearUnsaved();
-        }
-        if (typeof updateGreeting === 'function') {
-          updateGreeting();
-        }
-
-        // 2. 异步调 API
-        if (window.GIS.project) {
-          window.GIS.project.save().catch(function() {});
-          window.GIS.project.setCurrentProjectId(null);
-        }
-        window.GIS.api.clearMemory().catch(function() {});
-      });
-
-      // ---- 设置弹窗逻辑（三栏侧边栏布局）----
-      var settingsModal = document.getElementById('settingsModal');
-      var settingsBtn = document.getElementById('settingsBtn');
-      var modalCloseBtn = document.getElementById('modalCloseBtn');
-      var apiKeyInput = document.getElementById('apiKeyInput');
-      var glmApiKeyInput = document.getElementById('glmApiKeyInput');
-      var apiKeyStatus = document.getElementById('apiKeyStatus');
-      var glmApiKeyStatus = document.getElementById('glmApiKeyStatus');
-      var testResult = document.getElementById('testResult');
-      var glmTestResult = document.getElementById('glmTestResult');
-      var testKeyBtn = document.getElementById('testKeyBtn');
-      var saveKeyBtn = document.getElementById('saveKeyBtn');
-      var testGlmKeyBtn = document.getElementById('testGlmKeyBtn');
-      var saveGlmKeyBtn = document.getElementById('saveGlmKeyBtn');
-      var toggleKeyVis = document.getElementById('toggleKeyVis');
-      var toggleGlmKeyVis = document.getElementById('toggleGlmKeyVis');
-      var amapApiKeyInput = document.getElementById('amapApiKeyInput');
-      var amapKeyStatus = document.getElementById('amapKeyStatus');
-      var amapTestResult = document.getElementById('amapTestResult');
-      var toggleAmapKeyVis = document.getElementById('toggleAmapKeyVis');
-      var agnesApiKeyInput = document.getElementById('agnesApiKeyInput');
-      var agnesApiKeyStatus = document.getElementById('agnesApiKeyStatus');
-      var agnesTestResult = document.getElementById('agnesTestResult');
-      var testAgnesKeyBtn = document.getElementById('testAgnesKeyBtn');
-      var saveAgnesKeyBtn = document.getElementById('saveAgnesKeyBtn');
-      var toggleAgnesKeyVis = document.getElementById('toggleAgnesKeyVis');
-
-      // ---- 侧边栏切换 ----
-      var sidenavItems = document.querySelectorAll('.modal-sidenav-item');
-      var panels = {
-        appearance: document.getElementById('panelAppearance'),
-        'ai-api': document.getElementById('panelAiApi'),
-        'geo-api': document.getElementById('panelGeoApi'),
-        history: document.getElementById('panelHistory'),
-        about: document.getElementById('panelAbout'),
-      };
-      sidenavItems.forEach(function(item) {
-        item.addEventListener('click', function() {
-          var panel = this.dataset.panel;
-          sidenavItems.forEach(function(s) { s.classList.remove('active'); });
-          this.classList.add('active');
-          Object.keys(panels).forEach(function(k) {
-            if (panels[k]) panels[k].classList.toggle('active', k === panel);
-          });
-        });
-      });
-
-      // ---- 字号设置（通过 --font-scale 统一缩放）----
-      var fontSizeSlider = document.getElementById('fontSizeSlider');
-      var fontSizeValue = document.getElementById('fontSizeValue');
-      function applyFontScale(val) {
-        var scale = val / 14;  // 14 = 基准，14px → scale 1.0
-        document.documentElement.style.setProperty('--font-scale', scale);
-        if (fontSizeValue) fontSizeValue.textContent = val + 'px';
-        if (fontSizeSlider) fontSizeSlider.value = val;
-        try { localStorage.setItem('gis_font_size', val); } catch(e) {}
-      }
-      if (fontSizeSlider) {
-        var savedSize = localStorage.getItem('gis_font_size');
-        if (savedSize) applyFontScale(parseInt(savedSize, 10));
-        fontSizeSlider.addEventListener('input', function() {
-          applyFontScale(parseInt(this.value, 10));
-        });
-      }
-
-      // ---- 主题切换 ----
-      var themeBtns = document.querySelectorAll('.theme-btn');
-      function applyTheme(theme) {
-        document.documentElement.classList.toggle('theme-dark', theme === 'dark');
-        themeBtns.forEach(function(b) {
-          b.classList.toggle('active', b.dataset.theme === theme);
-        });
-        try { localStorage.setItem('gis_theme', theme); } catch(e) {}
-      }
-      if (themeBtns.length) {
-        // 恢复保存的主题
-        var savedTheme = localStorage.getItem('gis_theme');
-        if (savedTheme) applyTheme(savedTheme);
-        themeBtns.forEach(function(btn) {
-          btn.addEventListener('click', function() {
-            applyTheme(this.dataset.theme);
-          });
-        });
-      }
-
-      // 打开弹窗（重置到界面设置面板）
-      settingsBtn.addEventListener('click', function() {
-        // 重置到界面设置面板
-        sidenavItems.forEach(function(s) { s.classList.remove('active'); });
-        var firstNav = document.querySelector('.modal-sidenav-item[data-panel="appearance"]');
-        if (firstNav) firstNav.classList.add('active');
-        Object.keys(panels).forEach(function(k) {
-          if (panels[k]) panels[k].classList.toggle('active', k === 'appearance');
-        });
-        // 填充 AI Key 值
-        var savedKey = window.GIS.api.getApiKey();
-        apiKeyInput.value = savedKey;
-        updateKeyStatus(savedKey);
-        testResult.innerHTML = '';
-        var savedGlmKey = window.GIS.api.getGLMApiKey();
-        glmApiKeyInput.value = savedGlmKey;
-        updateGlmKeyStatus(savedGlmKey);
-        glmTestResult.innerHTML = '';
-        var savedAmapKey = window.GIS.api.getAmapKey();
-        amapApiKeyInput.value = savedAmapKey;
-        updateAmapKeyStatus(savedAmapKey);
-        amapTestResult.innerHTML = '';
-        settingsModal.style.display = 'flex';
-
-        // 检查浏览器自动填充（Edge 等可能自动填写密码/密钥字段）
-        setTimeout(function() {
-          [apiKeyInput, glmApiKeyInput, amapApiKeyInput, agnesApiKeyInput].forEach(function(input) {
-            if (input && input.value.trim()) {
-              var map = {};
-              map[apiKeyInput.id]    = { get: 'getApiKey',    set: 'setApiKey',    status: 'deepseek' };
-              map[glmApiKeyInput.id] = { get: 'getGLMApiKey', set: 'setGLMApiKey', status: 'glm' };
-              map[amapApiKeyInput.id]= { get: 'getAmapKey',   set: 'setAmapKey',   status: null };
-              map[agnesApiKeyInput.id]= { get: 'getAgnesApiKey',set: 'setAgnesApiKey',status: 'agnes' };
-              var info = map[input.id];
-              if (info && !window.GIS.api[info.get]()) {
-                window.GIS.api[info.set](input.value.trim());
-                if (info.status === 'deepseek') { updateKeyStatus(input.value.trim()); }
-                if (info.status === 'glm')      { updateGlmKeyStatus(input.value.trim()); }
-                if (info.status === 'agnes')    { updateAgnesKeyStatus(input.value.trim()); }
-                // amap 无状态圆点
-              }
-            }
-          });
-          // 自动填充保存后刷新状态显示
-          updateModelWarning();
-          if (typeof updateModelStatusDot === 'function') updateModelStatusDot();
-      });  // 关闭 setTimeout
-      });  // 关闭 settingsBtn 点击处理器
-
-      // 关闭弹窗（✕、遮罩、ESC）
-      function closeModal() {
-        settingsModal.style.display = 'none';
-      }
-      modalCloseBtn.addEventListener('click', closeModal);
-      settingsModal.addEventListener('click', function(e) {
-        if (e.target === settingsModal) closeModal();
-      });
-      document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape' && settingsModal.style.display === 'flex') closeModal();
-      });
-
-      // 显示/隐藏密钥：点击眼睛图标切换 input 的 type（password ↔ text）
-      toggleKeyVis.addEventListener('click', function() {
-        var eyeIcon = document.getElementById('eyeIcon');
-        if (apiKeyInput.type === 'password') {
-          apiKeyInput.type = 'text';
-          eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>';
-        } else {
-          apiKeyInput.type = 'password';
-          eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+        if (window.GIS.chat && typeof window.GIS.chat.clearSession === 'function') {
+          await window.GIS.chat.clearSession();
         }
       });
-
-      // GLM 密钥显隐切换
-      toggleGlmKeyVis.addEventListener('click', function() {
-        var eyeIcon = document.getElementById('glmEyeIcon');
-        if (glmApiKeyInput.type === 'password') {
-          glmApiKeyInput.type = 'text';
-          eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>';
-        } else {
-          glmApiKeyInput.type = 'password';
-          eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
-        }
-      });
-
-      // Agnes 密钥显隐切换
-      toggleAgnesKeyVis.addEventListener('click', function() {
-        var eyeIcon = document.getElementById('agnesEyeIcon');
-        if (agnesApiKeyInput.type === 'password') {
-          agnesApiKeyInput.type = 'text';
-          eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>';
-        } else {
-          agnesApiKeyInput.type = 'password';
-          eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
-        }
-      });
-
-      // 高德密钥显隐切换
-      toggleAmapKeyVis.addEventListener('click', function() {
-        var eyeIcon = document.getElementById('amapEyeIcon');
-        if (amapApiKeyInput.type === 'password') {
-          amapApiKeyInput.type = 'text';
-          eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>';
-        } else {
-          amapApiKeyInput.type = 'password';
-          eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
-        }
-      });
-
-      // 更新配置状态显示：badge 绿色/灰色
-      function updateKeyStatus(key) {
-        apiKeyStatus.textContent = key ? '已配置' : '未配置';
-        apiKeyStatus.className = 'model-config-badge' + (key ? ' configured' : '');
-      }
-      function updateGlmKeyStatus(key) {
-        glmApiKeyStatus.textContent = key ? '已配置' : '未配置';
-        glmApiKeyStatus.className = 'model-config-badge' + (key ? ' configured' : '');
-      }
-      function updateAmapKeyStatus(key) {
-        amapKeyStatus.textContent = key ? '已配置' : '未配置';
-        amapKeyStatus.className = 'model-config-badge' + (key ? ' configured' : '');
-      }
-      function updateAgnesKeyStatus(key) {
-        agnesApiKeyStatus.textContent = key ? '已配置' : '未配置';
-        agnesApiKeyStatus.className = 'model-config-badge' + (key ? ' configured' : '');
-      }
-
-	      // ---- 测速按钮 ----
-	      // 向后端发请求验证密钥能否连上 DeepSeek
-	      var isTesting = false;  // 防止重复点击
-	      testKeyBtn.addEventListener('click', async function() {
-	        var key = apiKeyInput.value.trim();
-	        if (!key) {
-	          testResult.textContent = '请先输入 API 密钥';
-	          testResult.className = 'modal-test-result modal-test-error';
-	          return;
-	        }
-	        if (isTesting) return;
-	        isTesting = true;
-	        testKeyBtn.textContent = '测速中...';
-	        testKeyBtn.disabled = true;
-	        testResult.innerHTML = '<span class="loading-spinner"></span> 正在连接...';
-	        testResult.className = 'modal-test-result';
-
-	        try {
-	          // 调后端 /api/test-key 接口，后端会发一条极简请求到 DeepSeek 验证
-	          var res = await window.GIS.api.testApiKey(key);
-	          testResult.textContent = res.message;  // "连接成功 ✓" 或 "密钥无效"
-	          testResult.className = 'modal-test-result ' + (res.success ? 'modal-test-success' : 'modal-test-error');
-	          // 更新模型状态圆点
-	          window.GIS.api.setModelStatus('deepseek', res.success ? 'online' : 'offline');
-	          if (modelSelector && modelSelector.value === 'deepseek') updateModelStatusDot();
-	        } catch (e) {
-	          testResult.textContent = '连接失败: ' + e.message;
-	          testResult.className = 'modal-test-result modal-test-error';
-	          window.GIS.api.setModelStatus('deepseek', 'offline');
-	          if (modelSelector && modelSelector.value === 'deepseek') updateModelStatusDot();
-	        } finally {
-	          isTesting = false;
-	          testKeyBtn.textContent = '测速';
-	          testKeyBtn.disabled = false;
-	        }
-	      });
-
-      // ---- 保存按钮 ----
-      // 把密钥存到浏览器 localStorage，关闭浏览器再打开还在
-      saveKeyBtn.addEventListener('click', function() {
-        var key = apiKeyInput.value.trim();
-        window.GIS.api.setApiKey(key);  // 存到 localStorage
-        window.GIS.api.setModelStatus('deepseek', 'untested');  // 重置状态，让警告重新判断
-        updateKeyStatus(key);
-        updateModelWarning();  // 更新红色警告状态
-        // 按钮文字闪一下"已保存 ✓"再变回来，给用户反馈
-        var orig = saveKeyBtn.textContent;
-        saveKeyBtn.textContent = '已保存 ✓';
-        setTimeout(function() { saveKeyBtn.textContent = orig; }, 2000);
-      });
-
-      // ---- GLM 测速按钮 ----
-      var isTestingGlm = false;
-      testGlmKeyBtn.addEventListener('click', async function() {
-        var key = glmApiKeyInput.value.trim();
-        if (!key) {
-          glmTestResult.textContent = '请先输入 API 密钥';
-          glmTestResult.className = 'modal-test-result modal-test-error';
-          return;
-        }
-        if (isTestingGlm) return;
-        isTestingGlm = true;
-        testGlmKeyBtn.textContent = '测速中...';
-        testGlmKeyBtn.disabled = true;
-        glmTestResult.innerHTML = '<span class="loading-spinner"></span> 正在连接...';
-        glmTestResult.className = 'modal-test-result';
-
-        try {
-          var res = await window.GIS.api.testGLMApiKey(key);
-          glmTestResult.textContent = res.message;
-          glmTestResult.className = 'modal-test-result ' + (res.success ? 'modal-test-success' : 'modal-test-error');
-          // 更新模型状态圆点
-          window.GIS.api.setModelStatus('glm', res.success ? 'online' : 'offline');
-          if (modelSelector && modelSelector.value === 'glm') updateModelStatusDot();
-        } catch (e) {
-          window.GIS.api.setModelStatus('glm', 'offline');
-          if (modelSelector && modelSelector.value === 'glm') updateModelStatusDot();
-          glmTestResult.textContent = '连接失败: ' + e.message;
-          glmTestResult.className = 'modal-test-result modal-test-error';
-        } finally {
-          isTestingGlm = false;
-          testGlmKeyBtn.textContent = '测速';
-          testGlmKeyBtn.disabled = false;
-        }
-      });
-
-      // ---- GLM 保存按钮 ----
-      saveGlmKeyBtn.addEventListener('click', function() {
-        var key = glmApiKeyInput.value.trim();
-        window.GIS.api.setGLMApiKey(key);
-        window.GIS.api.setModelStatus('glm', 'untested');
-        updateGlmKeyStatus(key);
-        updateModelWarning();
-        var orig = saveGlmKeyBtn.textContent;
-        saveGlmKeyBtn.textContent = '已保存 ✓';
-        setTimeout(function() { saveGlmKeyBtn.textContent = orig; }, 2000);
-      });
-
-      // ---- Agnes 测速按钮 ----
-      var isTestingAgnes = false;
-      testAgnesKeyBtn.addEventListener('click', async function() {
-        var key = agnesApiKeyInput.value.trim();
-        if (!key) {
-          agnesTestResult.textContent = '请先输入 API 密钥';
-          agnesTestResult.className = 'modal-test-result modal-test-error';
-          return;
-        }
-        if (isTestingAgnes) return;
-        isTestingAgnes = true;
-        testAgnesKeyBtn.textContent = '测速中...';
-        testAgnesKeyBtn.disabled = true;
-        agnesTestResult.innerHTML = '<span class="loading-spinner"></span> 正在连接...';
-        agnesTestResult.className = 'modal-test-result';
-
-        try {
-          var res = await window.GIS.api.testAgnesApiKey(key);
-          agnesTestResult.textContent = res.message;
-          agnesTestResult.className = 'modal-test-result ' + (res.success ? 'modal-test-success' : 'modal-test-error');
-          window.GIS.api.setModelStatus('agnes', res.success ? 'online' : 'offline');
-          if (modelSelector && modelSelector.value === 'agnes') updateModelStatusDot();
-        } catch (e) {
-          window.GIS.api.setModelStatus('agnes', 'offline');
-          if (modelSelector && modelSelector.value === 'agnes') updateModelStatusDot();
-          agnesTestResult.textContent = '连接失败: ' + e.message;
-          agnesTestResult.className = 'modal-test-result modal-test-error';
-        } finally {
-          isTestingAgnes = false;
-          testAgnesKeyBtn.textContent = '测速';
-          testAgnesKeyBtn.disabled = false;
-        }
-      });
-
-      // ---- Agnes 保存按钮 ----
-      saveAgnesKeyBtn.addEventListener('click', function() {
-        var key = agnesApiKeyInput.value.trim();
-        window.GIS.api.setAgnesApiKey(key);
-        window.GIS.api.setModelStatus('agnes', 'untested');
-        updateAgnesKeyStatus(key);
-        updateModelWarning();
-        var orig = saveAgnesKeyBtn.textContent;
-        saveAgnesKeyBtn.textContent = '已保存 ✓';
-        setTimeout(function() { saveAgnesKeyBtn.textContent = orig; }, 2000);
-      });
-
-      // ---- 高德密钥保存按钮 ----
-      var saveAmapKeyBtn = document.getElementById('saveAmapKeyBtn');
-      saveAmapKeyBtn.addEventListener('click', function() {
-        var key = amapApiKeyInput.value.trim();
-        window.GIS.api.setAmapKey(key);
-        updateAmapKeyStatus(key);
-        var orig = saveAmapKeyBtn.textContent;
-        saveAmapKeyBtn.textContent = '已保存 ✓';
-        setTimeout(function() { saveAmapKeyBtn.textContent = orig; }, 2000);
-      });
-
-      // ---- 模型选择器持久化 + 状态圆点 ----
-      var modelSelector = document.getElementById('modelSelector');
-      var modelStatusDot = document.getElementById('modelStatusDot');
-
-      /** 根据当前选中的模型更新状态圆点 */
-      function updateModelStatusDot() {
-        if (!modelSelector || !modelStatusDot) return;
-        var provider = modelSelector.value;
-        // deepseek-routed 借用 deepseek 的状态（共用密钥）
-        var statusProvider = provider === 'deepseek-routed' ? 'deepseek' : provider;
-        var status = window.GIS.api.getModelStatus(statusProvider);
-        // 移除所有状态类
-        modelStatusDot.classList.remove('online', 'offline', 'checking');
-        if (status === 'online') {
-          modelStatusDot.classList.add('online');
-        } else if (status === 'offline') {
-          modelStatusDot.classList.add('offline');
-        } else {
-          // 'untested' — 默认显示红色（未通过）
-          modelStatusDot.classList.add('offline');
-        }
-        // 同时更新双模型警告
-        updateModelWarning();
-      }
-
-      /** 检查所有模型是否都未配置/离线，显示警告 */
-      function updateModelWarning() {
-        var warn = document.getElementById('modelWarning');
-        if (!warn) return;
-        var dsKey = window.GIS.api.getApiKey();
-        var glmKey = window.GIS.api.getGLMApiKey();
-        var agnesKey = window.GIS.api.getAgnesApiKey();
-        var dsStatus = window.GIS.api.getModelStatus('deepseek');
-        var glmStatus = window.GIS.api.getModelStatus('glm');
-        var agnesStatus = window.GIS.api.getModelStatus('agnes');
-        var anyConfigured = dsKey || glmKey || agnesKey;
-        var anyOnline = dsStatus === 'online' || glmStatus === 'online' || agnesStatus === 'online';
-        if (!anyConfigured) {
-          warn.style.display = 'block';
-          warn.querySelector('span').textContent = '请配置 API Key（DeepSeek / GLM / Agnes 任一即可），点击齿轮按钮设置';
-        } else if (!anyOnline && (dsStatus !== 'untested' || glmStatus !== 'untested' || agnesStatus !== 'untested')) {
-          warn.style.display = 'block';
-          warn.querySelector('span').textContent = '配置的 API Key 均连接失败，请检查密钥配置';
-        } else {
-          warn.style.display = 'none';
-        }
-      }
-
-      // ---- 模型选择器（向上弹出） ----
-      var modelPicker = document.getElementById('modelPicker');
-      var modelPickerOptions = modelPicker.querySelectorAll('.model-picker-option');
-      var modelSelectTrigger = document.getElementById('modelSelectTrigger');
-      var modelSelectValue = document.getElementById('modelSelectValue');
-
-      function updatePickerSelection() {
-        var cur = modelSelector.value;
-        modelPickerOptions.forEach(function(opt) {
-          opt.classList.toggle('is-selected', opt.dataset.value === cur);
-        });
-      }
-
-      function selectModel(value) {
-        if (value === modelSelector.value) { modelPicker.classList.remove('is-open'); return; }
-        modelSelector.value = value;
-        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
-        modelSelectValue.textContent = names[value] || value;
-        window.GIS.api.setSelectedModel(value);
-        updateModelStatusDot();
-        modelPicker.classList.remove('is-open');
-      }
-
-      // 点击触发器切换
-      modelSelectTrigger.addEventListener('click', function(e) {
-        updatePickerSelection();
-        modelPicker.classList.toggle('is-open');
-      });
-
-      // 点击选项选择模型
-      modelPickerOptions.forEach(function(opt) {
-        opt.addEventListener('click', function() {
-          selectModel(this.dataset.value);
-        });
-      });
-
-      // 点击外部关闭
-      document.addEventListener('click', function(e) {
-        if (modelPicker.classList.contains('is-open') &&
-            !modelPicker.contains(e.target) &&
-            !modelSelectTrigger.contains(e.target)) {
-          modelPicker.classList.remove('is-open');
-        }
-      });
-
-      // 初始化
-      if (modelSelector) {
-        var savedModel = window.GIS.api.getSelectedModel();
-        modelSelector.value = savedModel;
-        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
-        modelSelectValue.textContent = names[savedModel] || savedModel;
-        modelPickerOptions.forEach(function(opt) {
-          opt.classList.toggle('is-selected', opt.dataset.value === savedModel);
-        });
-        updateModelStatusDot();
-      }
-
-      // ---- 按钮按下反馈（微交互） ----
-      document.querySelectorAll('button, .icon-btn, .map-zoom-btn, .map-layer-btn, .layer-action-btn')
-        .forEach(function(el) {
-          el.addEventListener('mousedown', function() { this.style.opacity = '0.7'; });
-          el.addEventListener('mouseup', function() { this.style.opacity = '1'; });
-          el.addEventListener('mouseleave', function() { this.style.opacity = '1'; });
-        });
-
-      // ---- 自动检测模型状态（页面加载后检测已保存密钥的模型） ----
-      (function autoDetectModelStatus() {
-        if (!window.GIS || !window.GIS.api) {
-          setTimeout(autoDetectModelStatus, 1000);
-          return;
-        }
-        var providers = ['deepseek', 'glm', 'agnes'];
-        var keyMap = { 'deepseek': 'getApiKey', 'glm': 'getGLMApiKey', 'agnes': 'getAgnesApiKey' };
-        var testMap = { 'deepseek': 'testApiKey', 'glm': 'testGLMApiKey', 'agnes': 'testAgnesApiKey' };
-        providers.forEach(function(provider) {
-          var key = window.GIS.api[keyMap[provider]]();
-          if (!key) {
-            window.GIS.api.setModelStatus(provider, 'offline');
-            if (modelSelector && modelSelector.value === provider) {
-              updateModelStatusDot();
-            }
-            return;
-          }
-
-          if (modelSelector && modelSelector.value === provider && modelStatusDot) {
-            modelStatusDot.classList.remove('online', 'offline');
-            modelStatusDot.classList.add('checking');
-          }
-
-          window.GIS.api[testMap[provider]](key).then(function(result) {
-            window.GIS.api.setModelStatus(provider, result.success ? 'online' : 'offline');
-            if (modelSelector && modelSelector.value === provider) {
-              updateModelStatusDot();
-            }
-          }).catch(function() {
-            window.GIS.api.setModelStatus(provider, 'offline');
-            if (modelSelector && modelSelector.value === provider) {
-              updateModelStatusDot();
-            }
-          });
-        });
-      })();
 
       console.log('[GIS] 内联启动脚本完成');
     })();

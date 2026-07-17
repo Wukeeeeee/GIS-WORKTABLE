@@ -49,7 +49,12 @@ python -m uvicorn backend.main:app --port 8000
 - 网页抓取与内容清洗（Scrapling）
 - 中国平台搜索（B站）
 - 右键发送位置给 AI
-- 斜杠命令面板（/buffer /intersection /aoi 等）
+- 斜杠命令面板（/buffer /intersection /aoi /help 等）
+- 顶部菜单栏（文件/绘制/视图/工具/帮助），SVG+文字风格
+- 快捷栏定制：通过菜单开关右侧工具栏按钮显隐
+- 操作手册弹窗（左侧目录+右侧内容），支持 `/help` 打开
+- 要素选择工具：点击地图要素弹出属性信息卡片
+- 绘制工具互斥选中 + ✓ 图标高亮
 
 ## 技术栈
 
@@ -129,6 +134,16 @@ skills/               # 技能文档
 
 ## 更新日志
 
+### 2026-07-18
+- Add settings.js 提取设置弹窗、密钥管理、模型选择、主题/字号
+- Add `chat.clearSession()` 统一清会话，inline script 缩减 630→64 行
+- Add 要素选择与高亮系统（popup + _featureMap + 属性表定位按钮）
+- Add 顶部菜单栏（文件/绘制/视图/工具/帮助）+ 快捷栏定制
+- Add 操作手册弹窗（左侧目录 + 右侧内容）/ `/help` 斜杠命令
+- Add 绘制工具互斥选中 ✓ 标记，坐标信息持久勾选开关
+- Remove 放大/缩小/定位按钮、底图切换、快捷键项
+- Fix style.css 各组件偏移适配菜单栏 30px
+
 ### 2026-07-16
 - Add SYSTEM_PROMPT 精简：DeepSeek 版 200→113 行 (-44%)，GLM 版 68→64 行
 - Add Skills 文档精简：11 个文件 688→362 行 (-47%)，安全代码模板全部保留
@@ -155,7 +170,6 @@ skills/               # 技能文档
 
 ### 2026-07-14
 - Add 图层属性表编辑与筛选导出
-- Add 字段计算器
 - Add 自校验 Agent 架构
 - Add 高德 POI 搜索
 - Add 上传取消（AbortController）与状态气泡

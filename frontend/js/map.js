@@ -12,11 +12,20 @@ window.GIS = window.GIS || {};
   'use strict';
 
   const GIS = window.GIS;
+
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   let mapInstance = null;
   const layers = {};
   const geoStore = {};
   let baseLayer = null;
   let drawnItems = null;        // Leaflet.Draw 绘制的图形集合
+  let _featureMap = {};         // { "layerName:idx": LeafletLayer } — 要素索引→Leaflet 图层
+  let _highlightedFeature = null; // 当前高亮的 Leaflet 图层
+  let _featureInfoActive = false; // 选择要素工具是否激活
   // 缓存 DOM 引用——避免每次 mousemove 都 querySelector
   var _coordsEl = null;
   var _zoomLabelEl = null;
@@ -47,6 +56,18 @@ window.GIS = window.GIS || {};
     // 不操作 active 类（由 toolbar click handler 管理）
   }
 
+  function _setFeatureInfoActive(active) {
+    _featureInfoActive = active;
+    var mapEl = document.getElementById('map');
+    if (active) {
+      mapEl.style.cursor = 'crosshair';
+      if (drawnItems) drawnItems.on('click', _onFeatureInfoClick);
+    } else {
+      mapEl.style.cursor = '';
+      if (drawnItems) drawnItems.off('click', _onFeatureInfoClick);
+    }
+  }
+
   /** 点击删除回调 */
   function _onDeleteClick(e) {
     var layer = e.layer || e.target;
@@ -61,6 +82,46 @@ window.GIS = window.GIS || {};
     if (drawnItems.getLayers().length === 0) {
       _exitDeleteMode();
     }
+  }
+
+  /** 选择要素工具：点击绘制要素弹出属性信息卡片 */
+  function _onFeatureInfoClick(e) {
+    var layer = e.layer || e.target;
+    if (!layer || layer === drawnItems) return;
+
+    clearHighlight();
+    _highlightFeature(layer);
+
+    var geomType = '未知';
+    var coordsInfo = '';
+    if (layer.getLatLng) {
+      var ll = layer.getLatLng();
+      coordsInfo = ll.lat.toFixed(5) + ', ' + ll.lng.toFixed(5);
+      if (layer instanceof L.CircleMarker) {
+        geomType = '点（圆）';
+      } else if (layer instanceof L.Marker) {
+        geomType = '点（标记）';
+      } else {
+        geomType = '点';
+      }
+    } else if (layer.getCenter) {
+      try {
+        var center = layer.getCenter();
+        coordsInfo = center.lat.toFixed(5) + ', ' + center.lng.toFixed(5);
+      } catch(_) {}
+      if (layer instanceof L.Polygon || layer instanceof L.Rectangle) {
+        geomType = '面';
+      } else if (layer instanceof L.Polyline) {
+        geomType = '线';
+      }
+    }
+
+    var html = '<div class="feat-popup">';
+    html += '<strong>' + escapeHtml(layer._name || ('绘制' + geomType)) + '</strong>';
+    html += '<div class="feat-popup-row"><span>类型</span><span>' + geomType + '</span></div>';
+    if (coordsInfo) html += '<div class="feat-popup-row"><span>坐标</span><span>' + escapeHtml(coordsInfo) + '</span></div>';
+    html += '</div>';
+    layer.bindPopup(html, { className: 'feat-popup-wrap', closeButton: true, maxWidth: 300, offset: L.point(0, -8) }).openPopup();
   }
 
   function init(container, options) {
@@ -183,12 +244,23 @@ window.GIS = window.GIS || {};
           document.querySelectorAll('.map-draw-btn').forEach(function(b) { b.classList.remove('active'); });
           btn.classList.add('active');
 
+          // 切到其他工具时停用选择要素
+          if (tool !== 'feature-info') _setFeatureInfoActive(false);
+
           // 停止之前的绘制模式
           if (mapInstance._drawHandler) { mapInstance._drawHandler.disable(); mapInstance._drawHandler = null; }
 
           if (tool === 'select') {
             // 选择工具：退出所有编辑/删除模式，恢复默认光标
             _exitDeleteMode();
+            _setFeatureInfoActive(false);
+            return;
+          }
+
+          if (tool === 'feature-info') {
+            // 选择要素工具：激活后点击地图要素弹出属性信息
+            _exitDeleteMode();
+            _setFeatureInfoActive(true);
             return;
           }
 
@@ -221,11 +293,16 @@ window.GIS = window.GIS || {};
           if (e.originalEvent.key === 'Escape') {
             if (mapInstance._drawHandler) { mapInstance._drawHandler.disable(); mapInstance._drawHandler = null; }
             _exitDeleteMode();
+            _setFeatureInfoActive(false);
             document.querySelectorAll('.map-draw-btn').forEach(function(b) { b.classList.remove('active'); });
             document.getElementById('map').style.cursor = '';
           }
         });
       }
+      // 初始化顶部菜单栏
+      _initMapMenu();
+      _initShortcuts();
+      _initManual();
     }
   }
 
@@ -262,6 +339,13 @@ window.GIS = window.GIS || {};
     } catch(e) {}
     console.log('[GIS Map] 加载图层:', name, '要素:', featCount, '首坐标:', firstCoord);
 
+    // 要素映射：清除该图层旧的映射
+    Object.keys(_featureMap).forEach(function(k) {
+      if (k.startsWith(name + ':')) delete _featureMap[k];
+    });
+
+    var features = (geojson.type === 'FeatureCollection' ? geojson.features : [geojson]);
+
     var layer = L.geoJSON(geojson, {
       style: mergedStyle,
       pointToLayer: function(feature, latlng) {
@@ -271,13 +355,44 @@ window.GIS = window.GIS || {};
         });
       },
       coordsToLatLng: function(coords) {
-        // GeoJSON 标准是 [lng, lat]，但有的数据是 [lat, lng]
-        // 如果纬度值看起来像经度（超出合理纬度范围 -90~90），自动交换
         var lng = coords[0], lat = coords[1];
         if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) {
           return L.latLng(lng, lat);
         }
         return L.latLng(lat, lng);
+      },
+      onEachFeature: function(feature, leafletLayer) {
+        var idx = features.indexOf(feature);
+        if (idx === -1) return;
+        var key = name + ':' + idx;
+        _featureMap[key] = leafletLayer;
+
+        leafletLayer.on('click', function(e) {
+          // 选择要素工具未激活时不弹 popup（只保留高亮供检查器定位用）
+          if (!_featureInfoActive) return;
+
+          clearHighlight();
+          _highlightFeature(leafletLayer);
+
+          var props = feature.properties || {};
+          var title = props.name || props.id || props.NAME || '要素 #' + (idx + 1);
+          var html = '<div class="feat-popup">';
+          html += '<strong>' + escapeHtml(String(title)) + '</strong>';
+          var count = 0;
+          for (var k in props) {
+            if (count++ >= 5) break;
+            var v = props[k];
+            html += '<div class="feat-popup-row">';
+            html += '<span>' + escapeHtml(k) + '</span>';
+            html += '<span>' + (v === null || v === undefined ? '' : escapeHtml(String(v))) + '</span>';
+            html += '</div>';
+          }
+          html += '<div class="feat-popup-footer">';
+          html += '<span class="feat-popup-idx">#' + (idx + 1) + ' / ' + features.length + '</span>';
+          html += '<span style="color:var(--ui-gray-300);font-size:10px;">' + escapeHtml(name) + '</span>';
+          html += '</div></div>';
+          leafletLayer.bindPopup(html, { className: 'feat-popup-wrap', closeButton: true, maxWidth: 300, offset: L.point(0, -8) }).openPopup();
+        });
       },
     });
     layer.addTo(mapInstance);
@@ -291,6 +406,10 @@ window.GIS = window.GIS || {};
   }
 
   function removeLayer(name) {
+    // 清理要素映射
+    Object.keys(_featureMap).forEach(function(k) {
+      if (k.startsWith(name + ':')) delete _featureMap[k];
+    });
     if (layers[name]) { mapInstance.removeLayer(layers[name]); delete layers[name]; delete geoStore[name]; }
     if (drawnItems) {
       var toRemove = [];
@@ -346,6 +465,56 @@ window.GIS = window.GIS || {};
   function fitLayer(name) {
     if (!mapInstance || !layers[name]) return;
     mapInstance.fitBounds(layers[name].getBounds());
+  }
+
+  /** 清除当前高亮 */
+  function clearHighlight() {
+    if (_highlightedFeature) {
+      var orig = _highlightedFeature._origStyle;
+      if (orig) {
+        _highlightedFeature.setStyle({
+          color: orig.color,
+          weight: orig.weight,
+          fillColor: orig.fillColor,
+          fillOpacity: orig.fillOpacity,
+        });
+      }
+      _highlightedFeature._origStyle = null;
+      _highlightedFeature = null;
+    }
+  }
+
+  /** 高亮指定 Leaflet 图层 */
+  function _highlightFeature(leafletLayer) {
+    _highlightedFeature = leafletLayer;
+    _highlightedFeature._origStyle = {
+      color: leafletLayer.options.color,
+      weight: leafletLayer.options.weight,
+      fillColor: leafletLayer.options.fillColor,
+      fillOpacity: leafletLayer.options.fillOpacity,
+    };
+    leafletLayer.setStyle({
+      color: '#e53935',
+      weight: 4,
+      fillColor: '#ef5350',
+      fillOpacity: 0.3,
+    });
+    if (leafletLayer.bringToFront) leafletLayer.bringToFront();
+  }
+
+  /** 从属性表定位到要素 */
+  function highlightLayerFeature(name, idx) {
+    var key = name + ':' + idx;
+    var leafletLayer = _featureMap[key];
+    if (!leafletLayer) return false;
+    clearHighlight();
+    _highlightFeature(leafletLayer);
+    if (leafletLayer.getBounds) {
+      try { mapInstance.flyToBounds(leafletLayer.getBounds(), { padding: [30, 30], maxZoom: 16 }); } catch(e) {}
+    } else if (leafletLayer.getLatLng) {
+      mapInstance.flyTo(leafletLayer.getLatLng(), 16);
+    }
+    return true;
   }
 
   function onMouseMove(e) {
@@ -588,6 +757,180 @@ window.GIS = window.GIS || {};
     }
   }
 
+  /** 打开/关闭操作手册弹窗 */
+  function _openManual() {
+    var overlay = document.getElementById('manualOverlay');
+    if (overlay) overlay.style.display = 'flex';
+  }
+  function _closeManual() {
+    var overlay = document.getElementById('manualOverlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+
+  /** 初始化操作手册弹窗交互 */
+  function _initManual() {
+    var overlay = document.getElementById('manualOverlay');
+    if (!overlay) return;
+    // 关闭按钮
+    var closeBtn = document.getElementById('manualClose');
+    if (closeBtn) closeBtn.addEventListener('click', _closeManual);
+    // 点击背景关闭
+    overlay.addEventListener('click', function(e) { if (e.target === overlay) _closeManual(); });
+    // 目录切换
+    var nav = document.getElementById('manualNav');
+    if (nav) {
+      nav.addEventListener('click', function(e) {
+        var item = e.target.closest('.manual-nav-item');
+        if (!item) return;
+        var section = item.getAttribute('data-section');
+        if (!section) return;
+        nav.querySelectorAll('.manual-nav-item').forEach(function(n) { n.classList.remove('active'); });
+        item.classList.add('active');
+        var content = document.getElementById('manualContent');
+        if (content) {
+          content.querySelectorAll('.manual-section').forEach(function(s) { s.style.display = 'none'; });
+          var target = document.getElementById('section-' + section);
+          if (target) target.style.display = '';
+        }
+      });
+    }
+  }
+
+  /** 初始化顶部菜单栏交互 */
+  function _initMapMenu() {
+    var menuBar = document.getElementById('mapMenuBar');
+    if (!menuBar) return;
+
+    menuBar.addEventListener('click', function(e) {
+      // 菜单项点击优先
+      var item = e.target.closest('.map-menu-item');
+      if (item) {
+        var action = item.getAttribute('data-action');
+        if (action) {
+          _handleMenuAction(action);
+          menuBar.querySelectorAll('.map-menu-trigger.open').forEach(function(t) { t.classList.remove('open'); });
+          e.stopPropagation();
+        }
+        return;
+      }
+      // 菜单触发器（展开/收起下拉）
+      var trigger = e.target.closest('.map-menu-trigger');
+      if (trigger) {
+        var isOpen = trigger.classList.contains('open');
+        menuBar.querySelectorAll('.map-menu-trigger.open').forEach(function(t) { t.classList.remove('open'); });
+        if (!isOpen) trigger.classList.add('open');
+        e.stopPropagation();
+      }
+    });
+    // 点击菜单外部关闭所有
+    document.addEventListener('click', function() {
+      menuBar.querySelectorAll('.map-menu-trigger.open').forEach(function(t) { t.classList.remove('open'); });
+    });
+  }
+
+  /** 初始化快捷栏状态（从 localStorage 恢复） */
+  function _initShortcuts() {
+    var defaults = { 'draw': false, 'tools': true };
+    ['draw', 'tools'].forEach(function(group) {
+      var val = localStorage.getItem('gis_shortcut_' + group);
+      if (val === null) val = defaults[group] ? '1' : '0';
+      var show = val === '1';
+      _applyShortcutGroup(group, show);
+    });
+  }
+
+  /** 应用快捷栏组的显隐 */
+  function _applyShortcutGroup(group, show) {
+    document.querySelectorAll('[data-shortcut-group="' + group + '"]').forEach(function(el) {
+      el.classList.toggle('shortcut-hidden', !show);
+    });
+    // 更新菜单项勾选图标
+    var menuBtn = document.querySelector('.map-menu-item-shortcut[data-action="shortcut-' + group + '"] .shortcut-check');
+    if (menuBtn) {
+      if (show) {
+        menuBtn.style.opacity = '1';
+      } else {
+        menuBtn.style.opacity = '0.25';
+      }
+    }
+  }
+
+  /** 切换快捷栏组 */
+  function _toggleShortcutGroup(group) {
+    var oldVal = localStorage.getItem('gis_shortcut_' + group);
+    var show = oldVal !== '1';
+    localStorage.setItem('gis_shortcut_' + group, show ? '1' : '0');
+    _applyShortcutGroup(group, show);
+  }
+
+  /** 执行菜单项动作 */
+  function _handleMenuAction(action) {
+    switch (action) {
+      case 'import':
+        var uploadBtn = document.getElementById('uploadTrigger') || document.getElementById('uploadTriggerBtn');
+        if (uploadBtn) uploadBtn.click();
+        break;
+      case 'export':
+        if (window.downloadGeoJSON) window.downloadGeoJSON();
+        break;
+      case 'save-project':
+        var saveBtn = document.querySelector('[data-action="save"]');
+        if (saveBtn) { saveBtn.click(); } else {
+          var projectSave = document.getElementById('projectSave');
+          if (projectSave) projectSave.click();
+        }
+        break;
+      case 'load-project':
+        var historyBtn = document.getElementById('historyBtn');
+        if (historyBtn) historyBtn.click();
+        break;
+      case 'shortcut-draw':
+        _toggleShortcutGroup('draw');
+        break;
+      case 'shortcut-tools':
+        _toggleShortcutGroup('tools');
+        break;
+      case 'tool-polygon':
+      case 'tool-rectangle':
+      case 'tool-circle':
+      case 'tool-polyline':
+      case 'tool-marker':
+      case 'tool-feature-info':
+      case 'tool-delete':
+        var tool = action.replace('tool-', '');
+        var btn = document.querySelector('.map-draw-btn[data-tool="' + tool + '"]');
+        if (btn) {
+          if (btn.classList.contains('shortcut-hidden')) {
+            var group = btn.getAttribute('data-shortcut-group');
+            if (group) { _applyShortcutGroup(group, true); localStorage.setItem('gis_shortcut_' + group, '1'); }
+          }
+          btn.click();
+        }
+        break;
+      case 'toggle-layer-panel':
+        var layerBtn = document.getElementById('toggleLayerPanel');
+        if (layerBtn) layerBtn.click();
+        break;
+      case 'toggle-coords':
+        var coordsEl = document.querySelector('.map-coords');
+        if (coordsEl) {
+          var nowHidden = coordsEl.style.display === 'none';
+          coordsEl.style.display = nowHidden ? '' : 'none';
+          // 更新菜单项勾选
+          var check = document.querySelector('.map-menu-item-toggle[data-action="toggle-coords"] .toggle-check');
+          if (check) check.classList.toggle('off', !nowHidden);
+        }
+        break;
+      case 'toggle-attr-table':
+        var attrBtn = document.getElementById('toggleAttrTable');
+        if (attrBtn) { attrBtn.click(); }
+        break;
+      case 'manual':
+        _openManual();
+        break;
+    }
+  }
+
   GIS.map = {
     init: init,
     loadGeoJSON: loadGeoJSON,
@@ -600,6 +943,8 @@ window.GIS = window.GIS || {};
     fitLayer: fitLayer,
     loadHeatmap: loadHeatmap,
     removeHeatmap: removeHeatmap,
+    clearHighlight: clearHighlight,
+    highlightLayerFeature: highlightLayerFeature,
     invalidateSize: function() { if (mapInstance) mapInstance.invalidateSize(); },
     getInstance: function() { return mapInstance; },
     // 以下为兼容旧内联脚本
@@ -612,5 +957,6 @@ window.GIS = window.GIS || {};
       mapInstance.setView(center, zoom);
     },
     getMap: function() { return mapInstance; },
+    _openManual: function() { _openManual(); },
   };
 })();

@@ -5,10 +5,34 @@
 ## 当前状态
 
 - **阶段**: BUILD（plan → build → test → land）
-- **最新**: SYSTEM_PROMPT + Skills 精简优化
+- **最新**: 工作流系统搭建（WORKFLOW + .opencode 配置）
 - **CURRENT 文件**: 项目根 `CURRENT`
 
 ---
+
+### 2026-07-18
+- Add settings.js 提取设置弹窗、密钥管理、模型选择、主题/字号
+- Add `chat.clearSession()` 统一清会话，inline script 缩减 630→64 行
+- Add 要素选择与高亮系统（popup + _featureMap + 属性表定位按钮）
+- Add 顶部菜单栏（文件/绘制/视图/工具/帮助）+ 快捷栏定制
+- Add 操作手册弹窗（左侧目录 + 右侧内容）/ `/help` 斜杠命令
+- Add 绘制工具互斥选中 ✓ 标记，坐标信息持久勾选开关
+- Remove 放大/缩小/定位按钮、底图切换、快捷键项
+- Fix style.css 各组件偏移适配菜单栏 30px
+
+### 2026-07-17
+- Add `frontend/js/settings.js`（640 行）— 从 index.html inline script 提取设置弹窗、密钥管理、模型选择器、主题/字号、自动检测功能
+- Add `chat.clearSession()` 方法 — 统一清会话流程，消除 inline script 中的重复 UI 重置逻辑
+- Reduce `frontend/index.html` inline script 630→64 行（-90%）
+- Fix `app.js` — 移除冗余 settingsBtn handler，集成 `GIS.settings.init()`
+- Add 要素选择与定位系统 — map.js 加 onEachFeature 要素点击高亮+popup、_featureMap 映射、highlightLayerFeature/clearHighlight 公开方法；layers.js 属性表每行加 ◎ 定位按钮，点击后地图 flyTo 并高亮，属性表行橙色高亮；style.css feat-popup/attr-locate-btn/feat-row-active 样式加暗色适配
+
+### 2026-07-16（续）
+- Add WORKFLOW.md — build/fix/refactor/optimize 流程定义，含步骤表
+- Add .opencode/skills/gis-worktable/SKILL.md — AI 工作流规则
+- Add .opencode/opencode.json — 注册 instructions（自动读 CURRENT/WORKFLOW/memory）
+- Fix CURRENT 增强 — 加 workflow/step/next 字段追踪
+- 39 个测试通过
 
 ### 2026-07-16
 - Add SYSTEM_PROMPT 精简：DeepSeek 版 200→113 行 (-44%)，GLM 版 68→64 行

@@ -52,9 +52,11 @@ _linkRenderer.link = function(token) {
     heatmap: '<svg viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="1" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="3.5" cy="3.5" r="1.2" fill="currentColor" opacity=".6"/><circle cx="10.5" cy="3.5" r=".8" fill="currentColor" opacity=".4"/><circle cx="3.5" cy="10.5" r="1.5" fill="currentColor" opacity=".8"/></svg>',
     plot: '<svg viewBox="0 0 14 14"><rect x="2" y="8" width="2.5" height="4" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.5" y="4" width="2.5" height="8" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="6" width="2.5" height="6" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
     amap: '<svg viewBox="0 0 14 14"><path d="M7 1a5 5 0 00-5 5c0 3.5 5 7 5 7s5-3.5 5-7a5 5 0 00-5-5zm0 7a2 2 0 110-4 2 2 0 010 4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    help: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 5.2a1.8 1.8 0 013.6 0c0 1.2-1.8 1.8-1.8 1.8v1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="11" r=".6" fill="currentColor"/></svg>',
   };
 
   const SLASH_COMMANDS = [
+    { name: 'help', label: '操作手册', desc: '打开系统操作手册', prompt: '' },
     { name: 'buffer', label: '缓冲区分析', desc: '为图层创建指定距离的缓冲区', prompt: '为当前选中的图层创建 {距离} 米的缓冲区，结果加载到地图上' },
     { name: 'intersection', label: '空间相交', desc: '两个图层的相交分析', prompt: '对 {图层A} 和 {图层B} 做空间相交分析，结果加载到地图上' },
     { name: 'union', label: '空间合并', desc: '合并两个图层的几何', prompt: '合并 {图层A} 和 {图层B}，结果加载到地图上' },
@@ -274,6 +276,13 @@ _linkRenderer.link = function(token) {
     if (!inputEl) return;
     // 移除输入框中的 /命令名（只保留用户已输入的其他文字）
     inputEl.value = inputEl.value.replace(/^\/[a-zA-Z]*/, '');
+    // /help 直接打开操作手册，不添加 chip
+    if (cmd.name === 'help') {
+      if (window.GIS && window.GIS.map && window.GIS.map._openManual) {
+        window.GIS.map._openManual();
+      }
+      return;
+    }
     _addChip(cmd);
   }
 
@@ -379,6 +388,62 @@ _linkRenderer.link = function(token) {
     document.querySelectorAll('.context-menu-item').forEach(function(el) {
       if (el.getAttribute('data-action') !== 'copy-coords') el.classList.remove('is-disabled');
     });
+  }
+
+  /**
+   * 清空当前会话（UI + 图层 + 任务 + API）
+   * 替代原来 inline script 里的重复实现
+   */
+  async function clearSession() {
+    // 1. 中止 AI 请求
+    if (window._aiRunning) {
+      window._aiRunning = false;
+      if (window._aiAbortController) {
+        window._aiAbortController.abort();
+        window._aiAbortController = null;
+      }
+      fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
+      var loadingEl = document.getElementById('ai-loading-msg');
+      if (loadingEl) {
+        if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
+        if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
+        loadingEl.remove();
+      }
+    }
+    _resetUIAfterStop();
+
+    // 2. 清 UI
+    if (messagesContainer) {
+      messagesContainer.innerHTML = '<div class="chat-messages-empty"></div>';
+      messagesContainer.style.display = '';
+    }
+    var historyPanel = document.getElementById('chatHistory');
+    if (historyPanel) historyPanel.style.display = 'none';
+
+    // 3. 清除图层
+    if (window.GIS.layers) {
+      var allLayers = window.GIS.layers.getLayers();
+      allLayers.forEach(function(l) {
+        if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
+      });
+    }
+
+    // 4. 清除未保存的任务
+    if (window.GIS.task && typeof window.GIS.task.clearUnsaved === 'function') {
+      window.GIS.task.clearUnsaved();
+    }
+
+    // 5. 更新问候语
+    if (typeof updateGreeting === 'function') {
+      updateGreeting();
+    }
+
+    // 6. 异步调 API
+    if (window.GIS.project) {
+      window.GIS.project.save().catch(function() {});
+      window.GIS.project.setCurrentProjectId(null);
+    }
+    window.GIS.api.clearMemory().catch(function() {});
   }
 
   async function send(text, displayOpt) {
@@ -1231,5 +1296,5 @@ _linkRenderer.link = function(token) {
     }, ANIM_MS + 40);
   }
 
-  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send };
+  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop };
 })();

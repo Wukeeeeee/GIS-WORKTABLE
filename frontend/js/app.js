@@ -91,7 +91,14 @@ window.GIS = window.GIS || {};
       console.warn('[GIS] 工程模块未加载');
     }
 
-    // 8. 绑定全局快捷键 / 事件
+    // 8. 初始化设置模块
+    if (GIS.settings && typeof GIS.settings.init === 'function') {
+      GIS.settings.init();
+    } else {
+      console.warn('[GIS] 设置模块未加载');
+    }
+
+    // 9. 绑定全局快捷键 / 事件
     bindGlobalEvents();
 
     console.log('[GIS] 应用初始化完成');
@@ -135,15 +142,6 @@ window.GIS = window.GIS || {};
       });
     }
 
-    // 设置弹窗打开时，如果切换到历史记录面板则刷新列表
-    var settingsBtn = document.getElementById('settingsBtn');
-    if (settingsBtn) {
-      settingsBtn.addEventListener('click', function() {
-        if (window.GIS.task && typeof window.GIS.task.getTasks === 'function') {
-          // re-render will happen via renderAll on next open
-        }
-      });
-    }
   }
 
   // DOM 就绪后初始化

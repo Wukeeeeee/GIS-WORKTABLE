@@ -39,3 +39,12 @@ output/
 
 # 开发阶段跟踪（本地，不提交）
 CURRENT
+
+# opencode AI 配置（本地，不提交）
+.opencode/
+
+# 本地开发追踪
+memory.md
+WORKFLOW.md
+CLAUDE.md
+.claude/

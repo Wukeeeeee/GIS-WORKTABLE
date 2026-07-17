@@ -581,7 +581,7 @@ window.GIS = window.GIS || {};
       '</div>' +
       '<div class="inspector-data-wrap"><table class="inspector-data-table" id="attrDataTable"><thead><tr><th>#</th>';
       displayKeys.forEach(function(k) { dataHtml += '<th>' + escapeHtml(VIRTUAL_DISPLAY[k] || k) + '</th>'; });
-      dataHtml += '<th style="width:32px;"></th></tr></thead><tbody>';
+      dataHtml += '<th style="width:28px;" title="定位">◎</th><th style="width:32px;"></th></tr></thead><tbody>';
       features.forEach(function(f, i) {
         var props = f.properties || {};
         dataHtml += '<tr data-idx="' + i + '">';
@@ -602,6 +602,7 @@ window.GIS = window.GIS || {};
           var readonlyAttr = isVirtual ? ' readonly class="attr-cell attr-cell-readonly"' : ' class="attr-cell"';
           dataHtml += '<td><input' + readonlyAttr + ' data-field="' + escapeHtml(k) + '" value="' + escapeHtml(cellValue) + '" /></td>';
         });
+        dataHtml += '<td class="col-locate"><button class="attr-locate-btn" data-idx="' + i + '" title="在地图上定位此要素">◎</button></td>';
         dataHtml += '<td><button class="attr-del-btn" data-idx="' + i + '" title="删除此行">×</button></td>';
         dataHtml += '</tr>';
       });
@@ -658,10 +659,23 @@ window.GIS = window.GIS || {};
       document.getElementById('attrFilterExport')?.addEventListener('click', function() {
         exportFilteredLayer(layerId);
       });
-      // 删除行（事件委托）
+      // 删除行 + 定位（事件委托）
       attrSection.querySelector('.inspector-data-wrap')?.addEventListener('click', function(e) {
-        var btn = e.target.closest('.attr-del-btn');
-        if (btn) deleteAttrRow(layerId, parseInt(btn.dataset.idx, 10));
+        var locateBtn = e.target.closest('.attr-locate-btn');
+        if (locateBtn) {
+          var idx = parseInt(locateBtn.dataset.idx, 10);
+          var rawName = layer._rawName || (layer.layer_id ? layer.layer_id.split('_')[0] : layer.layer_id) || layer.layer_id;
+          var layerName = layer._rawName || layer.layer_id;
+          if (window.GIS.map && window.GIS.map.highlightLayerFeature) {
+            window.GIS.map.highlightLayerFeature(layerName, idx);
+          }
+          document.querySelectorAll('#attrDataTable tbody tr').forEach(function(tr) {
+            tr.classList.toggle('feat-row-active', parseInt(tr.dataset.idx, 10) === idx);
+          });
+          return;
+        }
+        var delBtn = e.target.closest('.attr-del-btn');
+        if (delBtn) deleteAttrRow(layerId, parseInt(delBtn.dataset.idx, 10));
       });
     }
 
