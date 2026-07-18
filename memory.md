@@ -17,9 +17,20 @@
 - Add 顶部菜单栏（文件/绘制/视图/工具/帮助）+ 快捷栏定制
 - Add 操作手册弹窗（左侧目录 + 右侧内容）/ `/help` 斜杠命令
 - Add 绘制工具互斥选中 ✓ 标记，坐标信息持久勾选开关
-- Remove 放大/缩小/定位按钮、底图切换、快捷键项
-- Fix style.css 各组件偏移适配菜单栏 30px
+- Add SHP 导出 — 后端 `/api/layer/export-shp` + 前端下载弹窗（GeoJSON/SHP 二选一）+ AI 工具 `export_layer`
+- Add 图层符号化 — 属性检查器 3 标签页（基础信息/符号系统/属性表），4 种渲染器（唯一值/分级色彩/分级符号/比例符号），启用/禁用开关，色带选择，预览
+- Add 符号化启用后 color dot 锁定，图层面板颜色调整失效
+- Add 符号化按几何类型自动适配样式：点实心、线有宽度、面半透明
+- Add 统计图表 — AI 工具 `create_chart`
+- Remove 放大/缩小/定位按钮、底图快捷键项
+- Remove 旧版 _showSymbologyPanel 弹窗、_updateSymbologyPreview
+- Fix 符号化启用/禁用时 _symbologyConfig 未初始化/已删除导致的 TypeError
+- Fix CSS 更新 info/panel、symb-panel 新样式，替换旧 symbology-inline
 
+- Add 底图切换（视图菜单 → 卫星底图勾选），卫星/纯白两档切换，状态存储
+- Add 实心点渲染，所有符号化点 weight=0、fillOpacity=1
+- Add 纯白底图层（data URI 单像素白色 TileLayer）
+- 代码审查：发现 4 个 bug（fix pending）
 ### 2026-07-17
 - Add `frontend/js/settings.js`（640 行）— 从 index.html inline script 提取设置弹窗、密钥管理、模型选择器、主题/字号、自动检测功能
 - Add `chat.clearSession()` 方法 — 统一清会话流程，消除 inline script 中的重复 UI 重置逻辑

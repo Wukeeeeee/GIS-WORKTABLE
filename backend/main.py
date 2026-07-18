@@ -460,3 +460,59 @@ class RegisterLayerRequest(BaseModel):
 async def register_layer(request: RegisterLayerRequest):
     _register_layer(request.name, request.geojson)
     return {"success": True, "message": f"已注册图层: {request.name}"}
+
+
+# ===== SHP 导出接口 =====
+class ExportShpRequest(BaseModel):
+    geojson: dict
+    name: str = "图层"
+    crs: str = "EPSG:4326"
+
+@app.post("/api/layer/export-shp")
+async def export_shp(request: ExportShpRequest):
+    """将 GeoJSON 导出为 Shapefile (zip 包)，包含 .shp .shx .dbf .prj .cpg"""
+    import tempfile, zipfile, shutil
+    import geopandas as gpd
+
+    try:
+        gdf = gpd.GeoDataFrame.from_features(request.geojson["features"], crs=request.crs)
+        if gdf.empty:
+            return {"error": "没有可导出的要素"}
+
+        # 字段名截断（Shapefile 限制 10 字符）
+        rename_map = {}
+        for col in gdf.columns:
+            if col != "geometry" and len(col) > 10:
+                new_name = col[:10]
+                suffix = 1
+                while new_name in rename_map.values() or new_name == "geometry":
+                    new_name = col[:8] + str(suffix)
+                    suffix += 1
+                rename_map[col] = new_name
+        if rename_map:
+            gdf = gdf.rename(columns=rename_map)
+
+        # 写入临时目录
+        tmp_dir = tempfile.mkdtemp(prefix="shp_export_")
+        shp_base = os.path.join(tmp_dir, request.name)
+        gdf.to_file(shp_base, driver="ESRI Shapefile", encoding="utf-8")
+
+        # 打包 zip
+        zip_buf = BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for fname in os.listdir(tmp_dir):
+                fpath = os.path.join(tmp_dir, fname)
+                if os.path.isfile(fpath):
+                    zf.write(fpath, fname)
+
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        zip_buf.seek(0)
+        safe_name = request.name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        return StreamingResponse(
+            zip_buf,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={safe_name}.zip"},
+        )
+    except Exception as e:
+        return {"error": f"SHP 导出失败: {str(e)[:200]}"}

@@ -1192,6 +1192,278 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
 
 
 # ============================================================
+# 工具: export_layer — 导出图层
+# ============================================================
+
+@tool
+def export_layer(layer_name: str, format: str = "geojson") -> str:
+    """导出指定图层为 GeoJSON 或 Shapefile 格式。format 可选 geojson 或 shp。导出结果提供下载链接给用户"""
+    info = _registered_layers.get(layer_name)
+    if not info:
+        matches = [n for n in _registered_layers.keys() if layer_name in n]
+        if len(matches) == 1:
+            info = _registered_layers[matches[0]]
+            layer_name = matches[0]
+        elif len(matches) > 1:
+            return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+        else:
+            return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+    geojson = info.get("geojson", {})
+
+    if format == "geojson":
+        # 直接保存 GeoJSON
+        import datetime
+        ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        fname = f"{layer_name}_{ts}.geojson"
+        init_temp_dir()
+        path = os.path.join(_temp_output_dir, fname)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(geojson, f, ensure_ascii=False, indent=2)
+        return f"GeoJSON 已生成：可通过 /output/{fname} 下载\n如需要 Shapefile 格式，可再次调用 export_layer 并设 format='shp'"
+
+    elif format == "shp":
+        # 用 geopandas 转 Shapefile 并打包 zip
+        try:
+            import geopandas as gpd
+            import tempfile, zipfile, shutil
+            import datetime
+
+            gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+            if gdf.empty:
+                return "图层为空，无法导出"
+
+            # 字段名截断
+            rename_map = {}
+            for col in gdf.columns:
+                if col != "geometry" and len(col) > 10:
+                    new_name = col[:10]
+                    suffix = 1
+                    while new_name in rename_map.values() or new_name == "geometry":
+                        new_name = col[:8] + str(suffix)
+                        suffix += 1
+                    rename_map[col] = new_name
+            if rename_map:
+                gdf = gdf.rename(columns=rename_map)
+
+            ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            safe_name = layer_name.replace(" ", "_")
+            fname = f"{safe_name}_{ts}.zip"
+
+            tmp_dir = tempfile.mkdtemp(prefix="shp_export_")
+            shp_base = os.path.join(tmp_dir, safe_name)
+            gdf.to_file(shp_base, driver="ESRI Shapefile", encoding="utf-8")
+
+            init_temp_dir()
+            zip_path = os.path.join(_temp_output_dir, fname)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for fn in os.listdir(tmp_dir):
+                    fp = os.path.join(tmp_dir, fn)
+                    if os.path.isfile(fp):
+                        zf.write(fp, fn)
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+            return f"Shapefile 已生成：可通过 /output/{fname} 下载（包含 .shp .shx .dbf .prj .cpg）"
+        except Exception as e:
+            return f"SHP 导出失败: {str(e)[:200]}"
+
+    return f"不支持的格式: {format}，可选 geojson 或 shp"
+
+
+# ============================================================
+# 工具: create_chart — 统计图表
+# ============================================================
+
+@tool
+def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
+                 x_field: str = "", y_field: str = "", title: str = "") -> str:
+    """从图层的属性数据生成统计图表（ECharts SVG 渲染）。
+    chart_type 可选: bar(柱状图), pie(饼图), histogram(直方图), scatter(散点图), line(折线图)
+    - 单字段统计：传 field（如 histogram/bar/pie 统计某字段分布）
+    - 双字段对比：传 x_field + y_field（如 scatter/bar 对比两个字段）
+    - 自动统计分类字段的唯一值数量（bar/pie 时自动聚合）"""
+    info = _registered_layers.get(layer_name)
+    if not info:
+        matches = [n for n in _registered_layers.keys() if layer_name in n]
+        if len(matches) == 1:
+            info = _registered_layers[matches[0]]
+            layer_name = matches[0]
+        elif len(matches) > 1:
+            return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+        else:
+            return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+    try:
+        import numpy as np
+        features = info["geojson"].get("features", [])
+        if not features:
+            return "图层没有要素"
+
+        props_list = [f.get("properties", {}) for f in features]
+        prop_keys = set()
+        for p in props_list:
+            prop_keys.update(p.keys())
+        prop_keys = sorted(prop_keys)
+
+        if not prop_keys:
+            return "图层没有属性字段"
+
+        chart_title = title or f"{layer_name} - {chart_type}图"
+        now_ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+
+        # 分类统计（唯一值计数）
+        def _value_counts(key):
+            from collections import Counter
+            vals = []
+            for p in props_list:
+                v = p.get(key)
+                if v is not None and v != "":
+                    try:
+                        vals.append(float(v))
+                    except (ValueError, TypeError):
+                        vals.append(str(v))
+            return Counter(vals)
+
+        # 生成 ECharts HTML
+        echarts_html = ""
+        if chart_type == "histogram":
+            # 直方图：统计数值字段分布
+            f = field or prop_keys[0]
+            counter = _value_counts(f)
+            items = sorted([(k, v) for k, v in counter.items() if isinstance(k, (int, float))])
+            if not items:
+                # 尝试作为分类数据
+                items = list(counter.items())
+            if not items:
+                return f"字段「{f}」无有效数值数据"
+            values = [v for _, v in items]
+            labels = [str(k) for k, _ in items]
+            echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
+var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
+chart.setOption({{
+    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
+    tooltip: {{trigger:'axis'}},
+    xAxis: {{type:'category', data:{json.dumps(labels)}, axisLabel:{{rotate:45,fontSize:11}}}},
+    yAxis: {{type:'value'}},
+    series: [{{type:'bar', data:{json.dumps(values)}, itemStyle:{{color:'#1c1b1b'}}}}]
+}});
+window.addEventListener('resize', function(){{chart.resize();}});
+</script></body></html>"""
+
+        elif chart_type == "pie":
+            f = field or prop_keys[0]
+            counter = _value_counts(f)
+            items = list(counter.items())
+            if not items:
+                return f"字段「{f}」无有效数据"
+            items = sorted(items, key=lambda x: x[1], reverse=True)[:20]
+            pie_data = [{"name": str(k), "value": v} for k, v in items]
+            echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
+var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
+chart.setOption({{
+    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
+    tooltip: {{trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)'}},
+    series: [{{type:'pie', radius:'60%', center:['50%','55%'],
+        data:{json.dumps(pie_data, ensure_ascii=False)},
+        label:{{fontSize:11}},
+        itemStyle:{{borderRadius:4}}
+    }}]
+}});
+window.addEventListener('resize', function(){{chart.resize();}});
+</script></body></html>"""
+
+        elif chart_type == "scatter":
+            xf = x_field or prop_keys[0]
+            yf = y_field or (prop_keys[1] if len(prop_keys) > 1 else prop_keys[0])
+            scatter_data = []
+            for p in props_list:
+                try:
+                    xv = float(p.get(xf, 0))
+                    yv = float(p.get(yf, 0))
+                    scatter_data.append([xv, yv])
+                except (ValueError, TypeError):
+                    pass
+            if not scatter_data:
+                return f"字段「{xf}」和「{yf}」无有效数值数据"
+            echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
+var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
+chart.setOption({{
+    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
+    tooltip: {{trigger:'item', formatter:'[{xf}]: {{c[0]}}<br/>[{yf}]: {{c[1]}}'}},
+    xAxis: {{type:'value', name:'{xf}'}},
+    yAxis: {{type:'value', name:'{yf}'}},
+    series: [{{type:'scatter', data:{json.dumps(scatter_data)},
+        symbolSize:8, itemStyle:{{color:'#1c1b1b',opacity:0.7}}}}]
+}});
+window.addEventListener('resize', function(){{chart.resize();}});
+</script></body></html>"""
+
+        else:
+            # bar / line：默认柱状图或折线图
+            f = field or prop_keys[0]
+            if x_field and y_field:
+                # 双字段
+                xf, yf = x_field, y_field
+                bar_data = []
+                bar_labels = []
+                for p in props_list:
+                    try:
+                        bar_labels.append(str(p.get(xf, "")))
+                        bar_data.append(float(p.get(yf, 0)))
+                    except (ValueError, TypeError):
+                        pass
+                series_type = "line" if chart_type == "line" else "bar"
+                echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
+var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
+chart.setOption({{
+    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
+    tooltip: {{trigger:'axis'}},
+    xAxis: {{type:'category', data:{json.dumps(bar_labels)}, axisLabel:{{rotate:45,fontSize:11}}}},
+    yAxis: {{type:'value', name:'{yf}'}},
+    series: [{{type:'{series_type}', data:{json.dumps(bar_data)}, itemStyle:{{color:'#1c1b1b'}}}}]
+}});
+window.addEventListener('resize', function(){{chart.resize();}});
+</script></body></html>"""
+            else:
+                # 单字段统计
+                counter = _value_counts(f)
+                items = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:30]
+                if not items:
+                    return f"字段「{f}」无有效数据"
+                labels = [str(k) for k, _ in items]
+                values = [v for _, v in items]
+                series_type = "line" if chart_type == "line" else "bar"
+                echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
+var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
+chart.setOption({{
+    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
+    tooltip: {{trigger:'axis'}},
+    xAxis: {{type:'category', data:{json.dumps(labels)}, axisLabel:{{rotate:45,fontSize:11}}}},
+    yAxis: {{type:'value'}},
+    series: [{{type:'{series_type}', data:{json.dumps(values)}, itemStyle:{{color:'#1c1b1b'}}}}]
+}});
+window.addEventListener('resize', function(){{chart.resize();}});
+</script></body></html>"""
+
+        if not echarts_html:
+            return "图表生成失败"
+
+        # 保存 HTML 并推送到前端
+        init_temp_dir()
+        fname = f"chart_{now_ts}.html"
+        fpath = os.path.join(_temp_output_dir, fname)
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(echarts_html)
+
+        _add_pending_item(f"/output/{fname}", fpath)
+        return f"图表已生成：{chart_title}（{chart_type}图），可在聊天中查看"
+
+    except Exception as e:
+        import traceback
+        return f"图表生成失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
 # 工具列表（供 LangGraph Agent 注册）
 # ============================================================
 
@@ -1214,4 +1486,6 @@ tools = [
     clear_layers,
     get_session_logs,
     layer_control,
+    export_layer,
+    create_chart,
 ]

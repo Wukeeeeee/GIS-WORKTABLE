@@ -141,8 +141,22 @@ skills/               # 技能文档
 - Add 顶部菜单栏（文件/绘制/视图/工具/帮助）+ 快捷栏定制
 - Add 操作手册弹窗（左侧目录 + 右侧内容）/ `/help` 斜杠命令
 - Add 绘制工具互斥选中 ✓ 标记，坐标信息持久勾选开关
-- Remove 放大/缩小/定位按钮、底图切换、快捷键项
+- Add SHP 导出 — 后端 `/api/layer/export-shp` + 前端下载弹窗 + AI 工具 `export_layer`
+- Add 图层符号化 — 属性检查器三标签页（基础信息/符号系统/属性表）
+- Add 符号化面板仿 ArcMap 交互：启用/禁用、4种渲染方式、色带选择、类别预览
+- Add 符号化按几何类型自动适配（点实心/线有宽度/面半透明）
+- Add 符号化启用时 color dot 锁定（图层面板颜色调整失效）
+- Add 统计图表 — AI 工具 `create_chart`（bar/pie/histogram/scatter/line）
+- Add 底图切换（视图菜单 → 卫星/纯白两档），localStorage 持久化
+- Add 实心点渲染（weight=0, fillOpacity=1）
+- Add 纯白底图层（data URI 单像素白色 TileLayer）
+- Add 代码审查 - 发现 4 个 bug
+- Remove 放大/缩小/定位按钮、底图快捷键项
+- Remove 旧版 _showSymbologyPanel 弹窗、_updateSymbologyPreview
 - Fix style.css 各组件偏移适配菜单栏 30px
+- Fix 符号化启用/禁用时 _symbologyConfig 未初始化/已删除导致 TypeError
+- Fix CSS info-panel/symb-panel 新样式，替换旧 symbology-inline
+
 
 ### 2026-07-16
 - Add SYSTEM_PROMPT 精简：DeepSeek 版 200→113 行 (-44%)，GLM 版 68→64 行

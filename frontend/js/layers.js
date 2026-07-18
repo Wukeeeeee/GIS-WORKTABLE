@@ -158,12 +158,11 @@ window.GIS = window.GIS || {};
     }
   }
 
-  // 下载图层（导出 GeoJSON）
+  // 下载图层（显示格式选择弹窗）
   function downloadLayer(layerId) {
     const layer = layerData.find(l => l.layer_id === layerId);
     if (!layer) return;
     var geojson = layer.geojson;
-    // 如果没有独立 geojson，尝试从地图模块拿
     if (!geojson && GIS.map && GIS.map.getGeoJSON) {
       geojson = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
     }
@@ -171,6 +170,63 @@ window.GIS = window.GIS || {};
       if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') window.GIS.chat.addMessage('无数据可下载', 'system');
       return;
     }
+    // 显示格式选择弹窗
+    _showDownloadDialog(layer, geojson);
+  }
+
+  /** 下载格式选择弹窗 */
+  function _showDownloadDialog(layer, geojson) {
+    var overlay = document.createElement('div');
+    overlay.className = 'download-dialog-overlay';
+    overlay.innerHTML =
+      '<div class="download-dialog">' +
+        '<div class="download-dialog-title">导出图层</div>' +
+        '<div class="download-dialog-subtitle">' + escapeHtml(layer.filename || '图层') + '</div>' +
+        '<div class="download-dialog-options">' +
+          '<label class="download-dialog-option selected" data-format="geojson">' +
+            '<span class="download-dialog-radio"><svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg></span>' +
+            '<span class="download-dialog-label"><strong>GeoJSON</strong><span class="download-dialog-desc">标准地理数据格式，保留完整属性</span></span>' +
+          '</label>' +
+          '<label class="download-dialog-option" data-format="shp">' +
+            '<span class="download-dialog-radio"></span>' +
+            '<span class="download-dialog-label"><strong>Shapefile (.shp)</strong><span class="download-dialog-desc">兼容 ArcGIS/QGIS，含 .shp .shx .dbf .prj .cpg</span></span>' +
+          '</label>' +
+        '</div>' +
+        '<div class="download-dialog-actions">' +
+          '<button class="download-dialog-btn download-dialog-cancel">取消</button>' +
+          '<button class="download-dialog-btn download-dialog-confirm">下载</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    var selectedFormat = 'geojson';
+    var options = overlay.querySelectorAll('.download-dialog-option');
+    options.forEach(function(opt) {
+      opt.addEventListener('click', function() {
+        options.forEach(function(o) { o.classList.remove('selected'); });
+        opt.classList.add('selected');
+        selectedFormat = opt.getAttribute('data-format');
+      });
+    });
+
+    overlay.querySelector('.download-dialog-cancel').addEventListener('click', function() {
+      document.body.removeChild(overlay);
+    });
+    overlay.querySelector('.download-dialog-confirm').addEventListener('click', function() {
+      document.body.removeChild(overlay);
+      if (selectedFormat === 'geojson') {
+        _downloadGeoJSON(layer, geojson);
+      } else if (selectedFormat === 'shp') {
+        _downloadSHP(layer, geojson);
+      }
+    });
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) document.body.removeChild(overlay);
+    });
+  }
+
+  /** 下载 GeoJSON */
+  function _downloadGeoJSON(layer, geojson) {
     var blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/geo+json;charset=utf-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
@@ -180,7 +236,16 @@ window.GIS = window.GIS || {};
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    
+  }
+
+  /** 下载 SHP（调后端接口） */
+  function _downloadSHP(layer, geojson) {
+    if (!window.GIS.api || typeof window.GIS.api.exportShp !== 'function') {
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function')
+        window.GIS.chat.addMessage('SHP 导出服务不可用', 'system');
+      return;
+    }
+    window.GIS.api.exportShp(geojson, layer.filename || '图层');
   }
 
   function bindDragEvents() {
@@ -299,10 +364,14 @@ window.GIS = window.GIS || {};
     if (!tbody) return;
     //监听
     tbody.addEventListener('click', (e) => {
-      // 颜色点点击 → 弹出颜色选择器
+      // 颜色点点击 → 弹出颜色选择器（符号化启用时禁用）
       const dot = e.target.closest('.layer-color-dot');
       if (dot) {
         const id = dot.dataset.id;
+        // 检查符号化是否启用
+        if (_symbologyConfig[id] && _symbologyConfig[id].enabled) {
+          return;
+        }
         const input = document.createElement('input');
         input.type = 'color';
         input.value = dot.dataset.color || '#1c1b1b';
@@ -315,7 +384,6 @@ window.GIS = window.GIS || {};
             if (GIS.map && GIS.map.setLayerColor) {
               GIS.map.setLayerColor(layer._rawName || layer.layer_id, this.value);
             }
-            // 改颜色后如果原来隐藏就继续保持隐藏
             if (!layer.visible && GIS.map && GIS.map.setLayerVisible) {
               GIS.map.setLayerVisible(layer._rawName || layer.layer_id, false);
             }
@@ -558,6 +626,9 @@ window.GIS = window.GIS || {};
           '<button class="attr-btn" data-action="export-csv" data-layer="' + layerId + '" title="导出 CSV">' +
             '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1v10"/><path d="M4 7l4 4 4-4"/><path d="M2 13h12"/></svg>' +
           '</button>' +
+          '<button class="attr-btn" data-action="symbology" data-layer="' + layerId + '" title="符号化">' +
+            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="2.5"/><circle cx="11" cy="5" r="3.5"/><circle cx="8" cy="11" r="2"/></svg>' +
+          '</button>' +
         '</div>' +
       '</div>' +
       '<div class="attr-fill-row">' +
@@ -611,73 +682,160 @@ window.GIS = window.GIS || {};
       dataHtml = '<div class="inspector-section"><div class="inspector-section-title">属性数据</div><span style="color:var(--ui-gray-300);font-size:var(--fs-12);">无属性字段</span></div>';
     }
 
-    body.innerHTML =
-      '<div class="inspector-section">' +
-        '<div class="inspector-row"><span class="inspector-label">要素数</span><span class="inspector-value">' + (remote.feature_count ?? local.featureCount) + '</span></div>' +
-        '<div class="inspector-row"><span class="inspector-label">几何类型</span><span class="inspector-value">' + escapeHtml(remote.geometry_type || local.geometryType) + '</span></div>' +
-        '<div class="inspector-row"><span class="inspector-label">来源</span><span class="inspector-value">' + escapeHtml(layer.source || '未知') + '</span></div>' +
-        '<div class="inspector-row"><span class="inspector-label">CRS</span><span class="inspector-value">' + crsBadge + ' ' + escapeHtml(crsStr) + '</span></div>' +
-        '<div class="inspector-row"><span class="inspector-label">边界 (minX, minY, maxX, maxY)</span><span class="inspector-value" style="font-family:var(--font-mono);font-size:var(--fs-11);">' + escapeHtml(bboxStr) + '</span></div>' +
-        '<div class="inspector-row"><span class="inspector-label">空几何</span><span class="inspector-value">' + (remote.null_geom_count ?? local.nullGeom) + '</span></div>' +
-        '<div class="inspector-row"><span class="inspector-label">无效几何</span><span class="inspector-value">' + invalidCount + '</span></div>' +
-      '</div>' +
-      '<div class="inspector-section">' +
-        '<div class="inspector-section-title">属性字段 (' + attrKeys.length + ')</div>' +
-        attrHtml +
-      '</div>' +
-      '<div class="inspector-section" id="attrSection">' +
+    // 构建三个标签页
+    var bboxLeft = bbox ? bbox[0].toFixed(4) : '—';
+    var bboxBottom = bbox ? bbox[1].toFixed(4) : '—';
+    var bboxRight = bbox ? bbox[2].toFixed(4) : '—';
+    var bboxTop = bbox ? bbox[3].toFixed(4) : '—';
+    var tabInfo =
+      '<div class="inspector-tab-content" id="tabInfo" style="display:block;">' +
+        '<div class="info-panel">' +
+          '<div class="info-group">' +
+            '<div class="info-group-title">数据源</div>' +
+            '<div class="info-row"><span class="info-label">名称</span><span class="info-val">' + escapeHtml(layer.filename || '未命名') + '</span></div>' +
+            '<div class="info-row"><span class="info-label">来源</span><span class="info-val">' + escapeHtml(layer.source || '未知') + '</span></div>' +
+            '<div class="info-row"><span class="info-label">几何类型</span><span class="info-val">' + escapeHtml(remote.geometry_type || local.geometryType) + '</span></div>' +
+            '<div class="info-row"><span class="info-label">要素数</span><span class="info-val">' + (remote.feature_count ?? local.featureCount) + '</span></div>' +
+          '</div>' +
+          '<div class="info-group">' +
+            '<div class="info-group-title">坐标系</div>' +
+            '<div class="info-row"><span class="info-label">CRS</span><span class="info-val">' + crsBadge + ' ' + escapeHtml(crsStr) + '</span></div>' +
+          '</div>' +
+          '<div class="info-group">' +
+            '<div class="info-group-title">范围</div>' +
+            '<div class="info-row"><span class="info-label">左 (Xmin)</span><span class="info-val info-mono">' + bboxLeft + '</span></div>' +
+            '<div class="info-row"><span class="info-label">右 (Xmax)</span><span class="info-val info-mono">' + bboxRight + '</span></div>' +
+            '<div class="info-row"><span class="info-label">下 (Ymin)</span><span class="info-val info-mono">' + bboxBottom + '</span></div>' +
+            '<div class="info-row"><span class="info-label">上 (Ymax)</span><span class="info-val info-mono">' + bboxTop + '</span></div>' +
+          '</div>' +
+          '<div class="info-group">' +
+            '<div class="info-group-title">字段 (' + attrKeys.length + ')</div>' +
+            attrHtml +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    var tabs =
+      '<div class="inspector-tabs">' +
+        '<button class="inspector-tab active" data-tab="info">基础信息</button>' +
+        '<button class="inspector-tab" data-tab="symb">符号系统</button>' +
+        '<button class="inspector-tab" data-tab="attr">属性表</button>' +
+      '</div>';
+
+    var tabAttr =
+      '<div class="inspector-tab-content" id="tabAttr" style="display:none;">' +
         dataHtml +
       '</div>';
 
-    // 绑定属性表事件
-    var attrSection = document.getElementById('attrSection');
+    // ===== 符号系统标签 =====
+    var symbFields = Object.keys(attrFields);
+    var sConfig = _symbologyConfig[layerId] || {};
+    var sEnabled = sConfig.enabled || false;
+    var sType = sConfig.type || 'unique';
+    var sField = sConfig.field || symbFields[0] || '';
+    var sClasses = sConfig.classes || 5;
+    var sScheme = sConfig.colorScheme || 'scheme';
+
+    var tabSymb =
+      '<div class="inspector-tab-content" id="tabSymb" style="display:none;">' +
+        '<div class="symb-panel">' +
+          '<div class="symb-enable-row">' +
+            '<label class="symb-toggle">' +
+              '<input type="checkbox" id="symbEnable"' + (sEnabled ? ' checked' : '') + ' />' +
+              '<span class="symb-toggle-slider"></span>' +
+              '<span class="symb-toggle-label">启用符号化</span>' +
+            '</label>' +
+          '</div>' +
+          '<div class="symb-controls" id="symbControls"' + (sEnabled ? '' : ' style="opacity:0.4;pointer-events:none;"') + '>' +
+            '<div class="symb-row">' +
+              '<label class="symb-label">渲染方式</label>' +
+              '<select class="symb-input symb-select" id="symbType">' +
+                '<option value="unique"' + (sType === 'unique' ? ' selected' : '') + '>唯一值 (Unique Values)</option>' +
+                '<option value="graduated"' + (sType === 'graduated' ? ' selected' : '') + '>分级色彩 (Graduated Colors)</option>' +
+                '<option value="graduated-symbol"' + (sType === 'graduated-symbol' ? ' selected' : '') + '>分级符号 (Graduated Symbols)</option>' +
+                '<option value="proportional"' + (sType === 'proportional' ? ' selected' : '') + '>比例符号 (Proportional Symbols)</option>' +
+              '</select>' +
+            '</div>' +
+            '<div class="symb-row">' +
+              '<label class="symb-label">字段</label>' +
+              '<select class="symb-input symb-select" id="symbField">' +
+                symbFields.map(function(k) { return '<option value="' + escapeHtml(k) + '"' + (sField === k ? ' selected' : '') + '>' + escapeHtml(k) + '</option>'; }).join('') +
+              '</select>' +
+            '</div>' +
+            '<div class="symb-row symb-classes-row" id="sClassesRow"' + (sType === 'unique' || sType === 'proportional' ? ' style="display:none;"' : '') + '>' +
+              '<label class="symb-label">分级数</label>' +
+              '<input type="number" class="symb-input symb-input-narrow" id="sClassesNum" value="' + sClasses + '" min="2" max="20" />' +
+            '</div>' +
+            '<div class="symb-row symb-size-row" id="sSizeRow"' + (sType !== 'graduated-symbol' && sType !== 'proportional' ? ' style="display:none;"' : '') + '>' +
+              '<label class="symb-label">符号大小</label>' +
+              '<span class="symb-size-label">最小</span><input type="number" class="symb-input symb-input-narrow" id="sSizeMin" value="' + (sConfig.minSize || 3) + '" min="1" max="50" />' +
+              '<span class="symb-size-label">最大</span><input type="number" class="symb-input symb-input-narrow" id="sSizeMax" value="' + (sConfig.maxSize || 20) + '" min="1" max="50" />' +
+            '</div>' +
+            '<div class="symb-row">' +
+              '<label class="symb-label">色带</label>' +
+              '<div class="symb-schemes">' +
+                '<span class="symb-swatch" data-scheme="scheme" title="默认"><span style="background:#1c1b1b"></span><span style="background:#e74c3c"></span><span style="background:#2ecc71"></span><span style="background:#3498db"></span></span>' +
+                '<span class="symb-swatch" data-scheme="blues" title="蓝色系"><span style="background:#c6dbef"></span><span style="background:#6baed6"></span><span style="background:#2171b5"></span><span style="background:#08306b"></span></span>' +
+                '<span class="symb-swatch" data-scheme="reds" title="红色系"><span style="background:#fcbba1"></span><span style="background:#fb6a4a"></span><span style="background:#de2d26"></span><span style="background:#a50f15"></span></span>' +
+                '<span class="symb-swatch" data-scheme="greens" title="绿色系"><span style="background:#c7e9c0"></span><span style="background:#74c476"></span><span style="background:#238b45"></span><span style="background:#00441b"></span></span>' +
+                '<span class="symb-swatch" data-scheme="purples" title="紫色系"><span style="background:#dadaeb"></span><span style="background:#9e9ac8"></span><span style="background:#6a51a3"></span><span style="background:#3f007d"></span></span>' +
+                '<span class="symb-swatch" data-scheme="oranges" title="橙色系"><span style="background:#fdd0a2"></span><span style="background:#fd8d3c"></span><span style="background:#d94801"></span><span style="background:#8c2d04"></span></span>' +
+              '</div>' +
+            '</div>' +
+            '<div class="symb-classes-preview" id="sClassesPreview">' +
+              '<div class="symb-preview-title">类别预览</div>' +
+              '<div class="symb-preview-body" id="sPreviewBody">选择字段后自动预览</div>' +
+            '</div>' +
+            '<div class="symb-actions">' +
+              '<button class="symb-btn symb-btn-clear" id="sClearBtn">清除符号化</button>' +
+              '<div class="symb-actions-right">' +
+                '<button class="symb-btn symb-btn-apply" id="sApplyBtn" disabled>应用</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+
+    body.innerHTML = tabs + tabInfo + tabSymb + tabAttr;
+
+    // ===== 标签页切换 =====
+    body.querySelectorAll('.inspector-tab').forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        body.querySelectorAll('.inspector-tab').forEach(function(t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        var id = tab.getAttribute('data-tab');
+        document.getElementById('tabInfo').style.display = id === 'info' ? 'block' : 'none';
+        document.getElementById('tabSymb').style.display = id === 'symb' ? 'block' : 'none';
+        document.getElementById('tabAttr').style.display = id === 'attr' ? 'block' : 'none';
+      });
+    });
+
+    // ===== 属性表事件 =====
+    var attrSection = document.getElementById('tabAttr');
     if (attrSection) {
-      // 保存
-      attrSection.querySelector('[data-action="save-attrs"]')?.addEventListener('click', function() {
-        saveAttrChanges(layerId, attrKeys);
-      });
-      // 添加行
-      attrSection.querySelector('[data-action="add-row"]')?.addEventListener('click', function() {
-        addAttrRow(layerId, attrKeys);
-      });
-      // 切换筛选栏
-      attrSection.querySelector('[data-action="toggle-filter"]')?.addEventListener('click', function() {
-        var bar = document.getElementById('attrFilterBar');
-        if (bar) bar.style.display = bar.style.display === 'none' ? 'flex' : 'none';
-      });
-      // CSV 导出
-      attrSection.querySelector('[data-action="export-csv"]')?.addEventListener('click', function() {
-        exportAttrCSV(layerId);
-      });
-      // 筛选按钮
-      document.getElementById('attrFilterApply')?.addEventListener('click', function() {
-        applyFilter(layerId);
-      });
-      document.getElementById('attrFilterClear')?.addEventListener('click', function() {
-        clearFilter(layerId);
-      });
-      document.getElementById('attrFilterExport')?.addEventListener('click', function() {
-        exportFilteredLayer(layerId);
-      });
-      // 删除行 + 定位（事件委托）
+      attrSection.querySelector('[data-action="save-attrs"]')?.addEventListener('click', function() { saveAttrChanges(layerId, attrKeys); });
+      attrSection.querySelector('[data-action="add-row"]')?.addEventListener('click', function() { addAttrRow(layerId, attrKeys); });
+      attrSection.querySelector('[data-action="toggle-filter"]')?.addEventListener('click', function() { var bar = document.getElementById('attrFilterBar'); if (bar) bar.style.display = bar.style.display === 'none' ? 'flex' : 'none'; });
+      attrSection.querySelector('[data-action="export-csv"]')?.addEventListener('click', function() { exportAttrCSV(layerId); });
+      document.getElementById('attrFilterApply')?.addEventListener('click', function() { applyFilter(layerId); });
+      document.getElementById('attrFilterClear')?.addEventListener('click', function() { clearFilter(layerId); });
+      document.getElementById('attrFilterExport')?.addEventListener('click', function() { exportFilteredLayer(layerId); });
       attrSection.querySelector('.inspector-data-wrap')?.addEventListener('click', function(e) {
         var locateBtn = e.target.closest('.attr-locate-btn');
         if (locateBtn) {
           var idx = parseInt(locateBtn.dataset.idx, 10);
-          var rawName = layer._rawName || (layer.layer_id ? layer.layer_id.split('_')[0] : layer.layer_id) || layer.layer_id;
           var layerName = layer._rawName || layer.layer_id;
-          if (window.GIS.map && window.GIS.map.highlightLayerFeature) {
-            window.GIS.map.highlightLayerFeature(layerName, idx);
-          }
-          document.querySelectorAll('#attrDataTable tbody tr').forEach(function(tr) {
-            tr.classList.toggle('feat-row-active', parseInt(tr.dataset.idx, 10) === idx);
-          });
+          if (window.GIS.map && window.GIS.map.highlightLayerFeature) window.GIS.map.highlightLayerFeature(layerName, idx);
+          document.querySelectorAll('#attrDataTable tbody tr').forEach(function(tr) { tr.classList.toggle('feat-row-active', parseInt(tr.dataset.idx, 10) === idx); });
           return;
         }
         var delBtn = e.target.closest('.attr-del-btn');
         if (delBtn) deleteAttrRow(layerId, parseInt(delBtn.dataset.idx, 10));
       });
     }
+
+    // ===== 符号系统事件 =====
+    _bindSymbEvents(layerId, features);
 
     // 初始化列宽拖拽
     _enableColumnResize('attrDataTable');
@@ -740,6 +898,410 @@ window.GIS = window.GIS || {};
         document.body.style.userSelect = '';
       }
     });
+  }
+
+  // ---- 图层符号化 ----
+
+  /** 存储每层的符号化配置 */
+  var _symbologyConfig = {};
+
+  /** 绑定符号化标签页内的事件 */
+  function _bindSymbEvents(layerId, features) {
+    var enableEl = document.getElementById('symbEnable');
+    var controlsEl = document.getElementById('symbControls');
+    var typeEl = document.getElementById('symbType');
+    var fieldEl = document.getElementById('symbField');
+    var classesEl = document.getElementById('sClassesNum');
+    var classesRow = document.getElementById('sClassesRow');
+    var sizeRow = document.getElementById('sSizeRow');
+    var sizeMinEl = document.getElementById('sSizeMin');
+    var sizeMaxEl = document.getElementById('sSizeMax');
+    var previewBody = document.getElementById('sPreviewBody');
+    var applyBtn = document.getElementById('sApplyBtn');
+    var clearBtn = document.getElementById('sClearBtn');
+
+    if (!enableEl || !controlsEl || !typeEl || !fieldEl) return;
+
+    // 启用/禁用切换
+    enableEl.addEventListener('change', function() {
+      var enabled = enableEl.checked;
+      controlsEl.style.opacity = enabled ? '1' : '0.4';
+      controlsEl.style.pointerEvents = enabled ? 'auto' : 'none';
+      if (!enabled) {
+        _clearSymbology(layerId);
+      } else {
+        if (!_symbologyConfig[layerId]) _symbologyConfig[layerId] = {};
+        _symbologyConfig[layerId].enabled = true;
+        _updatePreview();
+      }
+    });
+
+    // 类型切换
+    function _onTypeChange() {
+      var t = typeEl.value;
+      if (classesRow) classesRow.style.display = (t === 'unique' || t === 'proportional') ? 'none' : '';
+      if (sizeRow) sizeRow.style.display = (t === 'graduated-symbol' || t === 'proportional') ? '' : 'none';
+      _updatePreview();
+    }
+    typeEl.addEventListener('change', _onTypeChange);
+    fieldEl.addEventListener('change', _updatePreview);
+    if (classesEl) classesEl.addEventListener('change', _updatePreview);
+    if (sizeMinEl) sizeMinEl.addEventListener('change', _updatePreview);
+    if (sizeMaxEl) sizeMaxEl.addEventListener('change', _updatePreview);
+
+    // 色带选择
+    var swatches = document.querySelectorAll('.symb-swatch');
+    swatches.forEach(function(sw) {
+      sw.addEventListener('click', function() {
+        swatches.forEach(function(s) { s.classList.remove('selected'); });
+        sw.classList.add('selected');
+        _updatePreview();
+      });
+    });
+
+    // 预览更新
+    function _updatePreview() {
+      if (!enableEl.checked) return;
+      var type = typeEl.value;
+      var field = fieldEl.value;
+      var classes = parseInt(classesEl?.value, 10) || 5;
+      var scheme = document.querySelector('.symb-swatch.selected')?.dataset?.scheme || 'scheme';
+      var minSize = parseInt(sizeMinEl?.value, 10) || 3;
+      var maxSize = parseInt(sizeMaxEl?.value, 10) || 20;
+
+      if (!field || !features.length) {
+        if (previewBody) previewBody.textContent = '请选择字段';
+        if (applyBtn) applyBtn.disabled = true;
+        return;
+      }
+
+      var values = [];
+      features.forEach(function(f) {
+        var v = f.properties ? f.properties[field] : undefined;
+        if (v !== null && v !== undefined) values.push(v);
+      });
+      if (!values.length) {
+        if (previewBody) previewBody.textContent = '字段无数据';
+        if (applyBtn) applyBtn.disabled = true;
+        return;
+      }
+
+      var uniqueVals = [];
+      values.forEach(function(v) { if (uniqueVals.indexOf(v) === -1) uniqueVals.push(v); });
+      var schemeColors = _getSchemeColors(scheme, type === 'unique' ? Math.min(uniqueVals.length, 10) : classes);
+
+      var html = '';
+      if (type === 'unique') {
+        var displayVals = uniqueVals.slice(0, 10);
+        displayVals.forEach(function(v, i) {
+          var c = schemeColors[i % schemeColors.length];
+          html += '<div class="symb-preview-item"><span class="symb-preview-swatch" style="background:' + c + '"></span><span class="symb-preview-val">' + escapeHtml(String(v)) + '</span></div>';
+        });
+        if (uniqueVals.length > 10) html += '<div class="symb-preview-more">… 还有 ' + (uniqueVals.length - 10) + ' 个值</div>';
+      } else {
+        var min = Infinity, max = -Infinity;
+        values.forEach(function(v) { if (v < min) min = v; if (v > max) max = v; });
+        var step = (max - min) / classes;
+        for (var i = 0; i < classes; i++) {
+          var lo = min + i * step;
+          var hi = (i === classes - 1) ? max : min + (i + 1) * step;
+          var c = schemeColors[i % schemeColors.length];
+          html += '<div class="symb-preview-item"><span class="symb-preview-swatch" style="background:' + c + '"></span><span class="symb-preview-val">' + lo.toFixed(2) + ' — ' + hi.toFixed(2) + '</span></div>';
+        }
+      }
+      if (previewBody) previewBody.innerHTML = html;
+      if (applyBtn) applyBtn.disabled = false;
+    }
+
+    // 清除符号化
+    clearBtn?.addEventListener('click', function() {
+      _clearSymbology(layerId);
+      if (enableEl) enableEl.checked = false;
+      controlsEl.style.opacity = '0.4';
+      controlsEl.style.pointerEvents = 'none';
+      if (previewBody) previewBody.textContent = '符号化已清除';
+      if (applyBtn) applyBtn.disabled = true;
+    });
+
+    // 应用
+    applyBtn?.addEventListener('click', function() {
+      var type = typeEl.value;
+      var field = fieldEl.value;
+      var classes = parseInt(classesEl?.value, 10) || 5;
+      var scheme = document.querySelector('.symb-swatch.selected')?.dataset?.scheme || 'scheme';
+      var minSize = parseInt(sizeMinEl?.value, 10) || 3;
+      var maxSize = parseInt(sizeMaxEl?.value, 10) || 20;
+      _applySymbology(layerId, type, field, classes, scheme, minSize, maxSize);
+    });
+
+    // 初始预览
+    if (enableEl.checked) _updatePreview();
+  }
+
+  /** 唯一值渲染 */
+
+  /** 应用符号化 */
+  function _applySymbology(layerId, type, field, classes, colorScheme, minSize, maxSize) {
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+    var gj = getLayerGeoJSON(layerId);
+    if (!gj) return;
+
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+    if (!features.length) return;
+
+    var scheme = _getColorScheme(colorScheme, classes);
+
+    _symbologyConfig[layerId] = { type: type, field: field, classes: classes, colorScheme: colorScheme, enabled: true, minSize: minSize || 3, maxSize: maxSize || 20 };
+
+    if (type === 'unique') {
+      _applyUniqueValues(layer, gj, features, field, scheme);
+    } else if (type === 'graduated') {
+      _applyGraduatedColors(layer, gj, features, field, classes, scheme);
+    } else if (type === 'graduated-symbol') {
+      _applyGraduatedSymbols(layer, gj, features, field, classes, scheme, minSize, maxSize);
+    } else if (type === 'proportional') {
+      _applyProportionalSymbols(layer, gj, features, field, minSize, maxSize);
+    }
+  }
+
+  /** 获取色带颜色数组 */
+  function _getColorScheme(name, count) {
+    var palettes = {
+      scheme: ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e','#16a085',
+               '#c0392b','#27ae60','#2980b9','#8e44ad','#2c3e50','#d35400','#7f8c8d','#f1c40f','#00bcd4','#ff5722'],
+      blues:   ['#f7fbff','#deebf7','#c6dbef','#9ecae1','#6baed6','#4292c6','#2171b5','#08519c','#08306b'],
+      reds:    ['#fff5f0','#fee0d2','#fcbba1','#fc9272','#fb6a4a','#ef3b2c','#cb181d','#a50f15','#67000d'],
+      greens:  ['#f7fcf5','#e5f5e0','#c7e9c0','#a1d99b','#74c476','#41ab5d','#238b45','#006d2c','#00441b'],
+      purples: ['#fcfbfd','#efedf5','#dadaeb','#bcbddc','#9e9ac8','#807dba','#6a51a3','#54278f','#3f007d'],
+      oranges: ['#fff5eb','#fee6ce','#fdd0a2','#fdae6b','#fd8d3c','#f16913','#d94801','#a63603','#7f2704'],
+    };
+    var colors = palettes[name] || palettes.scheme;
+    if (count <= colors.length) return colors.slice(0, count);
+    // 不够就重复
+    var result = [];
+    for (var i = 0; i < count; i++) result.push(colors[i % colors.length]);
+    return result;
+  }
+
+  /** 按几何类型返回适当样式 */
+  function _styleForGeom(feature, color, fillColor, extra) {
+    var geomType = feature && feature.geometry ? feature.geometry.type : '';
+    var isPoint = geomType === 'Point' || geomType === 'MultiPoint';
+    var isLine = geomType === 'LineString' || geomType === 'MultiLineString';
+    var s = { color: color, fillColor: fillColor || color };
+    if (isPoint) {
+      s.weight = 0; s.fillOpacity = 1;
+    } else if (isLine) {
+      s.weight = 2.5; s.fillOpacity = 0;
+    } else {
+      s.weight = 1; s.fillOpacity = 0.35;
+    }
+    if (extra) Object.assign(s, extra);
+    return s;
+  }
+
+  /** 获取色带颜色数组（别名，供预览用） */
+  function _getSchemeColors(name, count) {
+    return _getColorScheme(name, count);
+  }
+
+  /** 唯一值渲染 */
+  function _applyUniqueValues(layer, gj, features, field, scheme) {
+    var values = {};
+    features.forEach(function(f, idx) {
+      var v = String(f.properties ? f.properties[field] ?? '' : '');
+      if (!values[v]) values[v] = [];
+      values[v].push(idx);
+    });
+    var keys = Object.keys(values);
+    var colorMap = {};
+    keys.forEach(function(k, i) { colorMap[k] = scheme[i % scheme.length]; });
+
+    var styleMap = {};
+    features.forEach(function(f, idx) {
+      var v = String(f.properties ? f.properties[field] ?? '' : '');
+      styleMap[idx] = _styleForGeom(f, colorMap[v]);
+    });
+
+    _applyStyleToMap(layer, gj, styleMap);
+    var defaultColor = scheme[keys.length % scheme.length] || '#1c1b1b';
+
+    // 更新符号化信息
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      var info = '已应用唯一值符号化: ' + field + '（' + keys.length + ' 个类别）\n';
+      keys.slice(0, 10).forEach(function(k) {
+        info += '  ' + escapeHtml(k) + ' → ' + colorMap[k] + ' (' + values[k].length + ' 个)\n';
+      });
+      if (keys.length > 10) info += '  ... 还有 ' + (keys.length - 10) + ' 个类别';
+      window.GIS.chat.addMessage(info, 'system');
+    }
+    layer.color = defaultColor;
+  }
+
+  /** 分级色彩渲染 */
+  function _applyGraduatedColors(layer, gj, features, field, classes, scheme) {
+    var values = features.map(function(f, idx) {
+      return { idx: idx, val: parseFloat(f.properties ? f.properties[field] : 0) };
+    }).filter(function(v) { return !isNaN(v.val); });
+    if (!values.length) {
+      if (window.GIS.chat) window.GIS.chat.addMessage('字段「' + field + '」无有效数值', 'system');
+      return;
+    }
+
+    var sorted = values.map(function(v) { return v.val; }).sort(function(a, b) { return a - b; });
+    var min = sorted[0], max = sorted[sorted.length - 1];
+    if (min === max) {
+      // 所有值相同，用单一颜色
+      var styleMap = {};
+      features.forEach(function(f, idx) { styleMap[idx] = _styleForGeom(f, scheme[0]); });
+      _applyStyleToMap(layer, gj, styleMap);
+      return;
+    }
+
+    var step = (max - min) / classes;
+    var breaks = [];
+    for (var i = 0; i <= classes; i++) breaks.push(min + step * i);
+
+    var styleMap = {};
+    features.forEach(function(f, idx) {
+      var v = parseFloat(f.properties ? f.properties[field] : 0);
+      if (isNaN(v)) v = min;
+      var classIdx = 0;
+      for (var j = 0; j < breaks.length - 1; j++) {
+        if (v >= breaks[j] && (v < breaks[j + 1] || (j === breaks.length - 2 && v <= breaks[j + 1]))) {
+          classIdx = j; break;
+        }
+      }
+      var color = scheme[Math.min(classIdx, scheme.length - 1)];
+      styleMap[idx] = _styleForGeom(f, color);
+    });
+
+    _applyStyleToMap(layer, gj, styleMap);
+    layer.color = scheme[0];
+
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      var info = '已应用分级色彩: ' + field + '（' + classes + ' 级）\n';
+      for (var j = 0; j < classes && j < 10; j++) {
+        info += '  ' + breaks[j].toFixed(2) + ' - ' + breaks[j + 1].toFixed(2) + ' → ' + scheme[Math.min(j, scheme.length - 1)] + '\n';
+      }
+      window.GIS.chat.addMessage(info, 'system');
+    }
+  }
+
+  /** 分级符号渲染（点图层用不同半径，线图层用不同粗细） */
+  function _applyGraduatedSymbols(layer, gj, features, field, classes, scheme, minSize, maxSize) {
+    var isPoint = _isPointLayer(features);
+    var values = features.map(function(f, idx) {
+      return { idx: idx, val: parseFloat(f.properties ? f.properties[field] : 0) };
+    }).filter(function(v) { return !isNaN(v.val); });
+    if (!values.length) {
+      if (window.GIS.chat) window.GIS.chat.addMessage('字段「' + field + '」无有效数值', 'system');
+      return;
+    }
+
+    var sorted = values.map(function(v) { return v.val; }).sort(function(a, b) { return a - b; });
+    var min = sorted[0], max = sorted[sorted.length - 1];
+    if (min === max) {
+      _applyStyleToMap(layer, gj, {});
+      return;
+    }
+
+    var step = (max - min) / classes;
+    var breaks = [];
+    for (var i = 0; i <= classes; i++) breaks.push(min + step * i);
+
+    if (minSize === undefined) minSize = isPoint ? 3 : 1;
+    if (maxSize === undefined) maxSize = isPoint ? 12 : 5;
+
+    var styleMap = {};
+    features.forEach(function(f, idx) {
+      var v = parseFloat(f.properties ? f.properties[field] : 0);
+      if (isNaN(v)) v = min;
+      var classIdx = 0;
+      for (var j = 0; j < breaks.length - 1; j++) {
+        if (v >= breaks[j] && (v < breaks[j + 1] || (j === breaks.length - 2 && v <= breaks[j + 1]))) {
+          classIdx = j; break;
+        }
+      }
+      var ratio = classIdx / (classes - 1);
+      var size = minSize + ratio * (maxSize - minSize);
+      var color = scheme[Math.min(classIdx, scheme.length - 1)];
+      if (isPoint) {
+        styleMap[idx] = { radius: Math.round(size), color: color, weight: 0, fillOpacity: 1 };
+      } else {
+        styleMap[idx] = _styleForGeom(f, color, null, { weight: Math.round(size) });
+      }
+    });
+
+    _applyStyleToMap(layer, gj, styleMap);
+
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      var info = '已应用分级符号: ' + field + '（' + classes + ' 级，大小 ' + minSize + '-' + maxSize + '）';
+      window.GIS.chat.addMessage(info, 'system');
+    }
+  }
+
+  /** 比例符号渲染（点半径与数值成比例） */
+  function _applyProportionalSymbols(layer, gj, features, field, minSize, maxSize) {
+    if (!_isPointLayer(features)) {
+      if (window.GIS.chat) window.GIS.chat.addMessage('比例符号仅支持点图层', 'system');
+      return;
+    }
+    var values = features.map(function(f, idx) {
+      return { idx: idx, val: parseFloat(f.properties ? f.properties[field] : 0) };
+    }).filter(function(v) { return !isNaN(v.val) && v.val > 0; });
+    if (!values.length) {
+      if (window.GIS.chat) window.GIS.chat.addMessage('字段「' + field + '」无有效正值', 'system');
+      return;
+    }
+
+    var sorted = values.map(function(v) { return v.val; }).sort(function(a, b) { return a - b; });
+    var min = sorted[0], max = sorted[sorted.length - 1];
+    if (min === max) {
+      _applyStyleToMap(layer, gj, {});
+      return;
+    }
+
+    var styleMap = {};
+    var minR = minSize || 3, maxR = maxSize || 20;
+    features.forEach(function(f, idx) {
+      var v = parseFloat(f.properties ? f.properties[field] : 0);
+      if (isNaN(v) || v <= 0) v = min;
+      var ratio = (v - min) / (max - min);
+      var r = minR + ratio * (maxR - minR);
+      styleMap[idx] = _styleForGeom(f, '#1c1b1b', null, { radius: Math.round(r) });
+    });
+
+    _applyStyleToMap(layer, gj, styleMap);
+
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      window.GIS.chat.addMessage('已应用比例符号: ' + field + '（大小 ' + minR + '-' + maxR + 'px）', 'system');
+    }
+  }
+
+  /** 将样式映射应用到地图图层 */
+  function _applyStyleToMap(layer, gj, styleMap) {
+    var name = layer._rawName || layer.layer_id;
+    if (!GIS.map || !GIS.map.applySymbology) return;
+    GIS.map.applySymbology(name, gj, styleMap);
+  }
+
+  /** 清除符号化，恢复默认样式 */
+  function _clearSymbology(layerId) {
+    delete _symbologyConfig[layerId];
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+    var name = layer._rawName || layer.layer_id;
+    var gj = getLayerGeoJSON(layerId);
+    if (gj && GIS.map && GIS.map.loadGeoJSON) {
+      GIS.map.loadGeoJSON(gj, name, { color: layer.color || '#1c1b1b' });
+    }
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      window.GIS.chat.addMessage('已清除符号化，恢复默认样式', 'system');
+    }
   }
 
   // ---- 属性表编辑函数 ----

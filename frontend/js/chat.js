@@ -70,6 +70,8 @@ _linkRenderer.link = function(token) {
     { name: 'boundary', label: '行政边界', desc: '获取行政区划边界', prompt: '获取 {省/市/区} 的行政边界并加载到地图' },
     { name: 'heatmap', label: '热力图', desc: '从点数据生成热力图', prompt: '为 {图层名} 生成热力图' },
     { name: 'plot', label: '统计图表', desc: '生成数据统计图表', prompt: '对 {图层名} 的 {字段} 生成统计图表' },
+    { name: 'export', label: '导出SHP', desc: '导出图层为Shapefile或GeoJSON', prompt: '将 {图层名} 导出为 {格式} 文件' },
+    { name: 'chart', label: '图表分析', desc: '图层属性统计图表（柱状/饼图/散点）', prompt: '对 {图层名} 的 {字段} 生成 {图表类型} 图' },
     { name: 'amap', label: '高德', desc: '搜索POI/查天气/地址转坐标', prompt: '搜索 {关键词} 的 POI 数据，每页25条最多200条，结果加载到地图' },
   ];
 

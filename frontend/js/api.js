@@ -357,6 +357,30 @@ window.GIS.api = (() => {
     }
   }
 
+  /** 导出图层为 SHP（调后端接口） */
+  async function exportShp(geojson, name) {
+    try {
+      const res = await fetch(`${BASE_URL}/api/layer/export-shp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ geojson, name: name || '图层' }),
+      });
+      if (!res.ok) throw new Error(`SHP 导出失败: ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = (name || '图层').replace(/[\/\\]/g, '_') + '.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function')
+        window.GIS.chat.addMessage('SHP 导出失败: ' + (e.message || e), 'system');
+    }
+  }
+
   return {
     request, upload, chat, clearMemory,
     getLayers, getLayer, deleteLayer,
@@ -370,6 +394,7 @@ window.GIS.api = (() => {
     getSelectedModel, setSelectedModel,
     getModelStatus, setModelStatus, clearModelStatus,
     inspectLayer, unregisterLayer, registerLayer,
+    exportShp,
     BASE_URL, DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };
 })();

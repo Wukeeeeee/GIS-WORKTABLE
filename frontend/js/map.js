@@ -22,6 +22,7 @@ window.GIS = window.GIS || {};
   const layers = {};
   const geoStore = {};
   let baseLayer = null;
+  let _currentBaseMap = 'satellite'; // 'satellite' | 'light'
   let drawnItems = null;        // Leaflet.Draw 绘制的图形集合
   let _featureMap = {};         // { "layerName:idx": LeafletLayer } — 要素索引→Leaflet 图层
   let _highlightedFeature = null; // 当前高亮的 Leaflet 图层
@@ -140,14 +141,12 @@ window.GIS = window.GIS || {};
     });
 
     // Bing 卫星底图
-    baseLayer = new L.TileLayer('', {
-      attribution: '&copy; Microsoft, 必应地图',
-      maxZoom: 19,
-    });
-    baseLayer.getTileUrl = function(coords) {
-      return TILE_URL.replace('{q}', toQuadkey(coords.x, coords.y, coords.z));
-    };
+    _currentBaseMap = localStorage.getItem('gis_basemap') || 'satellite';
+    baseLayer = _createBaseLayer(_currentBaseMap);
     baseLayer.addTo(mapInstance);
+    // 初始化底图切换勾选
+    var swCheck = document.querySelector('.map-menu-item-toggle[data-action="switch-basemap"] .toggle-check');
+    if (swCheck) swCheck.classList.toggle('off', _currentBaseMap !== 'satellite');
 
     // 缓存 DOM 引用，避免每次 mousemove 都 querySelector
     _coordsEl = document.querySelector('.map-coords');
@@ -304,6 +303,40 @@ window.GIS = window.GIS || {};
       _initShortcuts();
       _initManual();
     }
+  }
+
+  /** 创建底图图层 */
+  function _createBaseLayer(type) {
+    if (type === 'light') {
+      return new L.TileLayer('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAAlwSFlzAAAWJQAAFiUBSVIk8AAAAA0lEQVQI12P4z8BQDwAEgAF/QualzQAAAABJRU5ErkJggg==', {
+        attribution: '',
+        maxZoom: 19,
+        tileSize: 256,
+        noWrap: true,
+      });
+    }
+    // satellite (default)
+    var layer = new L.TileLayer('', {
+      attribution: '&copy; Microsoft, 必应地图',
+      maxZoom: 19,
+    });
+    layer.getTileUrl = function(coords) {
+      return TILE_URL.replace('{q}', toQuadkey(coords.x, coords.y, coords.z));
+    };
+    return layer;
+  }
+
+  /** 切换底图 'satellite' | 'light' */
+  function switchBaseMap(type) {
+    if (!mapInstance || type === _currentBaseMap) return;
+    if (baseLayer) mapInstance.removeLayer(baseLayer);
+    baseLayer = _createBaseLayer(type);
+    baseLayer.addTo(mapInstance);
+    _currentBaseMap = type;
+    localStorage.setItem('gis_basemap', type);
+    // 更新菜单项勾选
+    var satCheck = document.querySelector('.map-menu-item-toggle[data-action="switch-basemap"] .toggle-check');
+    if (satCheck) satCheck.classList.toggle('off', type !== 'satellite');
   }
 
   function toQuadkey(x, y, z) {
@@ -916,10 +949,13 @@ window.GIS = window.GIS || {};
         if (coordsEl) {
           var nowHidden = coordsEl.style.display === 'none';
           coordsEl.style.display = nowHidden ? '' : 'none';
-          // 更新菜单项勾选
           var check = document.querySelector('.map-menu-item-toggle[data-action="toggle-coords"] .toggle-check');
           if (check) check.classList.toggle('off', !nowHidden);
         }
+        break;
+      case 'switch-basemap':
+        var newType = _currentBaseMap === 'satellite' ? 'light' : 'satellite';
+        switchBaseMap(newType);
         break;
       case 'toggle-attr-table':
         var attrBtn = document.getElementById('toggleAttrTable');
@@ -931,9 +967,93 @@ window.GIS = window.GIS || {};
     }
   }
 
+  /** 应用符号化样式（按要素索引的样式映射） */
+  function applySymbology(name, geojson, styleMap) {
+    if (!mapInstance || !layers[name]) return;
+
+    // 重新加载 GeoJSON 并应用每要素样式
+    var features = [];
+    if (geojson.type === 'FeatureCollection') features = geojson.features || [];
+    else if (geojson.type === 'Feature') features = [geojson];
+
+    // 移除旧图层
+    if (layers[name]) mapInstance.removeLayer(layers[name]);
+
+    // 清除旧要素映射
+    Object.keys(_featureMap).forEach(function(k) {
+      if (k.startsWith(name + ':')) delete _featureMap[k];
+    });
+
+    var layer = L.geoJSON(geojson, {
+      style: function(feature) {
+        var idx = features.indexOf(feature);
+        var custom = styleMap ? styleMap[idx] : null;
+        if (custom) {
+          return {
+            color: custom.color || '#1c1b1b',
+            weight: custom.weight !== undefined ? custom.weight : 2,
+            fillColor: custom.fillColor || '#1c1b1b',
+            fillOpacity: custom.fillOpacity !== undefined ? custom.fillOpacity : 0.1,
+            radius: custom.radius !== undefined ? custom.radius : 2.5,
+          };
+        }
+        return { color: '#1c1b1b', weight: 2, fillColor: '#1c1b1b', fillOpacity: 0.1, radius: 2.5 };
+      },
+      pointToLayer: function(feature, latlng) {
+        var idx = features.indexOf(feature);
+        var custom = styleMap ? styleMap[idx] : null;
+        var r = (custom && custom.radius) ? custom.radius : 2.5;
+        var c = (custom && custom.color) ? custom.color : '#1c1b1b';
+        return L.circleMarker(latlng, {
+          radius: r, fillColor: c, color: c, weight: custom && custom.weight !== undefined ? custom.weight : 0,
+          opacity: 1, fillOpacity: custom && custom.fillOpacity !== undefined ? custom.fillOpacity : 1,
+        });
+      },
+      coordsToLatLng: function(coords) {
+        var lng = coords[0], lat = coords[1];
+        if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) return L.latLng(lng, lat);
+        return L.latLng(lat, lng);
+      },
+      onEachFeature: function(feature, leafletLayer) {
+        var idx = features.indexOf(feature);
+        if (idx === -1) return;
+        var key = name + ':' + idx;
+        _featureMap[key] = leafletLayer;
+
+        leafletLayer.on('click', function(e) {
+          if (!_featureInfoActive) return;
+          clearHighlight();
+          _highlightFeature(leafletLayer);
+          var props = feature.properties || {};
+          var title = props.name || props.id || props.NAME || '要素 #' + (idx + 1);
+          var html = '<div class="feat-popup">';
+          html += '<strong>' + escapeHtml(String(title)) + '</strong>';
+          var count = 0;
+          for (var k in props) {
+            if (count++ >= 5) break;
+            var v = props[k];
+            html += '<div class="feat-popup-row"><span>' + escapeHtml(k) + '</span><span>' + (v === null || v === undefined ? '' : escapeHtml(String(v))) + '</span></div>';
+          }
+          html += '<div class="feat-popup-footer">';
+          html += '<span class="feat-popup-idx">#' + (idx + 1) + ' / ' + features.length + '</span>';
+          html += '<span style="color:var(--ui-gray-300);font-size:10px;">' + escapeHtml(name) + '</span>';
+          html += '</div></div>';
+          leafletLayer.bindPopup(html, { className: 'feat-popup-wrap', closeButton: true, maxWidth: 300, offset: L.point(0, -8) }).openPopup();
+        });
+      },
+    });
+    layer.addTo(mapInstance);
+    layers[name] = layer;
+    geoStore[name] = { geojson: geojson, style: null };
+    // 缩放到图层范围
+    try { mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 }); } catch(e) {}
+  }
+
   GIS.map = {
     init: init,
     loadGeoJSON: loadGeoJSON,
+    switchBaseMap: switchBaseMap,
+    applySymbology: applySymbology,
     removeLayer: removeLayer,
     setLayerVisible: setLayerVisible,
     setLayerColor: setLayerColor,
