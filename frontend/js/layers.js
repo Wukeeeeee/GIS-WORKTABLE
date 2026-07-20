@@ -20,8 +20,8 @@ window.GIS = window.GIS || {};
     layersTable = document.getElementById('layersTable');
     layersEmpty = document.getElementById('layersEmpty');
     renderList();
-    bindActionEvents();  // 用事件委托监听按钮点击
-    bindDragEvents();    // 用事件委托监听拖拽排序
+    bindActionEvents();
+    bindDragEvents();
   }
 
 
@@ -1621,5 +1621,15 @@ window.GIS = window.GIS || {};
     analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
     syncLayerOrder: _syncLayerOrder,
     getLayers: () => [...layerData],
+    /** 返回所有图层名称列表（供网络分析面板使用） */
+    getLayerNames: function() {
+      return layerData.map(function(l) { return l.filename; });
+    },
+    /** 按图层名称获取 GeoJSON（供网络分析面板使用） */
+    getLayerGeoJSON: function(name) {
+      var layer = layerData.find(function(l) { return l.filename === name; });
+      if (!layer) return null;
+      return layer.geojson || null;
+    },
   };
 })();

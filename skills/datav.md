@@ -15,3 +15,7 @@
 ## 使用场景
 - 用户问"广东的边界" → `datav_boundary("广东省")`
 - 做区域统计需要底图 → 先获取行政边界
+
+## 查不到时的策略
+- 尝试换用上级行政区划：区查不到→查市→查省
+- 国外地点不要用 datav_boundary，用 execute_python 调 osmnx（Overpass 镜像）

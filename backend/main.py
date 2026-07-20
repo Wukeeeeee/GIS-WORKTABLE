@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
@@ -41,6 +42,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=10000)  # 10KB 以上自动 gzip 压缩
 
 # 挂载临时输出目录为静态文件（不触发 Live Server 刷新）
 app.mount("/output", StaticFiles(directory=_TEMP_OUTPUT_DIR), name="output")
@@ -57,6 +59,21 @@ class ChatRequest(BaseModel):
 
 class TestKeyRequest(BaseModel):
     api_key: str                          # 要测试的 DeepSeek API 密钥
+
+class NetworkRequest(BaseModel):
+    geojson: dict                        # 路网数据
+    type: str                            # route / service_area / closest_facility
+    origin: Optional[list] = None        # 起点 [lng, lat]
+    dest: Optional[list] = None          # 终点 [lng, lat]
+    facility: Optional[list] = None      # 设施点 [lng, lat]
+    events: Optional[list] = None        # 事件点列表 [[lng,lat], ...]
+    waypoints: Optional[list] = None     # 途经点列表 [[lng,lat], ...]
+    breaks: Optional[list] = None        # 服务区断值 [1000, 3000, 5000]
+    n: int = 3                           # 最近设施返回条数
+
+class SnapRequest(BaseModel):
+    geojson: dict                        # 路网数据
+    point: list                          # [lng, lat]
 
 # ===== 聊天接口 =====
 # 前端发消息到这里，用 LangGraph Agent 处理
@@ -257,6 +274,7 @@ async def get_boundary_api(place: str = "长沙市"):
 @app.post('/api/upload')
 async def upload(file: UploadFile = File(...)):
     import json, os, tempfile, zipfile
+    loop = asyncio.get_event_loop()
     content = await file.read()
     filename = file.filename or ''
     ext = os.path.splitext(filename)[1].lower()
@@ -270,10 +288,17 @@ async def upload(file: UploadFile = File(...)):
 
     # ===== GeoJSON =====
     if ext == '.geojson' or ext == '.json':
-        geojson_data = json.loads(content)
+        geojson_data = await loop.run_in_executor(None, json.loads, content)
         if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
             _register_layer(filename, geojson_data)
             return {"geojson": geojson_data, "name": filename, "saved_path": saved_path}
+        # 支持 GeometryCollection → 转 FeatureCollection
+        if isinstance(geojson_data, dict) and geojson_data.get('type') == 'GeometryCollection':
+            geoms = geojson_data.get('geometries', [])
+            features = [{"type": "Feature", "geometry": g, "properties": {}} for g in geoms if g]
+            fc = {"type": "FeatureCollection", "features": features}
+            _register_layer(filename, fc)
+            return {"geojson": fc, "name": filename, "saved_path": saved_path}
         return {"error": "文件不是有效的 GeoJSON 格式"}
 
     # ===== SHP (zip 包) =====
@@ -289,8 +314,8 @@ async def upload(file: UploadFile = File(...)):
                 if not os.path.exists(shp_path):
                     return {"error": "无法读取 Shapefile"}
                 import geopandas as gpd
-                gdf = gpd.read_file(shp_path)
-                geojson_data = json.loads(gdf.to_json())
+                gdf = await loop.run_in_executor(None, functools.partial(gpd.read_file, shp_path))
+                geojson_data = gdf.__geo_interface__
                 name = os.path.splitext(shp_files[0])[0]
                 _register_layer(name, geojson_data)
                 return {"geojson": geojson_data, "name": name}
@@ -303,10 +328,10 @@ async def upload(file: UploadFile = File(...)):
             tmp_path = tmp.name
         try:
             import geopandas as gpd
-            gdf = gpd.read_file(tmp_path)
+            gdf = await loop.run_in_executor(None, functools.partial(gpd.read_file, tmp_path))
             if gdf.empty:
                 return {"error": "文件未包含有效的地理数据"}
-            geojson_data = json.loads(gdf.to_json())
+            geojson_data = gdf.__geo_interface__
             name = os.path.splitext(filename)[0]
             _register_layer(name, geojson_data)
             return {"geojson": geojson_data, "name": name}
@@ -341,8 +366,7 @@ async def upload(file: UploadFile = File(...)):
 
     return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .zip(含shp)"}
 
-
-# ===== 工程保存/加载 =====
+	# ===== 工程保存/加载 =====
 class ProjectSaveRequest(BaseModel):
     project_id: Optional[str] = None
     name: str = ""
@@ -467,6 +491,74 @@ class ExportShpRequest(BaseModel):
     geojson: dict
     name: str = "图层"
     crs: str = "EPSG:4326"
+
+# ===== 网络分析 - 吸附端点 =====
+@app.post("/api/network/snap")
+async def snap_network(request: SnapRequest):
+    """将点吸附到最近的路网节点，返回吸附后的坐标"""
+    from backend.services.network_service import snap_to_network
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, functools.partial(
+                snap_to_network, request.geojson, tuple(request.point),
+            )
+        )
+        return result
+    except Exception as e:
+        return {"snapped": None, "distance_m": 0, "found": False, "error": str(e)[:200]}
+
+
+# ===== 网络分析 - 求解端点 =====
+@app.post("/api/network/solve")
+async def solve_network(request: NetworkRequest):
+    """网络分析统一入口：路线/服务区/最近设施"""
+    from backend.services.network_service import (
+        shortest_route, service_area, closest_facilities,
+    )
+    loop = asyncio.get_event_loop()
+    try:
+        if request.type == "route":
+            if not request.origin or not request.dest:
+                return {"error": "路线分析需要起点和终点"}
+            wp = [tuple(w) for w in request.waypoints] if request.waypoints else None
+            result = await loop.run_in_executor(
+                None, functools.partial(
+                    shortest_route, request.geojson,
+                    tuple(request.origin), tuple(request.dest),
+                    waypoints=wp,
+                )
+            )
+        elif request.type == "service_area":
+            if not request.facility:
+                return {"error": "服务区分析需要设施点"}
+            result = await loop.run_in_executor(
+                None, functools.partial(
+                    service_area, request.geojson,
+                    tuple(request.facility),
+                    request.breaks or [1000, 3000, 5000],
+                )
+            )
+        elif request.type == "closest_facility":
+            if not request.origin:
+                return {"error": "最近设施分析需要事件点"}
+            fac_list = [tuple(e) for e in request.events] if request.events else []
+            if not fac_list:
+                return {"error": "需要至少一个设施点（通过设施图层或手动添加）"}
+            result = await loop.run_in_executor(
+                None, functools.partial(
+                    closest_facilities, request.geojson,
+                    tuple(request.origin),
+                    fac_list,
+                    request.n,
+                )
+            )
+        else:
+            return {"error": f"不支持的类型: {request.type}"}
+        return result
+    except Exception as e:
+        return {"error": f"网络分析失败: {str(e)[:300]}"}
+
 
 @app.post("/api/layer/export-shp")
 async def export_shp(request: ExportShpRequest):

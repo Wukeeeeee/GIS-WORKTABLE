@@ -138,6 +138,7 @@ window.GIS = window.GIS || {};
       zoom: options.zoom || 4,
       zoomControl: false,
       attributionControl: true,
+      preferCanvas: true,  // Canvas 渲染，大幅提升大数据性能
     });
 
     // Bing 卫星底图
@@ -164,6 +165,8 @@ window.GIS = window.GIS || {};
       _hideCrosshair();
     });
 
+    // 阻止浏览器默认右键菜单
+    el.addEventListener('contextmenu', function(e) { e.preventDefault(); });
     // 初始化右键菜单
     setTimeout(initContextMenu, 200);
 
@@ -273,6 +276,11 @@ window.GIS = window.GIS || {};
             return;
           }
 
+          if (tool === 'network-analysis') {
+            if (GIS.network && GIS.network.toggle) GIS.network.toggle();
+            return;
+          }
+
           // 启用手动绘制工具
           var DrawClass = { polygon: L.Draw.Polygon, rectangle: L.Draw.Rectangle,
             circle: L.Draw.Circle, polyline: L.Draw.Polyline, marker: L.Draw.Marker }[tool];
@@ -378,23 +386,41 @@ window.GIS = window.GIS || {};
     });
 
     var features = (geojson.type === 'FeatureCollection' ? geojson.features : [geojson]);
+    var isLarge = featCount > 5000;
 
-    var layer = L.geoJSON(geojson, {
-      style: mergedStyle,
-      pointToLayer: function(feature, latlng) {
-        return L.circleMarker(latlng, {
-          radius: 2.5, fillColor: mergedStyle.fillColor,
-          color: mergedStyle.fillColor, weight: 0, opacity: 1, fillOpacity: 1,
-        });
-      },
-      coordsToLatLng: function(coords) {
-        var lng = coords[0], lat = coords[1];
-        if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) {
-          return L.latLng(lng, lat);
-        }
-        return L.latLng(lat, lng);
-      },
-      onEachFeature: function(feature, leafletLayer) {
+    // 大数据使用 VectorGrid 瓦片渲染（Canvas + 按需加载，不生成 DOM 节点）
+    var layer;
+    if (isLarge && typeof L.vectorGrid !== 'undefined') {
+      layer = L.vectorGrid.slicer(geojson, {
+        rendererFactory: L.canvas.tile,
+        vectorTileLayerStyles: {
+          sliced: function(properties, zoom) {
+            var w = zoom > 15 ? 3 : (zoom > 12 ? 2 : 1);
+            return { color: mergedStyle.color, weight: w, opacity: 0.8 };
+          },
+        },
+        maxZoom: 18,
+        minZoom: 4,
+        interactive: false,
+      });
+      console.log('[GIS Map] 大数据模式(VectorGrid):', name, featCount, '个要素');
+    } else {
+      layer = L.geoJSON(geojson, {
+        style: mergedStyle,
+        pointToLayer: function(feature, latlng) {
+          return L.circleMarker(latlng, {
+            radius: 2.5, fillColor: mergedStyle.fillColor,
+            color: mergedStyle.fillColor, weight: 0, opacity: 1, fillOpacity: 1,
+          });
+        },
+        coordsToLatLng: function(coords) {
+          var lng = coords[0], lat = coords[1];
+          if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) {
+            return L.latLng(lng, lat);
+          }
+          return L.latLng(lat, lng);
+        },
+        onEachFeature: featCount > 5000 ? null : function(feature, leafletLayer) {
         var idx = features.indexOf(feature);
         if (idx === -1) return;
         var key = name + ':' + idx;
@@ -428,14 +454,15 @@ window.GIS = window.GIS || {};
         });
       },
     });
-    layer.addTo(mapInstance);
-    layers[name] = layer;
-    geoStore[name] = { geojson: geojson, style: style };
-    // 自动缩放到图层范围
-    try {
-      mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 });
-    } catch(e) {}
-    return layer;
+  }
+  layer.addTo(mapInstance);
+  layers[name] = layer;
+  geoStore[name] = { geojson: geojson, style: style };
+  // 自动缩放到图层范围
+  try {
+    mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 });
+  } catch(e) {}
+  return layer;
   }
 
   function removeLayer(name) {
@@ -956,6 +983,9 @@ window.GIS = window.GIS || {};
       case 'switch-basemap':
         var newType = _currentBaseMap === 'satellite' ? 'light' : 'satellite';
         switchBaseMap(newType);
+        break;
+      case 'tool-network-analysis':
+        if (GIS.network && GIS.network.toggle) GIS.network.toggle();
         break;
       case 'toggle-attr-table':
         var attrBtn = document.getElementById('toggleAttrTable');

@@ -70,6 +70,7 @@ python -m uvicorn backend.main:app --port 8000
 - 面积精确测量（自动选 UTM 投影 + Albers 交叉验证）
 - 统计图表（柱状图/饼图/直方图/散点图/折线图）
 - 三层沙箱隔离的 Python 代码执行
+- **网络分析面板**：最短路径（含途经点/方向箭头）、服务区（多级断值）、最近设施（图层+手动设施点混合），点击地图自动吸附路网，结果可导出为图层
 
 ### UI
 - 顶部菜单栏（文件/绘制/视图/工具/帮助）
@@ -133,6 +134,7 @@ frontend/
     ├── api.js         # API 通信
     ├── upload.js      # 文件上传
     ├── aoi.js         # AOI 交互
+    ├── network.js     # 网络分析面板
     └── project.js     # 工程持久化
 
 backend/
@@ -166,6 +168,18 @@ backend/
 
 
 ## 更新日志
+
+### 2026-07-21
+- Main 测试网络分析面板
+- Add 网络分析面板单元测试（26 项）
+- Add 网络分析面板重构（三栏结构，与设置弹窗风格统一）
+- Add 面板拖拽约束（左边界限定在聊天面板右侧，底部限 vh-10）
+- Add 导入性能优化：json.loads/gpd.read_file 移至线程池，SHP/GPKG/KML 路径省掉 JSON 序列化往返
+- Fix 选点卡死：snap 失败时重置 _inputMode 和光标
+- Fix 后端 error 字段被忽略：路网为空时显示具体错误
+- Fix 面板关闭后 _initialized 被重置导致每次打开全量重建 DOM
+- Fix 导出空白：_exportResult 调用 addLayer 传参错误
+- Fix 方向箭头 ▶ 残留：添加 _arrowMarker 变量跟踪并随结果清理
 
 ### 2026-07-18
 - Add settings.js 提取设置弹窗、密钥管理、模型选择、主题/字号

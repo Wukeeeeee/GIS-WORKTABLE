@@ -156,7 +156,7 @@ def _add_pending_item(url: str, file_path: str = None):
 
 @tool
 def search_web(query: str) -> str:
-    """搜索网络信息，返回相关网页的标题、链接和摘要。用于搜索最新新闻、数据、资料等"""
+    """搜索网络信息，返回网页标题/链接/摘要。用于搜索最新新闻、数据、资料。涉及国外内容用中英文搜。"""
     global _search_call_count
     _search_call_count += 1
     if _search_call_count > 30:
@@ -373,7 +373,7 @@ def search_platform(platform: str, query: str) -> str:
 
 @tool
 def save_file(filename: str, content: str) -> str:
-    """把内容保存成文件，支持CSV、GeoJSON、TXT等格式。文件名不要加 output/ 前缀"""
+    """把内容保存成文件（CSV/GeoJSON/TXT等）。文件名不加 output/ 前缀。优先UTF-8编码。GeoJSON自动加载到地图，HTML自动显示在前端。"""
     init_temp_dir()
     if not isinstance(content, str):
         content = json.dumps(content, ensure_ascii=False)
@@ -562,11 +562,10 @@ def _extract_geojson(name: str, data: dict):
 
 @tool
 def execute_python(code: str) -> str:
-    """执行Python GIS代码（沙箱隔离），返回执行结果及耗时。
-    可用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, json, math, re, datetime, io, tempfile, requests, pyproj, rasterio, osmnx
-    要在地图上显示结果，print出GeoJSON字符串即可。
-    要生成图表，用 plt.savefig('chart_xxx.png')（相对路径）。
-    AMAP_KEY 通过 _AMAP_KEY 变量直接获取。"""
+    """执行Python GIS代码（沙箱隔离）。可用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, json, math, re, datetime, io, tempfile, requests, pyproj, rasterio, osmnx。
+    print(GeoJSON) 自动加载到地图（加 name 字段做图层名）。
+    plt.savefig('chart_xxx.png') 生成图表。AMAP_KEY 通过 _AMAP_KEY 变量获取。
+    上传文件在 output/uploads/ 下。"""
     global _exec_call_count
     _exec_call_count += 1
     if _exec_call_count > 5:
@@ -749,11 +748,8 @@ plt.style.use("ggplot")
 
 @tool
 def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: int = 1000) -> str:
-    """高德地图 POI 搜索。搜索兴趣点（餐厅、银行、超市等），自动转换坐标并加载到地图。
-    keywords: 搜索关键词，如"麦当劳""肯德基"
-    city: 城市名，如"广州"（可选，不填则全国搜索）
-    location: 中心点坐标 "经度,纬度"（可选，传此参数则进行周边搜索）
-    radius: 搜索半径（周边搜索时有效），单位米，默认1000"""
+    """高德地图 POI 搜索（餐厅/银行/超市等），自动转 WGS-84 加载到地图。
+    keywords: 搜索关键词；city: 城市名（必填）；location: 中心点"经度,纬度"（周边搜索用）；radius: 搜索半径米（默认1000）。禁止用 execute_python 调高德API。"""
     if not _current_amap_key:
         return "高德 API Key 未配置，请在设置中配置高德地图密钥"
 
@@ -806,7 +802,12 @@ def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: i
 
 @tool
 def unified_aoi_search(query: str) -> str:
-    """搜索地点轮廓，返回候选列表在聊天框显示"""
+    """搜索地点轮廓，返回候选列表在聊天框显示。
+    流程：用户说"提取轮廓"或"AOI"时先调本工具 → 在聊天框显示候选列表
+    → **执行后立刻停止，不要继续提取**，等用户点击选择
+    → 用户选择后会发来"已选择AOI候选: 名称 | ID: xxx | 来源: baidu"
+    → 收到后用 unified_aoi_extract 提取
+    提取失败的话如实告诉用户，**严禁自己估算或画边界**"""
     try:
         from backend.services.baidu_aoi_service import search_suggestions
         suggestions = search_suggestions(query)
@@ -826,7 +827,8 @@ def unified_aoi_search(query: str) -> str:
 
 @tool
 def unified_aoi_extract(uid: str, name: str) -> str:
-    """根据用户选择的候选提取建筑轮廓（百度数据源），转WGS84加载到地图"""
+    """根据用户选择的候选提取建筑轮廓（百度数据源），转WGS84加载到地图。
+    提取失败则如实告诉用户"暂时无法获取"。**严禁自己估算或画近似边界**"""
     try:
         from backend.services.baidu_aoi_service import extract_boundary
         geojson = extract_boundary(uid, name)
@@ -885,8 +887,7 @@ def get_layer_detail(layer_name: str) -> str:
 
 @tool
 def datav_boundary(name: str) -> str:
-    """从阿里云 DataV 获取省/市/区三级行政区划边界，自动转 WGS-84 并加载到地图。
-    用于获取省份、城市、区县的行政边界，不要用百度/高德 AOI 工具获取行政边界"""
+    """从阿里云 DataV 获取中国省/市/区三级行政边界，自动转 WGS-84 加载到地图。国外边界用 execute_python 调 osmnx。查不到时尝试上级行政区划。"""
     try:
         from backend.services.datav_service import fetch_boundary
         data = fetch_boundary(name)
@@ -906,7 +907,7 @@ def datav_boundary(name: str) -> str:
 
 @tool
 def create_heatmap(layer_name: str, weight_field: str = "", radius: int = 20, gradient: str = "") -> str:
-    """从点图层生成热力图。参数：图层名、权重字段（可选）、半径（像素，默认20）、渐变色"""
+    """从点图层生成热力图。需先有点图层（含权重字段）。参数：weight_field（权重字段）、radius（像素半径，默认20）、gradient（渐变色如"0.4=blue,1.0=red"）。"""
     info = _registered_layers.get(layer_name)
     if not info:
         return f"图层 {layer_name} 未找到"
@@ -1039,7 +1040,7 @@ def measure_area(layer_name: str) -> str:
 
 @tool
 def field_calculate(layer_name: str, expression: str, new_field: str, field_type: str = "float") -> str:
-    """计算并添加新字段到指定图层。expression 是 Python 表达式，如"面积*0.0015"或"人口/面积"，引用现有字段名即可。支持四则运算、函数调用（abs, round, int, float, str, len 等）。执行后自动更新地图上的图层"""
+    """计算并添加新字段到指定图层。expression 写 Python 表达式（如"面积*0.0015"），直接引用字段名。支持 abs/round/int/float/str/len/min/max/sum/pow。自动更新地图。"""
     try:
         info = _registered_layers.get(layer_name)
         if not info:
@@ -1166,12 +1167,7 @@ def get_session_logs(n: int = 20) -> str:
 
 @tool
 def layer_control(action: str, name: str = "", new_name: str = "", color: str = "") -> str:
-    """控制地图上的图层。action 为操作类型：
-    - remove：删除指定图层（只需 name）
-    - toggle：切换显隐（只需 name）
-    - set_color：修改颜色（需 name + color，如 #ff0000）
-    - rename：重命名（需 name + new_name）
-    - fit：缩放到图层范围（只需 name）"""
+    """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) rename(重命名+new_name) fit(缩放至图层)。"""
     if action == "remove":
         _pending_layer_ops.append({"action": "remove", "name": name})
         return f"已标记移除图层: {name}"
@@ -1277,11 +1273,9 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
 @tool
 def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
                  x_field: str = "", y_field: str = "", title: str = "") -> str:
-    """从图层的属性数据生成统计图表（ECharts SVG 渲染）。
-    chart_type 可选: bar(柱状图), pie(饼图), histogram(直方图), scatter(散点图), line(折线图)
-    - 单字段统计：传 field（如 histogram/bar/pie 统计某字段分布）
-    - 双字段对比：传 x_field + y_field（如 scatter/bar 对比两个字段）
-    - 自动统计分类字段的唯一值数量（bar/pie 时自动聚合）"""
+    """从图层属性数据生成 ECharts 统计图表。用户要看统计图表/分布时优先用本工具。
+    chart_type 可选: bar(柱状图) pie(饼图) histogram(直方图) scatter(散点图) line(折线图)
+    单字段统计传 field，双字段对比传 x_field+y_field。"""
     info = _registered_layers.get(layer_name)
     if not info:
         matches = [n for n in _registered_layers.keys() if layer_name in n]
@@ -1448,6 +1442,24 @@ window.addEventListener('resize', function(){{chart.resize();}});
         if not echarts_html:
             return "图表生成失败"
 
+        # 注入 SVG 导出按钮
+        svg_export_script = """
+<style>
+.chart-toolbar{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:100}
+.chart-toolbar button{padding:4px 10px;font-size:12px;background:rgba(0,0,0,0.7);border:none;border-radius:4px;cursor:pointer;color:#fff}
+.chart-toolbar button:hover{background:rgba(0,0,0,0.9)}
+</style>
+<div class="chart-toolbar">
+<button onclick="downloadSVG()">导出 SVG</button>
+</div>
+<script>
+function downloadSVG(){var svg=document.querySelector('#chart svg');if(!svg){alert('SVG not found');return}
+var s=new XMLSerializer();var str='<?xml version="1.0" encoding="utf-8"?>'+s.serializeToString(svg)
+var blob=new Blob([str],{type:'image/svg+xml;charset=utf-8'})
+var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='chart.svg';a.click();URL.revokeObjectURL(url)}
+</script>"""
+        echarts_html = echarts_html.replace("</body></html>", svg_export_script + "</body></html>")
+
         # 保存 HTML 并推送到前端
         init_temp_dir()
         fname = f"chart_{now_ts}.html"
@@ -1461,6 +1473,106 @@ window.addEventListener('resize', function(){{chart.resize();}});
     except Exception as e:
         import traceback
         return f"图表生成失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
+# 工具: network_analysis — 网络分析
+# ============================================================
+
+@tool
+def network_analysis(
+    layer_name: str,
+    analysis_type: str,
+    origin: str = "",
+    destination: str = "",
+    facility: str = "",
+    events: str = "",
+    breaks: str = "",
+    n: int = 3,
+) -> str:
+    """从路网图层做网络分析。analysis_type: route(最短路径) service_area(服务区) closest_facility(最近设施)。
+    origin/destination/facility 参数传"经度,纬度"。events 传分号分隔坐标，breaks 传逗号分隔米数。"""
+    from backend.services.network_service import (
+        build_graph_from_geojson, shortest_route,
+        service_area, closest_facilities,
+    )
+
+    info = _registered_layers.get(layer_name)
+    if not info:
+        matches = [n for n in _registered_layers.keys() if layer_name in n]
+        if len(matches) == 1:
+            info = _registered_layers[matches[0]]
+            layer_name = matches[0]
+        elif len(matches) > 1:
+            return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+        else:
+            return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+    geojson = info.get("geojson", {})
+    if not geojson:
+        return f"图层「{layer_name}」数据为空"
+
+    try:
+        if analysis_type == "route":
+            if not origin or not destination:
+                return "路线分析需要 origin 和 destination 参数"
+            o = _parse_coord(origin)
+            d = _parse_coord(destination)
+            result = shortest_route(geojson, o, d)
+            if "error" in result:
+                return f"路径分析失败: {result['error']}"
+            _push_layer(f"路径_{layer_name}", {
+                "type": "FeatureCollection",
+                "features": [result["path"]],
+            })
+            return (
+                f"路径分析完成：总距离 {result['distance_km']} km，"
+                f"{result['node_count']} 个途经节点，已加载到地图"
+            )
+
+        elif analysis_type == "service_area":
+            if not facility:
+                return "服务区分析需要 facility 参数"
+            f = _parse_coord(facility)
+            breaks_list = [int(b.strip()) for b in breaks.split(",")] if breaks else [1000, 3000, 5000]
+            result = service_area(geojson, f, breaks_list)
+            if "error" in result:
+                return f"服务区分析失败: {result['error']}"
+            _push_layer(f"服务区_{layer_name}", result["polygons"])
+            area_str = "；".join(f"{a['break']}m:{a['area_km2']}km²" for a in result["areas"])
+            return f"服务区分析完成：{area_str}，已加载到地图"
+
+        elif analysis_type == "closest_facility":
+            if not origin:
+                return "最近设施分析需要 origin（事件点）和已注册的设施图层"
+            o = _parse_coord(origin)
+            fac_list = [_parse_coord(e.strip()) for e in events.split(";")] if events else []
+            if not fac_list:
+                return "请通过 events 参数提供设施点坐标（分号分隔）"
+            result = closest_facilities(geojson, o, fac_list, n)
+            if "error" in result:
+                return f"最近设施分析失败: {result['error']}"
+            _push_layer(f"最近设施_{layer_name}", {
+                "type": "FeatureCollection",
+                "features": result["paths"],
+            })
+            lines = [f"最近设施分析完成（前 {len(result['summary'])} 条）："]
+            for s in result["summary"]:
+                lines.append(f"  #{s['rank']} 设施{s['facility_idx']}：{s['distance_km']} km")
+            return "\n".join(lines)
+
+        else:
+            return f"不支持的分析类型：{analysis_type}，可选：route / service_area / closest_facility"
+
+    except Exception as e:
+        import traceback
+        return f"网络分析异常: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+def _parse_coord(s: str) -> tuple:
+    """解析 "经度,纬度" 字符串"""
+    parts = s.split(",")
+    return float(parts[0].strip()), float(parts[1].strip())
 
 
 # ============================================================
@@ -1488,4 +1600,6 @@ tools = [
     layer_control,
     export_layer,
     create_chart,
+    network_analysis,
 ]
+
