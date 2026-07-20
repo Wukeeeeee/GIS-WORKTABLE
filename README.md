@@ -1,28 +1,27 @@
 <p align="center">
-  <img src="frontend/assets/logo-readme.svg" alt="GIS WorkTable" width="320">
+  <img src="frontend/assets/logo-readme.svg" alt="GeoMind" width="320">
 </p>
 
 <p align="center">
-  GIS WORKTABLE -- 地理空间分析工作台
+  <b>地理空间分析工作台 · AI 驱动的 GIS 工具</b>
 </p>
 
-## 简介
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" />
+  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" />
+  <img src="https://img.shields.io/badge/Leaflet-199900?style=flat-square&logo=leaflet&logoColor=white" />
+  <img src="https://img.shields.io/badge/LangGraph-1C3C3C?style=flat-square&logo=langchain&logoColor=white" />
+  <img src="https://img.shields.io/badge/License-AGPL%20v3-1a1a2e?style=flat-square" />
+</p>
 
-基于 Web 的 GIS 数据处理可视化工作台，内置三模型 AI 助手（GLM/DeepSeek/Agnes），通过自然语言交互即可搜索数据、处理 GIS 数据并加载到地图。
+---
 
-AI 内置网页抓取、内容清洗、搜索等工具。
+一个基于 Web 的 GIS 数据处理与可视化工作台，内置三模型 AI Agent，通过自然语言对话即可驱动地图操作、空间分析和数据加载。
 
-## 模型
+## 截图
 
-| 模型 | 说明 |
-|------|------|
-| GLM-4.7-Flash+（默认） | 免费，完整 Function Calling |
-| DeepSeek V4 Flash+ | 需 API Key |
-| Agnes 2.0 Flash+ | 免费，512K 上下文 |
-
-所有 AI 回复支持 Markdown 渲染，一键复制，加载状态带计时器。
-
-> 使用前需配置 API Key — 点击页面顶部齿轮按钮设置。GLM 和 Agnes 目前免费。
+![界面截图](firstHtml.png)
 
 ## 快速开始
 
@@ -36,101 +35,135 @@ cd ..
 python -m uvicorn backend.main:app --port 8000
 ```
 
-前端直接用浏览器打开 `frontend/index.html`。
+打开浏览器访问 `http://localhost:8000`，或在开发时直接用浏览器打开 `frontend/index.html`（需后端运行中）。
 
 ## 功能
 
-- AI 对话（自然语言驱动 GIS 操作）
-- 地图底图（Bing 卫星）+ 绘制工具
-- 浮动图层面板（显隐/排序/颜色/删除）
-- 文件上传（GeoJSON/SHP/GPKG/KML/CSV）
-- 行政边界获取（DataV 省市区三级）
+### AI Agent 系统
+- 三模型支持：**GLM-4.7-Flash+**（免费默认）、**DeepSeek V4 Flash+**、**Agnes 2.0 Flash+**（免费 512K 上下文）
+- LangGraph 驱动的 ReAct Agent，自动管理多轮工具调用
+- 自校验 Verifier（Agent 2），自动验证结果质量，不通过则自动修正
+- GLM 路由系统，自动加载技能文档辅助任务
+- SSE 流式响应，前端实时展示工具调用进度
+- 话题切换检测，自动清空无关历史
+
+### 地图与空间数据
+- 多格式文件上传：GeoJSON / SHP / GPKG / KML / CSV
+- 浮动图层面板：显隐、排序、颜色、删除、重命名
+- 属性检查器三标签页：基础信息 / 符号系统 / 属性表
+- 符号系统：唯一值 / 分级色彩 / 分级符号 / 比例符号，色带选择，启用/禁用
+- 属性表：查看、编辑、筛选、导出、字段计算器、地图定位
+- 底图切换：Bing 卫星图 / 纯白底图
+- SHP 导出，要素选择与高亮
+
+### 数据获取
+- 行政边界（DataV 省市区三级）
+- 高德 POI 搜索、地理编码、天气
+- 百度 AOI 建筑轮廓提取
+- Bing 搜索、网页抓取（Scrapling 隐身引擎）
+- B 站搜索
+- OSM 道路网络提取（Overpass 多镜像自动切换）
+
+### 空间分析
+- 缓冲区、相交、合并、裁剪、坐标转换
 - 热力图生成
-- 网页抓取与内容清洗（Scrapling）
-- 中国平台搜索（B站）
-- 右键发送位置给 AI
-- 斜杠命令面板（/buffer /intersection /aoi /help 等）
-- 顶部菜单栏（文件/绘制/视图/工具/帮助），SVG+文字风格
-- 快捷栏定制：通过菜单开关右侧工具栏按钮显隐
-- 操作手册弹窗（左侧目录+右侧内容），支持 `/help` 打开
-- 要素选择工具：点击地图要素弹出属性信息卡片
-- 绘制工具互斥选中 + ✓ 图标高亮
+- 面积精确测量（自动选 UTM 投影 + Albers 交叉验证）
+- 统计图表（柱状图/饼图/直方图/散点图/折线图）
+- 三层沙箱隔离的 Python 代码执行
+
+### UI
+- 顶部菜单栏（文件/绘制/视图/工具/帮助）
+- 操作手册弹窗（左侧目录 + 右侧内容）
+- 斜杠命令面板（`/buffer` `/intersection` `/aoi` `/help` 等）
+- 任务管理、问答日志、工程持久化
+
+## AI Agent 架构
+
+```
+用户消息
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ GLM 路由 (ai_service.py)            │
+│ → 分析消息 → 加载对应技能文档        │
+└──────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ LangGraph ReAct Agent (graph.py)    │
+│ → create_react_agent(llm, tools)     │
+│ → 自动循环：LLM → 工具 → 结果 → ... │
+└──────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ 15+ @tool 工具集 (tools.py)         │
+│ search_web / execute_python /        │
+│ datav_boundary / amap_poi_search /   │
+│ create_heatmap / field_calculate /   │
+│ export_layer / layer_control / ...   │
+└──────────────────────────────────────┘
+    │
+    ▼
+┌──────────────────────────────────────┐
+│ 自校验 Verifier (graph.py)          │
+│ → 验证结果是否满足用户请求          │
+│ → 不通过则自动追加修正轮            │
+└──────────────────────────────────────┘
+    │
+    ▼
+AI 回复 + 数据推送到前端
+```
+
+每一个文件都有详细注释说明架构演进和设计决策。
+
+## 项目结构
+
+```
+frontend/
+├── index.html         # 主页面
+├── css/style.css      # 样式
+└── js/                # JS 模块
+    ├── app.js         # 应用初始化
+    ├── chat.js        # AI 对话
+    ├── map.js         # 地图控制
+    ├── layers.js      # 图层面板 + 属性检查器
+    ├── settings.js    # 设置弹窗
+    ├── task.js        # 任务管理
+    ├── api.js         # API 通信
+    ├── upload.js      # 文件上传
+    ├── aoi.js         # AOI 交互
+    └── project.js     # 工程持久化
+
+backend/
+├── main.py            # FastAPI 入口
+└── services/
+    ├── ai_service.py  # AI 服务层（系统提示词、历史管理、路由）
+    ├── graph.py       # LangGraph Agent（主循环 + 自校验）
+    ├── tools.py       # @tool 工具集（15+ 个工具）
+    ├── layer_service.py
+    ├── amap_service.py
+    ├── baidu_aoi_service.py
+    ├── datav_service.py
+    ├── geo_coords.py
+    ├── log_service.py
+    └── project_service.py
+```
 
 ## 技术栈
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" />
-  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" />
-  <img src="https://img.shields.io/badge/HTML5-E34F26?style=flat-square&logo=html5&logoColor=white" />
-  <img src="https://img.shields.io/badge/CSS3-1572B6?style=flat-square&logo=css3&logoColor=white" />
-  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" />
-  <img src="https://img.shields.io/badge/Leaflet-199900?style=flat-square&logo=leaflet&logoColor=white" />
-  <img src="https://img.shields.io/badge/DeepSeek-4F6BED?style=flat-square&logo=deepseek&logoColor=white" />
-  <img src="https://img.shields.io/badge/GLM-2563EB?style=flat-square&logo=zhipu&logoColor=white" />
-  <img src="https://img.shields.io/badge/GeoPandas-139C5A?style=flat-square&logo=geopandas&logoColor=white" />
-  <img src="https://img.shields.io/badge/Shapely-333333?style=flat-square&logo=shapely&logoColor=white" />
-  <img src="https://img.shields.io/badge/Playwright-2EAD33?style=flat-square&logo=playwright&logoColor=white" />
-  <img src="https://img.shields.io/badge/License-AGPL%20v3-1a1a2e?style=flat-square" />
-</p>
 
 | 类别 | 技术 |
 |------|------|
 | 前端 | HTML + CSS + JavaScript |
 | 地图 | Leaflet |
 | 后端 | FastAPI + Python |
-| AI | GLM-4.7-Flash+ / DeepSeek V4 Flash+ / Agnes 2.0 Flash+ |
+| AI 框架 | LangGraph (ReAct Agent) |
+| 模型 | GLM-4.7-Flash+ / DeepSeek V4 Flash+ / Agnes 2.0 Flash+ |
 | GIS | GeoPandas + Shapely + PyProj |
-| 抓取 | Scrapling + markdownify |
+| 沙箱 | AST 静态校验 + 子进程 + 超时强杀（三层） |
+| 抓取 | Scrapling + Playwright |
 
-### 使用的开源项目
 
-| 项目 | 用途 | GitHub |
-|------|------|--------|
-| Firecrawl | 网页抓取 API（自托管） | [nicholasgriffintn/firecrawl](https://github.com/nicholasgriffintn/firecrawl) |
-| browser_use | 浏览器自动化 AI 代理 | [nicholasgriffintn/browser-use](https://github.com/nicholasgriffintn/browser-use) |
-| Scrapling | 隐身网页抓取（TLS 指纹混淆） | [niespodd/scrapling](https://github.com/niespodd/scrapling) |
-
-### 开放平台
-
-| 平台 | 用途 | 链接 |
-|------|------|------|
-| 高德开放平台 | POI 搜索、地理编码、行政区域查询 | [lbs.amap.com](https://lbs.amap.com/) |
-| 百度地图开放平台 | AOI 建筑轮廓提取 | [lbsyun.baidu.com](https://lbsyun.baidu.com/) |
-| DataV 地理工具 | 省市区行政边界 GeoJSON | [datav.aliyun.com](https://datav.aliyun.com/portal/school/atlas/area_selector) |
-| Bing Maps 中国区 | 地图底图（卫星图） | [bingmapsportal.com](https://www.bingmapsportal.com/) |
-| DeepSeek 开放平台 | AI 推理模型 | [platform.deepseek.com](https://platform.deepseek.com/) |
-| 智谱开放平台 | GLM AI 模型（免费） | [open.bigmodel.cn](https://open.bigmodel.cn/) |
-| Agnes API | Agnes 2.0 Flash+ AI 模型 | [apihub.agnes-ai.com](https://apihub.agnes-ai.com/) |
-| Firecrawl | 网页抓取 API | [firecrawl.dev](https://www.firecrawl.dev/) |
-
-## 项目结构
-
-```
-frontend/
-  index.html      # 主页面
-  css/style.css   # 样式
-  js/             # JS 模块
-    chat.js       # AI 对话
-    map.js        # 地图
-    layers.js     # 图层面板
-    task.js       # 任务管理
-    api.js        # API 通信
-    upload.js     # 文件上传
-    app.js        # 应用初始化
-backend/
-  main.py         # FastAPI 入口
-  services/
-    ai_service.py     # AI 对话 + 系统提示词
-    tools.py          # @tool 工具集
-    graph.py          # LangGraph Agent
-    geo_coords.py     # 坐标转换
-    amap_service.py   # 高德 Web API
-    datav_service.py  # DataV 行政边界
-    log_service.py    # 问答日志
-skills/               # 技能文档
-  geometry.md / aoi.md / datav.md / heatmap.md
-  visualization.md / analysis.md / amap.md / gdal.md / remote_sensing.md
-```
 
 ## 更新日志
 
@@ -156,7 +189,6 @@ skills/               # 技能文档
 - Fix style.css 各组件偏移适配菜单栏 30px
 - Fix 符号化启用/禁用时 _symbologyConfig 未初始化/已删除导致 TypeError
 - Fix CSS info-panel/symb-panel 新样式，替换旧 symbology-inline
-
 
 ### 2026-07-16
 - Add SYSTEM_PROMPT 精简：DeepSeek 版 200→113 行 (-44%)，GLM 版 68→64 行
