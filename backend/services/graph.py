@@ -363,6 +363,7 @@ def run_agent_stream(
     _cached_graph = agent
 
     try:
+        msgs = []  # 初始化，防止空流时 verifier 引用未定义变量
         for step in agent.stream(
             {"messages": messages},
             {"recursion_limit": 120},

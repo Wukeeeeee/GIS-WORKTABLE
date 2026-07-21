@@ -106,7 +106,7 @@ window.GIS = window.GIS || {};
   }
 
   // 添加图层：加入列表 + 渲染
-  function addLayer(layer) {
+  function addLayer(layer, skipRegister) {
     const colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
     const color = layer.color || colors[layerData.length % colors.length];
     // 重名自动加 (1) (2)
@@ -120,7 +120,7 @@ window.GIS = window.GIS || {};
     layerData.push({ ...layer, filename: name, _rawName, visible: true, color });
     renderList();
     _syncLayerOrder();
-    if (window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
+    if (!skipRegister && window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
       window.GIS.api.registerLayer(name, layer.geojson);
     }
   }

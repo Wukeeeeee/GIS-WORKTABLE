@@ -71,6 +71,7 @@ python -m uvicorn backend.main:app --port 8000
 - 统计图表（柱状图/饼图/直方图/散点图/折线图）
 - 三层沙箱隔离的 Python 代码执行
 - **网络分析面板**：最短路径（含途经点/方向箭头）、服务区（多级断值）、最近设施（图层+手动设施点混合），点击地图自动吸附路网，结果可导出为图层
+- **AI 驱动网络分析**：用自然语言指挥 AI 完成「识别城市→下载路网→分析路径/服务区/最近设施→加载结果」全流程，Agent 自动调用 `amap_poi_search` 转坐标、`download_road_network` 从 OSM 下载路网、`network_analysis` 执行分析（国内用户若 OSM 连不通，AI 会给出 Geofabrik/BBBike 替代下载指引）
 
 ### UI
 - 顶部菜单栏（文件/绘制/视图/工具/帮助）
@@ -171,6 +172,10 @@ backend/
 
 ### 2026-07-21
 - Main 测试网络分析面板
+- Fix AI 工具路由：`execute_python` docstring 改为"最后选择"、系统提示词新增工具优先级规则
+- Fix `_push_layer` 推图层不生效：`get_pending_state()` 改为读取即消费 + 线程锁，修复校验器路径图层重复累积
+- Fix SSE 端点冗余 `reset_state` 调用，`run_agent_stream` `msgs` 变量初始化
+- Update 操作手册：新增空间分析 section（网络分析/AOI/行政边界/热力图）、AI 斜杠命令完整表格（18 条）、图层管理补充导出/字段计算/图表、顶部菜单更新
 - Add 网络分析面板单元测试（26 项）
 - Add 网络分析面板重构（三栏结构，与设置弹窗风格统一）
 - Add 面板拖拽约束（左边界限定在聊天面板右侧，底部限 vh-10）

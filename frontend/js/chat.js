@@ -52,6 +52,9 @@ _linkRenderer.link = function(token) {
     heatmap: '<svg viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="1" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="3.5" cy="3.5" r="1.2" fill="currentColor" opacity=".6"/><circle cx="10.5" cy="3.5" r=".8" fill="currentColor" opacity=".4"/><circle cx="3.5" cy="10.5" r="1.5" fill="currentColor" opacity=".8"/></svg>',
     plot: '<svg viewBox="0 0 14 14"><rect x="2" y="8" width="2.5" height="4" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.5" y="4" width="2.5" height="8" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="6" width="2.5" height="6" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
     amap: '<svg viewBox="0 0 14 14"><path d="M7 1a5 5 0 00-5 5c0 3.5 5 7 5 7s5-3.5 5-7a5 5 0 00-5-5zm0 7a2 2 0 110-4 2 2 0 010 4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    export: '<svg viewBox="0 0 14 14"><path d="M7 1v8M4 6l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 10v2h10v-2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+    chart: '<svg viewBox="0 0 14 14"><polyline points="1,11 3,7 5.5,9 8,4 11,6 13,2" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="1" y1="11" x2="13" y2="11" stroke="currentColor" stroke-width="1.2"/></svg>',
+    network: '<svg viewBox="0 0 14 14"><circle cx="7" cy="3" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="3" cy="11" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11" cy="11" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="4.5" x2="4.5" y2="9.5" stroke="currentColor" stroke-width="1.2"/><line x1="8.5" y1="4.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1.2"/></svg>',
     help: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 5.2a1.8 1.8 0 013.6 0c0 1.2-1.8 1.8-1.8 1.8v1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="11" r=".6" fill="currentColor"/></svg>',
   };
 
@@ -73,6 +76,7 @@ _linkRenderer.link = function(token) {
     { name: 'export', label: '导出SHP', desc: '导出图层为Shapefile或GeoJSON', prompt: '将 {图层名} 导出为 {格式} 文件' },
     { name: 'chart', label: '图表分析', desc: '图层属性统计图表（柱状/饼图/散点）', prompt: '对 {图层名} 的 {字段} 生成 {图表类型} 图' },
     { name: 'amap', label: '高德', desc: '搜索POI/查天气/地址转坐标', prompt: '搜索 {关键词} 的 POI 数据，每页25条最多200条，结果加载到地图' },
+    { name: 'network', label: '网络分析', desc: '最短路径/服务区/最近设施', prompt: '从 {起点} 到 {终点} 的最短路径，用广州路网分析' },
   ];
 
   let _slashFiltered = [];      // 当前过滤后的列表

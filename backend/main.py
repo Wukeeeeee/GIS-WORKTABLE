@@ -158,12 +158,10 @@ async def chat(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """SSE 流式聊天接口，实时推送 Agent 执行进度"""
     from backend.services.graph import run_agent_stream
-    from backend.services.tools import reset_state
     from backend.services.ai_service import _build_system_content, _build_langgraph_messages, _get_or_create_history
 
     provider = request.provider or "deepseek"
     amap_key = request.amap_key or ""
-    reset_state(amap_key)
 
     # 构建 system prompt + 消息（复用 ai_service 的构建逻辑）
     force_skills = request.force_skills or []
@@ -273,32 +271,34 @@ async def get_boundary_api(place: str = "长沙市"):
 
 @app.post('/api/upload')
 async def upload(file: UploadFile = File(...)):
-    import json, os, tempfile, zipfile
+    import os, tempfile, zipfile, orjson
     loop = asyncio.get_event_loop()
     content = await file.read()
     filename = file.filename or ''
     ext = os.path.splitext(filename)[1].lower()
 
-    # 所有上传的文件存到临时目录，供 AI 后续处理用
-    upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
-    os.makedirs(upload_dir, exist_ok=True)
-    saved_path = os.path.join(upload_dir, filename)
-    with open(saved_path, 'wb') as f:
-        f.write(content)
+    # GeoJSON 已有内存副本，跳过磁盘写；其余格式落地供 AI 后续处理
+    saved_path = None
+    if ext not in ('.geojson', '.json'):
+        upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        saved_path = os.path.join(upload_dir, filename)
+        with open(saved_path, 'wb') as f:
+            f.write(content)
 
     # ===== GeoJSON =====
     if ext == '.geojson' or ext == '.json':
-        geojson_data = await loop.run_in_executor(None, json.loads, content)
+        geojson_data = await loop.run_in_executor(None, orjson.loads, content)
         if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
             _register_layer(filename, geojson_data)
-            return {"geojson": geojson_data, "name": filename, "saved_path": saved_path}
+            return {"geojson": geojson_data, "name": filename}
         # 支持 GeometryCollection → 转 FeatureCollection
         if isinstance(geojson_data, dict) and geojson_data.get('type') == 'GeometryCollection':
             geoms = geojson_data.get('geometries', [])
             features = [{"type": "Feature", "geometry": g, "properties": {}} for g in geoms if g]
             fc = {"type": "FeatureCollection", "features": features}
             _register_layer(filename, fc)
-            return {"geojson": fc, "name": filename, "saved_path": saved_path}
+            return {"geojson": fc, "name": filename}
         return {"error": "文件不是有效的 GeoJSON 格式"}
 
     # ===== SHP (zip 包) =====

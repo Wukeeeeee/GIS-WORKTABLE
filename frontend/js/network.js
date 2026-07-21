@@ -45,26 +45,26 @@ window.GIS = window.GIS || {};
         '</button>' +
       '</div>' +
 
-      /* ===== 主体：左导航 + 右内容 ===== */
+      /* ===== 顶部标签栏 ===== */
+      '<div class="network-tabs" id="networkTabs">' +
+        '<button class="network-tab active" data-type="route">' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="12" x2="2" y2="12"/><polyline points="5 9 2 12 5 15"/><polyline points="19 9 22 12 19 15"/></svg>' +
+          '<span>路线</span>' +
+        '</button>' +
+        '<button class="network-tab" data-type="service_area">' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="9"/></svg>' +
+          '<span>服务区</span>' +
+        '</button>' +
+        '<button class="network-tab" data-type="closest_facility">' +
+          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>' +
+          '<span>最近设施</span>' +
+        '</button>' +
+      '</div>' +
+
+      /* ===== 主体 ===== */
       '<div class="network-body">' +
 
-        /* ===== 左侧导航栏 ===== */
-        '<div class="network-sidenav" id="networkSidenav">' +
-          '<button class="network-sidenav-item active" data-type="route">' +
-            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="12" x2="2" y2="12"/><polyline points="5 9 2 12 5 15"/><polyline points="19 9 22 12 19 15"/></svg>' +
-            '<span>路线</span>' +
-          '</button>' +
-          '<button class="network-sidenav-item" data-type="service_area">' +
-            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="9"/></svg>' +
-            '<span>服务区</span>' +
-          '</button>' +
-          '<button class="network-sidenav-item" data-type="closest_facility">' +
-            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>' +
-            '<span>最近设施</span>' +
-          '</button>' +
-        '</div>' +
-
-        /* ===== 右侧内容区 ===== */
+        /* ===== 内容区 ===== */
         '<div class="network-content" id="networkContent">' +
 
           '<div class="network-section-title">路网图层</div>' +
@@ -144,8 +144,8 @@ window.GIS = window.GIS || {};
 
     document.getElementById('networkClose').addEventListener('click', deactivate);
 
-    document.getElementById('networkSidenav').addEventListener('click', function(e) {
-      var btn = e.target.closest('.network-sidenav-item');
+    document.getElementById('networkTabs').addEventListener('click', function(e) {
+      var btn = e.target.closest('.network-tab');
       if (!btn) return;
       _switchType(btn.dataset.type);
     });
@@ -234,13 +234,14 @@ window.GIS = window.GIS || {};
     _mode = type;
     _clearNetworkResult();
     _clearNetworkMarkers();
+    _resetSetButtons();
     _origin = null;
     _destination = null;
     _facility = null;
     _waypoints = [];
     _manualFacilities = [];
 
-    document.querySelectorAll('.network-sidenav-item').forEach(function(b) {
+    document.querySelectorAll('.network-tab').forEach(function(b) {
       b.classList.toggle('active', b.dataset.type === type);
     });
 
@@ -257,7 +258,7 @@ window.GIS = window.GIS || {};
           '<label>起点</label>' +
           '<div class="network-point-row">' +
             '<button class="network-set-btn" id="btnOrigin" data-target="origin">' + _pinIcon + '<span>点击设点</span></button>' +
-            '<span class="network-coord" id="networkOriginCoord">未设置</span>' +
+            '<span class="network-coord unset" id="networkOriginCoord">未设置</span>' +
           '</div>' +
         '</div>' +
         '<div class="network-field">' +
@@ -274,7 +275,7 @@ window.GIS = window.GIS || {};
           '<label>终点</label>' +
           '<div class="network-point-row">' +
             '<button class="network-set-btn" id="btnDest" data-target="destination">' + _pinIcon + '<span>点击设点</span></button>' +
-            '<span class="network-coord" id="networkDestCoord">未设置</span>' +
+            '<span class="network-coord unset" id="networkDestCoord">未设置</span>' +
           '</div>' +
         '</div>';
       breaksField.style.display = 'none';
@@ -292,7 +293,7 @@ window.GIS = window.GIS || {};
           '<label>设施点</label>' +
           '<div class="network-point-row">' +
             '<button class="network-set-btn" id="btnFacility" data-target="facility">' + _pinIcon + '<span>点击设点</span></button>' +
-            '<span class="network-coord" id="networkFacilityCoord">未设置</span>' +
+            '<span class="network-coord unset" id="networkFacilityCoord">未设置</span>' +
           '</div>' +
         '</div>';
       breaksField.style.display = 'block';
@@ -394,19 +395,25 @@ window.GIS = window.GIS || {};
       if (_inputMode === 'origin') {
         _origin = snapped;
         var el = document.getElementById('networkOriginCoord');
-        if (el) el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : '');
+        if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
+        var btn = document.getElementById('btnOrigin') || document.getElementById('btnEventOrigin');
+        if (btn) { btn.classList.add('done'); btn.querySelector('span').textContent = '已设置 ✓'; }
         _clearMarkersByType('origin');
         _addMarker(snapLatLng, '#e74c3c', '起');
       } else if (_inputMode === 'destination') {
         _destination = snapped;
         var el = document.getElementById('networkDestCoord');
-        if (el) el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : '');
+        if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
+        var btn = document.getElementById('btnDest');
+        if (btn) { btn.classList.add('done'); btn.querySelector('span').textContent = '已设置 ✓'; }
         _clearMarkersByType('dest');
         _addMarker(snapLatLng, '#2ecc71', '终');
       } else if (_inputMode === 'facility') {
         _facility = snapped;
         var el = document.getElementById('networkFacilityCoord');
-        if (el) el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : '');
+        if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
+        var btn = document.getElementById('btnFacility');
+        if (btn) { btn.classList.add('done'); btn.querySelector('span').textContent = '已设置 ✓'; }
         _clearMarkersByType('facility');
         _addMarker(snapLatLng, '#3498db', '设');
       }
@@ -801,6 +808,7 @@ window.GIS = window.GIS || {};
       }
 
       resultBody.innerHTML = html;
+      _autoAddResultLayer(data);
       _setStatus('路径分析完成');
 
     } else if (_mode === 'service_area') {
@@ -817,6 +825,7 @@ window.GIS = window.GIS || {};
       resultBody.innerHTML = (data.areas || []).map(function(a) {
         return '<div class="network-stat">' + a.break + 'm 服务区: <strong>' + a.area_km2 + '</strong> km²</div>';
       }).join('');
+      _autoAddResultLayer(data);
       _setStatus('服务区分析完成');
 
     } else if (_mode === 'closest_facility') {
@@ -836,7 +845,51 @@ window.GIS = window.GIS || {};
       resultBody.innerHTML = (data.summary || []).map(function(s) {
         return '<div class="network-stat">#' + s.rank + ' 设施' + s.facility_idx + ': <strong>' + s.distance_km + '</strong> km</div>';
       }).join('');
+      _autoAddResultLayer(data);
       _setStatus('最近设施分析完成');
+    }
+  }
+
+
+  function _resetSetButtons() {
+    document.querySelectorAll('.network-set-btn.done').forEach(function(b) {
+      b.classList.remove('done');
+      var span = b.querySelector('span');
+      if (span) span.textContent = '点击设点';
+    });
+    document.querySelectorAll('.network-coord').forEach(function(c) {
+      c.textContent = '未设置';
+      c.classList.add('unset');
+    });
+  }
+
+
+  function _autoAddResultLayer(data) {
+    var fc;
+    if (_mode === 'route' && data.path) {
+      fc = {type: 'FeatureCollection', features: [data.path]};
+    } else if (_mode === 'service_area' && data.polygons) {
+      fc = data.polygons;
+    } else if (_mode === 'closest_facility' && data.paths && data.paths.length > 0) {
+      fc = {type: 'FeatureCollection', features: data.paths};
+    } else {
+      return;
+    }
+    var label = _mode === 'route' ? '路径分析' : _mode === 'service_area' ? '服务区分析' : '最近设施分析';
+    var name = label + '_' + Date.now();
+    if (GIS.map && GIS.map.loadGeoJSON) {
+      GIS.map.loadGeoJSON(fc, name);
+    }
+    if (GIS.layers) {
+      GIS.layers.addLayer({
+        layer_id: 'network_' + Date.now(),
+        filename: name,
+        geojson: fc,
+        geometry_type: fc.features[0] && fc.features[0].geometry ? fc.features[0].geometry.type : '未知',
+        crs: 'WGS-84',
+        visible: true,
+        source: 'network_analysis',
+      });
     }
   }
 
@@ -856,11 +909,19 @@ window.GIS = window.GIS || {};
     });
     if (features.length === 0) return;
     var fc = {type: 'FeatureCollection', features: features};
+    var exportName = '网络分析结果_' + Date.now();
+    var layerId = 'network_' + Date.now();
+    if (GIS.map && GIS.map.loadGeoJSON) {
+      GIS.map.loadGeoJSON(fc, exportName);
+    }
     if (GIS.layers) {
       GIS.layers.addLayer({
-        filename: '网络分析结果',
+        layer_id: layerId,
+        filename: exportName,
         geojson: fc,
         geometry_type: fc.features[0] && fc.features[0].geometry ? fc.features[0].geometry.type : '未知',
+        crs: 'WGS-84',
+        visible: true,
         source: 'network_analysis',
       });
     }

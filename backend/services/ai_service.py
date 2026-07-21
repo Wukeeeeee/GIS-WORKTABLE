@@ -218,6 +218,12 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
   - **当用户要求获取数据、加载图层、画图时，必须在同一次回复中完成所有工具调用**（不要分两轮，前端只保留最后一轮数据）。
   - 需要多个省的数据时一次性调多次 datav_boundary，需要同时画线和加载边界时一次性调完所有工具。
 
+ ## 工具使用优先级（必须遵守）
+  - **优先用专用工具**：amap_geocode / amap_poi_search / datav_boundary / network_analysis / download_road_network / unified_aoi_search / unified_aoi_extract / create_heatmap / create_chart / field_calculate / measure_area / layer_control
+  - **execute_python 是最后选择**，仅当前述专用工具都不满足需求时才使用。大多数 GIS 需求都有专用工具，不需要用 execute_python 写代码。
+  - 使用 execute_python 时**禁止硬编码 API Key**（高德 Key 已自动注入为 _AMAP_KEY 变量，直接从变量读取）。
+  - 如果不确定用哪个工具，优先选专用工具而非 execute_python——专用工具有更好的错误处理和坐标转换。
+
   每个工具的具体使用规则（参数、约束、最佳实践）见各工具的 description，不必事先记忆。
 
  ## 国外地点
@@ -253,6 +259,11 @@ SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
  - **当用户要求获取数据、加载图层、画图时，必须在同一次回复中完成所有工具调用，不要分两轮**（前端只保留最后一轮数据）
  - 需要多个省的数据时一次性调多次 datav_boundary，不要分批
  - 需要同时画线和加载边界，一次性调完所有工具
+
+## 工具使用优先级
+ - 优先使用专用工具（amap_geocode / amap_poi_search / datav_boundary / network_analysis 等），execute_python 是最后选择
+ - 有专用工具的操作不得用 execute_python 代替
+ - execute_python 中禁止硬编码 API Key
 
 每个工具的具体使用规则（参数、约束、最佳实践）见各工具的 description，不必事先记忆。
 
@@ -489,7 +500,28 @@ def _build_system_content(provider: str, message: str, force_skills: list = None
         if skill_text:
             appendix_parts.append(f"## 参考技能文档\n{skill_text}")
 
-    # 用分隔线连接可变部分（清晰的分界，帮助模型理解）
+    # 当前已注册的图层信息（让 AI 知道已有图层，避免重复下载）
+    try:
+        from backend.services.tools import get_registered_layers_snapshot
+        _snap = get_registered_layers_snapshot()
+        if _snap:
+            _layer_lines = []
+            for _lyr in _snap:
+                _typ = ", ".join(_lyr.get("geometry_types", []))
+                _cnt = _lyr.get("feature_count", 0)
+                _box = _lyr.get("bbox", [])
+                _ext = ""
+                if _box and len(_box) == 4 and _box != [0,0,0,0]:
+                    _lng = (_box[0] + _box[2]) / 2
+                    _lat = (_box[1] + _box[3]) / 2
+                    _ext = f"（中心 {_lat:.3f}°N, {_lng:.3f}°E）"
+                _layer_lines.append(f"  - {_lyr['name']}：{_cnt} 个 {_typ}{_ext}")
+            appendix_parts.append("## 当前已加载的图层\n" + "\n".join(_layer_lines) +
+                "\n重要：如果已有路网图层，优先使用现有图层做分析，严禁重复下载。")
+    except Exception:
+        pass
+
+    # 用分隔线连接可变部分（清晰的分界，不影响前缀缓存）
     if appendix_parts:
         system_content += "\n\n---\n" + "\n\n".join(appendix_parts)
 

@@ -48,16 +48,31 @@ _workspace_dir: str = ""
 _registered_layers: dict = {}       # 已注册的图层信息
 
 # 这些列表会被主模块读取，所以要导出
+# 线程锁，保证 get_pending_state 的"读取+清空"操作原子性
+_state_lock = threading.Lock()
+
 def get_pending_state():
-    return {
-        "layers": list(_pending_layers),
-        "images": list(_pending_images),
-        "aoi_suggestions": _pending_aoi_suggestions.get("latest"),
-        "heatmap": _pending_heatmap.get("latest"),
-        "clear_layers": _clear_layers_flag,
-        "registered_layers": dict(_registered_layers),
-        "layer_ops": list(_pending_layer_ops),
-    }
+    """获取当前所有待发送状态并消费（清空），防止跨请求污染和校验器重复收集"""
+    global _clear_layers_flag
+    with _state_lock:
+        result = {
+            "layers": list(_pending_layers),
+            "images": list(_pending_images),
+            "aoi_suggestions": _pending_aoi_suggestions.get("latest"),
+            "heatmap": _pending_heatmap.get("latest"),
+            "clear_layers": _clear_layers_flag,
+            "registered_layers": dict(_registered_layers),
+            "layer_ops": list(_pending_layer_ops),
+        }
+        # 消费：清空已收集的状态，避免：
+        # 1. 校验器重新调用 agent 时重复累积
+        # 2. 本请求残留状态污染下个请求
+        _pending_layers.clear()
+        _pending_images.clear()
+        _pending_layer_ops.clear()
+        _clear_layers_flag = False
+        _pending_heatmap["latest"] = None
+        return result
 
 
 def reset_state(amap_key: str = ""):
@@ -102,20 +117,77 @@ def _unregister_layer(name: str):
     _registered_layers.pop(name, None)
 
 
+def _normalize_geojson(geojson: dict) -> dict:
+    """将任意 GeoJSON 归一化为 FeatureCollection"""
+    t = geojson.get("type")
+    if t == "FeatureCollection":
+        return geojson
+    if t == "Feature":
+        return {"type": "FeatureCollection", "features": [geojson]}
+    if t in ("Point", "MultiPoint", "LineString", "MultiLineString", "Polygon", "MultiPolygon", "GeometryCollection"):
+        return {"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": geojson, "properties": {}}]}
+    return geojson
+
+
+def _compute_bbox(geojson: dict) -> list:
+    """计算 GeoJSON 的包围盒 [minLng, minLat, maxLng, maxLat]"""
+    coords = []
+    fc = _normalize_geojson(geojson)
+    for f in fc.get("features", []):
+        geom = f.get("geometry") or {}
+        _extract_coords(geom, coords)
+    if not coords:
+        return [0, 0, 0, 0]
+    lngs = [c[0] for c in coords]
+    lats = [c[1] for c in coords]
+    return [min(lngs), min(lats), max(lngs), max(lats)]
+
+
+def _extract_coords(geom: dict, coords: list):
+    t = geom.get("type")
+    c = geom.get("coordinates")
+    if not t:
+        return
+    if t == "Point":
+        if c: coords.append(c)
+    elif t in ("MultiPoint", "LineString"):
+        if c: coords.extend(c)
+    elif t in ("MultiLineString", "Polygon"):
+        if c:
+            for ring in c:
+                coords.extend(ring)
+    elif t == "MultiPolygon":
+        if c:
+            for poly in c:
+                for ring in poly:
+                    coords.extend(ring)
+    elif t == "GeometryCollection":
+        for g in geom.get("geometries", []):
+            _extract_coords(g, coords)
+    elif t == "Feature":
+        _extract_coords(geom.get("geometry", {}), coords)
+    elif t == "FeatureCollection":
+        for f in geom.get("features", []):
+            _extract_coords(f.get("geometry", {}), coords)
+
+
 def _register_layer(name: str, geojson: dict):
     """注册图层供 AI 后续查询"""
     try:
-        features = geojson.get("features", [])
+        fc = _normalize_geojson(geojson)
+        features = fc.get("features", [])
         types = set()
         for f in features:
             geom = f.get("geometry", {}) or {}
             if geom.get("type"):
                 types.add(geom["type"])
+        bbox = _compute_bbox(geojson)
         _registered_layers[name] = {
             "name": name,
             "feature_count": len(features),
             "geometry_types": list(types) if types else ["未知"],
             "geojson": geojson,
+            "bbox": bbox,
         }
     except Exception:
         pass
@@ -562,10 +634,30 @@ def _extract_geojson(name: str, data: dict):
 
 @tool
 def execute_python(code: str) -> str:
-    """执行Python GIS代码（沙箱隔离）。可用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, json, math, re, datetime, io, tempfile, requests, pyproj, rasterio, osmnx。
-    print(GeoJSON) 自动加载到地图（加 name 字段做图层名）。
-    plt.savefig('chart_xxx.png') 生成图表。AMAP_KEY 通过 _AMAP_KEY 变量获取。
-    上传文件在 output/uploads/ 下。"""
+    """【最后选择】执行自定义 Python GIS 代码（沙箱隔离）。仅当所有专用工具都不满足需求时才用本工具。
+
+    ❌ 以下操作已有专用工具，禁止使用 execute_python：
+       - 地理编码/地址转坐标 → 必须用 amap_geocode
+       - POI 搜索/查天气 → 必须用 amap_poi_search
+       - 行政边界获取 → 必须用 datav_boundary
+       - AOI 建筑轮廓提取 → 必须用 unified_aoi_search/extract
+       - 路网下载 → 必须用 download_road_network
+       - 网络分析（路径/服务区/最近设施） → 必须用 network_analysis
+       - 热力图生成 → 必须用 create_heatmap
+       - 图层属性统计图 → 必须用 create_chart
+       - 字段计算 → 必须用 field_calculate
+
+    ✅ 本工具适合做的：
+       - 自定义 GIS 空间分析（矢量/栅格运算）
+       - 数据格式转换与清洗
+       - 国外边界数据获取（osmnx）
+       - 自定义 matplotlib/pyecharts 可视化
+
+    可用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, json, math, re, datetime, io, tempfile, requests, pyproj, rasterio, osmnx
+    print(GeoJSON) 自动加载到地图（加 name 字段做图层名）
+    plt.savefig('chart_xxx.png') 生成图表
+
+    安全：严禁在代码中硬编码 API Key（高德 Key 已自动注入 _AMAP_KEY 变量）"""
     global _exec_call_count
     _exec_call_count += 1
     if _exec_call_count > 5:
@@ -797,6 +889,50 @@ def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: i
 
 
 # ============================================================
+# 工具: amap_geocode — 高德地理编码（地名 → 坐标）
+# ============================================================
+
+@tool
+def amap_geocode(address: str, city: str = "") -> str:
+    """高德地理编码：将地名转为 WGS-84 坐标"经度,纬度"字符串，供 network_analysis 等工具使用。
+address: 地址/地名（如"广州塔""广州南站"）；city: 城市名（可选，如"广州"）。
+重要：必须用本工具做地理编码，严禁用 execute_python 调高德 API。"""
+    if not _current_amap_key:
+        return "高德 API Key 未配置，请在设置中配置高德地图密钥"
+
+    import requests
+    try:
+        params = {
+            "key": _current_amap_key,
+            "address": address,
+            "output": "JSON",
+        }
+        if city:
+            params["city"] = city
+
+        resp = requests.get("https://restapi.amap.com/v3/geocode/geo", params=params, timeout=10)
+        data = resp.json()
+
+        if data.get("status") != "1":
+            return f"地理编码失败：{data.get('info', '未知错误')}"
+
+        geocodes = data.get("geocodes", [])
+        if not geocodes:
+            return f"未找到「{address}」的坐标"
+
+        loc = geocodes[0].get("location", "")
+        if not loc:
+            return f"未找到「{address}」的坐标"
+
+        lng, lat = loc.split(",")
+        from backend.services.geo_coords import gcj02_to_wgs84
+        wgs_lng, wgs_lat = gcj02_to_wgs84(float(lng), float(lat))
+        return f"「{address}」的坐标（WGS-84）：{wgs_lng:.6f},{wgs_lat:.6f}"
+    except Exception as e:
+        return f"地理编码失败: {str(e)[:200]}"
+
+
+# ============================================================
 # 工具: unified_aoi_search / unified_aoi_extract（百度 AOI）
 # ============================================================
 
@@ -846,14 +982,34 @@ def unified_aoi_extract(uid: str, name: str) -> str:
 # ============================================================
 
 @tool
+def _format_extent(bbox: list) -> str:
+    """将 bbox 转为可读的描述文本"""
+    if not bbox or bbox == [0, 0, 0, 0]:
+        return "未知范围"
+    lng = (bbox[0] + bbox[2]) / 2
+    lat = (bbox[1] + bbox[3]) / 2
+    span_lng = bbox[2] - bbox[0]
+    span_lat = bbox[3] - bbox[1]
+    loc = f"中心: {lat:.3f}°N, {lng:.3f}°E"
+    if span_lng < 0.1 and span_lat < 0.1:
+        loc += "（小范围）"
+    elif span_lng < 1 and span_lat < 1:
+        loc += "（城区级）"
+    else:
+        loc += "（大区域）"
+    return loc
+
+
+@tool
 def get_registered_layers() -> str:
-    """查看当前地图上所有已加载的图层列表，包括图层名、每个图层的要素数量和几何类型"""
+    """查看当前地图上所有已加载的图层列表，包括图层名、要素数量、几何类型、覆盖范围"""
     if not _registered_layers:
         return "当前没有已加载的图层"
     lines = [f"当前共 {len(_registered_layers)} 个图层："]
     for name, info in _registered_layers.items():
         types = ", ".join(info.get("geometry_types", ["未知"]))
-        lines.append(f"  - {name}：{info['feature_count']} 个要素，类型：{types}")
+        ext = _format_extent(info.get("bbox", []))
+        lines.append(f"  - {name}：{info['feature_count']} 个要素，类型：{types}，{ext}")
     lines.append("\n如需查看某个图层的具体数据内容，可以使用 get_layer_detail 工具")
     return "\n".join(lines)
 
@@ -873,10 +1029,12 @@ def get_layer_detail(layer_name: str) -> str:
 
     geojson = info.get("geojson", {})
     preview = json.dumps(geojson, ensure_ascii=False)[:2000]
+    bbox = info.get("bbox", [])
     return (
         f"图层：{info['name']}\n"
         f"要素数：{info['feature_count']}\n"
         f"几何类型：{', '.join(info['geometry_types'])}\n"
+        f"覆盖范围：{_format_extent(bbox)}\n"
         f"数据预览：\n{preview}"
     )
 
@@ -1096,8 +1254,7 @@ def field_calculate(layer_name: str, expression: str, new_field: str, field_type
         except Exception:
             pass
 
-        geojson_str = gdf.to_json()
-        geojson_data = json.loads(geojson_str)
+        geojson_data = gdf.__geo_interface__
         geojson_data["name"] = layer_name
 
         _registered_layers[layer_name]["geojson"] = geojson_data
@@ -1476,13 +1633,81 @@ var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a
 
 
 # ============================================================
+# 工具: download_road_network — 从 OSM 下载路网
+# ============================================================
+
+@tool
+def download_road_network(location_name: str, network_type: str = "drive") -> str:
+    """从 OpenStreetMap 下载指定城市/区域的路网数据并加载到地图，供 network_analysis 使用。
+location_name: 城市名（如"北京市""广州市""上海浦东新区"），或"经度,纬度,经度,纬度"（bbox）。
+network_type: drive(车行路) walk(步行) bike(骑行) all(全部)，默认 drive。"""
+    try:
+        import osmnx as ox
+    except ImportError:
+        return "osmnx 未安装，请执行 pip install osmnx"
+
+    try:
+        import concurrent.futures
+
+        ox.settings.log_console = False
+        ox.settings.use_cache = True
+
+        parts = [p.strip() for p in location_name.split(",")]
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+        def _fetch():
+            if len(parts) == 4:
+                min_lng, min_lat, max_lng, max_lat = float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3])
+                return ox.graph_from_bbox(north=max_lat, south=min_lat, east=max_lng, west=min_lng, network_type=network_type)
+            else:
+                return ox.graph_from_place(location_name, network_type=network_type)
+
+        fut = executor.submit(_fetch)
+        try:
+            G = fut.result(timeout=120)
+        except concurrent.futures.TimeoutError:
+            executor.shutdown(wait=False)
+            return (
+                f"下载「{location_name}」路网超时（120秒），OSM 服务器无响应。\n\n"
+                f"请尝试以下替代方案：\n"
+                f"1. 前往 https://www.geofabrik.de 下载对应地区 .osm.pbf 文件（国内可访问）\n"
+                f"2. 前往 https://extract.bbbike.org 用矩形框选区域导出 .osm（支持国内访问）\n"
+                f"3. 将下载的文件上传到 GIS WorkTable，AI 会自动识别为路网图层\n"
+                f"4. 上传后告诉我，我再调用 network_analysis 分析"
+            )
+
+        nodes, edges = ox.graph_to_gdfs(G)
+        if edges.empty:
+            return f"未找到「{location_name}」的路网数据"
+
+        geojson = edges.__geo_interface__
+        layer_name = f"{location_name}_路网({network_type})"
+        _push_layer(layer_name, geojson, {"color": "#555", "weight": 1.5})
+        _register_layer(layer_name, geojson)
+
+        node_count = len(nodes)
+        edge_count = len(edges)
+        bbox = _compute_bbox(geojson)
+        extent = _format_extent(bbox)
+        return (
+            f"已从 OSM 下载「{location_name}」路网（{network_type}），"
+            f"共 {node_count} 个节点、{edge_count} 条道路，{extent}。"
+            f"图层名「{layer_name}」，已加载到地图。"
+            f"接下来可以用 network_analysis 工具分析此路网。"
+        )
+    except Exception as e:
+        import traceback
+        return f"下载路网失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
 # 工具: network_analysis — 网络分析
 # ============================================================
 
 @tool
 def network_analysis(
-    layer_name: str,
-    analysis_type: str,
+    layer_name: str = "",
+    analysis_type: str = "",
     origin: str = "",
     destination: str = "",
     facility: str = "",
@@ -1491,26 +1716,68 @@ def network_analysis(
     n: int = 3,
 ) -> str:
     """从路网图层做网络分析。analysis_type: route(最短路径) service_area(服务区) closest_facility(最近设施)。
-    origin/destination/facility 参数传"经度,纬度"。events 传分号分隔坐标，breaks 传逗号分隔米数。"""
+origin/destination/facility 用"经度,纬度"传坐标。events 传分号分隔坐标，breaks 传逗号分隔米数。
+
+完整工作流（按顺序）：
+1. 用户给地名（如"北京西站到天安门最短路径"）→ 先调 amap_geocode 把地名转成坐标
+2. 如果还没有路网图层 → 调 download_road_network 下载
+3. 如果不确定用哪个路网 → 调 get_registered_layers 查看各图层覆盖范围
+4. 用本工具（network_analysis）做分析
+5. 分析结果已自动加载到地图（图层），无需额外操作
+
+注意：坐标用"经度,纬度"格式（先经度后纬度）。
+重要：必须用本工具做网络分析，严禁用 execute_python 调高德 API 做路径规划。"""
     from backend.services.network_service import (
         build_graph_from_geojson, shortest_route,
         service_area, closest_facilities,
     )
 
+    # 收集分析所需的坐标，用于图层匹配
+    need_coords = []
+    if origin:
+        need_coords.append(_parse_coord(origin))
+    if destination:
+        need_coords.append(_parse_coord(destination))
+    if facility:
+        need_coords.append(_parse_coord(facility))
+
+    # 根据坐标自动匹配图层
+    if not layer_name:
+        for c in need_coords:
+            matched = _find_layer_for_coord(c[0], c[1])
+            if matched:
+                layer_name = matched
+                break
+        if not layer_name:
+            return "请先通过 get_registered_layers 查看已加载的路网图层，再指定正确的 layer_name"
+
     info = _registered_layers.get(layer_name)
     if not info:
-        matches = [n for n in _registered_layers.keys() if layer_name in n]
+        matches = [n for n in _registered_layers.keys() if layer_name in n] if layer_name else []
         if len(matches) == 1:
             info = _registered_layers[matches[0]]
             layer_name = matches[0]
         elif len(matches) > 1:
             return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+        elif not _registered_layers:
+            return "当前没有已加载的图层，请先上传路网数据"
         else:
             return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
 
     geojson = info.get("geojson", {})
     if not geojson:
         return f"图层「{layer_name}」数据为空"
+
+    # 校验坐标是否在图层范围内
+    layer_bbox = info.get("bbox", [])
+    for c in need_coords:
+        if not _point_in_bbox(c[0], c[1], layer_bbox):
+            alt = _find_layer_for_coord(c[0], c[1])
+            if alt:
+                return (f"坐标 ({c[0]:.4f}, {c[1]:.4f}) 不在图层「{layer_name}」范围内，"
+                        f"但匹配到图层「{alt}」。请将 layer_name 设为「{alt}」后重试")
+            return (f"坐标 ({c[0]:.4f}, {c[1]:.4f}) 不在图层「{layer_name}」范围内，"
+                    f"当前图层的覆盖范围为 {_format_extent(layer_bbox)}。请确认使用的是正确的路网图层")
 
     try:
         if analysis_type == "route":
@@ -1569,6 +1836,22 @@ def network_analysis(
         return f"网络分析异常: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
 
 
+def _point_in_bbox(lng: float, lat: float, bbox: list) -> bool:
+    """判断坐标是否在 bbox [minLng, minLat, maxLng, maxLat] 内"""
+    if not bbox or len(bbox) < 4:
+        return False
+    return bbox[0] <= lng <= bbox[2] and bbox[1] <= lat <= bbox[3]
+
+
+def _find_layer_for_coord(lng: float, lat: float) -> str:
+    """在所有已注册图层中找到包含该坐标的图层名，返回第一个匹配"""
+    for name, info in _registered_layers.items():
+        bbox = info.get("bbox", [])
+        if _point_in_bbox(lng, lat, bbox):
+            return name
+    return ""
+
+
 def _parse_coord(s: str) -> tuple:
     """解析 "经度,纬度" 字符串"""
     parts = s.split(",")
@@ -1587,6 +1870,7 @@ tools = [
     save_file,
     execute_python,
     amap_poi_search,
+    amap_geocode,
     unified_aoi_search,
     unified_aoi_extract,
     get_registered_layers,
@@ -1600,6 +1884,7 @@ tools = [
     layer_control,
     export_layer,
     create_chart,
+    download_road_network,
     network_analysis,
 ]
 

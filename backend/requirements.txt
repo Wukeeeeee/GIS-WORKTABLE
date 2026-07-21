@@ -12,4 +12,5 @@ seaborn>=0.13.0
 pyecharts>=2.0.0
 scrapling>=0.4.7
 markdownify>=1.0.0
+orjson>=3.10.0
 pytest>=9.0.0

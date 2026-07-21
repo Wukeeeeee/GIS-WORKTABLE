@@ -101,7 +101,7 @@ window.GIS = window.GIS || {};
         crs: 'WGS-84',
         geojson: geojson,
         source: 'upload',
-      });
+      }, true);
 
       // 通知 AI 文件路径（隐藏消息，不显示在聊天框，但 AI 能读到）
       if (GIS.chat && GIS.chat.addMessage) {
