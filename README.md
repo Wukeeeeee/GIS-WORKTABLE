@@ -172,6 +172,8 @@ backend/
 
 ### 2026-07-21
 - Main 测试网络分析面板
+- Fix 操作手册 HTML 结构断裂导致地图不加载：补回 4 个缺失的 `</div>` 闭合标签
+- Fix 手册中 emoji 图标统一替换为 SVG
 - Fix AI 工具路由：`execute_python` docstring 改为"最后选择"、系统提示词新增工具优先级规则
 - Fix `_push_layer` 推图层不生效：`get_pending_state()` 改为读取即消费 + 线程锁，修复校验器路径图层重复累积
 - Fix SSE 端点冗余 `reset_state` 调用，`run_agent_stream` `msgs` 变量初始化
