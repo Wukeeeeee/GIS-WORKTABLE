@@ -153,6 +153,9 @@ window.GIS = window.GIS || {};
     _coordsEl = document.querySelector('.map-coords');
     _zoomLabelEl = document.querySelector('.map-zoom-label');
 
+    // 比例尺控件
+    L.control.scale({position: 'bottomleft', metric: true, imperial: false}).addTo(mapInstance);
+
     mapInstance.on('mousemove', onMouseMove);
     mapInstance.on('zoomend', onZoomEnd);
 
@@ -278,6 +281,14 @@ window.GIS = window.GIS || {};
 
           if (tool === 'network-analysis') {
             if (GIS.network && GIS.network.toggle) GIS.network.toggle();
+            return;
+          }
+          if (tool === 'spatial-analysis') {
+            if (GIS.spatial && GIS.spatial.toggle) GIS.spatial.toggle();
+            return;
+          }
+          if (tool === 'debug-panel') {
+            if (GIS.debug && GIS.debug.toggle) GIS.debug.toggle();
             return;
           }
 
@@ -986,6 +997,12 @@ window.GIS = window.GIS || {};
         break;
       case 'tool-network-analysis':
         if (GIS.network && GIS.network.toggle) GIS.network.toggle();
+        break;
+      case 'tool-spatial-analysis':
+        if (GIS.spatial && GIS.spatial.toggle) GIS.spatial.toggle();
+        break;
+      case 'tool-debug-panel':
+        if (GIS.debug && GIS.debug.toggle) GIS.debug.toggle();
         break;
       case 'toggle-attr-table':
         var attrBtn = document.getElementById('toggleAttrTable');

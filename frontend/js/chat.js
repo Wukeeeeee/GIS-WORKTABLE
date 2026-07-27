@@ -11,10 +11,13 @@ window.GIS = window.GIS || {};
   'use strict';
 
 // 所有外部链接新标签打开
-var _linkRenderer = new marked.Renderer();
-_linkRenderer.link = function(token) {
-  return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer">' + token.text + '</a>';
-};
+var _linkRenderer = null;
+if (typeof marked !== 'undefined') {
+  _linkRenderer = new marked.Renderer();
+  _linkRenderer.link = function(token) {
+    return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer">' + token.text + '</a>';
+  };
+}
 
 //将GIS命名空间赋值给常量GIS，相当于全局变量
   const GIS = window.GIS;
@@ -28,6 +31,7 @@ _linkRenderer.link = function(token) {
   const CHIP_TO_SKILL = {
     buffer: 'geometry', intersection: 'geometry', union: 'geometry',
     difference: 'geometry', centroid: 'geometry', simplify: 'geometry',
+    clip: 'geometry', dissolve: 'geometry',
     make_valid: 'geometry',
     area: 'analysis', length: 'analysis',
     aoi: 'aoi',
@@ -56,16 +60,40 @@ _linkRenderer.link = function(token) {
     chart: '<svg viewBox="0 0 14 14"><polyline points="1,11 3,7 5.5,9 8,4 11,6 13,2" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="1" y1="11" x2="13" y2="11" stroke="currentColor" stroke-width="1.2"/></svg>',
     network: '<svg viewBox="0 0 14 14"><circle cx="7" cy="3" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="3" cy="11" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11" cy="11" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="4.5" x2="4.5" y2="9.5" stroke="currentColor" stroke-width="1.2"/><line x1="8.5" y1="4.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1.2"/></svg>',
     help: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 5.2a1.8 1.8 0 013.6 0c0 1.2-1.8 1.8-1.8 1.8v1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="11" r=".6" fill="currentColor"/></svg>',
+    clip: '<svg viewBox="0 0 14 14"><polygon points="2,2 12,2 12,12 2,12" fill="none" stroke="currentColor" stroke-width="1.2"/><polygon points="4,4 10,4 10,10 4,10" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    dissolve: '<svg viewBox="0 0 14 14"><circle cx="4" cy="4" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="10" cy="4" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="10" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 5.5l1.5 3.5M8.5 5.5l-1.5 3.5" stroke="currentColor" stroke-width="1"/></svg>',
+    join: '<svg viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="8" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="6" y1="3" x2="8" y2="10" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/></svg>',
+    merge: '<svg viewBox="0 0 14 14"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    split: '<svg viewBox="0 0 14 14"><line x1="7" y1="1" x2="7" y2="13" stroke="currentColor" stroke-width="1.3"/><path d="M3 4l4-3 4 3M3 10l4 3 4-3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    geocode: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="1.5" fill="currentColor"/></svg>',
+    select: '<svg viewBox="0 0 14 14"><rect x="2" y="2" width="10" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    sample: '<svg viewBox="0 0 14 14"><circle cx="3" cy="3" r="1" fill="currentColor"/><circle cx="11" cy="4" r="1" fill="currentColor"/><circle cx="6" cy="10" r="1" fill="currentColor"/><circle cx="10" cy="9" r="1" fill="currentColor"/></svg>',
+    near: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="1.5" fill="currentColor"/><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    cluster: '<svg viewBox="0 0 14 14"><circle cx="4" cy="4" r="2.5" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="10" cy="10" r="3" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="4" cy="10" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    voronoi: '<svg viewBox="0 0 14 14"><polygon points="1,1 13,1 7,13" fill="none" stroke="currentColor" stroke-width="1.2"/><polygon points="1,1 7,9 1,13" fill="none" stroke="currentColor" stroke-width="1.2"/><polygon points="13,1 7,9 13,5" fill="none" stroke="currentColor" stroke-width="1.2"/><polygon points="7,9 1,13 7,13 13,5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
+    stats: '<svg viewBox="0 0 14 14"><polyline points="2,12 4,7 6,9 8,4 12,2" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="2" y1="12" x2="12" y2="12" stroke="currentColor" stroke-width="1.2"/></svg>',
   };
 
   const SLASH_COMMANDS = [
     { name: 'help', label: '操作手册', desc: '打开系统操作手册', prompt: '' },
-    { name: 'buffer', label: '缓冲区分析', desc: '为图层创建指定距离的缓冲区', prompt: '为当前选中的图层创建 {距离} 米的缓冲区，结果加载到地图上' },
+    { name: 'buffer', label: '缓冲区分析', desc: '为图层创建指定距离的缓冲区', prompt: '为图层 {图层名} 创建 {距离} 米的缓冲区，结果加载到地图上' },
     { name: 'intersection', label: '空间相交', desc: '两个图层的相交分析', prompt: '对 {图层A} 和 {图层B} 做空间相交分析，结果加载到地图上' },
     { name: 'union', label: '空间合并', desc: '合并两个图层的几何', prompt: '合并 {图层A} 和 {图层B}，结果加载到地图上' },
     { name: 'difference', label: '空间差异', desc: '一个图层减去另一个图层', prompt: '用 {图层A} 减去 {图层B}，结果加载到地图上' },
     { name: 'centroid', label: '提取质心', desc: '提取图层的中心点', prompt: '提取 {图层名} 的质心/中心点，结果加载到地图上' },
     { name: 'simplify', label: '简化几何', desc: '简化图层几何，减少顶点数', prompt: '简化 {图层名} 的几何，简化容差设为 {容差}，结果加载到地图上' },
+    { name: 'clip', label: '图层裁剪', desc: '用一个图层裁剪另一个图层', prompt: '用 {裁剪图层} 裁剪 {被裁剪图层}，结果加载到地图上' },
+    { name: 'dissolve', label: '属性融合', desc: '按属性字段融合图层几何', prompt: '按字段 {字段名} 融合图层 {图层名}，结果加载到地图上' },
+    { name: 'join', label: '空间连接', desc: '按空间关系连接两个图层的属性', prompt: '将 {连接图层} 的属性按空间关系连接到 {目标图层} 上，结果加载到地图' },
+    { name: 'merge', label: '图层合并', desc: '行级合并多个图层为一个', prompt: '合并图层 {图层A, 图层B}，结果加载到地图' },
+    { name: 'split', label: '图层拆分', desc: '按属性字段拆分图层', prompt: '按字段 {字段名} 拆分图层 {图层名}' },
+    { name: 'geocode', label: '反向地理编码', desc: '坐标转地址 / 地址批量转坐标', prompt: '将坐标 ({经度},{纬度}) 转为地址' },
+    { name: 'select', label: '空间选择', desc: '按空间关系选择图层要素', prompt: '选择 {目标图层} 中与 {源图层} 相交的所有要素，结果加载到地图' },
+    { name: 'sample', label: '随机采样', desc: '从图层随机采样要素', prompt: '从 {图层名} 随机采样 {数量} 个要素，结果加载到地图' },
+    { name: 'near', label: '邻近查找', desc: '查找距离目标图层一定范围内的要素', prompt: '查找 {目标图层} 中距离 {源图层} {距离} 米以内的要素，结果加载到地图' },
+    { name: 'cluster', label: '空间聚类', desc: 'DBSCAN 点聚类分析', prompt: '对 {图层名} 做空间聚类，eps={半径} min_samples={最少点数}，结果加载到地图' },
+    { name: 'voronoi', label: '泰森多边形', desc: '根据点图层生成 Voronoi 图', prompt: '为 {图层名} 生成泰森多边形，结果加载到地图' },
+    { name: 'stats', label: '字段统计', desc: '统计图层数值字段', prompt: '统计 {图层名} 的 {字段名} 字段，给出 min/max/mean/sum/std' },
     { name: 'area', label: '计算面积', desc: '计算图层各要素的面积', prompt: '计算 {图层名} 每个要素的面积，结果用表格显示' },
     { name: 'length', label: '计算长度', desc: '计算线图层的长度', prompt: '计算 {图层名} 每个要素的长度，结果用表格显示' },
     { name: 'make_valid', label: '修复几何', desc: '修复无效的几何图形', prompt: '修复 {图层名} 中无效的几何图形，将修复后的结果加载到地图上' },
@@ -576,9 +604,11 @@ _linkRenderer.link = function(token) {
         const el = document.getElementById('ai-loading-msg');
         if (el) {
           const c = el.querySelector('.message-bubble > div');
-          if (providerOverride === 'glm-routed') c.textContent = 'GLM-4.7-Flash+ 执行中...';
-          else if (providerOverride === 'agnes') c.textContent = 'Agnes 2.0 Flash+ 执行中...';
-          else c.textContent = 'DeepSeek V4 Flash+ 执行中...';
+          if (c) {
+            if (providerOverride === 'glm-routed') c.textContent = 'GLM-4.7-Flash+ 执行中...';
+            else if (providerOverride === 'agnes') c.textContent = 'Agnes 2.0 Flash+ 执行中...';
+            else c.textContent = 'DeepSeek V4 Flash+ 执行中...';
+          }
         }
       }, 1500);
     }
@@ -670,7 +700,17 @@ _linkRenderer.link = function(token) {
           for (var _i = 0; _i < lines.length; _i++) {
             var line = lines[_i];
             if (!line.startsWith('data: ')) continue;
-            var evt = JSON.parse(line.slice(6));
+            var evt;
+            try { evt = JSON.parse(line.slice(6)); } catch (parseErr) {
+              console.warn('[GIS Chat] 流式数据解析失败，跳过:', line.slice(0, 80));
+              continue;
+            }
+            // error/cancelled 必须在内层 try 之外处理，否则空 catch 会吞掉
+            if (evt.type === 'error') {
+              throw new Error(evt.message || 'Agent 执行失败');
+            } else if (evt.type === 'cancelled') {
+              throw new Error('用户取消');
+            }
             try {
               if (evt.type === 'tool_start') {
                 var toolLabel = evt.name + (evt.input ? '(' + evt.input.slice(0, 60) + ')' : '');
@@ -678,7 +718,6 @@ _linkRenderer.link = function(token) {
                 stepEl.className = 'step-item step-running';
                 stepEl.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align:-2px;margin-right:4px;"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg><strong>' + GIS.utils.escapeHtml(toolLabel) + '</strong>';
                 stepLog.appendChild(stepEl);
-                // 滚动到最新
                 if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
                 lastStepEl = stepEl;
               } else if (evt.type === 'tool_end') {
@@ -687,10 +726,6 @@ _linkRenderer.link = function(token) {
                   lastStepEl.style.fontWeight = 'normal';
                   lastStepEl.style.color = 'var(--ui-gray-400)';
                 }
-              } else if (evt.type === 'error') {
-                throw new Error(evt.message || 'Agent 执行失败');
-              } else if (evt.type === 'cancelled') {
-                throw new Error('用户取消');
               } else if (evt.type === 'verifying') {
                 if (lastStepEl) {
                   lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);">✓</span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
@@ -705,9 +740,7 @@ _linkRenderer.link = function(token) {
                 if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
               } else if (evt.type === 'done') {
                 result = evt;
-                // 清除超时计时器（正常完成）
                 if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
-                // 完成后折叠步骤日志
                 if (stepLog && stepLog.children.length > 1) {
                   stepLog.style.maxHeight = '44px';
                   stepLog.style.overflow = 'hidden';
@@ -720,7 +753,9 @@ _linkRenderer.link = function(token) {
                   });
                 }
               }
-            } catch (parseErr) {}
+            } catch (parseErr) {
+              console.warn('[GIS Chat] SSE 事件处理异常:', parseErr);
+            }
           }
         }
       } catch (streamErr) {
@@ -774,7 +809,11 @@ _linkRenderer.link = function(token) {
       }
 
       // 显示 AI 的文字回复
-      const msgEl = addMessage(result.response, 'ai');
+      if (!result) {
+        addMessage('AI 未返回有效响应', 'ai');
+        return;
+      }
+      const msgEl = addMessage(result.response || '(空响应)', 'ai');
 
       // 如果有 AI 生成的图表图片，追加到最后一条回复下方
       if (result.images && result.images.length > 0) {

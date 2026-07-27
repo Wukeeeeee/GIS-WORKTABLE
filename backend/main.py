@@ -223,6 +223,36 @@ async def cancel_request():
 async def health():
     return {"status": "ok"}
 
+@app.get("/api/layers")
+async def list_layers():
+    from backend.services.tools import _registered_layers
+    layers = []
+    for name, info in _registered_layers.items():
+        layers.append({
+            "name": name,
+            "geojson": info.get("geojson"),
+            "bbox": info.get("bbox"),
+            "style": info.get("style"),
+        })
+    return {"layers": layers}
+
+@app.post("/api/reset_state")
+async def api_reset_state():
+    from backend.services.tools import reset_state
+    reset_state()
+    return {"status": "ok", "message": "状态已重置"}
+
+@app.get("/api/session_logs")
+async def session_logs():
+    from backend.services.tools import _exec_call_count
+    return {"logs": [], "exec_count": _exec_call_count}
+
+@app.post("/api/session_logs/clear")
+async def clear_session_logs():
+    import backend.services.tools as tools_mod
+    tools_mod._exec_call_count = 0
+    return {"status": "ok", "message": "日志已清除"}
+
 @app.get("/api/version")
 async def version():
     return {

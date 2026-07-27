@@ -78,15 +78,16 @@ def get_pending_state():
 def reset_state(amap_key: str = ""):
     """每次请求开始时调用，清空所有共享状态"""
     global _current_amap_key, _clear_layers_flag, _search_call_count, _exec_call_count
-    _pending_layers.clear()
-    _pending_images.clear()
-    _pending_aoi_suggestions.clear()
-    _pending_heatmap["latest"] = None
-    _clear_layers_flag = False
-    _pending_layer_ops.clear()
-    _current_amap_key = amap_key
-    _search_call_count = 0
-    _exec_call_count = 0
+    with _state_lock:
+        _pending_layers.clear()
+        _pending_images.clear()
+        _pending_aoi_suggestions.clear()
+        _pending_heatmap["latest"] = None
+        _clear_layers_flag = False
+        _pending_layer_ops.clear()
+        _current_amap_key = amap_key
+        _search_call_count = 0
+        _exec_call_count = 0
 
 
 def init_temp_dir():
@@ -107,14 +108,16 @@ def _push_layer(name: str, geojson: dict, style: dict = None):
         layer = {"geojson": geojson, "name": name}
         if style:
             layer["style"] = style
-        _pending_layers.append(layer)
+        with _state_lock:
+            _pending_layers.append(layer)
     except Exception:
         pass
 
 
 def _unregister_layer(name: str):
     """从注册表中移除图层"""
-    _registered_layers.pop(name, None)
+    with _state_lock:
+        _registered_layers.pop(name, None)
 
 
 def _normalize_geojson(geojson: dict) -> dict:
@@ -182,13 +185,14 @@ def _register_layer(name: str, geojson: dict):
             if geom.get("type"):
                 types.add(geom["type"])
         bbox = _compute_bbox(geojson)
-        _registered_layers[name] = {
-            "name": name,
-            "feature_count": len(features),
-            "geometry_types": list(types) if types else ["未知"],
-            "geojson": geojson,
-            "bbox": bbox,
-        }
+        with _state_lock:
+            _registered_layers[name] = {
+                "name": name,
+                "feature_count": len(features),
+                "geometry_types": list(types) if types else ["未知"],
+                "geojson": geojson,
+                "bbox": bbox,
+            }
     except Exception:
         pass
 
@@ -200,7 +204,7 @@ def get_registered_layers_snapshot() -> list:
         result.append({
             "filename": name,
             "geojson": info.get("geojson"),
-            "geometry_type": ", ".join(info.get("geometry_types", [])),
+            "geometry_types": info.get("geometry_types", []),
             "feature_count": info.get("feature_count", 0),
             "source": "ai",
         })
@@ -637,7 +641,9 @@ def execute_python(code: str) -> str:
     """【最后选择】执行自定义 Python GIS 代码（沙箱隔离）。仅当所有专用工具都不满足需求时才用本工具。
 
     ❌ 以下操作已有专用工具，禁止使用 execute_python：
-       - 地理编码/地址转坐标 → 必须用 amap_geocode
+        - 地理编码/地址转坐标 → 必须用 amap_geocode
+        - 反向地理编码/坐标转地址 → 必须用 reverse_geocode
+        - 批量地理编码 → 必须用 batch_geocode
        - POI 搜索/查天气 → 必须用 amap_poi_search
        - 行政边界获取 → 必须用 datav_boundary
        - AOI 建筑轮廓提取 → 必须用 unified_aoi_search/extract
@@ -646,6 +652,24 @@ def execute_python(code: str) -> str:
        - 热力图生成 → 必须用 create_heatmap
        - 图层属性统计图 → 必须用 create_chart
        - 字段计算 → 必须用 field_calculate
+       - 缓冲区分析 → 必须用 spatial_buffer
+       - 空间相交分析 → 必须用 spatial_intersect
+       - 空间合并 → 必须用 spatial_union
+       - 空间差异 → 必须用 spatial_difference
+       - 图层裁剪 → 必须用 spatial_clip
+       - 质心提取 → 必须用 spatial_centroid
+       - 几何简化 → 必须用 spatial_simplify
+        - 属性融合 → 必须用 spatial_dissolve
+        - 按空间关系选择要素 → 必须用 spatial_select
+        - 随机采样 → 必须用 spatial_sample
+        - 查找附近要素 → 必须用 spatial_near
+        - 空间聚类 → 必须用 spatial_cluster
+        - 泰森多边形 → 必须用 spatial_voronoi
+        - 字段统计分析 → 必须用 spatial_field_stats
+        - 空间连接 → 必须用 spatial_join
+        - 图层合并 → 必须用 layer_merge
+        - 图层拆分 → 必须用 layer_split
+        - 从坐标列创建要素 → 必须用 layer_add_geometry
 
     ✅ 本工具适合做的：
        - 自定义 GIS 空间分析（矢量/栅格运算）
@@ -1715,7 +1739,7 @@ def network_analysis(
     breaks: str = "",
     n: int = 3,
 ) -> str:
-    """从路网图层做网络分析。analysis_type: route(最短路径) service_area(服务区) closest_facility(最近设施)。
+    """从路网图层做网络分析。analysis_type: route(最短路径,双向Dijkstra) service_area(服务区) closest_facility(最近设施)。
 origin/destination/facility 用"经度,纬度"传坐标。events 传分号分隔坐标，breaks 传逗号分隔米数。
 
 完整工作流（按顺序）：
@@ -1855,7 +1879,572 @@ def _find_layer_for_coord(lng: float, lat: float) -> str:
 def _parse_coord(s: str) -> tuple:
     """解析 "经度,纬度" 字符串"""
     parts = s.split(",")
-    return float(parts[0].strip()), float(parts[1].strip())
+    if len(parts) < 2:
+        raise ValueError(f"坐标格式错误，需要 '经度,纬度' 格式，收到: '{s}'")
+    try:
+        return float(parts[0].strip()), float(parts[1].strip())
+    except ValueError:
+        raise ValueError(f"坐标值非数字，收到: '{s}'")
+
+
+# ============================================================
+# 辅助函数：图层 ↔ GeoDataFrame 互转（供空间分析工具使用）
+# ============================================================
+
+def _layer_to_gdf(layer_name: str) -> tuple:
+    """从注册表获取图层并转为 GeoDataFrame，返回 (gdf, layer_name) 或 (None, 错误消息)"""
+    info = _registered_layers.get(layer_name)
+    if not info:
+        matches = [n for n in _registered_layers.keys() if layer_name in n]
+        if len(matches) == 1:
+            info = _registered_layers[matches[0]]
+            layer_name = matches[0]
+        elif len(matches) > 1:
+            return None, f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+        else:
+            return None, f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+    geojson = info.get("geojson", {})
+    if not geojson or not geojson.get("features"):
+        return None, f"图层「{layer_name}」为空"
+    import geopandas as gpd
+    gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+    return gdf, layer_name
+
+
+def _gdf_to_layer(gdf, name: str):
+    """将 GeoDataFrame 转为 GeoJSON，推送到地图并注册"""
+    import json
+    geojson_data = json.loads(gdf.to_json())
+    geojson_data["name"] = name
+    _push_layer(name, geojson_data)
+    _register_layer(name, geojson_data)
+
+
+# ============================================================
+# 工具: spatial_buffer — 缓冲区分析
+# ============================================================
+
+@tool
+def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: bool = False) -> str:
+    """为指定图层创建缓冲区。unit 可选 m(米) 或 km(公里)。dissolve=True 时融合重叠的缓冲区。"""
+    try:
+        import geopandas as gpd
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        distance_m = distance * 1000 if unit == "km" else distance
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            centroid = gdf.dissolve().centroid.iloc[0]
+        lon, lat = centroid.x, centroid.y
+        utm_zone = int((lon + 180) / 6) + 1
+        crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+        gdf_utm = gdf.to_crs(crs_utm)
+        gdf_utm["geometry"] = gdf_utm.geometry.buffer(distance_m)
+        if dissolve:
+            gdf_utm = gpd.GeoDataFrame({"geometry": [gdf_utm.union_all()]}, geometry="geometry", crs=crs_utm)
+        gdf_wgs = gdf_utm.to_crs("EPSG:4326")
+        result_name = f"{name}_缓冲区"
+        _gdf_to_layer(gdf_wgs, result_name)
+        return f"已为「{name}」创建{distance}{unit}缓冲区，{len(gdf_wgs)} 个要素，已加载到地图"
+    except Exception as e:
+        import traceback
+        return f"缓冲区分析失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
+# 工具: spatial_intersect — 空间相交
+# ============================================================
+
+@tool
+def spatial_intersect(layer_a: str, layer_b: str) -> str:
+    """两个图层的空间相交分析，返回两者重叠的部分。"""
+    try:
+        import geopandas as gpd
+        gdf_a, name_a = _layer_to_gdf(layer_a)
+        if gdf_a is None: return name_a
+        gdf_b, name_b = _layer_to_gdf(layer_b)
+        if gdf_b is None: return name_b
+        result = gpd.overlay(gdf_a, gdf_b, how="intersection")
+        if result.empty:
+            return f"「{name_a}」和「{name_b}」没有重叠区域"
+        result_name = f"{name_a}_∩_{name_b}"
+        _gdf_to_layer(result, result_name)
+        return f"相交分析完成：{len(result)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"相交分析失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_union — 空间合并
+# ============================================================
+
+@tool
+def spatial_union(layer_a: str, layer_b: str) -> str:
+    """合并两个图层的全部几何区域。"""
+    try:
+        import geopandas as gpd
+        gdf_a, name_a = _layer_to_gdf(layer_a)
+        if gdf_a is None: return name_a
+        gdf_b, name_b = _layer_to_gdf(layer_b)
+        if gdf_b is None: return name_b
+        result = gpd.overlay(gdf_a, gdf_b, how="union")
+        result_name = f"{name_a}_∪_{name_b}"
+        _gdf_to_layer(result, result_name)
+        return f"合并完成：{len(result)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"合并失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_difference — 空间差异
+# ============================================================
+
+@tool
+def spatial_difference(layer_a: str, layer_b: str) -> str:
+    """用 layer_a 减去 layer_b，返回 layer_a 中不在 layer_b 内的部分。"""
+    try:
+        import geopandas as gpd
+        gdf_a, name_a = _layer_to_gdf(layer_a)
+        if gdf_a is None: return name_a
+        gdf_b, name_b = _layer_to_gdf(layer_b)
+        if gdf_b is None: return name_b
+        result = gpd.overlay(gdf_a, gdf_b, how="difference")
+        if result.empty:
+            return f"「{name_a}」完全被「{name_b}」覆盖，无剩余部分"
+        result_name = f"{name_a}_减_{name_b}"
+        _gdf_to_layer(result, result_name)
+        return f"差异分析完成：{len(result)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"差异分析失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_clip — 裁剪
+# ============================================================
+
+@tool
+def spatial_clip(layer_name: str, clip_layer: str) -> str:
+    """用 clip_layer 的边界裁剪 layer_name。"""
+    try:
+        import geopandas as gpd
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        clip_gdf, clip_name = _layer_to_gdf(clip_layer)
+        if clip_gdf is None: return clip_name
+        result = gpd.clip(gdf, clip_gdf)
+        if result.empty:
+            return f"裁剪后无剩余要素（「{name}」不在「{clip_name}」范围内）"
+        result_name = f"{name}_裁剪"
+        _gdf_to_layer(result, result_name)
+        return f"裁剪完成：{len(result)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"裁剪失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_centroid — 质心提取
+# ============================================================
+
+@tool
+def spatial_centroid(layer_name: str) -> str:
+    """提取图层的质心/中心点，返回点图层。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        import warnings
+        centroids = gdf.copy()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            centroids["geometry"] = gdf.geometry.centroid
+        centroids = centroids[centroids.geometry.notna()]
+        if centroids.empty:
+            return f"「{name}」无法计算质心"
+        result_name = f"{name}_质心"
+        _gdf_to_layer(centroids, result_name)
+        return f"已提取 {len(centroids)} 个质心，已加载到地图"
+    except Exception as e:
+        return f"质心提取失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_simplify — 简化几何
+# ============================================================
+
+@tool
+def spatial_simplify(layer_name: str, tolerance: float = 0.001) -> str:
+    """简化图层几何，减少顶点数。tolerance 为简化容差（单位：度），0.001 约等于 100m。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        gdf["geometry"] = gdf.geometry.simplify(tolerance, preserve_topology=True)
+        result_name = f"{name}_简化"
+        _gdf_to_layer(gdf, result_name)
+        return f"已简化「{name}」（容差 {tolerance}），{len(gdf)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"简化失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_dissolve — 融合
+# ============================================================
+
+@tool
+def spatial_dissolve(layer_name: str, group_by: str = "") -> str:
+    """按属性字段融合图层几何。相同字段值的要素合并为一个。不传 group_by 则融合全部要素。"""
+    try:
+        import geopandas as gpd
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        if group_by and group_by in gdf.columns:
+            result = gdf.dissolve(by=group_by, aggfunc="first").reset_index()
+            result_name = f"{name}_按{group_by}融合"
+        else:
+            result = gpd.GeoDataFrame({"geometry": [gdf.union_all()]}, geometry="geometry", crs="EPSG:4326")
+            result_name = f"{name}_融合"
+        _gdf_to_layer(result, result_name)
+        return f"融合完成：{len(result)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"融合失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_select — 按空间关系选择
+# ============================================================
+
+@tool
+def spatial_select(target_layer: str, source_layer: str, predicate: str = "intersects") -> str:
+    """按空间关系选择要素。返回 target_layer 中与 source_layer 满足关系的要素。predicate: intersects / within / contains / touches / crosses / overlaps。"""
+    try:
+        import geopandas as gpd
+        gdf_t, name_t = _layer_to_gdf(target_layer)
+        if gdf_t is None: return name_t
+        gdf_s, name_s = _layer_to_gdf(source_layer)
+        if gdf_s is None: return name_s
+        result = gpd.sjoin(gdf_t, gdf_s, how="inner", predicate=predicate)
+        result = result.drop(columns=[c for c in result.columns if c.endswith("_right") or c == "index_right"], errors="ignore")
+        result = result.drop_duplicates()
+        if result.empty:
+            return f"没有要素满足「{predicate}」关系"
+        result_name = f"{name_t}_选择"
+        _gdf_to_layer(result, result_name)
+        return f"按「{predicate}」选择了 {len(result)}/{len(gdf_t)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"空间选择失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_sample — 随机采样
+# ============================================================
+
+@tool
+def spatial_sample(layer_name: str, n: int = 0, frac: float = 0) -> str:
+    """从图层随机采样 n 个要素（或 frac 比例）。n 和 frac 至少指定一个。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        if n > 0:
+            n = min(n, len(gdf))
+            sampled = gdf.sample(n=n)
+        elif frac > 0:
+            sampled = gdf.sample(frac=min(frac, 1.0))
+        else:
+            return "请指定 n（数量）或 frac（比例）"
+        if sampled.empty:
+            return "采样结果为空"
+        result_name = f"{name}_采样{n or frac}"
+        _gdf_to_layer(sampled, result_name)
+        return f"已随机采样 {len(sampled)}/{len(gdf)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"采样失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_near — 查找附近要素
+# ============================================================
+
+@tool
+def spatial_near(layer_name: str, target_layer: str, distance: float = 1000) -> str:
+    """查找 target_layer 中距离 layer_name 要素 distance 米以内的要素。"""
+    try:
+        import geopandas as gpd
+        from shapely import buffer
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        gdf_t, name_t = _layer_to_gdf(target_layer)
+        if gdf_t is None: return name_t
+        gdf_u = gdf.to_crs("EPSG:3857")
+        gdf_tu = gdf_t.to_crs("EPSG:3857")
+        gdf_u_buf = gpd.GeoDataFrame({"geometry": gdf_u.geometry.buffer(distance)}, geometry="geometry", crs="EPSG:3857")
+        hits = gpd.sjoin(gdf_tu, gdf_u_buf, how="inner", predicate="intersects")
+        if hits.empty:
+            return f"「{name_t}」中未找到距离「{name}」{distance}m 以内的要素"
+        result = gdf_t.iloc[hits.index.unique()].copy()
+        result_name = f"{name_t}_附近"
+        _gdf_to_layer(result, result_name)
+        return f"找到 {len(result)} 个距离{distance}m 以内的要素，已加载到地图"
+    except Exception as e:
+        return f"近邻查找失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_cluster — 空间聚类
+# ============================================================
+
+@tool
+def spatial_cluster(layer_name: str, eps: float = 0.01, min_samples: int = 3) -> str:
+    """用 DBSCAN 对点图层做空间聚类。eps 为聚类半径（度），min_samples 为最少点数。返回带 cluster 字段的新图层。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        from sklearn.cluster import DBSCAN
+        coords = gdf.geometry.get_coordinates().values
+        if len(coords) < min_samples:
+            return f"要素数（{len(coords)}）少于最少点数（{min_samples}），无法聚类"
+        clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(coords)
+        gdf["cluster"] = clustering.labels_.tolist()
+        n_clusters = len(set(clustering.labels_)) - (1 if -1 in clustering.labels_ else 0)
+        noise = list(clustering.labels_).count(-1)
+        result_name = f"{name}_聚类"
+        _gdf_to_layer(gdf, result_name)
+        return f"聚类完成：{n_clusters} 个簇，{noise} 个噪声点，已加载到地图（含 cluster 字段）"
+    except Exception as e:
+        return f"聚类失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_voronoi — 泰森多边形
+# ============================================================
+
+@tool
+def spatial_voronoi(layer_name: str) -> str:
+    """根据点图层生成泰森多边形（Voronoi 图）。覆盖范围由输入点的凸包决定。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        from shapely import MultiPoint
+        from shapely.ops import voronoi_diagram
+        points = gdf.geometry.union_all()
+        polygons = voronoi_diagram(points)
+        import geopandas as gpd
+        result = gpd.GeoDataFrame({"geometry": list(polygons.geoms)}, geometry="geometry", crs="EPSG:4326")
+        if result.empty:
+            return "泰森多边形生成失败"
+        result_name = f"{name}_泰森"
+        _gdf_to_layer(result, result_name)
+        return f"已生成 {len(result)} 个泰森多边形，已加载到地图"
+    except Exception as e:
+        return f"泰森多边形失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_field_stats — 字段统计
+# ============================================================
+
+@tool
+def spatial_field_stats(layer_name: str, field: str = "") -> str:
+    """统计图层数值字段的基本统计量（count / min / max / mean / sum / std / 空值数）。不指定 field 则列出所有可统计字段。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        import numpy as np
+        numeric_cols = gdf.select_dtypes(include=[np.number]).columns.tolist()
+        if not field:
+            return f"「{name}」的数值字段：{', '.join(numeric_cols) if numeric_cols else '无'}"
+        if field not in gdf.columns:
+            return f"「{name}」中无字段「{field}」，可用字段：{', '.join(gdf.columns)}"
+        if field not in numeric_cols:
+            return f"字段「{field}」不是数值类型，类型：{gdf[field].dtype}"
+        vals = gdf[field].dropna()
+        from collections import OrderedDict
+        stats = OrderedDict([
+            ("count", len(gdf)),
+            ("non_null", len(vals)),
+            ("null", int(gdf[field].isna().sum())),
+            ("min", float(vals.min())),
+            ("max", float(vals.max())),
+            ("mean", float(vals.mean())),
+            ("sum", float(vals.sum())),
+            ("std", float(vals.std()) if len(vals) > 1 else 0),
+        ])
+        lines = [f"📊 「{name}」.{field} 统计："]
+        for k, v in stats.items():
+            lines.append(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"字段统计失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: reverse_geocode — 反向地理编码
+# ============================================================
+
+@tool
+def reverse_geocode(lng: float, lat: float) -> str:
+    """将 WGS-84 坐标转为地址描述（反向地理编码）。"""
+    if not _current_amap_key:
+        return "高德 API Key 未配置"
+    import requests
+    from backend.services.geo_coords import wgs84_to_gcj02
+    try:
+        gcj_lng, gcj_lat = wgs84_to_gcj02(lng, lat)
+        params = {"key": _current_amap_key, "location": f"{gcj_lng},{gcj_lat}", "output": "JSON", "radius": 100}
+        resp = requests.get("https://restapi.amap.com/v3/geocode/regeo", params=params, timeout=10)
+        data = resp.json()
+        if data.get("status") != "1":
+            return f"反向地理编码失败：{data.get('info', '未知错误')}"
+        regeocode = data.get("regeocode", {})
+        formatted = regeocode.get("formatted_address", "")
+        if not formatted:
+            return f"({lng:.6f}, {lat:.6f}) 附近无地址信息"
+        return f"坐标 ({lng:.6f}, {lat:.6f}) 对应地址：{formatted}"
+    except Exception as e:
+        return f"反向地理编码失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: batch_geocode — 批量地理编码
+# ============================================================
+
+@tool
+def batch_geocode(addresses: str) -> str:
+    """批量将地名转为 WGS-84 坐标。addresses 用逗号或分号分隔。返回地名→坐标映射。"""
+    if not _current_amap_key:
+        return "高德 API Key 未配置"
+    import requests
+    from backend.services.geo_coords import gcj02_to_wgs84
+    import re
+    sep = ";" if ";" in addresses else ","
+    parts = [a.strip() for a in addresses.split(sep) if a.strip()]
+    if not parts:
+        return "请输入至少一个地址"
+    results = []
+    for addr in parts:
+        try:
+            params = {"key": _current_amap_key, "address": addr, "output": "JSON"}
+            resp = requests.get("https://restapi.amap.com/v3/geocode/geo", params=params, timeout=10)
+            data = resp.json()
+            if data.get("status") != "1" or not data.get("geocodes"):
+                results.append(f"  ❌ {addr}：未找到")
+                continue
+            loc = data["geocodes"][0].get("location", "")
+            if not loc:
+                results.append(f"  ❌ {addr}：未找到")
+                continue
+            lng, lat = loc.split(",")
+            wgs_lng, wgs_lat = gcj02_to_wgs84(float(lng), float(lat))
+            results.append(f"  ✅ {addr} → {wgs_lng:.6f},{wgs_lat:.6f}")
+        except Exception as e:
+            results.append(f"  ❌ {addr}：{str(e)[:60]}")
+    return f"批量地理编码结果（{len(results)}/{len(parts)}）：\n" + "\n".join(results)
+
+
+# ============================================================
+# 工具: spatial_join — 空间连接
+# ============================================================
+
+@tool
+def spatial_join(target_layer: str, join_layer: str, how: str = "left", predicate: str = "intersects") -> str:
+    """将 join_layer 的属性按空间关系连接到 target_layer 的要素上。predicate: intersects / within / contains / nearest。how: left / inner。"""
+    try:
+        import geopandas as gpd
+        gdf_t, name_t = _layer_to_gdf(target_layer)
+        if gdf_t is None: return name_t
+        gdf_j, name_j = _layer_to_gdf(join_layer)
+        if gdf_j is None: return name_j
+        result = gpd.sjoin(gdf_t, gdf_j, how=how, predicate=predicate)
+        result_name = f"{name_t}_连接{name_j}"
+        _gdf_to_layer(result, result_name)
+        return f"空间连接完成：{len(result)} 个要素，已加载到地图"
+    except Exception as e:
+        return f"空间连接失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: layer_merge — 图层合并
+# ============================================================
+
+@tool
+def layer_merge(layer_names: str, new_name: str = "") -> str:
+    """合并多个图层为一个（行合并）。layer_names 用逗号分隔。"""
+    try:
+        import geopandas as gpd
+        names = [n.strip() for n in layer_names.split(",")]
+        gdfs = []
+        for n in names:
+            gdf, resolved = _layer_to_gdf(n)
+            if gdf is None: return resolved
+            gdfs.append(gdf)
+        result = gpd.pd.concat(gdfs, ignore_index=True)
+        merged_name = new_name.strip() or f"{'_'.join(names)}_合并"
+        _gdf_to_layer(result, merged_name)
+        return f"合并完成：{len(result)} 个要素（{len(names)} 个图层），已加载到地图"
+    except Exception as e:
+        return f"图层合并失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: layer_split — 图层拆分
+# ============================================================
+
+@tool
+def layer_split(layer_name: str, by_field: str = "") -> str:
+    """按属性字段拆分图层，每个唯一值生成一个子图层。不传 by_field 则每个要素单独成层。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        if by_field and by_field in gdf.columns:
+            groups = gdf.groupby(by_field)
+            count = 0
+            for val, group in groups:
+                sub_name = f"{name}_{val}"
+                _gdf_to_layer(group, sub_name)
+                count += 1
+            return f"按字段「{by_field}」拆分为 {count} 个子图层（共 {len(gdf)} 个要素），已加载到地图"
+        else:
+            for i in range(len(gdf)):
+                sub = gdf.iloc[[i]].copy()
+                sub_name = f"{name}_{i}"
+                _gdf_to_layer(sub, sub_name)
+            return f"已拆分为 {len(gdf)} 个独立要素图层，已加载到地图"
+    except Exception as e:
+        return f"图层拆分失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: layer_add_geometry — 从坐标创建几何
+# ============================================================
+
+@tool
+def layer_add_geometry(layer_name: str, lon_field: str = "", lat_field: str = "") -> str:
+    """根据图层中的经度/纬度字段创建点几何。自动识别常见列名（lng/lon/longitude/x, lat/latitude/y）。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None: return name
+        import geopandas as gpd
+        from shapely.geometry import Point
+        lon_candidates = ["lng", "lon", "longitude", "x", "经度", "经"]
+        lat_candidates = ["lat", "latitude", "y", "纬度", "纬"]
+        if not lon_field:
+            for c in lon_candidates:
+                if c in gdf.columns:
+                    lon_field = c
+                    break
+        if not lat_field:
+            for c in lat_candidates:
+                if c in gdf.columns:
+                    lat_field = c
+                    break
+        if not lon_field or not lat_field:
+            return f"未找到经纬度列，可用列：{', '.join(gdf.columns)}"
+        gdf["geometry"] = gdf.apply(lambda r: Point(float(r[lon_field]), float(r[lat_field])), axis=1)
+        gdf = gdf.set_geometry("geometry", crs="EPSG:4326")
+        result_name = f"{name}_点"
+        _gdf_to_layer(gdf, result_name)
+        return f"已从 {lon_field}/{lat_field} 创建 {len(gdf)} 个点，已加载到地图"
+    except Exception as e:
+        return f"创建几何失败: {str(e)[:300]}"
 
 
 # ============================================================
@@ -1886,5 +2475,25 @@ tools = [
     create_chart,
     download_road_network,
     network_analysis,
+    spatial_buffer,
+    spatial_intersect,
+    spatial_union,
+    spatial_difference,
+    spatial_clip,
+    spatial_centroid,
+    spatial_simplify,
+    spatial_dissolve,
+    reverse_geocode,
+    batch_geocode,
+    spatial_select,
+    spatial_sample,
+    spatial_near,
+    spatial_cluster,
+    spatial_voronoi,
+    spatial_field_stats,
+    spatial_join,
+    layer_merge,
+    layer_split,
+    layer_add_geometry,
 ]
 

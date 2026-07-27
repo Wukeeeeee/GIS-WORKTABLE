@@ -65,7 +65,10 @@ python -m uvicorn backend.main:app --port 8000
 - OSM 道路网络提取（Overpass 多镜像自动切换）
 
 ### 空间分析
-- 缓冲区、相交、合并、裁剪、坐标转换
+- 缓冲区、相交、合并、裁剪、差异、质心、简化、属性融合
+- 空间连接（sjoin）、图层行合并、按字段拆分、坐标列→几何
+- 空间选择、随机采样、邻近查找、DBSCAN 聚类、泰森多边形、字段统计
+- 反向地理编码（坐标→地址）、批量地理编码（地址→坐标）
 - 热力图生成
 - 面积精确测量（自动选 UTM 投影 + Albers 交叉验证）
 - 统计图表（柱状图/饼图/直方图/散点图/折线图）
@@ -99,11 +102,13 @@ python -m uvicorn backend.main:app --port 8000
     │
     ▼
 ┌──────────────────────────────────────┐
-│ 15+ @tool 工具集 (tools.py)         │
+│ 20+ @tool 工具集 (tools.py)         │
 │ search_web / execute_python /        │
 │ datav_boundary / amap_poi_search /   │
-│ create_heatmap / field_calculate /   │
-│ export_layer / layer_control / ...   │
+│ spatial_buffer / spatial_join /      │
+│ reverse_geocode / spatial_cluster /  │
+│ network_analysis / create_heatmap /  │
+│ field_calculate / export_layer / ... │
 └──────────────────────────────────────┘
     │
     ▼
@@ -136,6 +141,8 @@ frontend/
     ├── upload.js      # 文件上传
     ├── aoi.js         # AOI 交互
     ├── network.js     # 网络分析面板
+    ├── spatial.js     # 空间分析面板
+    ├── debug.js       # 调试面板
     └── project.js     # 工程持久化
 
 backend/
@@ -143,7 +150,7 @@ backend/
 └── services/
     ├── ai_service.py  # AI 服务层（系统提示词、历史管理、路由）
     ├── graph.py       # LangGraph Agent（主循环 + 自校验）
-    ├── tools.py       # @tool 工具集（15+ 个工具）
+    ├── tools.py       # @tool 工具集（20+ 个工具）
     ├── layer_service.py
     ├── amap_service.py
     ├── baidu_aoi_service.py
@@ -169,6 +176,29 @@ backend/
 
 
 ## 更新日志
+
+### 2026-07-27 — ② Bug 大扫除
+- Fix SSE `error`/`cancelled` 事件被空 catch 吞噬，Agent 报错用户完全不知（chat.js）
+- Fix `JSON.parse` 无 try 保护，收到坏数据整条流炸掉
+- Fix `marked` 未加载直接 `new marked.Renderer()` 整模块启动失败
+- Fix 流结束无 `done` 事件时 `result` 为 null 导致 `.response` 读取崩溃
+- Fix 菜单"导出"调 `downloadGeoJSON()` 无参数直接静默无操作
+- Fix `geometry_type` vs `geometry_types` key 名不一致，AI 看到的图层几何类型永远为空
+- Fix `_parse_coord` 无逗号秒崩，友好报错替代 `IndexError`
+- Fix `reset_state`/`_push_layer`/`_register_layer` 无锁竞争，并发请求数据交叉污染
+- Fix `weight_field` 值为 null 时 `float(None)` 崩溃建图
+- Fix 双向 Dijkstra 替换 A* 寻路，大型路网提速约 2x
+- Fix `debug.js` setInterval 不清理，面板隐藏后仍在刷
+- Add `_parse_coord` 输入校验（长度 + 数字类型）
+
+### 2026-07-27 — ①
+- Add Phase 1~4 空间分析工具化（buffer/intersect/union/difference/clip/centroid/simplify/dissolve）
+- Add Phase 2 数据处理工具（spatial_join/layer_merge/layer_split/layer_add_geometry）
+- Add Phase 3 地理编码工具（reverse_geocode/batch_geocode）
+- Add Phase 4 空间统计工具（spatial_select/spatial_sample/spatial_near/spatial_cluster/spatial_voronoi/spatial_field_stats）
+- Add 空间分析前端面板
+- Add 调试面板（图层概览/reset_state）
+- Add 比例尺控件
 
 ### 2026-07-21
 - Main 测试网络分析面板

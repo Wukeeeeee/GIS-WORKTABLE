@@ -344,7 +344,15 @@ window.GIS.api = (() => {
   }
 
   // ===== 系统 =====
-  async function healthCheck()      { /* TODO: GET /health */ }
+  async function healthCheck() {
+    try {
+      const res = await fetch(`${BASE_URL}/api/health`);
+      if (!res.ok) return { ok: false, status: res.status };
+      return await res.json();
+    } catch (e) {
+      return { ok: false, message: e.message };
+    }
+  }
 
   /** 获取后端版本信息（Git 提交号 + 启动时间） */
   async function getVersion() {
@@ -382,7 +390,7 @@ window.GIS.api = (() => {
   }
 
   return {
-    request, upload, chat, clearMemory,
+    request, upload, chat, clearMemory, healthCheck,
     getLayers, getLayer, deleteLayer,
     downloadLayer, executeGISAction, getBoundary,
     saveProject, loadProject, listProjects,
@@ -402,6 +410,8 @@ window.GIS.api = (() => {
 // ===== 全局下载函数 =====
 window.downloadGeoJSON = function(layerId) {
   const layers = GIS.layers.getLayers();
+  if (!layers || layers.length === 0) return;
+  if (!layerId) layerId = layers[0].layer_id;
   const layer = layers.find(l => l.layer_id === layerId);
   if (!layer || !layer.geojson) return;
   //封装成blob对象
