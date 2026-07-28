@@ -105,6 +105,23 @@ if (typeof marked !== 'undefined') {
     { name: 'chart', label: '图表分析', desc: '图层属性统计图表（柱状/饼图/散点）', prompt: '对 {图层名} 的 {字段} 生成 {图表类型} 图' },
     { name: 'amap', label: '高德', desc: '搜索POI/查天气/地址转坐标', prompt: '搜索 {关键词} 的 POI 数据，每页25条最多200条，结果加载到地图' },
     { name: 'network', label: '网络分析', desc: '最短路径/服务区/最近设施', prompt: '从 {起点} 到 {终点} 的最短路径，用广州路网分析' },
+    { name: 'slope', label: '坡度分析', desc: '对 DEM 做坡度分析', prompt: '对 {图层名} 做坡度分析，结果叠加到地图上' },
+    { name: 'aspect', label: '坡向分析', desc: '对 DEM 做坡向分析', prompt: '对 {图层名} 做坡向分析，结果叠加到地图上' },
+    { name: 'hillshade', label: '山体阴影', desc: '生成 DEM 山体阴影', prompt: '生成 {图层名} 的山体阴影，结果叠加到地图上' },
+    { name: 'contour', label: '等高线', desc: '从 DEM 提取等高线', prompt: '从 {图层名} 提取等高线，等高距 {间隔} 米，结果加载到地图' },
+    { name: 'ndvi', label: 'NDVI 计算', desc: '计算植被指数 NDVI', prompt: '计算 {图层名} 的 NDVI，结果叠加到地图' },
+    { name: 'rastercalc', label: '栅格计算器', desc: '波段数学运算', prompt: '用表达式 {表达式} 对 {图层名} 做栅格计算，结果叠加到地图' },
+    { name: 'interpolate', label: '空间插值', desc: 'IDW / RBF 插值分析', prompt: '对 {图层名} 的 {字段} 做 {方法} 插值，结果叠加到地图' },
+    { name: 'hydrology', label: '水文分析', desc: '流向/流量/河网提取', prompt: '对 {图层名} 做水文分析，提取河网，结果加载到地图' },
+    { name: 'topology', label: '拓扑检查', desc: '检查重叠/缝隙/无效几何', prompt: '对 {图层名} 做拓扑检查，标记所有拓扑错误' },
+    { name: 'coord-convert', label: '坐标转换', desc: '经纬度与投影坐标互转', prompt: '将坐标 {经度},{纬度} 转为 Web Mercator' },
+    { name: 'edit-vertices', label: '折点编辑', desc: '编辑图层的折点', prompt: '编辑 {图层名} 的折点' },
+    { name: 'snapping', label: '捕捉开关', desc: '启用/关闭绘制捕捉', prompt: '启用绘制捕捉' },
+    { name: 'legend', label: '添加图例', desc: '为分级/唯一值图层添加图例', prompt: '给 {图层名} 添加图例' },
+    { name: 'north-arrow', label: '指北针', desc: '添加/移除指北针', prompt: '添加指北针' },
+    { name: 'labels', label: '要素标注', desc: '给图层添加文字标注', prompt: '给 {图层名} 添加标注，显示 {字段} 内容' },
+    { name: 'export-map', label: '导出地图', desc: '导出当前地图为 PNG', prompt: '导出当前地图为 PNG' },
+    { name: 'export-pdf', label: '导出 PDF', desc: '导出当前地图为 PDF', prompt: '导出当前地图为 PDF' },
   ];
 
   let _slashFiltered = [];      // 当前过滤后的列表
@@ -939,6 +956,11 @@ if (typeof marked !== 'undefined') {
                 }
               }
               break;
+            case 'set_style':
+              if (target && GIS.map && GIS.map.setLayerStyle) {
+                GIS.map.setLayerStyle(target._rawName || target.layer_id, op.style || {});
+              }
+              break;
             case 'rename':
               if (target && window.GIS.layers) {
                 target.filename = op.new_name;
@@ -949,6 +971,79 @@ if (typeof marked !== 'undefined') {
             case 'fit':
               if (window.GIS.map && window.GIS.map.fitLayer) {
                 window.GIS.map.fitLayer(op.name);
+              }
+              break;
+            case 'symbology':
+              if (window.GIS.layers) {
+                if (op.symbology_type === 'graduated') {
+                  window.GIS.layers.applyGraduatedColors(op.name, op.field, op.classes, op.scheme);
+                } else if (op.symbology_type === 'unique') {
+                  window.GIS.layers.applyUniqueValues(op.name, op.field, op.scheme);
+                }
+              }
+              break;
+            case 'labels':
+              if (window.GIS.layers) {
+                window.GIS.layers.addLabels(op.name, op.field);
+              }
+              break;
+            case 'legend':
+              if (window.GIS.layers) {
+                window.GIS.layers.addLegend(op.name);
+              }
+              break;
+            case 'north_arrow':
+              if (window.GIS.map && window.GIS.map.showNorthArrow) {
+                window.GIS.map.showNorthArrow();
+              }
+              break;
+            case 'edit_vertices':
+              if (window.GIS.layers) window.GIS.layers.editVertices(op.name);
+              if (window.GIS.chat) window.GIS.chat.addMessage('已进入折点编辑模式，拖拽顶点调整后点击「保存」完成编辑', 'system');
+              break;
+            case 'export_map':
+              if (window.GIS.map && window.GIS.map.exportMap) {
+                window.GIS.map.exportMap(op.format || 'png');
+              }
+              break;
+            case 'export_pdf':
+              if (window.GIS.map && window.GIS.map.exportPdf) {
+                window.GIS.map.exportPdf(op.title || '地图导出');
+              }
+              break;
+            case 'undo':
+              if (window.GIS.map && window.GIS.map.undo) window.GIS.map.undo();
+              break;
+            case 'redo':
+              if (window.GIS.map && window.GIS.map.redo) window.GIS.map.redo();
+              break;
+            case 'snapping':
+              if (window.GIS.chat) {
+                window.GIS.chat.addMessage('捕捉已' + (op.enabled ? '启用' : '禁用') + '（刷新页面生效）', 'system');
+              }
+              break;
+            case 'dem_result':
+              if (op.url && op.bounds) {
+                window.GIS.map.addImageOverlay(op.url, op.bounds, op.name);
+                if (window.GIS.chat) {
+                  window.GIS.chat.addMessage('已添加地形分析图层: ' + (op.label || op.name), 'system');
+                }
+              }
+              break;
+            case 'time_animation':
+              if (window.GIS.map && typeof window.GIS.map.startTimeAnimation === 'function') {
+                window.GIS.map.startTimeAnimation(op.name, op.time_field, op.time_values, op.interval_ms);
+                if (window.GIS.chat) {
+                  window.GIS.chat.addMessage('已启动时序动画: ' + (op.name || ''), 'system');
+                }
+              }
+              break;
+            case 'chart_link':
+              if (window.GIS.map && typeof window.GIS.map.enableChartLink === 'function') {
+                window.GIS.map.enableChartLink(op.name, op.chart_field);
+                if (window.GIS.chat) {
+                  window.GIS.chat.addMessage('已建立图表联动: ' + (op.name || ''), 'system');
+                }
               }
               break;
           }
@@ -1341,5 +1436,11 @@ if (typeof marked !== 'undefined') {
     }, ANIM_MS + 40);
   }
 
-  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop };
+  /** 通过命令名触发斜杠命令（供菜单栏调用） */
+  function triggerSlash(name) {
+    var cmd = SLASH_COMMANDS.find(function(c) { return c.name === name; });
+    if (cmd) _applySlashCommand(cmd);
+  }
+
+  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop, SLASH_COMMANDS, triggerSlash };
 })();

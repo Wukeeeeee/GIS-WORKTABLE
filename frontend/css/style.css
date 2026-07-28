@@ -1505,6 +1505,46 @@ html, body {
   opacity: 1;
 }
 
+/* 图层面板右键菜单 */
+.context-menu {
+  display: none;
+  position: fixed;
+  background: var(--surface-container-high, #ebe7e6);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+  padding: 4px 0;
+  min-width: 150px;
+  z-index: 10001;
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: var(--fs-13);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+.context-menu .context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+  color: var(--on-surface, #1c1b1b);
+  transition: background 0.1s;
+}
+.context-menu .context-menu-item:hover {
+  background: var(--surface-variant, #e5e2e1);
+}
+.context-menu .context-menu-item.context-menu-item-danger {
+  color: #d32f2f;
+}
+.context-menu .context-menu-item.context-menu-item-danger:hover {
+  background: #ffebee;
+}
+.context-menu .context-menu-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--outline-variant, #c4c7c7);
+}
+
 /* Leaflet 十字准星坐标标签 */
 .crosshair-leaflet-label {
   background: none !important;
@@ -3791,6 +3831,48 @@ html.theme-dark .download-dialog-btn { background: var(--surface-container-high)
 html.theme-dark .download-dialog-btn:hover { background: var(--surface-dim); }
 html.theme-dark .download-dialog-confirm { background: var(--primary-fixed-dim); color: #000; border-color: var(--primary-fixed-dim); }
 
+/* 上传前预览弹窗 */
+.preview-dialog-overlay {
+  position: fixed; inset: 0; z-index: 10000;
+  background: rgba(0,0,0,0.35); display: flex;
+  align-items: center; justify-content: center;
+}
+.preview-dialog {
+  background: var(--surface-container-lowest, #fff);
+  border-radius: 10px; padding: 24px;
+  max-width: 560px; width: 90%; max-height: 80vh; overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.preview-dialog-title { font-size: 17px; font-weight: 600; color: var(--on-surface, #1c1b1b); margin-bottom: 2px; }
+.preview-dialog-file { font-size: 12px; color: var(--ui-gray-400, #999); margin-bottom: 16px; }
+.preview-dialog-section { margin-bottom: 14px; }
+.preview-dialog-label { font-size: 12px; font-weight: 600; color: var(--ui-gray-500); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.preview-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.preview-chip {
+  display: inline-block; padding: 2px 8px;
+  background: var(--surface-container-high, #f0efee);
+  border-radius: 4px; font-size: 12px; color: var(--on-surface, #1c1b1b);
+}
+.preview-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.preview-table th { text-align: left; padding: 4px 6px; background: var(--surface-container, #e5e2e1); color: var(--ui-gray-600); font-weight: 600; border: 1px solid var(--outline-variant, #c4c7c7); white-space: nowrap; }
+.preview-table td { padding: 3px 6px; border: 1px solid var(--outline-variant, #c4c7c7); color: var(--on-surface, #1c1b1b); max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-info { display: flex; gap: 16px; font-size: 13px; color: var(--on-surface, #1c1b1b); }
+.preview-dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--outline-variant, #c4c7c7); }
+.preview-btn {
+  padding: 6px 18px; border-radius: 6px; border: 1px solid var(--outline-variant, #c4c7c7);
+  background: var(--surface-container-high, #f0efee); color: var(--on-surface, #1c1b1b);
+  font-size: 13px; cursor: pointer; transition: background 0.15s;
+}
+.preview-btn:hover { background: var(--surface-container-highest, #e5e2e1); }
+.preview-btn-confirm { background: var(--primary-container, #1c1b1b); color: var(--on-primary-container, #fff); border-color: var(--primary-container, #1c1b1b); }
+.preview-btn-confirm:hover { opacity: 0.85; }
+html.theme-dark .preview-dialog { background: var(--surface-container-high, #333); }
+html.theme-dark .preview-chip { background: var(--surface-dim, #444); }
+html.theme-dark .preview-table th { background: var(--surface-dim, #444); }
+html.theme-dark .preview-table th,
+html.theme-dark .preview-table td { border-color: var(--ui-gray-700); }
+
 /* ============================================================
    符号化弹窗
    ============================================================ */
@@ -4414,3 +4496,38 @@ html.theme-dark .debug-btn-sm { background: #2a2a2a; color: #ccc; border-color: 
 html.theme-dark .debug-btn-sm:hover { background: #333; }
 html.theme-dark .debug-api-result { background: #222; border-color: #333; color: #ccc; }
 html.theme-dark .debug-empty { color: #666; }
+
+/* ================================================================
+   图层分组
+   ================================================================ */
+.group-header {
+  background: var(--surface-container, #f1edec);
+  cursor: pointer;
+  user-select: none;
+}
+.group-header td {
+  padding: 6px 8px !important;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--on-surface-variant, #666);
+  border-bottom: 1px solid var(--outline-variant, #ddd);
+}
+.col-group-toggle {
+  width: 24px;
+  text-align: center;
+  padding: 6px 2px !important;
+}
+.group-toggle {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--on-surface-variant, #888);
+  cursor: pointer;
+  padding: 2px;
+}
+.group-toggle:hover { color: var(--primary, #000); }
+.group-name-text { cursor: pointer; padding: 2px 4px; border-radius: 3px; }
+.group-name-text:hover { background: var(--surface-container-highest, #e0ddd9); }
+.group-count { font-weight: 400; font-size: 11px; color: var(--ui-gray-400, #aaa); }
+tr[data-group] { transition: none; }
+html.theme-dark .group-header { background: var(--surface-container-highest, #2a2a2a); }
+html.theme-dark .group-name-text:hover { background: var(--surface-dim, #333); }

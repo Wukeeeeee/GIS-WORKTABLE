@@ -23,10 +23,18 @@ window.GIS = window.GIS || {};
   const geoStore = {};
   let baseLayer = null;
   let _currentBaseMap = 'satellite'; // 'satellite' | 'light'
-  let drawnItems = null;        // Leaflet.Draw 绘制的图形集合
-  let _featureMap = {};         // { "layerName:idx": LeafletLayer } — 要素索引→Leaflet 图层
-  let _highlightedFeature = null; // 当前高亮的 Leaflet 图层
-  let _featureInfoActive = false; // 选择要素工具是否激活
+let drawnItems = null;        // Leaflet.Draw 绘制的图形集合
+let _featureMap = {};         // { "layerName:idx": LeafletLayer } — 要素索引→Leaflet 图层
+let _highlightedFeature = null; // 当前高亮的 Leaflet 图层
+let _featureInfoActive = false; // 选择要素工具是否激活
+var _labelConfigs = {};
+var _patternsInited = false;  // SVG pattern defs 是否已注入
+var _rasterLayers = {};       // { name: ImageOverlay }
+var _northArrowControl = null;       // { name: {field, fontSize, color} } — 标注配置
+var _undoStack = [];          // [{name, geojson}]
+var _redoStack = [];
+var _undoMax = 50;
+var _undoSkip = false;
   // 缓存 DOM 引用——避免每次 mousemove 都 querySelector
   var _coordsEl = null;
   var _zoomLabelEl = null;
@@ -225,7 +233,9 @@ window.GIS = window.GIS || {};
             setTimeout(function() {
               if (!mapInstance) return;
               if (!document.querySelector('.map-draw-btn.active[data-tool="' + tool + '"]')) return;
-              mapInstance._drawHandler = new DrawClass(mapInstance);
+              mapInstance._drawHandler = new DrawClass(mapInstance, {
+                snap: true, snapDistance: 15
+              });
               mapInstance._drawHandler.enable();
             }, 50);
           }
@@ -287,16 +297,29 @@ window.GIS = window.GIS || {};
             if (GIS.spatial && GIS.spatial.toggle) GIS.spatial.toggle();
             return;
           }
+          if (tool === 'convert-crs') {
+            if (window.GIS.chat) {
+              window.GIS.chat.addMessage('坐标转换：发送"将[图层]转为Web Mercator" 或 "转换坐标 116.4,39.9 到web_mercator" 到聊天', 'system');
+            }
+            return;
+          }
+          if (tool === 'terrain-profile') {
+            if (window.GIS.chat) {
+              window.GIS.chat.addMessage('地形剖面：发送"查看[图层]的地形剖面" 或 "绘制断面并沿线提取高程" 到聊天', 'system');
+            }
+            return;
+          }
           if (tool === 'debug-panel') {
             if (GIS.debug && GIS.debug.toggle) GIS.debug.toggle();
             return;
           }
 
-          // 启用手动绘制工具
+          // 启用手动绘制工具（启用顶点捕捉）
+          var snapOpts = { snap: true, snapDistance: 15 };
           var DrawClass = { polygon: L.Draw.Polygon, rectangle: L.Draw.Rectangle,
             circle: L.Draw.Circle, polyline: L.Draw.Polyline, marker: L.Draw.Marker }[tool];
           if (DrawClass) {
-            mapInstance._drawHandler = new DrawClass(mapInstance);
+            mapInstance._drawHandler = new DrawClass(mapInstance, snapOpts);
             mapInstance._drawHandler.enable();
           }
         });
@@ -477,6 +500,12 @@ window.GIS = window.GIS || {};
   }
 
   function removeLayer(name) {
+    if (_rasterLayers[name]) {
+      mapInstance.removeLayer(_rasterLayers[name]);
+      delete _rasterLayers[name];
+      delete layers[name];
+      return;
+    }
     // 清理要素映射
     Object.keys(_featureMap).forEach(function(k) {
       if (k.startsWith(name + ':')) delete _featureMap[k];
@@ -520,6 +549,64 @@ window.GIS = window.GIS || {};
       layer.setStyle({ color: color, fillColor: color });
     }
     if (geoStore[name]) geoStore[name].style = { color: color, fillColor: color };
+  }
+
+  /** 修改图层完整样式（颜色/透明度/线宽） */
+  function setLayerStyle(name, style) {
+    var layer = layers[name];
+    if (!layer && drawnItems) {
+      drawnItems.eachLayer(function(l) {
+        if (l._name === name) layer = l;
+      });
+      if (layer) layers[name] = layer;
+    }
+    if (!layer) return;
+    var opts = {};
+    if (style.color) { opts.color = style.color; opts.fillColor = style.color; }
+    if (style.opacity !== undefined) { opts.opacity = style.opacity; opts.fillOpacity = style.opacity; }
+    if (style.weight !== undefined) { opts.weight = style.weight; }
+    if (style.fillPattern) {
+      opts.fillPattern = style.fillPattern;
+    }
+    if (typeof layer.setStyle === 'function') {
+      layer.setStyle(opts);
+    }
+    if (geoStore[name]) geoStore[name].style = { ...(geoStore[name].style || {}), ...opts };
+    // 对面要素应用填充图案（SVG 渲染器）
+    if (opts.fillPattern && layer._path) {
+      _ensureFillPatterns();
+      var patternId = 'fp-' + opts.fillPattern;
+      if (layer._path.setAttribute) {
+        layer._path.setAttribute('fill', 'url(#' + patternId + ')');
+        if (opts.fillColor) layer._path.setAttribute('fill-pattern-color', opts.fillColor);
+      }
+    }
+  }
+
+  /** 向地图 SVG 注入 fill pattern defs */
+  function _ensureFillPatterns() {
+    if (_patternsInited) return;
+    var mapPanes = mapInstance && mapInstance.getPanes();
+    var svgRoot = mapPanes && (mapPanes.overlayPane || mapPanes.mapPane);
+    if (!svgRoot) return;
+    var svg = svgRoot.querySelector('svg');
+    if (!svg) return;
+    var defs = svg.querySelector('defs');
+    if (!defs) {
+      defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+      svg.insertBefore(defs, svg.firstChild);
+    }
+    var defsXml = [
+      '<pattern id="fp-hatch" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M0 0L16 16M8-4L20 4M-4 8L4 20" stroke="currentColor" stroke-width="1" fill="none"/></pattern>',
+      '<pattern id="fp-crosshatch" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M0 0L16 16M16 0L0 16" stroke="currentColor" stroke-width="1" fill="none"/></pattern>',
+      '<pattern id="fp-dots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="4" cy="4" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="4" r="2" fill="currentColor"/><circle cx="4" cy="12" r="2" fill="currentColor"/></pattern>',
+      '<pattern id="fp-grid" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M8 0L8 16M0 8L16 8" stroke="currentColor" stroke-width="0.5" fill="none"/></pattern>',
+      '<pattern id="fp-diagonal" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M0 16L16 0M-4 10L10-4M6 20L20 6" stroke="currentColor" stroke-width="1" fill="none"/></pattern>',
+    ];
+    var temp = document.createElement('div');
+    temp.innerHTML = defsXml.join('');
+    while (temp.firstChild) defs.appendChild(temp.firstChild);
+    _patternsInited = true;
   }
 
   function toggleLayer(name) {
@@ -1011,6 +1098,37 @@ window.GIS = window.GIS || {};
       case 'manual':
         _openManual();
         break;
+      // 新功能菜单项 — 转接到斜杠命令
+      case 'tool-coord-convert':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('coord-convert');
+        break;
+      case 'tool-topology':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('topology');
+        break;
+      case 'tool-slope':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('slope');
+        break;
+      case 'tool-aspect':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('aspect');
+        break;
+      case 'tool-hillshade':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('hillshade');
+        break;
+      case 'tool-contour':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('contour');
+        break;
+      case 'tool-ndvi':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('ndvi');
+        break;
+      case 'tool-rastercalc':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('rastercalc');
+        break;
+      case 'tool-interpolate':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('interpolate');
+        break;
+      case 'tool-hydrology':
+        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('hydrology');
+        break;
     }
   }
 
@@ -1094,7 +1212,450 @@ window.GIS = window.GIS || {};
     geoStore[name] = { geojson: geojson, style: null };
     // 缩放到图层范围
     try { mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 }); } catch(e) {}
+    // 重应用标注
+    _applyLabelsForLayer(name);
   }
+
+  /** 给指定图层绑定永久标注（Leaflet tooltip） */
+  function _applyLabelsForLayer(name) {
+    if (!_labelConfigs[name]) return;
+    var cfg = _labelConfigs[name];
+    if (!layers[name]) return;
+    var gj = geoStore[name] && geoStore[name].geojson;
+    if (!gj) return;
+    var features = gj.type === 'FeatureCollection' ? gj.features : [gj];
+    Object.keys(_featureMap).forEach(function(key) {
+      if (!key.startsWith(name + ':')) return;
+      var leaf = _featureMap[key];
+      if (!leaf) return;
+      var idx = parseInt(key.split(':')[1], 10);
+      if (isNaN(idx) || idx >= features.length) return;
+      var props = features[idx].properties || {};
+      var txt = String(props[cfg.field] || '');
+      if (!txt) return;
+      leaf.bindTooltip(txt, {
+        permanent: true, direction: 'center',
+        className: 'layer-label',
+        offset: [0, 0],
+      });
+    });
+  }
+
+  /** 对图层添加/更新标注 */
+  function setLabels(name, field, fontSize, color) {
+    _labelConfigs[name] = { field: field, fontSize: fontSize || 12, color: color || '#333333' };
+    _applyLabelsForLayer(name);
+  }
+
+  /** 清除图层标注 */
+  function clearLabels(name) {
+    delete _labelConfigs[name];
+    if (!layers[name]) return;
+    Object.keys(_featureMap).forEach(function(key) {
+      if (!key.startsWith(name + ':')) return;
+      var leaf = _featureMap[key];
+      if (leaf && leaf.unbindTooltip) leaf.unbindTooltip();
+    });
+  }
+
+  function showNorthArrow() {
+    hideNorthArrow();
+    var NorthArrowControl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd: function() {
+        var div = L.DomUtil.create('div', 'north-arrow-container');
+        div.innerHTML = '<div style="background:rgba(255,255,255,0.9);border:1px solid #ccc;border-radius:4px;padding:6px;text-align:center;cursor:default;box-shadow:0 1px 5px rgba(0,0,0,0.2)">' +
+          '<div style="font-size:18px;line-height:1;color:#c0392b">&#x2191;</div>' +
+          '<div style="font-size:10px;color:#666;margin-top:2px">N</div>' +
+          '</div>';
+        L.DomEvent.disableClickPropagation(div);
+        return div;
+      }
+    });
+    _northArrowControl = new NorthArrowControl().addTo(mapInstance);
+  }
+
+  function hideNorthArrow() {
+    if (_northArrowControl && mapInstance) {
+      mapInstance.removeControl(_northArrowControl);
+      _northArrowControl = null;
+    }
+  }
+
+  /** 栅格图层（GeoTIFF 转换后的 PNG） */
+  function addImageOverlay(url, bounds, name, layerId) {
+    if (!mapInstance) return;
+    var southWest = L.latLng(bounds[1], bounds[0]);
+    var northEast = L.latLng(bounds[3], bounds[2]);
+    var imageBounds = L.latLngBounds(southWest, northEast);
+    var overlay = L.imageOverlay(url, imageBounds, {
+      opacity: 1.0,
+      attribution: name
+    }).addTo(mapInstance);
+    _rasterLayers[name] = overlay;
+    _rasterLayers[layerId] = overlay;
+    layers[name] = overlay;
+    layers[layerId] = overlay;
+    mapInstance.fitBounds(imageBounds);
+  }
+
+  function removeRasterLayer(name) {
+    if (_rasterLayers[name]) {
+      mapInstance.removeLayer(_rasterLayers[name]);
+      delete _rasterLayers[name];
+      delete layers[name];
+    }
+  }
+
+  /** 折点编辑模式 */
+  var _editModeName = null;
+
+  function enterEditMode(name) {
+    if (!mapInstance || !drawnItems) return;
+    var gs = geoStore[name];
+    if (!gs) return;
+    _exitEditMode(); // 先退出已有编辑
+
+    var geojson = gs.geojson;
+    var features = geojson.type === 'FeatureCollection' ? (geojson.features || []) : [geojson];
+    if (!features.length) return;
+
+    // 隐藏原图层
+    if (layers[name]) mapInstance.removeLayer(layers[name]);
+
+    // 清空 drawnItems 并填入要素
+    drawnItems.clearLayers();
+    _editModeName = name;
+
+    features.forEach(function(f, idx) {
+      var leaf;
+      var geom = f.geometry;
+      if (!geom) return;
+      switch (geom.type) {
+        case 'Point':
+          leaf = L.circleMarker([geom.coordinates[1], geom.coordinates[0]], { radius: 6, fillColor: '#e74c3c', color: '#e74c3c', weight: 2, fillOpacity: 0.6 });
+          break;
+        case 'LineString':
+          leaf = L.polyline(geom.coordinates.map(function(c) { return [c[1], c[0]]; }), { color: '#e74c3c', weight: 3 });
+          break;
+        case 'Polygon':
+          leaf = L.polygon(geom.coordinates[0].map(function(c) { return [c[1], c[0]]; }), { color: '#e74c3c', weight: 2, fillColor: '#e74c3c', fillOpacity: 0.1 });
+          break;
+        case 'MultiPoint':
+          leaf = L.featureGroup(geom.coordinates.map(function(c) { return L.circleMarker([c[1], c[0]], { radius: 5 }); }));
+          break;
+        case 'MultiLineString':
+          leaf = L.featureGroup(geom.coordinates.map(function(line) { return L.polyline(line.map(function(c) { return [c[1], c[0]]; })); }));
+          break;
+        case 'MultiPolygon':
+          leaf = L.featureGroup(geom.coordinates.map(function(poly) { return L.polygon(poly[0].map(function(c) { return [c[1], c[0]]; })); }));
+          break;
+        default:
+          return;
+      }
+      leaf._editIdx = idx;
+      leaf._editName = name;
+      leaf._editOrigProps = f.properties || {};
+      drawnItems.addLayer(leaf);
+    });
+
+    // 启用编辑
+    drawnItems.editing.enable();
+
+    // 监听编辑事件
+    mapInstance.on(L.Draw.Event.EDITSTOP, _onEditStop);
+
+    // 添加保存/取消控制条
+    _addEditControls(name);
+  }
+
+  function _addEditControls(name) {
+    var existing = document.getElementById('edit-controls');
+    if (existing) existing.remove();
+    var div = L.DomUtil.create('div', 'edit-controls-bar', document.getElementById('map'));
+    div.id = 'edit-controls';
+    div.innerHTML =
+      '<div style="background:rgba(255,255,255,0.95);border:1px solid #ddd;border-radius:8px;padding:8px 14px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 8px rgba(0,0,0,0.15);z-index:1000;font-size:13px;position:absolute;top:12px;left:50%;transform:translateX(-50%)">' +
+      '<span style="color:#333;font-weight:500">折点编辑: ' + escapeHtml(name) + '</span>' +
+      '<button id="edit-save-btn" style="background:#27ae60;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:13px">保存</button>' +
+      '<button id="edit-cancel-btn" style="background:#bdc3c7;color:#333;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;font-size:13px">取消</button>' +
+      '</div>';
+    L.DomEvent.disableClickPropagation(div);
+    document.getElementById('edit-save-btn').onclick = function() { _saveEdit(name); };
+    document.getElementById('edit-cancel-btn').onclick = function() { _exitEditMode(); };
+  }
+
+  function _onEditStop() {
+    // 编辑停止时不自动退出，等待用户点保存或取消
+  }
+
+  function _saveEdit(name) {
+    if (!drawnItems || !_editModeName) return;
+    var features = [];
+    drawnItems.eachLayer(function(leaf) {
+      var geom = null;
+      if (leaf instanceof L.CircleMarker || leaf instanceof L.Marker) {
+        var ll = leaf.getLatLng();
+        geom = { type: 'Point', coordinates: [ll.lng, ll.lat] };
+      } else if (leaf instanceof L.Polyline || leaf instanceof L.Polygon) {
+        var latlngs = leaf.getLatLngs();
+        if (leaf instanceof L.Polygon) {
+          geom = { type: 'Polygon', coordinates: [latlngs[0].map(function(ll) { return [ll.lng, ll.lat]; })] };
+        } else {
+          geom = { type: 'LineString', coordinates: latlngs.map(function(ll) { return [ll.lng, ll.lat]; }) };
+        }
+      } else if (leaf instanceof L.FeatureGroup) {
+        // Multi* types — skip reconstruction for now
+        return;
+      }
+      if (geom) {
+        features.push({ type: 'Feature', geometry: geom, properties: leaf._editOrigProps || {} });
+      }
+    });
+    if (!features.length) { _exitEditMode(); return; }
+
+    var updated = features.length === 1 ? features[0] : { type: 'FeatureCollection', features: features };
+    geoStore[name] = { geojson: updated, style: geoStore[name] ? geoStore[name].style : {} };
+
+    // 退出编辑模式并重新加载
+    _exitEditMode();
+    loadGeoJSON(updated, name, geoStore[name].style);
+  }
+
+  function _exitEditMode() {
+    if (!drawnItems) return;
+    drawnItems.editing.disable();
+    drawnItems.clearLayers();
+    mapInstance.off(L.Draw.Event.EDITSTOP, _onEditStop);
+    _editModeName = null;
+    var ctrl = document.getElementById('edit-controls');
+    if (ctrl) ctrl.remove();
+  }
+
+  function exitEditMode() {
+    _exitEditMode();
+  }
+
+  /** 导出地图为图片 */
+  function exportMap(format) {
+    if (!mapInstance) return;
+    format = format || 'png';
+    var mapEl = document.getElementById('map');
+    if (!mapEl) return;
+    var w = mapEl.clientWidth;
+    var h = mapEl.clientHeight;
+    if (!w || !h) return;
+
+    var canvas = document.createElement('canvas');
+    canvas.width = w * 2;
+    canvas.height = h * 2;
+    var ctx = canvas.getContext('2d');
+    ctx.scale(2, 2);
+
+    ctx.fillStyle = '#f8f8f8';
+    ctx.fillRect(0, 0, w, h);
+
+    try {
+      var tiles = mapEl.querySelectorAll('.leaflet-tile-loaded img, .leaflet-tile img');
+      tiles.forEach(function(img) {
+        if (!img.complete || !img.naturalWidth) return;
+        var left = parseInt(img.style.left) || 0;
+        var top = parseInt(img.style.top) || 0;
+        ctx.drawImage(img, left, top, img.naturalWidth, img.naturalHeight);
+      });
+    } catch(e) {}
+
+    try {
+      var renderer = mapInstance.getRenderer();
+      if (renderer && renderer._container) {
+        ctx.drawImage(renderer._container, 0, 0);
+      }
+    } catch(e) {}
+
+    try {
+      if (drawnItems) {
+        drawnItems.eachLayer(function(l) {
+          if (l._container && l._container instanceof HTMLCanvasElement) {
+            ctx.drawImage(l._container, 0, 0);
+          }
+        });
+      }
+    } catch(e) {}
+
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+    ctx.fillRect(0, h - 20, w, 20);
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px sans-serif';
+    ctx.fillText('GIS WorkTable · ' + new Date().toISOString().slice(0, 10), 8, h - 7);
+
+    var mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
+    var dataUrl = canvas.toDataURL(mime, 0.92);
+    var link = document.createElement('a');
+    link.download = 'map_export_' + Date.now() + '.' + format;
+    link.href = dataUrl;
+    link.click();
+  }
+
+  /** 导出地图为 PDF（通过浏览器打印布局） */
+  function exportPdf(title) {
+    if (!mapInstance) return;
+    title = title || '地图导出';
+    var mapEl = document.getElementById('map');
+    if (!mapEl) return;
+
+    var mapData = _captureMapCanvas();
+    if (!mapData) return;
+
+    var now = new Date();
+    var dateStr = now.toLocaleDateString('zh-CN');
+    var center = mapInstance.getCenter();
+    var zoom = mapInstance.getZoom();
+    var layers = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
+
+    var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+      '<title>' + escapeHtml(title) + '</title>' +
+      '<style>' +
+      '@page { size: A4 landscape; margin: 20mm; }' +
+      'body { font-family: "Microsoft YaHei", sans-serif; margin: 0; padding: 20px; color: #333; }' +
+      '.header { text-align: center; margin-bottom: 16px; }' +
+      '.header h1 { font-size: 22px; margin: 0 0 4px 0; font-weight: 600; }' +
+      '.header .meta { font-size: 12px; color: #888; }' +
+      '.map-container { border: 1px solid #ccc; page-break-inside: avoid; }' +
+      '.map-container img { width: 100%; height: auto; display: block; }' +
+      '.footer { display: flex; justify-content: space-between; margin-top: 14px; font-size: 11px; color: #666; }' +
+      '.footer .legend { flex: 1; }' +
+      '.footer .scale { text-align: right; }' +
+      '.north-arrow { display: inline-block; font-size: 28px; color: #c0392b; margin-right: 12px; line-height: 1; }' +
+      '@media print { body { padding: 0; } }' +
+      '</style></head><body>' +
+      '<div class="header"><h1>' + escapeHtml(title) + '</h1>' +
+      '<div class="meta">' + dateStr + ' | 中心: ' + center.lat.toFixed(4) + ', ' + center.lng.toFixed(4) + ' | 缩放: ' + zoom + '</div></div>' +
+      '<div class="map-container"><img src="' + mapData + '" alt="地图"></div>' +
+      '<div class="footer"><div class="legend">' +
+      (layers.length ? '<strong>图层:</strong> ' + layers.map(function(l) { return l.filename; }).join(' · ') : '') +
+      '</div><div class="scale"><span class="north-arrow">&#x2191;</span> N</div></div>' +
+      '<script>window.onload=function(){setTimeout(function(){window.print()},500)}<' + '/script>' +
+      '</body></html>';
+
+    var win = window.open('', '_blank', 'width=900,height=700');
+    if (win) {
+      win.document.write(html);
+      win.document.close();
+    }
+  }
+
+  /** 内部：捕获地图 Canvas 数据 */
+  function _captureMapCanvas() {
+    var mapEl = document.getElementById('map');
+    if (!mapEl) return null;
+    var w = mapEl.clientWidth, h = mapEl.clientHeight;
+    if (!w || !h) return null;
+    var canvas = document.createElement('canvas');
+    canvas.width = w * 2;
+    canvas.height = h * 2;
+    var ctx = canvas.getContext('2d');
+    ctx.scale(2, 2);
+    ctx.fillStyle = '#f8f8f8';
+    ctx.fillRect(0, 0, w, h);
+    try {
+      mapEl.querySelectorAll('.leaflet-tile-loaded img, .leaflet-tile img').forEach(function(img) {
+        if (!img.complete || !img.naturalWidth) return;
+        ctx.drawImage(img, parseInt(img.style.left) || 0, parseInt(img.style.top) || 0, img.naturalWidth, img.naturalHeight);
+      });
+    } catch(e) {}
+    try {
+      var renderer = mapInstance.getRenderer();
+      if (renderer && renderer._container) ctx.drawImage(renderer._container, 0, 0);
+    } catch(e) {}
+    try {
+      if (drawnItems) drawnItems.eachLayer(function(l) {
+        if (l._container && l._container instanceof HTMLCanvasElement) ctx.drawImage(l._container, 0, 0);
+      });
+    } catch(e) {}
+    return canvas.toDataURL('image/png', 0.95);
+  }
+
+  /** 快照当前所有地图状态到撤销栈 */
+  function _snapshot() {
+    var snap = {};
+    Object.keys(geoStore).forEach(function(k) {
+      snap[k] = JSON.parse(JSON.stringify(geoStore[k]));
+    });
+    return snap;
+  }
+
+  /** 保存快照（在修改前调用） */
+  function _saveUndoSnap() {
+    if (_undoSkip) return;
+    _undoStack.push(_snapshot());
+    if (_undoStack.length > _undoMax) _undoStack.shift();
+    _redoStack = [];
+  }
+
+  /** 恢复到指定快照 */
+  function _restoreSnap(snap) {
+    Object.keys(geoStore).forEach(function(k) { delete geoStore[k]; });
+    Object.keys(snap).forEach(function(k) { geoStore[k] = snap[k]; });
+    _undoSkip = true;
+    Object.keys(geoStore).forEach(function(k) {
+      if (geoStore[k] && geoStore[k].geojson && layers[k]) {
+        loadGeoJSON(geoStore[k].geojson, k, geoStore[k].style || {});
+      }
+    });
+    _undoSkip = false;
+  }
+
+  /** 撤销 */
+  function undo() {
+    if (_undoStack.length === 0) return;
+    var current = _snapshot();
+    _redoStack.push(current);
+    var snap = _undoStack.pop();
+    _restoreSnap(snap);
+    if (window.GIS.chat) window.GIS.chat.addMessage('已撤销上一步操作', 'system');
+  }
+
+  /** 重做 */
+  function redo() {
+    if (_redoStack.length === 0) return;
+    var current = _snapshot();
+    _undoStack.push(current);
+    var snap = _redoStack.pop();
+    _restoreSnap(snap);
+    if (window.GIS.chat) window.GIS.chat.addMessage('已重做操作', 'system');
+  }
+
+  /** 修改 loadGeoJSON 以支持撤销快照（在加载前保存状态） */
+  var _origLoadGeoJSON = loadGeoJSON;
+  loadGeoJSON = function(geojson, name, style) {
+    if (!_undoSkip && name && geoStore[name]) {
+      _saveUndoSnap();
+    }
+    return _origLoadGeoJSON(geojson, name, style);
+  };
+
+  /** 键盘快捷键（CTRL+Z / CTRL+SHIFT+Z） */
+  function _initKeyboardShortcuts() {
+    document.addEventListener('keydown', function(e) {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+      if (e.key === 'z' || e.key === 'Z') {
+        e.preventDefault();
+        undo();
+      }
+    });
+  }
+
+  // 在 init 中调用快捷键初始化
+  var _origInit = init;
+  init = function(container, options) {
+    _origInit(container, options);
+    _initKeyboardShortcuts();
+  };
 
   GIS.map = {
     init: init,
@@ -1104,6 +1665,7 @@ window.GIS = window.GIS || {};
     removeLayer: removeLayer,
     setLayerVisible: setLayerVisible,
     setLayerColor: setLayerColor,
+    setLayerStyle: setLayerStyle,
     getLayer: getLayer,
     toggleLayer: toggleLayer,
     flyTo: flyTo,
@@ -1112,8 +1674,63 @@ window.GIS = window.GIS || {};
     removeHeatmap: removeHeatmap,
     clearHighlight: clearHighlight,
     highlightLayerFeature: highlightLayerFeature,
+    setLabels: setLabels,
+    clearLabels: clearLabels,
+    showNorthArrow: showNorthArrow,
+    hideNorthArrow: hideNorthArrow,
+    addImageOverlay: addImageOverlay,
+    removeRasterLayer: removeRasterLayer,
+    enterEditMode: enterEditMode,
+    exitEditMode: exitEditMode,
+    exportMap: exportMap,
+    exportPdf: exportPdf,
+    undo: undo,
+    redo: redo,
     invalidateSize: function() { if (mapInstance) mapInstance.invalidateSize(); },
     getInstance: function() { return mapInstance; },
+    startTimeAnimation: function(name, timeField, timeValues, intervalMs) {
+      if (!mapInstance || !timeValues || timeValues.length < 2) return;
+      var targetLayer = null;
+      mapInstance.eachLayer(function(l) {
+        if (l._name && String(l._name).indexOf(name) >= 0) targetLayer = l;
+        if (l.name && String(l.name).indexOf(name) >= 0) targetLayer = l;
+      });
+      if (!targetLayer) {
+        if (window.GIS.chat) { window.GIS.chat.addMessage('未找到图层: ' + name, 'system'); }
+        return;
+      }
+      var idx = 0;
+      if (window._timeAnimTimer) clearInterval(window._timeAnimTimer);
+      window._timeAnimTimer = setInterval(function() {
+        idx = (idx + 1) % timeValues.length;
+        var val = timeValues[idx];
+        targetLayer.eachLayer(function(f) {
+          var fv = f.feature && f.feature.properties ? String(f.feature.properties[timeField] || '') : '';
+          var match = fv === val;
+          if (mapInstance.hasLayer(f)) {
+            if (!match) mapInstance.removeLayer(f);
+          } else {
+            if (match) mapInstance.addLayer(f);
+          }
+        });
+      }, intervalMs || 500);
+      if (window.GIS.chat) {
+        window.GIS.chat.addMessage('时序动画播放中，共' + timeValues.length + '帧', 'system');
+      }
+    },
+    enableChartLink: function(name, chartField) {
+      if (!mapInstance) return;
+      mapInstance.eachLayer(function(l) {
+        if (!l.feature || !l.feature.properties) return;
+        var v = l.feature.properties[chartField];
+        if (v !== undefined && v !== null) {
+          l.bindTooltip(String(v), {permanent: false, direction: 'top'});
+        }
+      });
+      if (window.GIS.chat) {
+        window.GIS.chat.addMessage('图表联动已启用（字段: ' + chartField + '）', 'system');
+      }
+    },
     // 以下为兼容旧内联脚本
     getState: function() {
       if (!mapInstance) return null;

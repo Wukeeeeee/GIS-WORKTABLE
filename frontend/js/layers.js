@@ -14,6 +14,8 @@ window.GIS = window.GIS || {};
   let layersTable = null;
   let layersEmpty = null;
   let layerData = [];
+  let groups = {};             // { groupId: {id, name, collapsed} }
+  let _groupIdCounter = 0;
 
   function init() {
     tbody = document.getElementById('layerTbody');
@@ -22,74 +24,95 @@ window.GIS = window.GIS || {};
     renderList();
     bindActionEvents();
     bindDragEvents();
+    bindContextMenu();
+    bindGroupEvents();
   }
 
 
-  //渲染表格
+  //渲染表格（支持分组）
   function renderList(data) {
     if (data) layerData = data;
     if (!tbody) return;
 
     if (layerData.length === 0) {
-      // 空列表
       tbody.innerHTML = '';
       if (layersEmpty) layersEmpty.style.display = 'flex';
       if (layersTable) layersTable.style.display = 'none';
       return;
     }
-    // 非空列表
     if (layersEmpty) layersEmpty.style.display = 'none';
     if (layersTable) layersTable.style.display = '';
 
-    // 渲染列表
-    tbody.innerHTML = layerData.map((layer, index) => `
-      <tr draggable="true" data-index="${index}" data-id="${layer.layer_id || ''}">
-        <td class="col-drag">
-          <span class="drag-handle" draggable="true">
-            <svg><use href="assets/icons.svg#icon-drag"/></svg>
-          </span>
-        </td>
-        <td class="col-vis">
-          <button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="${layer.layer_id || ''}" title="显隐">
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              ${layer.visible !== false
-                ? '<rect x="3" y="3" width="18" height="18" rx="3" fill="var(--ui-gray-900)" stroke="var(--ui-gray-900)"/><polyline points="7 12 10 15 17 8" stroke="#fff" stroke-width="2.5"/>'
-                : '<rect x="3" y="3" width="18" height="18" rx="3" fill="none" stroke="var(--ui-gray-300)"/>'}
-            </svg>
-          </button>
-        </td>
-        <td class="col-name">
-          <span class="layer-color-dot" style="background:${layer.color || '#1c1b1b'}" data-color="${layer.color || '#1c1b1b'}" data-id="${layer.layer_id || ''}"></span>
-          <span class="layer-source layer-source-${layer.source || 'upload'}">
-            ${layer.source === 'ai'
-              ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#8B5CF6" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
-              : '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>'}
-          </span>
-          <span class="layer-name" data-id="${layer.layer_id || ''}" title="双击重命名">${escapeHtml(layer.filename || '未命名')}</span>
-        </td>
-        <td class="col-type"><span class="layer-type">${escapeHtml(layer.geometry_type || '未知')}</span></td>
-        <td class="col-actions">
-          <div class="layer-actions">
-            <button class="layer-action-btn" data-action="inspect" data-id="${layer.layer_id || ''}" title="检查图层">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-              </svg>
-            </button>
-            <button class="layer-action-btn" data-action="analyze" data-id="${layer.layer_id || ''}" title="发送给AI分析">
-              <svg><use href="assets/icons.svg#icon-ai-send"/></svg>
-            </button>
-            <button class="layer-action-btn" data-action="download" data-id="${layer.layer_id || ''}" title="下载">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-            </button>
-            <button class="layer-action-btn btn-danger" data-action="delete" data-id="${layer.layer_id || ''}" title="删除">
-              <svg><use href="assets/icons.svg#icon-delete"/></svg>
-            </button>
-          </div>
-        </td>
-      </tr>
-    `).join('');
+    var html = '';
+
+    // 收集组列表
+    var groupIds = [];
+    var groupMap = {};
+    Object.keys(groups).forEach(function(gid) {
+      var g = groups[gid];
+      if (!g) return;
+      groupIds.push(gid);
+      groupMap[gid] = g;
+    });
+
+    // 收集每个组的图层和分组的图层
+    var ungrouped = [];
+
+    // 先渲染组，再渲染无组图层
+    var processed = {};
+
+    // 按 layerData 中的顺序渲染（组前后顺序由 order 字段或首次出现决定）
+    var renderedGroups = {};
+
+    layerData.forEach(function(layer, index) {
+      var gid = layer.groupId;
+      if (gid && groupMap[gid]) {
+        if (!renderedGroups[gid]) {
+          renderedGroups[gid] = true;
+          var g = groupMap[gid];
+          var collapsed = g.collapsed ? ' style="display:none"' : '';
+          html += '<tr class="group-header" data-group="' + escapeHtml(gid) + '">' +
+            '<td class="col-group-toggle"><span class="group-toggle" data-group="' + escapeHtml(gid) + '">' + (g.collapsed ? '&#9654;' : '&#9660;') + '</span></td>' +
+            '<td class="col-group-name" colspan="4"><span class="group-name-text" data-group="' + escapeHtml(gid) + '">' + escapeHtml(g.name) + '</span>' +
+            ' <span class="group-count">(' + layerData.filter(function(l) { return l.groupId === gid; }).length + ')</span></td></tr>';
+        }
+        html += _renderLayerRow(layer, index, collapsed ? ' style="display:none"' : '');
+      } else {
+        ungrouped.push({ layer: layer, index: index });
+      }
+    });
+
+    // 渲染无组图层
+    ungrouped.forEach(function(item) {
+      html += _renderLayerRow(item.layer, item.index, '');
+    });
+
+    tbody.innerHTML = html;
+  }
+
+  function _renderLayerRow(layer, index, hiddenStyle) {
+    return '<tr draggable="true" data-index="' + index + '" data-id="' + (layer.layer_id || '') + '"' +
+      (layer.groupId ? ' data-group="' + escapeHtml(layer.groupId) + '"' : '') + hiddenStyle + '>' +
+      '<td class="col-drag"><span class="drag-handle" draggable="true"><svg><use href="assets/icons.svg#icon-drag"/></svg></span></td>' +
+      '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + (layer.layer_id || '') + '" title="显隐">' +
+      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      (layer.visible !== false
+        ? '<rect x="3" y="3" width="18" height="18" rx="3" fill="var(--ui-gray-900)" stroke="var(--ui-gray-900)"/><polyline points="7 12 10 15 17 8" stroke="#fff" stroke-width="2.5"/>'
+        : '<rect x="3"="3" width="18" height="18" rx="3" fill="none" stroke="var(--ui-gray-300)"/>') +
+      '</svg></button></td>' +
+      '<td class="col-name"><span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '"></span>' +
+      '<span class="layer-source layer-source-' + (layer.source || 'upload') + '">' +
+      (layer.source === 'ai'
+        ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#8B5CF6" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
+        : '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>') +
+      '</span><span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="双击重命名">' + escapeHtml(layer.filename || '未命名') + '</span></td>' +
+      '<td class="col-type"><span class="layer-type">' + escapeHtml(layer.geometry_type || '未知') + '</span></td>' +
+      '<td class="col-actions"><div class="layer-actions">' +
+      '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + '" title="检查图层"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>' +
+      '<button class="layer-action-btn" data-action="analyze" data-id="' + (layer.layer_id || '') + '" title="发送给AI分析"><svg><use href="assets/icons.svg#icon-ai-send"/></svg></button>' +
+      '<button class="layer-action-btn" data-action="download" data-id="' + (layer.layer_id || '') + '" title="下载"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>' +
+      '<button class="layer-action-btn btn-danger" data-action="delete" data-id="' + (layer.layer_id || '') + '" title="删除"><svg><use href="assets/icons.svg#icon-delete"/></svg></button>' +
+      '</div></td></tr>';
   }
 
   /** 同步地图叠放顺序与列表一致：列表最上面 = 地图最前面 */
@@ -300,6 +323,75 @@ window.GIS = window.GIS || {};
       // 同步地图叠放顺序
       _syncLayerOrder();
     });
+  }
+
+  /** 图层分组控制 */
+  function bindGroupEvents() {
+    var newBtn = document.getElementById('newGroupBtn');
+    if (newBtn) {
+      newBtn.addEventListener('click', function() {
+        addGroup();
+      });
+    }
+    if (!tbody) return;
+    tbody.addEventListener('click', function(e) {
+      var toggle = e.target.closest('.group-toggle');
+      if (toggle) {
+        var gid = toggle.dataset.group;
+        if (groups[gid]) {
+          groups[gid].collapsed = !groups[gid].collapsed;
+          renderList();
+        }
+        return;
+      }
+      var nameEl = e.target.closest('.group-name-text');
+      if (nameEl) {
+        var gid2 = nameEl.dataset.group;
+        if (!gid2 || !groups[gid2]) return;
+        var newName = prompt('重命名分组：', groups[gid2].name);
+        if (newName && newName.trim()) {
+          groups[gid2].name = newName.trim();
+          renderList();
+        }
+      }
+    });
+  }
+
+  /** 新建分组 */
+  function addGroup(name) {
+    var gid = 'group_' + (++_groupIdCounter);
+    groups[gid] = {
+      id: gid,
+      name: name || '新分组 ' + _groupIdCounter,
+      collapsed: false,
+    };
+    renderList();
+    return gid;
+  }
+
+  /** 将图层移入分组 */
+  function moveLayerToGroup(layerId, groupId) {
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (layer) {
+      layer.groupId = groupId;
+      renderList();
+      _syncLayerOrder();
+    }
+  }
+
+  /** 从分组中移除图层 */
+  function removeLayerFromGroup(layerId) {
+    moveLayerToGroup(layerId, null);
+  }
+
+  /** 删除分组 */
+  function deleteGroup(groupId) {
+    if (!groups[groupId]) return;
+    layerData.forEach(function(l) {
+      if (l.groupId === groupId) l.groupId = null;
+    });
+    delete groups[groupId];
+    renderList();
   }
 
   /** 获取 GeoJSON 的中心点坐标（取所有坐标平均） */
@@ -1129,6 +1221,14 @@ window.GIS = window.GIS || {};
     _applyStyleToMap(layer, gj, styleMap);
     var defaultColor = scheme[keys.length % scheme.length] || '#1c1b1b';
 
+    // 存储图例数据
+    if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
+    _symbologyConfig[layer.layer_id].legendData = {
+      type: 'unique',
+      field: field,
+      items: keys.map(function(k) { return { label: k, color: colorMap[k], count: values[k].length }; }),
+    };
+
     // 更新符号化信息
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       var info = '已应用唯一值符号化: ' + field + '（' + keys.length + ' 个类别）\n';
@@ -1181,6 +1281,20 @@ window.GIS = window.GIS || {};
 
     _applyStyleToMap(layer, gj, styleMap);
     layer.color = scheme[0];
+
+    // 存储图例数据
+    if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
+    _symbologyConfig[layer.layer_id].legendData = {
+      type: 'graduated',
+      field: field,
+      items: (function() {
+        var arr = [];
+        for (var j = 0; j < classes; j++) {
+          arr.push({ label: breaks[j].toFixed(2) + ' - ' + breaks[j + 1].toFixed(2), color: scheme[Math.min(j, scheme.length - 1)] });
+        }
+        return arr;
+      })(),
+    };
 
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       var info = '已应用分级色彩: ' + field + '（' + classes + ' 级）\n';
@@ -1616,6 +1730,66 @@ window.GIS = window.GIS || {};
     }
   }
 
+  /** 显示图例 */
+  function _showLegend(layerId) {
+    var config = _symbologyConfig[layerId];
+    if (!config || !config.legendData) {
+      if (window.GIS.chat) window.GIS.chat.addMessage('该图层没有图例数据，请先应用分级设色或唯一值渲染', 'system');
+      return;
+    }
+    var data = config.legendData;
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    var layerName = layer ? (layer._rawName || layer.filename || layerId) : layerId;
+    var html = '<div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:10px;margin:4px 0;font-size:13px">';
+    html += '<div style="font-weight:600;margin-bottom:6px;color:#333">图例 — ' + escapeHtml(layerName) + '</div>';
+    html += '<div style="font-size:12px;color:#666;margin-bottom:6px">字段：' + escapeHtml(data.field) + '（' + (data.type === 'graduated' ? '分级设色' : '唯一值') + '）</div>';
+    data.items.forEach(function(item) {
+      html += '<div style="display:flex;align-items:center;margin:2px 0">';
+      html += '<span style="display:inline-block;width:14px;height:14px;background:' + item.color + ';border:1px solid #ccc;margin-right:6px;border-radius:2px;flex-shrink:0"></span>';
+      html += '<span style="color:#444">' + escapeHtml(item.label) + (item.count !== undefined ? ' <span style="color:#999">(' + item.count + ')</span>' : '') + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      window.GIS.chat.addMessage(html, 'system');
+    }
+  }
+
+  /** 按照AI layer_op 'symbology' 应用分级色彩 */
+  function _applyGraduatedFromAI(name, field, classes, scheme) {
+    var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+    if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
+    var gj = getLayerGeoJSON(layer.layer_id);
+    if (!gj) { if (window.GIS.chat) window.GIS.chat.addMessage('图层「' + name + '」无数据', 'system'); return; }
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+    if (!features.length) return;
+    var colors = _getColorScheme(scheme || 'blues', classes || 5);
+    if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
+    _symbologyConfig[layer.layer_id].enabled = true;
+    _applyGraduatedColors(layer, gj, features, field, classes || 5, colors);
+    _showLegend(layer.layer_id);
+  }
+
+  /** 按照AI layer_op 'symbology' 应用唯一值渲染 */
+  function _applyUniqueFromAI(name, field, scheme) {
+    var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+    if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
+    var gj = getLayerGeoJSON(layer.layer_id);
+    if (!gj) { if (window.GIS.chat) window.GIS.chat.addMessage('图层「' + name + '」无数据', 'system'); return; }
+    var features = [];
+    if (gj.type === 'FeatureCollection') features = gj.features || [];
+    else if (gj.type === 'Feature') features = [gj];
+    if (!features.length) return;
+    var uniq = features.map(function(f) { return f.properties ? f.properties[field] : null; }).filter(function(v, i, a) { return a.indexOf(v) === i; });
+    var colors = _getColorScheme(scheme || 'scheme', Math.min(uniq.length, 10));
+    if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
+    _symbologyConfig[layer.layer_id].enabled = true;
+    _applyUniqueValues(layer, gj, features, field, colors);
+    _showLegend(layer.layer_id);
+  }
+
   GIS.layers = {
     init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer,
     analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
@@ -1631,5 +1805,205 @@ window.GIS = window.GIS || {};
       if (!layer) return null;
       return layer.geojson || null;
     },
+    /** AI 自然语言调用：对图层应用分级色彩 */
+    applyGraduatedColors: _applyGraduatedFromAI,
+    /** AI 自然语言调用：对图层应用唯一值渲染 */
+    applyUniqueValues: _applyUniqueFromAI,
+    /** AI 自然语言调用：对图层添加属性标注 */
+    addLabels: function(name, field) {
+      var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+      if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
+      if (GIS.map && GIS.map.setLabels) GIS.map.setLabels(layer._rawName || layer.layer_id, field);
+    },
+    /** 清除图层标注 */
+    clearLabels: function(name) {
+      var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+      if (!layer) return;
+      if (GIS.map && GIS.map.clearLabels) GIS.map.clearLabels(layer._rawName || name);
+    },
+    /** AI 自然语言调用：显示图例 */
+    addLegend: function(name) {
+      var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+      if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
+      _showLegend(layer.layer_id);
+    },
+    /** AI 自然语言调用：显示指北针 */
+    addNorthArrow: function() {
+      if (window.GIS.map && window.GIS.map.showNorthArrow) {
+        window.GIS.map.showNorthArrow();
+        if (window.GIS.chat) window.GIS.chat.addMessage('指北针已显示在地图右上角', 'system');
+      }
+    },
+    /** 折点编辑：进入顶点拖拽编辑模式 */
+    editVertices: function(name) {
+      var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+      if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
+      if (GIS.map && GIS.map.enterEditMode) {
+        GIS.map.enterEditMode(layer._rawName || layer.filename || layer.layer_id);
+      }
+    },
+    /** 保存折点编辑并退出编辑模式 */
+    saveEditVertices: function(name) {
+      if (GIS.map && GIS.map.exitEditMode) {
+        // map.exitEditMode is the cancel method; save is handled internally
+        GIS.chat.addMessage('请在编辑栏点击「保存」按钮完成编辑', 'system');
+      }
+    },
   };
+
+
+  // ===== 右键菜单 =====
+
+  function bindContextMenu() {
+    if (!tbody) return;
+    var menu = document.getElementById('layerContextMenu');
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = 'layerContextMenu';
+      menu.className = 'context-menu';
+      document.body.appendChild(menu);
+    }
+
+    tbody.addEventListener('contextmenu', function(e) {
+      var tr = e.target.closest('tr[draggable]');
+      if (!tr) return;
+      e.preventDefault();
+      var layerId = tr.dataset.id;
+      if (!layerId) return;
+      _showContextMenu(e.clientX, e.clientY, layerId);
+    });
+
+    document.addEventListener('click', _hideContextMenu);
+    document.addEventListener('contextmenu', function(e) {
+      if (!e.target.closest('.context-menu')) _hideContextMenu();
+    });
+  }
+
+  function _showContextMenu(x, y, layerId) {
+    _hideContextMenu();
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+
+    var menu = document.getElementById('layerContextMenu');
+    menu.innerHTML =
+      '<div class="context-menu-item" data-action="inspect" title="查看要素信息和属性">检查</div>' +
+      '<div class="context-menu-item" data-action="toggle">' + (layer.visible !== false ? '隐藏' : '显示') + '</div>' +
+      '<div class="context-menu-divider"></div>' +
+      '<div class="context-menu-item" data-action="color" title="更改图层颜色">更改颜色</div>' +
+      '<div class="context-menu-item" data-action="fit" title="缩放至图层范围">缩放至</div>' +
+      '<div class="context-menu-divider"></div>' +
+      '<div class="context-menu-item" data-action="rename" title="重命名图层">重命名</div>' +
+      '<div class="context-menu-item" data-action="download" title="下载图层">下载</div>' +
+      '<div class="context-menu-divider"></div>' +
+      '<div class="context-menu-item context-menu-item-danger" data-action="delete" title="删除图层">删除</div>';
+
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    menu.style.display = 'block';
+    menu._layerId = layerId;
+
+    // 点击菜单项
+    menu.querySelectorAll('.context-menu-item').forEach(function(item) {
+      item.addEventListener('click', function(ev) {
+        ev.stopPropagation();
+        var action = this.dataset.action;
+        _hideContextMenu();
+        _execContextAction(action, layerId);
+      });
+    });
+  }
+
+  function _hideContextMenu() {
+    var menu = document.getElementById('layerContextMenu');
+    if (menu) menu.style.display = 'none';
+  }
+
+  function _execContextAction(action, layerId) {
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+
+    switch (action) {
+      case 'inspect':
+        showLayerInspector(layerId);
+        break;
+      case 'toggle':
+        toggleVisibility(layerId);
+        break;
+      case 'color':
+        _triggerColorPicker(layerId);
+        break;
+      case 'fit':
+        if (GIS.map && GIS.map.fitLayer) {
+          GIS.map.fitLayer(layer._rawName || layer.layer_id);
+        }
+        break;
+      case 'rename':
+        _triggerRename(layerId);
+        break;
+      case 'download':
+        downloadLayer(layerId);
+        break;
+      case 'delete':
+        if (confirm('确定删除图层「' + (layer.filename || '图层') + '」？')) {
+          removeLayer(layerId);
+        }
+        break;
+    }
+  }
+
+  /** 触发颜色选择器（复用已有逻辑） */
+  function _triggerColorPicker(layerId) {
+    var dot = document.querySelector('.layer-color-dot[data-id="' + layerId + '"]');
+    if (dot) {
+      var input = document.createElement('input');
+      input.type = 'color';
+      input.value = dot.dataset.color || '#1c1b1b';
+      input.addEventListener('input', function() {
+        var l = layerData.find(function(x) { return x.layer_id === layerId; });
+        if (l) {
+          l.color = this.value;
+          dot.style.background = this.value;
+          dot.dataset.color = this.value;
+          if (GIS.map && GIS.map.setLayerColor) {
+            GIS.map.setLayerColor(l._rawName || l.layer_id, this.value);
+          }
+        }
+      });
+      input.click();
+    }
+  }
+
+  /** 触发重命名（复用已有逻辑） */
+  function _triggerRename(layerId) {
+    var nameEl = document.querySelector('.layer-name[data-id="' + layerId + '"]');
+    if (!nameEl) return;
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+    var oldName = layer.filename || '未命名';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = oldName;
+    input.className = 'layer-rename-input';
+    input.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid var(--ui-gray-400);border-radius:2px;padding:1px 4px;font-size:inherit;font-family:inherit;background:var(--ui-white);color:var(--ui-gray-900);';
+    nameEl.textContent = '';
+    nameEl.appendChild(input);
+    input.focus();
+    input.select();
+    function commit() {
+      var val = input.value.trim() || oldName;
+      var exists = layerData.some(function(l) { return l !== layer && l.filename === val; });
+      if (exists) {
+        var suffix = 1;
+        while (layerData.some(function(l) { return l !== layer && l.filename === val + '(' + suffix + ')'; })) { suffix++; }
+        val = val + '(' + suffix + ')';
+      }
+      layer.filename = val;
+      nameEl.textContent = val;
+    }
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', function(ke) {
+      if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
+      if (ke.key === 'Escape') { ke.preventDefault(); nameEl.textContent = oldName; }
+    });
+  }
 })();

@@ -37,6 +37,14 @@ cache/
 output/
 *.geojson
 
+# 测试输出临时文件
+uploads/
+
+# 测试数据与报告
+_test/
+test/data/
+test/reports/
+
 # 开发阶段跟踪（本地，不提交）
 CURRENT
 
@@ -54,3 +62,6 @@ study/
 
 # 临时脚本
 scripts/
+
+# 本地测试数据（不上传）
+test_data/

@@ -9,7 +9,7 @@ window.GIS = window.GIS || {};
   'use strict';
 
   const GIS = window.GIS;
-  const ALLOWED_EXTENSIONS = ['.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip', '.csv'];
+  const ALLOWED_EXTENSIONS = ['.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip', '.csv', '.tif', '.tiff'];
 
   let fileInput = null;
 
@@ -43,20 +43,139 @@ window.GIS = window.GIS || {};
     console.log('[GIS Upload] 上传模块初始化完成');
   }
 
+  // 内容嗅探：无扩展名时检测 KML / GPX / GeoJSON
+  async function sniffFormat(file) {
+    try {
+      var header = await readFileHead(file, 512);
+      if (header.includes('<kml') || header.includes('earth.google.com/kml'))
+        return '.kml';
+      if (header.includes('<gpx') || header.includes('topografix.com/GPX'))
+        return '.gpx';
+      if (header.trim().startsWith('{') && header.includes('"type"'))
+        return '.geojson';
+    } catch (_) {}
+    return null;
+  }
+
+  function readFileHead(file, bytes) {
+    return new Promise(function (resolve, reject) {
+      var blob = file.slice(0, bytes);
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = reject;
+      reader.readAsText(blob);
+    });
+  }
+
   // 文件格式校验
   function handleFiles(files) {
-    Array.from(files).forEach(file => {
-      const ext = '.' + file.name.split('.').pop().toLowerCase();
+    Array.from(files).forEach(async function (file) {
+      var parts = file.name.split('.');
+      var ext;
+      if (parts.length > 1) {
+        ext = '.' + parts.pop().toLowerCase();
+      } else {
+        // 无扩展名 → 嗅探内容
+        var sniffed = await sniffFormat(file);
+        if (!sniffed) {
+          return showUploadToast('error', '无法识别文件格式，请添加 .kml/.gpx/.geojson 等扩展名');
+        }
+        ext = sniffed;
+      }
       if (!ALLOWED_EXTENSIONS.includes(ext)) {
-        return showUploadToast('error', `不支持 ${ext} 格式`);
+        return showUploadToast('error', '不支持 ' + ext + ' 格式');
       }
       if (file.size > 300 * 1024 * 1024) {
         return showUploadToast('error', '文件超过 300MB 限制');
+      }
+      // 数据预览：CSV/GeoJSON 上传前显示表头
+      if (ext === '.csv' || ext === '.geojson') {
+        var confirmed = await _showPreviewDialog(file, ext);
+        if (!confirmed) return;
       }
       startUpload(file);
     });
   }
 
+
+  /** 上传前预览 CSV/GeoJSON 文件头 */
+  function _showPreviewDialog(file, ext) {
+    return new Promise(function(resolve) {
+      var reader = new FileReader();
+      reader.onload = function() {
+        var content = reader.result;
+        var html = '';
+        if (ext === '.csv') {
+          var lines = content.split('\n').filter(function(l) { return l.trim(); });
+          var header = lines[0] || '无列名';
+          var cols = header.split(',').map(function(c) { return c.trim(); });
+          var previewRows = lines.slice(1, 4);
+          html = '<div class="preview-dialog">' +
+            '<div class="preview-dialog-title">数据预览</div>' +
+            '<div class="preview-dialog-file">' + escapeHtml(file.name) + ' (' + (file.size / 1024).toFixed(1) + ' KB)</div>' +
+            '<div class="preview-dialog-section"><div class="preview-dialog-label">列名 (' + cols.length + ' 列)</div>' +
+            '<div class="preview-chips">' + cols.map(function(c) { return '<span class="preview-chip">' + escapeHtml(c) + '</span>'; }).join('') + '</div></div>' +
+            '<div class="preview-dialog-section"><div class="preview-dialog-label">前 ' + Math.min(previewRows.length, 3) + ' 行预览</div>' +
+            '<table class="preview-table"><thead><tr>' + cols.map(function(c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') + '</tr></thead>' +
+            '<tbody>' + previewRows.map(function(row) {
+              var cells = row.split(',').map(function(c) { return c.trim(); });
+              return '<tr>' + cells.map(function(c) { return '<td>' + escapeHtml(c) + '</td>'; }).join('') + '</tr>';
+            }).join('') + '</tbody></table></div>' +
+            '<div class="preview-dialog-actions">' +
+            '<button class="preview-btn preview-btn-cancel">取消</button>' +
+            '<button class="preview-btn preview-btn-confirm">确认上传</button></div></div>';
+        } else {
+          // GeoJSON
+          try {
+            var gj = JSON.parse(content);
+            var features = gj.features || (gj.type === 'Feature' ? [gj] : []);
+            var featCount = features.length;
+            var types = {};
+            var fields = {};
+            features.slice(0, 10).forEach(function(f) {
+              if (f.geometry) types[f.geometry.type] = (types[f.geometry.type] || 0) + 1;
+              if (f.properties) Object.keys(f.properties).forEach(function(k) { fields[k] = typeof f.properties[k]; });
+            });
+            var typeStr = Object.keys(types).join(', ') || '未知';
+            var fieldKeys = Object.keys(fields);
+            html = '<div class="preview-dialog">' +
+              '<div class="preview-dialog-title">数据预览</div>' +
+              '<div class="preview-dialog-file">' + escapeHtml(file.name) + ' (' + (file.size / 1024).toFixed(1) + ' KB)</div>' +
+              '<div class="preview-dialog-section"><div class="preview-dialog-label">要素信息</div>' +
+              '<div class="preview-info"><span>要素数: <strong>' + featCount + '</strong></span><span>几何类型: <strong>' + escapeHtml(typeStr) + '</strong></span></div></div>' +
+              (fieldKeys.length ? '<div class="preview-dialog-section"><div class="preview-dialog-label">字段 (' + fieldKeys.length + ')</div>' +
+              '<div class="preview-chips">' + fieldKeys.map(function(k) { return '<span class="preview-chip">' + escapeHtml(k) + '</span>'; }).join('') + '</div></div>' : '') +
+              '<div class="preview-dialog-actions">' +
+              '<button class="preview-btn preview-btn-cancel">取消</button>' +
+              '<button class="preview-btn preview-btn-confirm">确认上传</button></div></div>';
+          } catch (e) {
+            html = '<div class="preview-dialog"><div class="preview-dialog-title">无法解析</div>' +
+              '<p style="color:var(--ui-gray-500);font-size:13px;">GeoJSON 解析失败</p>' +
+              '<div class="preview-dialog-actions"><button class="preview-btn preview-btn-cancel">取消</button></div></div>';
+          }
+        }
+        var overlay = document.createElement('div');
+        overlay.className = 'preview-dialog-overlay';
+        overlay.innerHTML = html;
+        document.body.appendChild(overlay);
+        overlay.querySelector('.preview-btn-confirm')?.addEventListener('click', function() {
+          document.body.removeChild(overlay);
+          resolve(true);
+        });
+        overlay.querySelector('.preview-btn-cancel')?.addEventListener('click', function() {
+          document.body.removeChild(overlay);
+          resolve(false);
+        });
+        overlay.addEventListener('click', function(e) {
+          if (e.target === overlay) { document.body.removeChild(overlay); resolve(false); }
+        });
+      };
+      reader.onerror = function() { resolve(true); };
+      // 只读取前 64KB 用于预览（CSV取前几行，GeoJSON 完全解析需要读全部但限制大小）
+      var blob = (ext === '.csv') ? file.slice(0, 64 * 1024) : file;
+      reader.readAsText(blob);
+    });
+  }
 
   async function startUpload(file) {
     showUploadToast('importing', file.name);
@@ -84,6 +203,26 @@ window.GIS = window.GIS || {};
             GIS.chat.sendMessage(msg);
           }
         }, 500);
+        return;
+      }
+
+      // ===== GeoTIFF 栅格文件 =====
+      if (result.raster_info) {
+        const info = result.raster_info;
+        const layerId = 'raster_' + Date.now();
+        const name = result.name || file.name.replace(/\.(tif|tiff)$/i, '');
+
+        GIS.map.addImageOverlay(info.url, info.bounds, name, layerId);
+        GIS.layers.addLayer({
+          layer_id: layerId,
+          filename: name,
+          geometry_type: 'Raster',
+          crs: 'WGS-84',
+          source: 'upload',
+          raster: info,
+        }, true);
+
+        showUploadToast('success', name);
         return;
       }
 

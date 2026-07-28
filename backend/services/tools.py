@@ -1217,6 +1217,35 @@ def measure_area(layer_name: str) -> str:
 
 
 # ============================================================
+# 工具: measure_distance — 测距
+# ============================================================
+
+@tool
+def measure_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> str:
+    """测量两个经纬度坐标之间的地面距离。使用 Haversine 公式计算大圆距离。
+    lon1/lat1: 起点经纬度；lon2/lat2: 终点经纬度。
+    WGS84 坐标系。返回米和公里。"""
+    try:
+        import math
+        R = 6371000  # 地球半径（米）
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlambda = math.radians(lon2 - lon1)
+
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        distance_m = R * c
+
+        if distance_m < 1000:
+            return f"距离：{distance_m:.1f} 米"
+        else:
+            return f"距离：{distance_m / 1000:.2f} 公里（{distance_m:.1f} 米）"
+    except Exception as e:
+        return f"距离测量失败: {str(e)[:200]}"
+
+
+# ============================================================
 # 工具: field_calculate — 字段计算器
 # ============================================================
 
@@ -1347,8 +1376,8 @@ def get_session_logs(n: int = 20) -> str:
 # ============================================================
 
 @tool
-def layer_control(action: str, name: str = "", new_name: str = "", color: str = "") -> str:
-    """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) rename(重命名+new_name) fit(缩放至图层)。"""
+def layer_control(action: str, name: str = "", new_name: str = "", color: str = "", opacity: float = 1.0, weight: int = 2, fill_pattern: str = "") -> str:
+    """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) set_style(设置完整样式+color+opacity+weight+fill_pattern) rename(重命名+new_name) fit(缩放至图层)。opacity: 0~1，weight: 线宽像素数，fill_pattern: hatch/crosshatch/dots/grid/diagonal。"""
     if action == "remove":
         _pending_layer_ops.append({"action": "remove", "name": name})
         return f"已标记移除图层: {name}"
@@ -1358,6 +1387,20 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
     elif action == "set_color":
         _pending_layer_ops.append({"action": "set_color", "name": name, "color": color})
         return f"已标记修改图层颜色: {name} → {color}"
+    elif action == "set_style":
+        style = {"color": color}
+        if opacity != 1.0:
+            style["opacity"] = max(0.0, min(1.0, opacity))
+        if weight != 2:
+            style["weight"] = max(1, weight)
+        if fill_pattern:
+            style["fillPattern"] = fill_pattern
+        _pending_layer_ops.append({"action": "set_style", "name": name, "style": style})
+        parts = [f"颜色={color}"]
+        if "opacity" in style: parts.append(f"透明度={style['opacity']}")
+        if "weight" in style: parts.append(f"线宽={style['weight']}")
+        if "fillPattern" in style: parts.append(f"填充图案={style['fillPattern']}")
+        return f"已标记修改图层样式: {name} → {'，'.join(parts)}"
     elif action == "rename":
         _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
         return f"已标记重命名图层: {name} → {new_name}"
@@ -1365,7 +1408,7 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
         _pending_layer_ops.append({"action": "fit", "name": name})
         return f"已标记缩放到图层: {name}"
     else:
-        return f"未知操作: {action}，可选：remove / toggle / set_color / rename / fit"
+        return f"未知操作: {action}，可选：remove / toggle / set_color / set_style / rename / fit"
 
 
 # ============================================================
@@ -1444,7 +1487,80 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
         except Exception as e:
             return f"SHP 导出失败: {str(e)[:200]}"
 
-    return f"不支持的格式: {format}，可选 geojson 或 shp"
+    elif format == "gpkg":
+        try:
+            import geopandas as gpd
+            import datetime
+
+            gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+            if gdf.empty:
+                return "图层为空，无法导出"
+
+            ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            safe_name = layer_name.replace(" ", "_")
+            fname = f"{safe_name}_{ts}.gpkg"
+
+            init_temp_dir()
+            path = os.path.join(_temp_output_dir, fname)
+            gdf.to_file(path, layer=safe_name, driver="GPKG", encoding="utf-8")
+
+            return f"GeoPackage 已生成：可通过 /output/{fname} 下载（单一文件，含空间索引）"
+        except Exception as e:
+            return f"GPKG 导出失败: {str(e)[:200]}"
+
+    elif format == "csv":
+        try:
+            import geopandas as gpd
+            import pandas as pd
+            import datetime
+
+            gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+            if gdf.empty:
+                return "图层为空，无法导出"
+
+            ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            safe_name = layer_name.replace(" ", "_")
+            fname = f"{safe_name}_{ts}.csv"
+
+            init_temp_dir()
+            path = os.path.join(_temp_output_dir, fname)
+            attr_df = gdf.drop(columns=["geometry"], errors="ignore")
+            attr_df.to_csv(path, index=False, encoding="utf-8-sig")
+
+            return (f"CSV 属性表已生成：可通过 /output/{fname} 下载"
+                    f"（{len(attr_df.columns)} 列, {len(attr_df)} 行）"
+                    f"\n如需含坐标的 CSV，可用 format='csv_xy'")
+        except Exception as e:
+            return f"CSV 导出失败: {str(e)[:200]}"
+
+    elif format == "csv_xy":
+        try:
+            import geopandas as gpd
+            import pandas as pd
+            import datetime
+
+            gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+            if gdf.empty:
+                return "图层为空，无法导出"
+
+            ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            safe_name = layer_name.replace(" ", "_")
+            fname = f"{safe_name}_{ts}.csv"
+
+            init_temp_dir()
+            path = os.path.join(_temp_output_dir, fname)
+
+            gdf["longitude"] = gdf.geometry.x
+            gdf["latitude"] = gdf.geometry.y
+            attr_df = gdf.drop(columns=["geometry"], errors="ignore")
+            attr_df.to_csv(path, index=False, encoding="utf-8-sig")
+
+            return (f"CSV（含坐标）已生成：可通过 /output/{fname} 下载"
+                    f"（{len(attr_df.columns)} 列, {len(attr_df)} 行，含 longitude/latitude）")
+        except Exception as e:
+            return f"CSV 导出失败: {str(e)[:200]}"
+
+    return f"不支持的格式: {format}，可选 geojson / shp / gpkg / csv / csv_xy"
 
 
 # ============================================================
@@ -1936,6 +2052,8 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
             centroid = gdf.dissolve().centroid.iloc[0]
         lon, lat = centroid.x, centroid.y
         utm_zone = int((lon + 180) / 6) + 1
@@ -1954,7 +2072,336 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
 
 
 # ============================================================
-# 工具: spatial_intersect — 空间相交
+# 工具: spatial_multi_ring_buffer — 多环缓冲区
+# ============================================================
+
+@tool
+def spatial_multi_ring_buffer(layer_name: str, distances: str, unit: str = "m", dissolve: bool = False) -> str:
+    """为指定图层创建多环缓冲区。distances 为逗号分隔的距离值（如"100,200,500"），每个距离生成一环。
+    unit: m(米)/km(公里)；dissolve: 是否融合重叠缓冲区。所有环合并为单一图层。"""
+    try:
+        import geopandas as gpd
+        import pandas as pd
+        import warnings
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        dist_list = [float(d.strip()) for d in distances.split(",") if d.strip()]
+        if not dist_list:
+            return '请指定有效距离列表，如"100,200,500"'
+        if len(dist_list) > 20:
+            return f"最多支持 20 个距离，当前 {len(dist_list)} 个"
+
+        centroid = gdf.dissolve().centroid.iloc[0]
+        lon, lat = centroid.x, centroid.y
+        utm_zone = int((lon + 180) / 6) + 1
+        crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+        gdf_utm = gdf.to_crs(crs_utm)
+
+        rings = []
+        for i, d in enumerate(dist_list):
+            distance_m = d * 1000 if unit == "km" else d
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                buffered = gdf_utm.geometry.buffer(distance_m)
+            ring = gpd.GeoDataFrame({"geometry": buffered, "distance": d, "ring": i + 1}, crs=crs_utm)
+            if dissolve:
+                ring = gpd.GeoDataFrame({"geometry": [ring.union_all()], "distance": d, "ring": i + 1}, geometry="geometry", crs=crs_utm)
+            rings.append(ring)
+
+        merged = pd.concat(rings, ignore_index=True)
+        merged = merged.to_crs("EPSG:4326")
+
+        dist_str = "、".join(str(d) for d in dist_list)
+        result_name = f"{name}_多环{unit}"
+        _gdf_to_layer(merged, result_name)
+
+        return (f"已为「{name}」创建 {len(dist_list)} 个多环缓冲区：{dist_str} {unit}，"
+                f"共 {len(merged)} 个要素，已加载到地图")
+    except Exception as e:
+        import traceback
+        return f"多环缓冲区失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
+# 工具: move_features — 移动要素
+# ============================================================
+
+@tool
+def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m") -> str:
+    """移动指定图层的所有要素。dx 为东西方向位移（正=东/负=西），dy 为南北方向位移（正=北/负=南）。
+    unit 可选 m(米) 或 km(公里)。自动 UTM 投影保证距离精确。"""
+    try:
+        import geopandas as gpd
+        import warnings
+
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        if dx == 0 and dy == 0:
+            return "位移量 dx 和 dy 不能同时为 0"
+
+        if unit == "km":
+            dx *= 1000
+            dy *= 1000
+        elif unit != "m":
+            return f"不支持的单位「{unit}」，请用 m 或 km"
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            centroid = gdf.dissolve().centroid.iloc[0]
+        lon, lat = centroid.x, centroid.y
+        utm_zone = int((lon + 180) / 6) + 1
+        crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+
+        gdf_utm = gdf.to_crs(crs_utm)
+        gdf_utm.geometry = gdf_utm.geometry.translate(xoff=dx, yoff=dy)
+
+        gdf_result = gdf_utm.to_crs("EPSG:4326")
+        geojson_data = gdf_result.__geo_interface__
+        geojson_data["name"] = layer_name
+        _registered_layers[layer_name]["geojson"] = geojson_data
+        _push_layer(layer_name, geojson_data)
+
+        dir_x = "东" if dx > 0 else ("西" if dx < 0 else "")
+        dir_y = "北" if dy > 0 else ("南" if dy < 0 else "")
+        dir_str = (dir_y + dir_x) if (dx != 0 and dy != 0) else (dir_y or dir_x)
+        unit_str = "km" if unit == "km" else "m"
+        return (f"已移动图层「{layer_name}」{dir_str}方向 "
+                f"（{dx}{unit_str}, {dy}{unit_str}），"
+                f"{len(gdf_result)} 个要素，已同步地图")
+    except Exception as e:
+        import traceback
+        return f"移动要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
+# 工具: add_north_arrow — 指北针
+# ============================================================
+
+@tool
+def add_north_arrow() -> str:
+    """在地图上显示指北针。指北针会出现在地图右上角，始终指向正北。"""
+    try:
+        _pending_layer_ops.append({
+            "action": "north_arrow",
+        })
+        return "已在地图右上角显示指北针"
+    except Exception as e:
+        return f"指北针添加失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: rotate_features — 旋转要素
+# ============================================================
+
+@tool
+def rotate_features(layer_name: str, angle: float = 90) -> str:
+    """旋转指定图层的所有要素。angle 为旋转角度（度），正数=逆时针，负数=顺时针。旋转中心为图层所有要素的几何中心。"""
+    try:
+        import geopandas as gpd
+        from shapely import affinity
+        import warnings
+
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            center = gdf.dissolve().centroid.iloc[0]
+
+        gdf.geometry = gdf.geometry.rotate(angle, origin=(center.x, center.y), use_radians=False)
+
+        geojson_data = gdf.__geo_interface__
+        geojson_data["name"] = layer_name
+        _registered_layers[layer_name]["geojson"] = geojson_data
+        _push_layer(layer_name, geojson_data)
+
+        direction = "逆时针" if angle > 0 else "顺时针"
+        return (f"已旋转图层「{layer_name}」{abs(angle)}°（{direction}），"
+                f"{len(gdf)} 个要素，已同步地图")
+    except Exception as e:
+        import traceback
+        return f"旋转要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
+# 工具: scale_features — 缩放要素
+# ============================================================
+
+@tool
+def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) -> str:
+    """缩放指定图层的所有要素。x_factor 为 X 轴缩放倍数，y_factor 为 Y 轴缩放倍数。缩放中心为图层几何中心。大于 1 放大，小于 1 缩小。"""
+    try:
+        import geopandas as gpd
+        from shapely import affinity
+        import warnings
+
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        if x_factor <= 0 or y_factor <= 0:
+            return "缩放倍数必须大于 0"
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            center = gdf.dissolve().centroid.iloc[0]
+
+        gdf.geometry = gdf.geometry.scale(xfact=x_factor, yfact=y_factor, origin=(center.x, center.y))
+
+        geojson_data = gdf.__geo_interface__
+        geojson_data["name"] = layer_name
+        _registered_layers[layer_name]["geojson"] = geojson_data
+        _push_layer(layer_name, geojson_data)
+
+        return (f"已缩放图层「{layer_name}」（X: {x_factor}倍, Y: {y_factor}倍），"
+                f"{len(gdf)} 个要素，已同步地图")
+    except Exception as e:
+        import traceback
+        return f"缩放要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
+# 工具: draw_feature — 绘制点/线/面
+# ============================================================
+
+@tool
+def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> str:
+    """根据指定坐标创建新的点/线/面图层。
+    geometry_type: Point / LineString / Polygon / Rectangle / Circle。
+    coordinates 格式：
+      - Point: "lon,lat" 如 "116.4,39.9"
+      - LineString: "lon1,lat1;lon2,lat2;..." 如 "116.3,39.9;116.4,40.0;116.5,39.8"
+      - Polygon: "lon1,lat1;lon2,lat2;lon3,lat3;lon1,lat1"（首尾闭合）
+      - Rectangle: "lon1,lat1;lon2,lat2"（对角线，自动生成矩形）
+      - Circle: "lon,lat;radius_m"（圆心坐标 + 半径米数，自动 UTM 投影）
+    未指定 layer_name 时自动命名。"""
+    try:
+        import geopandas as gpd
+        from shapely.geometry import Point, LineString, Polygon
+        import json, re
+
+        gt = geometry_type.strip().lower()
+        norm_map = {"point": "Point", "linestring": "LineString", "polygon": "Polygon",
+                    "rectangle": "Rectangle", "circle": "Circle"}
+        if gt in norm_map:
+            gt = norm_map[gt]
+        else:
+            return f"不支持的几何类型：{geometry_type}，请用 Point / LineString / Polygon / Rectangle / Circle"
+
+        # 解析坐标
+        parts = [p.strip() for p in coordinates.replace("，", ",").replace("；", ";").split(";") if p.strip()]
+        if not parts:
+            return "未提供有效坐标"
+
+        def parse_xy(s):
+            s = s.replace("，", ",")
+            xy = [x.strip() for x in s.split(",") if x.strip()]
+            if len(xy) != 2:
+                return None
+            try:
+                return (float(xy[0]), float(xy[1]))
+            except ValueError:
+                return None
+
+        pts = [parse_xy(p) for p in parts]
+        pts = [p for p in pts if p is not None]
+
+        if gt == "Point":
+            if not pts:
+                return "无法解析坐标，请使用「lon,lat」格式"
+            geom = Point(pts[0])
+            node_count = 1
+        elif gt == "LineString":
+            if len(pts) < 2:
+                return "无法解析坐标，LineString 至少需要 2 个点"
+            geom = LineString(pts)
+            node_count = len(pts)
+        elif gt == "Polygon":
+            if len(pts) < 3:
+                return "无法解析坐标，Polygon 至少需要 3 个点"
+            if pts[0] != pts[-1]:
+                pts.append(pts[0])
+            geom = Polygon(pts)
+            node_count = len(pts)
+        elif gt == "Rectangle":
+            if len(parts) == 2 and (len(pts) < 2 or len(pts) > 2):
+                pass  # pts already parsed
+            if len(pts) != 2:
+                return "Rectangle 需要 2 个坐标（对角线）：lon1,lat1;lon2,lat2"
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            minx, maxx = min(xs), max(xs)
+            miny, maxy = min(ys), max(ys)
+            geom = Polygon([(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)])
+            node_count = 4
+        else:  # Circle
+            if len(pts) < 1 or len(parts) < 2:
+                return "Circle 需要圆心坐标和半径：lon,lat;radius_m"
+            radius = float(parts[1]) if len(parts) >= 2 else 0
+            if radius <= 0:
+                return "半径必须大于 0"
+            center_pt = Point(pts[0])
+            lon, lat = pts[0]
+            utm_zone = int((lon + 180) / 6) + 1
+            crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+            center_gdf = gpd.GeoDataFrame({"geometry": [center_pt]}, crs="EPSG:4326")
+            center_utm = center_gdf.to_crs(crs_utm)
+            circle_utm = center_utm.geometry.buffer(radius)
+            circle_gdf = gpd.GeoDataFrame({"geometry": circle_utm}, crs=crs_utm).to_crs("EPSG:4326")
+            geom = circle_gdf.geometry.iloc[0]
+            node_count = len(geom.exterior.coords) if hasattr(geom, 'exterior') else 0
+
+        name = layer_name.strip() or f"绘制_{gt}_{len(_registered_layers) + 1}"
+        gdf = gpd.GeoDataFrame({"geometry": [geom]}, crs="EPSG:4326")
+        _gdf_to_layer(gdf, name)
+        pts_str = f"，含 {node_count} 个节点" if node_count else ""
+        return f"已创建{gt}图层「{name}」，含 1 个要素{pts_str}，已加载到地图"
+    except Exception as e:
+        import traceback
+        return f"绘制失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+# ============================================================
+# 工具: spatial_buffer — 缓冲区分析
 # ============================================================
 
 @tool
@@ -2448,8 +2895,1743 @@ def layer_add_geometry(layer_name: str, lon_field: str = "", lat_field: str = ""
 
 
 # ============================================================
+# 工具: add_labels — 属性标注
+# ============================================================
+
+@tool
+def add_labels(layer_name: str, field: str, font_size: int = 12, color: str = "#333333") -> str:
+    """对图层添加属性标注，每个要素上显示指定字段的文本标签，类似于 ArcGIS 的"标注要素"功能。
+    layer_name: 图层名；field: 用于标注的字段名；font_size: 字体大小（默认12）；color: 字体颜色（如"#333333"）。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        if field not in gdf.columns:
+            return f"图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
+
+        _pending_layer_ops.append({
+            "action": "labels",
+            "name": name,
+            "field": field,
+            "font_size": font_size,
+            "color": color,
+        })
+
+        feat_count = len(gdf)
+        return (f"已为「{name}」添加标注，字段：{field}，{feat_count} 个要素已显示文字标签")
+    except Exception as e:
+        return f"标注失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: spatial_graduated_colors — 分级色彩渲染
+# ============================================================
+
+@tool
+def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, color_scheme: str = "blues") -> str:
+    """对图层应用分级色彩渲染（Choropleth），按数值字段将要素分为N个等级，每级用不同颜色显示。
+    layer_name: 图层名；field: 数值字段名；n_classes: 分级数（2-20，默认5）；
+    color_scheme: 色带 scheme(默认)/blues(蓝)/reds(红)/greens(绿)/purples(紫)/oranges(橙)。"""
+    try:
+        import geopandas as gpd
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        if field not in gdf.columns:
+            return f"图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
+
+        if not gdf[field].dtype.kind in ('i', 'f'):
+            return f"字段「{field}」不是数值类型（{gdf[field].dtype}），分级色彩仅支持数值字段"
+
+        n_classes = max(2, min(20, n_classes if n_classes else 5))
+        values = gdf[field].dropna()
+        if values.empty:
+            return f"字段「{field}」无有效数值"
+
+        vmin, vmax = float(values.min()), float(values.max())
+        if vmin == vmax:
+            return f"字段「{field}」所有值相同（{vmin}），无法分级"
+
+        step = (vmax - vmin) / n_classes
+        breaks = [vmin + i * step for i in range(n_classes + 1)]
+
+        color_scheme = color_scheme if color_scheme in ("scheme","blues","reds","greens","purples","oranges") else "blues"
+
+        _pending_layer_ops.append({
+            "action": "symbology",
+            "name": name,
+            "symbology_type": "graduated",
+            "field": field,
+            "classes": n_classes,
+            "scheme": color_scheme,
+        })
+
+        breaks_str = ", ".join(f"{b:.2f}" for b in breaks)
+        return (f"已对「{name}」应用分级色彩渲染，字段：{field}，{n_classes} 级，"
+                f"色带：{color_scheme}，值域：{vmin:.2f} ~ {vmax:.2f}\n"
+                f"分界值：{breaks_str}")
+    except Exception as e:
+        import traceback
+        return f"分级色彩渲染失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: spatial_unique_values — 唯一值渲染
+# ============================================================
+
+@tool
+def spatial_unique_values(layer_name: str, field: str, color_scheme: str = "scheme") -> str:
+    """对图层应用唯一值渲染，按分类字段每个唯一值分配不同颜色。
+    layer_name: 图层名；field: 分类字段（字符串或数值）；
+    color_scheme: 色带 scheme(默认)/blues(蓝)/reds(红)/greens(绿)/purples(紫)/oranges(橙)。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        if field not in gdf.columns:
+            return f"图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
+
+        unique_vals = gdf[field].dropna().unique()
+        n_unique = len(unique_vals)
+        if n_unique == 0:
+            return f"字段「{field}」无有效值"
+
+        if n_unique > 50:
+            return (f"字段「{field}」有 {n_unique} 个唯一值（超出最大50），"
+                    f"建议改用 spatial_graduated_colors 分级色彩或缩小范围后再试")
+
+        color_scheme = color_scheme if color_scheme in ("scheme","blues","reds","greens","purples","oranges") else "scheme"
+
+        _pending_layer_ops.append({
+            "action": "symbology",
+            "name": name,
+            "symbology_type": "unique",
+            "field": field,
+            "scheme": color_scheme,
+        })
+
+        val_list = list(unique_vals[:20])
+        vals_str = ", ".join(str(v) for v in val_list)
+        if n_unique > 20:
+            vals_str += f" ... 等共 {n_unique} 个值"
+        return (f"已对「{name}」应用唯一值渲染，字段：{field}，{n_unique} 个类别，"
+                f"色带：{color_scheme}\n"
+                f"值列表：{vals_str}")
+    except Exception as e:
+        return f"唯一值渲染失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: add_legend — 显示图例
+# ============================================================
+
+@tool
+def add_legend(layer_name: str) -> str:
+    """显示图层的图例。图例根据图层的符号化配置（分级色彩或唯一值渲染）自动生成。
+    layer_name: 图层名。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        _pending_layer_ops.append({
+            "action": "legend",
+            "name": name,
+        })
+
+        return (f"已为「{name}」生成图例")
+    except Exception as e:
+        return f"图例生成失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: update_attribute — 属性编辑
+# ============================================================
+
+@tool
+def update_attribute(layer_name: str, field: str, value: str, condition_field: str = "", condition_value: str = "") -> str:
+    """更新图层要素的属性值。不指定条件则更新所有要素。
+    支持数值和文本字段。更新后地图自动同步。
+    layer_name: 图层名；field: 要更新的字段名；value: 新值（自动转换类型）；
+    condition_field: 条件字段名（可选）；condition_value: 条件字段值（可选，仅更新匹配要素）。"""
+    try:
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        import geopandas as gpd
+        import json
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        if field not in gdf.columns:
+            return f"图层「{layer_name}」没有字段「{field}」，可用字段：{', '.join([c for c in gdf.columns if c != 'geometry'])}"
+
+        # 类型转换
+        dtype_kind = gdf[field].dtype.kind
+        try:
+            if dtype_kind == 'i':
+                typed_value = int(value)
+            elif dtype_kind == 'f':
+                typed_value = float(value)
+            else:
+                typed_value = str(value)
+        except ValueError:
+            return f"字段「{field}」类型为 {gdf[field].dtype}，但值「{value}」无法转换"
+
+        # 筛选要更新的行
+        if condition_field and condition_value:
+            if condition_field not in gdf.columns:
+                return f"条件字段「{condition_field}」不存在"
+            cond_kind = gdf[condition_field].dtype.kind
+            try:
+                if cond_kind in ('i', 'f'):
+                    cond_value = float(condition_value)
+                else:
+                    cond_value = str(condition_value)
+            except ValueError:
+                cond_value = str(condition_value)
+
+            matches_mask = gdf[condition_field] == cond_value
+            match_count = matches_mask.sum()
+            if match_count == 0:
+                return f"没有要素满足条件（{condition_field} = {condition_value}）"
+            gdf.loc[matches_mask, field] = typed_value
+            affected = match_count
+        else:
+            gdf[field] = typed_value
+            affected = len(gdf)
+
+        geojson_data = gdf.__geo_interface__
+        geojson_data["name"] = layer_name
+        _registered_layers[layer_name]["geojson"] = geojson_data
+        _push_layer(layer_name, geojson_data)
+
+        condition_str = f"（条件：{condition_field} = {condition_value}）" if condition_field else ""
+        return (f"已更新图层「{layer_name}」字段「{field}」为 {value}，"
+                f"影响 {affected}/{len(gdf)} 个要素{condition_str}，已同步地图")
+    except Exception as e:
+        return f"属性更新失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: delete_features — 删除要素
+# ============================================================
+
+@tool
+def delete_features(layer_name: str, condition_field: str = "", condition_value: str = "") -> str:
+    """按条件删除图层的要素。必须指定条件（例如删除某个字段等于某值的所有要素）。
+    删除后地图自动同步。layer_name: 图层名；condition_field: 条件字段名（必填）；
+    condition_value: 条件字段值（必填）。"""
+    try:
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        if not condition_field or not condition_value:
+            return "请指定删除条件（condition_field 和 condition_value），例如删除 name=xx 的所有要素"
+
+        import geopandas as gpd
+        import json
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        if condition_field not in gdf.columns:
+            return f"条件字段「{condition_field}」不存在，可用字段：{', '.join([c for c in gdf.columns if c != 'geometry'])}"
+
+        cond_kind = gdf[condition_field].dtype.kind
+        try:
+            if cond_kind in ('i', 'f'):
+                cond_val = float(condition_value)
+            else:
+                cond_val = str(condition_value)
+        except ValueError:
+            cond_val = str(condition_value)
+
+        mask = gdf[condition_field] == cond_val
+        to_delete = mask.sum()
+        if to_delete == 0:
+            return f"没有要素满足条件（{condition_field} = {condition_value}）"
+
+        remaining = gdf[~mask]
+        if remaining.empty:
+            return f"条件（{condition_field} = {condition_value}）将删除全部 {to_delete} 个要素，操作已取消"
+
+        geojson_data = remaining.__geo_interface__
+        geojson_data["name"] = layer_name
+        _registered_layers[layer_name]["geojson"] = geojson_data
+        _push_layer(layer_name, geojson_data)
+
+        return (f"已从图层「{layer_name}」删除 {to_delete}/{len(gdf)} 个要素"
+                f"（条件：{condition_field} = {condition_value}），剩余 {len(remaining)} 个，已同步地图")
+    except Exception as e:
+        return f"删除要素失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: add_field / delete_field — 字段管理
+# ============================================================
+
+@tool
+def add_field(layer_name: str, field_name: str, field_type: str = "str", default_value: str = "") -> str:
+    """为图层添加新字段。field_type 可选 str(文本) / int(整数) / float(小数)。
+    default_value 可指定默认填充值。添加后地图自动同步。"""
+    try:
+        import geopandas as gpd
+        import pandas as pd
+        import json
+
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        if field_name in gdf.columns:
+            return f"字段「{field_name}」已存在"
+
+        field_type = field_type.lower().strip()
+        if field_type == "int":
+            gdf[field_name] = pd.Series(dtype="int64")
+            if default_value:
+                try:
+                    gdf[field_name] = int(default_value)
+                except ValueError:
+                    pass
+        elif field_type == "float":
+            gdf[field_name] = pd.Series(dtype="float64")
+            if default_value:
+                try:
+                    gdf[field_name] = float(default_value)
+                except ValueError:
+                    pass
+        else:
+            gdf[field_name] = pd.Series(dtype="object")
+            if default_value:
+                gdf[field_name] = str(default_value)
+
+        if default_value:
+            gdf[field_name] = gdf[field_name].fillna(default_value if field_type == "str" else
+                                                       (int(default_value) if field_type == "int" else float(default_value)))
+
+        geojson_data = gdf.__geo_interface__
+        geojson_data["name"] = layer_name
+        _registered_layers[layer_name]["geojson"] = geojson_data
+        _push_layer(layer_name, geojson_data)
+
+        return (f"已为图层「{layer_name}」添加字段「{field_name}」（类型：{field_type}"
+                + (f"，默认值：{default_value}" if default_value else "")
+                + "），已同步地图")
+
+    except Exception as e:
+        return f"添加字段失败: {str(e)[:300]}"
+
+
+@tool
+def delete_field(layer_name: str, field_name: str) -> str:
+    """删除图层的指定字段。字段删除后数据不可恢复。layer_name: 图层名；field_name: 要删除的字段名。"""
+    try:
+        import geopandas as gpd
+        import json
+
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        if field_name not in gdf.columns:
+            return f"字段「{field_name}」不存在，可用字段：{', '.join([c for c in gdf.columns if c != 'geometry'])}"
+
+        if field_name == "geometry":
+            return "不能删除 geometry 字段"
+
+        gdf = gdf.drop(columns=[field_name])
+
+        geojson_data = gdf.__geo_interface__
+        geojson_data["name"] = layer_name
+        _registered_layers[layer_name]["geojson"] = geojson_data
+        _push_layer(layer_name, geojson_data)
+
+        return f"已从图层「{layer_name}」删除字段「{field_name}」，已同步地图"
+
+    except Exception as e:
+        return f"删除字段失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_select_by_attribute — 按属性选择
+# ============================================================
+
+@tool
+def spatial_select_by_attribute(layer_name: str, field: str, operator: str, value: str) -> str:
+    """按属性条件选择要素。支持操作符：=(等于) / !=(不等于) / >(大于) / >=(大于等于) / <(小于) / <=(小于等于) / like(包含) / between(介于,值格式"min,max")。
+    将匹配要素复制为新图层，不修改原始数据。layer_name: 图层名；field: 字段名；operator: 操作符；value: 比较值。"""
+    try:
+        import geopandas as gpd
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        if field not in gdf.columns:
+            return f"图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
+
+        ops = {
+            "=": "eq", "eq": "eq",
+            "!=": "ne", "neq": "ne",
+            ">": "gt", "gt": "gt",
+            ">=": "gte", "gte": "gte",
+            "<": "lt", "lt": "lt",
+            "<=": "lte", "lte": "lte",
+            "like": "like",
+            "between": "between",
+        }
+        op_norm = ops.get(operator.lower() if operator else "")
+        if op_norm is None:
+            return f"不支持的操作符「{operator}」，支持：= != > >= < <= like between"
+
+        field_data = gdf[field]
+        is_numeric = field_data.dtype.kind in ('i', 'f')
+
+        if op_norm == "like":
+            mask = field_data.astype(str).str.contains(value, case=False, na=False)
+        elif op_norm == "between":
+            parts = value.split(",")
+            if len(parts) != 2:
+                return "between 格式为「min,max」，如「0,100」"
+            try:
+                vmin, vmax = float(parts[0]), float(parts[1])
+            except ValueError:
+                return f"between 值必须为数字，当前：{value}"
+            if not is_numeric:
+                return f"字段「{field}」不是数值类型，不支持 between"
+            mask = (field_data >= vmin) & (field_data <= vmax)
+        else:
+            if is_numeric:
+                try:
+                    v = float(value)
+                except ValueError:
+                    return f"字段「{field}」为数值类型，但条件值「{value}」无法转为数字"
+                if op_norm == "eq":
+                    mask = field_data == v
+                elif op_norm == "ne":
+                    mask = field_data != v
+                elif op_norm == "gt":
+                    mask = field_data > v
+                elif op_norm == "gte":
+                    mask = field_data >= v
+                elif op_norm == "lt":
+                    mask = field_data < v
+                elif op_norm == "lte":
+                    mask = field_data <= v
+                else:
+                    return f"不支持的数值操作符：{operator}"
+            else:
+                if op_norm in ("gt", "gte", "lt", "lte", "between"):
+                    return f"字段「{field}」不是数值类型，不支持「{operator}」操作"
+                if op_norm == "eq":
+                    mask = field_data == value
+                elif op_norm == "ne":
+                    mask = field_data != value
+                else:
+                    return f"不支持的字符串操作符：{operator}"
+
+        result = gdf[mask].copy()
+        if result.empty:
+            return f"没有满足条件（{field} {operator} {value}）的要素"
+
+        result_name = f"{name}_按{field}{operator}{value}"
+        _gdf_to_layer(result, result_name)
+        return (f"按属性条件（{field} {operator} {value}）选择了 {len(result)}/{len(gdf)} 个要素，"
+                f"已加载到地图：{result_name}")
+    except Exception as e:
+        import traceback
+        return f"按属性选择失败: {str(e)[:300]}"
+
+
+# ============================================================
 # 工具列表（供 LangGraph Agent 注册）
 # ============================================================
+
+# ============================================================
+# 工具: edit_vertices — 折点编辑
+# ============================================================
+
+@tool
+def edit_vertices(layer_name: str) -> str:
+    """对图层要素启用折点拖拽编辑模式。用户可通过鼠标拖拽几何图形的顶点进行编辑。
+    layer_name: 图层名。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        _pending_layer_ops.append({
+            "action": "edit_vertices",
+            "name": name,
+        })
+
+        feat_count = len(gdf)
+        return (f"已为「{name}」启用折点编辑，{feat_count} 个要素进入编辑模式。拖拽顶点修改后保存即可。")
+    except Exception as e:
+        return f"启用折点编辑失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: export_map — 地图导出（图片/PDF）
+# ============================================================
+
+@tool
+def export_map(format: str = "png") -> str:
+    """将当前地图导出为图片。format: png(默认) / jpg。"""
+    try:
+        _pending_layer_ops.append({
+            "action": "export_map",
+            "format": format,
+        })
+        return f"已触发地图导出（{format}）"
+    except Exception as e:
+        return f"导出失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: export_pdf — PDF 出图
+# ============================================================
+
+@tool
+def export_pdf(title: str = "地图导出") -> str:
+    """将当前地图导出为 PDF 文档（打印布局），包含地图、标题、比例尺、图例、指北针。
+    title: 文档标题（默认"地图导出"）。"""
+    try:
+        _pending_layer_ops.append({
+            "action": "export_pdf",
+            "title": title,
+        })
+        return f"已触发 PDF 出图，标题：{title}"
+    except Exception as e:
+        return f"PDF 出图失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: undo / redo — 撤销重做
+# ============================================================
+
+@tool
+def undo() -> str:
+    """撤销上一步操作（恢复上一步的地图状态）。"""
+    try:
+        _pending_layer_ops.append({"action": "undo"})
+        return "已触发撤销操作"
+    except Exception as e:
+        return f"撤销失败: {str(e)[:200]}"
+
+
+@tool
+def redo() -> str:
+    """重做被撤销的操作。"""
+    try:
+        _pending_layer_ops.append({"action": "redo"})
+        return "已触发重做操作"
+    except Exception as e:
+        return f"重做失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: dem_analysis — 坡度/坡向/山体阴影
+# ============================================================
+
+@tool
+def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
+    """对DEM栅格图层进行地形分析。analysis可选: slope(坡度), aspect(坡向), hillshade(山体阴影)。
+    layer_name为上传DEM时创建的图层名（如dem.tif→图层名为dem）。
+    结果将作为新栅格图层叠加到地图上。"""
+    try:
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        if not os.path.isdir(upload_dir):
+            return "未找到上传目录，请先上传DEM文件"
+        # 按图层名匹配TIF
+        tif_path = None
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name:
+                    tif_path = os.path.join(upload_dir, f)
+                    break
+        if tif_path is None:
+            return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件，请先上传DEM"
+        import rasterio
+        from rasterio.warp import transform_bounds
+        import numpy as np
+        from PIL import Image
+        with rasterio.open(tif_path) as src:
+            dem = src.read(1).astype(np.float64)
+            nodata = src.nodata
+            if nodata is not None:
+                dem[dem == nodata] = np.nan
+            transform = src.transform
+            bounds = list(src.bounds)
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
+        ny, nx = dem.shape
+        cx = transform[0]
+        cy = -abs(transform[4])
+        # Horn's formula — 3x3 window
+        dzdx = np.full_like(dem, np.nan)
+        dzdy = np.full_like(dem, np.nan)
+        # interior cells
+        dzdx[1:-1,1:-1] = (
+            (dem[:-2,2:] + 2*dem[1:-1,2:] + dem[2:,2:]) -
+            (dem[:-2,:-2] + 2*dem[1:-1,:-2] + dem[2:,:-2])
+        ) / (8 * cx)
+        dzdy[1:-1,1:-1] = (
+            (dem[2:,:-2] + 2*dem[2:,1:-1] + dem[2:,2:]) -
+            (dem[:-2,:-2] + 2*dem[:-2,1:-1] + dem[:-2,2:])
+        ) / (8 * cy)
+        valid = np.isfinite(dzdx) & np.isfinite(dzdy)
+        if analysis == "slope":
+            data = np.degrees(np.arctan(np.sqrt(dzdx**2 + dzdy**2)))
+            data[~valid] = np.nan
+            label = "坡度(Slope)"
+            cmap = "slope"
+        elif analysis == "aspect":
+            data = np.degrees(np.arctan2(dzdy, -dzdx)) % 360
+            data[~valid] = np.nan
+            label = "坡向(Aspect)"
+            cmap = "aspect"
+        elif analysis == "hillshade":
+            slope_rad = np.arctan(np.sqrt(dzdx**2 + dzdy**2))
+            aspect_rad = np.arctan2(dzdy, -dzdx)
+            zenith = np.radians(45)
+            azimuth = np.radians(315)
+            data = (
+                np.cos(zenith) * np.cos(slope_rad) +
+                np.sin(zenith) * np.sin(slope_rad) * np.cos(azimuth - aspect_rad)
+            )
+            data = np.clip(data, 0, 1) * 255
+            data[~valid] = 0
+            label = "山体阴影(Hillshade)"
+            cmap = "hillshade"
+        else:
+            return f"不支持的analysis类型: {analysis}，可选: slope/aspect/hillshade"
+        # 颜色映射
+        if analysis == "hillshade":
+            rgb = np.stack([data.astype(np.uint8)]*3, axis=-1)
+        else:
+            from matplotlib import cm
+            if cmap == "slope":
+                cmap_obj = cm.colormaps['YlOrRd'] if hasattr(cm, 'colormaps') else cm.get_cmap('YlOrRd')
+            else:
+                cmap_obj = cm.colormaps['hsv'] if hasattr(cm, 'colormaps') else cm.get_cmap('hsv')
+            vmin = np.nanmin(data)
+            vmax = np.nanmax(data)
+            norm_data = (data - vmin) / (vmax - vmin + 1e-10)
+            norm_data = np.clip(norm_data, 0, 1)
+            norm_data[~valid] = 0
+            rgba = cmap_obj(norm_data)
+            rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
+            if np.any(~valid):
+                rgb[~valid] = 0
+        img = Image.fromarray(rgb)
+        out_name = f"{layer_name}_{analysis}.png"
+        out_path = os.path.join(upload_dir, out_name)
+        img.save(out_path)
+        _pending_layer_ops.append({
+            "action": "dem_result",
+            "name": out_name,
+            "url": f"/output/uploads/{out_name}",
+            "bounds": bounds,
+            "label": label,
+        })
+        return f"已生成{label}，叠加到地图上"
+    except ImportError as e:
+        return f"DEM分析需要依赖库: {str(e)[:200]}，请安装: pip install matplotlib"
+    except Exception as e:
+        import traceback
+        return f"DEM分析失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: ndvi_analysis — NDVI 植被指数
+# ============================================================
+
+@tool
+def ndvi_analysis(layer_name: str, red_band: int = 1, nir_band: int = 4) -> str:
+    """从多光谱 GeoTIFF 计算归一化植被指数 NDVI = (NIR-Red)/(NIR+Red)。
+    layer_name为上传的图层名，red_band为红光波段号（默认1），nir_band为近红外波段号（默认4）。
+    结果将作为新栅格图层叠加到地图上。"""
+    try:
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        if not os.path.isdir(upload_dir):
+            return "未找到上传目录，请先上传多光谱文件"
+        tif_path = None
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name:
+                    tif_path = os.path.join(upload_dir, f)
+                    break
+        if tif_path is None:
+            return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
+        import rasterio
+        from rasterio.warp import transform_bounds
+        import numpy as np
+        from PIL import Image
+        with rasterio.open(tif_path) as src:
+            if src.count < max(red_band, nir_band):
+                return f"文件只有{src.count}个波段，无法读取波段{max(red_band, nir_band)}"
+            red = src.read(red_band).astype(np.float64)
+            nir = src.read(nir_band).astype(np.float64)
+            nodata = src.nodata
+            if nodata is not None:
+                red[red == nodata] = np.nan
+                nir[nir == nodata] = np.nan
+            bounds = list(src.bounds)
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
+        ndvi = (nir - red) / (nir + red + 1e-10)
+        ndvi = np.clip(ndvi, -1, 1)
+        # 红绿渐变：NDVI=-1→红色，0→黄色，1→绿色
+        from matplotlib import cm
+        cmap = cm.colormaps['RdYlGn'] if hasattr(cm, 'colormaps') else cm.get_cmap('RdYlGn')
+        valid = np.isfinite(ndvi)
+        norm = (ndvi - (-1)) / (1 - (-1))  # -1~1 → 0~1
+        norm = np.clip(norm, 0, 1)
+        norm[~valid] = 0
+        rgba = cmap(norm)
+        rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
+        if np.any(~valid):
+            rgb[~valid] = 0
+        img = Image.fromarray(rgb)
+        out_name = f"{layer_name}_ndvi.png"
+        out_path = os.path.join(upload_dir, out_name)
+        img.save(out_path)
+        _pending_layer_ops.append({
+            "action": "dem_result",
+            "name": out_name,
+            "url": f"/output/uploads/{out_name}",
+            "bounds": bounds,
+            "label": "NDVI 归一化植被指数",
+        })
+        valid_count = np.sum(valid)
+        mean_ndvi = float(np.nanmean(ndvi))
+        return f"已生成NDVI图层，有效像元{valid_count}个，平均NDVI={mean_ndvi:.3f}"
+    except ImportError as e:
+        return f"NDVI计算需要依赖库: {str(e)[:200]}，请安装: pip install matplotlib"
+    except Exception as e:
+        import traceback
+        return f"NDVI分析失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: raster_calculator — 栅格计算器
+# ============================================================
+
+@tool
+def raster_calculator(layer_name: str, expression: str) -> str:
+    """对多波段 GeoTIFF 执行逐像元数学表达式计算。
+    layer_name 为上传的栅格图层名，expression 为表达式字符串。
+    波段用 B1/B2/B3… 引用，支持 + - * / ** ( ) 和函数。
+    示例: '(B4-B3)/(B4+B3)'、'B1*2.5'、'B2-B1'。"""
+    try:
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        if not os.path.isdir(upload_dir):
+            return "未找到上传目录"
+        tif_path = None
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name:
+                    tif_path = os.path.join(upload_dir, f)
+                    break
+        if tif_path is None:
+            return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
+        import rasterio
+        from rasterio.warp import transform_bounds
+        import numpy as np
+        from PIL import Image
+        with rasterio.open(tif_path) as src:
+            bands = {}
+            for i in range(1, src.count + 1):
+                b = src.read(i).astype(np.float64)
+                nodata = src.nodata
+                if nodata is not None:
+                    b[b == nodata] = np.nan
+                bands[f"B{i}"] = b
+            bounds = list(src.bounds)
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
+        safe_dict = {**bands}
+        safe_dict.update({
+            "sin": lambda x: np.sin(np.radians(x)),
+            "cos": lambda x: np.cos(np.radians(x)),
+            "sqrt": np.sqrt,
+            "abs": np.abs,
+            "log": np.log,
+            "exp": np.exp,
+            "min": np.minimum,
+            "max": np.maximum,
+            "power": np.power,
+        })
+        result = eval(expression, {"__builtins__": {}}, safe_dict)
+        if not isinstance(result, np.ndarray):
+            return f"表达式结果不是栅格数据: {type(result)}"
+        if np.all(np.isnan(result)):
+            return "计算结果全为NaN，请检查表达式或波段数据"
+        vmin, vmax = np.nanmin(result), np.nanmax(result)
+        result = result.astype(np.float64)
+        if np.isclose(vmin, vmax):
+            rgb = np.full((*result.shape, 3), 128, dtype=np.uint8)
+        else:
+            norm = (result - vmin) / (vmax - vmin + 1e-10)
+            norm = np.clip(norm, 0, 1)
+            from matplotlib import cm
+            cmap = cm.colormaps['viridis'] if hasattr(cm, 'colormaps') else cm.get_cmap('viridis')
+            rgba = cmap(norm)
+            rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
+            nan_mask = np.isnan(result)
+            if np.any(nan_mask):
+                rgb[nan_mask] = 0
+        img = Image.fromarray(rgb)
+        out_name = f"{layer_name}_calc.png"
+        out_path = os.path.join(upload_dir, out_name)
+        img.save(out_path)
+        _pending_layer_ops.append({
+            "action": "dem_result",
+            "name": out_name,
+            "url": f"/output/uploads/{out_name}",
+            "bounds": bounds,
+            "label": f"栅格计算: {expression}",
+        })
+        return f"已执行 '{expression}'，范围 [{vmin:.2f}, {vmax:.2f}]，生成栅格图层"
+    except Exception as e:
+        return f"栅格计算失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: spatial_interpolate — 空间插值（IDW / RBF）
+# ============================================================
+
+@tool
+def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
+                        resolution: int = 200) -> str:
+    """对点图层进行空间插值生成栅格曲面。field为插值字段，method可选idw(反距离加权)或rbf(径向基函数)，
+    resolution为栅格分辨率（行列数）。结果作为栅格图层叠加到地图上。"""
+    try:
+        import numpy as np
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if gdf.geometry.iloc[0].geom_type not in ("Point", "MultiPoint"):
+            return f"图层 '{name}' 不含点要素，无法插值"
+        if field not in gdf.columns:
+            return f"图层 '{name}' 没有字段 '{field}'，可用字段: {', '.join(gdf.columns)}"
+        pts = gdf.copy()
+        pts = pts.to_crs("EPSG:4326")
+        coords = [(p.x, p.y) for p in pts.geometry if p is not None]
+        values = pts[field].values.astype(np.float64)
+        if len(coords) < 3:
+            return "至少需要3个有效点进行插值"
+        xs = np.array([c[0] for c in coords])
+        ys = np.array([c[1] for c in coords])
+        # 生成规则网格
+        xmin, ymin, xmax, ymax = xs.min(), ys.min(), xs.max(), ys.max()
+        pad_x = (xmax - xmin) * 0.05 or 0.01
+        pad_y = (ymax - ymin) * 0.05 or 0.01
+        grid_x, grid_y = np.meshgrid(
+            np.linspace(xmin - pad_x, xmax + pad_x, resolution),
+            np.linspace(ymin - pad_y, ymax + pad_y, resolution)
+        )
+        if method == "idw":
+            # 反距离加权
+            from scipy.spatial.distance import cdist
+            flat_grid = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+            pts_xy = np.column_stack([xs, ys])
+            dist = cdist(flat_grid, pts_xy)
+            dist[dist < 1e-10] = 1e-10
+            weights = 1.0 / dist ** 2
+            z = np.dot(weights, values) / weights.sum(axis=1)
+            z = z.reshape(grid_x.shape)
+        elif method == "rbf":
+            from scipy import interpolate
+            rbf = interpolate.Rbf(xs, ys, values, function='multiquadric')
+            z = rbf(grid_x, grid_y)
+        else:
+            return f"不支持的方法: {method}，可选 idw / rbf"
+        vmin, vmax = np.nanmin(z), np.nanmax(z)
+        if np.isclose(vmin, vmax):
+            return f"插值结果无变化（值={vmin:.2f}）"
+        norm = (z - vmin) / (vmax - vmin + 1e-10)
+        norm = np.clip(norm, 0, 1)
+        from matplotlib import cm
+        cmap = cm.colormaps['viridis'] if hasattr(cm, 'colormaps') else cm.get_cmap('viridis')
+        rgba = cmap(norm)
+        rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
+        nan_mask = ~np.isfinite(z)
+        if np.any(nan_mask):
+            rgb[nan_mask] = 0
+        from PIL import Image
+        img = Image.fromarray(rgb)
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        out_name = f"{name}_{method}.png"
+        out_path = os.path.join(upload_dir, out_name)
+        img.save(out_path)
+        from rasterio.transform import from_bounds
+        transform = from_bounds(xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y, resolution, resolution)
+        bounds = [xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y]
+        _pending_layer_ops.append({
+            "action": "dem_result",
+            "name": out_name,
+            "url": f"/output/uploads/{out_name}",
+            "bounds": bounds,
+            "label": f"插值({method}): {field}",
+        })
+        return f"已生成{method.upper()}插值网格 ({resolution}×{resolution})，值范围 [{vmin:.2f}, {vmax:.2f}]"
+    except Exception as e:
+        import traceback
+        return f"插值失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: hydrology_analysis — 水文分析
+# ============================================================
+
+@tool
+def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
+                       threshold: int = 100) -> str:
+    """对DEM栅格进行水文分析。analysis可选:
+    flowdir(流向图), flowacc(汇流累积量), streamnet(河网提取)。
+    threshold为河网提取的最小汇流累积量阈值。
+    layer_name为上传DEM时创建的图层名。"""
+    try:
+        import numpy as np
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        if not os.path.isdir(upload_dir):
+            return "未找到上传目录"
+        tif_path = None
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name:
+                    tif_path = os.path.join(upload_dir, f)
+                    break
+        if tif_path is None:
+            return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
+        import rasterio
+        from rasterio.warp import transform_bounds
+        from PIL import Image
+        with rasterio.open(tif_path) as src:
+            dem = src.read(1).astype(np.float64)
+            nodata = src.nodata
+            if nodata is not None:
+                dem[dem == nodata] = np.nan
+            transform = src.transform
+            bounds = list(src.bounds)
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
+        ny, nx = dem.shape
+        filled = dem.copy()
+        # 简单填洼：多次迭代填充
+        for _ in range(20):
+            prev = filled.copy()
+            for i in range(1, ny-1):
+                for j in range(1, nx-1):
+                    if np.isnan(filled[i, j]):
+                        continue
+                    neighbors = [
+                        filled[i-1, j], filled[i+1, j],
+                        filled[i, j-1], filled[i, j+1],
+                        filled[i-1, j-1], filled[i-1, j+1],
+                        filled[i+1, j-1], filled[i+1, j+1]
+                    ]
+                    min_nbr = np.nanmin(neighbors)
+                    if filled[i, j] > min_nbr + 1e-6 and min_nbr < filled[i, j]:
+                        filled[i, j] = min(min_nbr, filled[i, j])
+            if np.allclose(filled, prev, atol=1e-6):
+                break
+        # D8 流向编码（1=E,2=NE,4=N,8=NW,16=W,32=SW,64=S,128=SE）
+        # 使用简化编码: 0=E,1=NE,2=N,3=NW,4=W,5=SW,6=S,7=SE
+        dx = [1, 1, 0, -1, -1, -1, 0, 1]
+        dy = [0, -1, -1, -1, 0, 1, 1, 1]
+        direction = np.full_like(dem, -1, dtype=np.int32)
+        slope_pct = np.full_like(dem, np.nan)
+        for i in range(1, ny-1):
+            for j in range(1, nx-1):
+                if np.isnan(filled[i, j]):
+                    continue
+                max_drop = 0
+                best_dir = -1
+                for k in range(8):
+                    ni, nj = i + dy[k], j + dx[k]
+                    if ni < 0 or ni >= ny or nj < 0 or nj >= nx:
+                        continue
+                    if np.isnan(filled[ni, nj]):
+                        continue
+                    dist = 1.0 if k in (0, 2, 4, 6) else 1.414
+                    drop = (filled[i, j] - filled[ni, nj]) / dist
+                    if drop > max_drop:
+                        max_drop = drop
+                        best_dir = k
+                if best_dir >= 0:
+                    direction[i, j] = best_dir
+                    slope_pct[i, j] = max_drop
+        # 汇流累积量（按高程排序从高到低累加）
+        flowacc = np.zeros_like(dem, dtype=np.float64)
+        valid_cells = np.isfinite(filled)
+        if np.any(valid_cells):
+            flowacc[valid_cells] = 1.0
+            order = np.argsort(-filled.ravel())
+            for idx in order:
+                i, j = divmod(int(idx), nx)
+                if not valid_cells[i, j] or direction[i, j] < 0:
+                    continue
+                k = direction[i, j]
+                ni, nj = i + dy[k], j + dx[k]
+                if 0 <= ni < ny and 0 <= nj < nx and valid_cells[ni, nj]:
+                    flowacc[ni, nj] += flowacc[i, j]
+        out_name = f"{layer_name}_{analysis}.png"
+        if analysis == "flowdir":
+            # 流向可视化（按角度色环）
+            angle_map = np.array([0, 45, 90, 135, 180, 225, 270, 315])
+            dir_deg = np.full_like(dem, np.nan, dtype=np.float64)
+            for k in range(8):
+                dir_deg[direction == k] = angle_map[k]
+            from matplotlib import cm
+            cmap = cm.colormaps['hsv'] if hasattr(cm, 'colormaps') else cm.get_cmap('hsv')
+            norm_data = np.full_like(dir_deg, np.nan)
+            valid_dir = dir_deg >= 0
+            if np.any(valid_dir):
+                norm_data[valid_dir] = dir_deg[valid_dir] / 360.0
+            norm_data = np.clip(np.nan_to_num(norm_data, 0), 0, 1)
+            rgba = cmap(norm_data)
+            rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
+            rgb[~valid_cells] = 0
+            label = "流向(Flow Direction)"
+        elif analysis == "flowacc":
+            # 汇流累积量（对数拉伸）
+            log_fa = np.log1p(flowacc)
+            vmin, vmax = 0, np.nanmax(log_fa)
+            norm_data = log_fa / (vmax + 1e-10)
+            norm_data = np.clip(norm_data, 0, 1)
+            from matplotlib import cm
+            cmap = cm.colormaps['Blues'] if hasattr(cm, 'colormaps') else cm.get_cmap('Blues')
+            rgba = cmap(norm_data)
+            rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
+            rgb[~valid_cells] = 0
+            label = "汇流累积量(Flow Accumulation)"
+        elif analysis == "streamnet":
+            # 河网（蓝色线状）
+            stream = np.zeros((ny, nx, 3), dtype=np.uint8)
+            stream[~valid_cells] = [200, 200, 200]
+            stream[valid_cells] = [255, 255, 255]
+            stream_cells = (flowacc >= threshold) & valid_cells
+            for i in range(1, ny-1):
+                for j in range(1, nx-1):
+                    if stream_cells[i, j]:
+                        stream[i, j] = [0, 100, 255]
+                        # 加粗河网
+                        for di in (-1, 0, 1):
+                            for dj in (-1, 0, 1):
+                                ni, nj = i+di, j+dj
+                                if 0 <= ni < ny and 0 <= nj < nx:
+                                    stream[ni, nj] = [0, 100, 255]
+            rgb = stream
+            label = f"河网(Stream): threshold={threshold}"
+        else:
+            return f"不支持的analysis类型: {analysis}，可选: flowdir/flowacc/streamnet"
+        img = Image.fromarray(rgb)
+        out_path = os.path.join(upload_dir, out_name)
+        img.save(out_path)
+        _pending_layer_ops.append({
+            "action": "dem_result",
+            "name": out_name,
+            "url": f"/output/uploads/{out_name}",
+            "bounds": bounds,
+            "label": label,
+        })
+        return f"已生成水文分析图层 '{label}'"
+    except Exception as e:
+        return f"水文分析失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: create_workflow — 批量处理链
+# ============================================================
+
+@tool
+def create_workflow(workflow_json: str) -> str:
+    """创建并执行批量处理工作流。workflow_json为JSON字符串，格式：
+    [{"tool":"工具名","params":{"参数名":"参数值",...},"output":"输出图层名"},
+     {"tool":"spatial_buffer","params":{"layer_name":"$prev","distance":100,"unit":"m"},"output":"buf_layer"}]
+    工具名取工具函数名（不包含命名空间），$prev引用上一步输出，$N引用第N步输出（从1开始）。
+    各步骤顺序执行，中间结果自动注册。"""
+    try:
+        import json as _json
+        steps = _json.loads(workflow_json)
+        if not isinstance(steps, list) or not steps:
+            return "workflow_json必须是非空数组"
+        outputs = {}
+        results = []
+        # 构建工具查找表
+        tool_map = {}
+        for t in tools:
+            name = t.name if hasattr(t, 'name') else str(t)
+            tool_map[name] = t
+        for idx, step in enumerate(steps):
+            step_num = idx + 1
+            tool_name = step.get("tool", "")
+            raw_params = dict(step.get("params", {}))
+            output_name = step.get("output", f"step_{step_num}")
+            if tool_name not in tool_map:
+                return f"第{step_num}步: 未找到工具 '{tool_name}'"
+            # 解析 $prev / $N 引用
+            resolved_params = {}
+            for k, v in raw_params.items():
+                if isinstance(v, str) and v.startswith("$"):
+                    ref = v[1:]
+                    if ref == "prev":
+                        if not outputs:
+                            resolved_params[k] = v
+                        else:
+                            prev_out = list(outputs.values())[-1]
+                            resolved_params[k] = prev_out
+                    elif ref.isdigit():
+                        n = int(ref)
+                        if n in outputs:
+                            resolved_params[k] = outputs[n]
+                        else:
+                            resolved_params[k] = v
+                    else:
+                        resolved_params[k] = v
+                else:
+                    resolved_params[k] = v
+            try:
+                tool_fn = tool_map[tool_name]
+                result_str = tool_fn.invoke(resolved_params)
+            except Exception as e:
+                return f"第{step_num}步 '{tool_name}' 执行失败: {str(e)[:200]}"
+            step_output = output_name
+            outputs[step_num] = step_output
+            outputs[output_name] = step_output
+            results.append(f"步骤{step_num}({tool_name}) → {output_name}: {result_str[:100]}")
+        return "工作流执行完成:\n" + "\n".join(results)
+    except Exception as e:
+        return f"工作流失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: view_3d_terrain — 3D 地形
+# ============================================================
+
+@tool
+def view_3d_terrain(layer_name: str, exaggeration: float = 2.0) -> str:
+    """从DEM生成3D地形交互视图。layer_name为DEM图层名。
+    exaggeration为垂直夸大系数（默认2.0）。
+    结果在聊天窗口展示 Three.js 3D 场景。"""
+    try:
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        if not os.path.isdir(upload_dir):
+            return "未找到上传目录"
+        tif_path = None
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name:
+                    tif_path = os.path.join(upload_dir, f)
+                    break
+        if tif_path is None:
+            return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
+        import rasterio
+        from rasterio.warp import transform_bounds
+        import numpy as np
+        with rasterio.open(tif_path) as src:
+            dem = src.read(1).astype(np.float64)
+            nodata = src.nodata
+            if nodata is not None:
+                dem[dem == nodata] = np.nan
+            transform = src.transform
+            bounds_wgs84 = list(src.bounds)
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                bounds_wgs84 = list(transform_bounds(src.crs, 'EPSG:4326', *bounds_wgs84))
+        ny, nx = dem.shape
+        step = max(1, max(ny, nx) // 200)
+        dem = dem[::step, ::step]
+        ny, nx = dem.shape
+        vmin = np.nanmin(dem)
+        vrange = np.nanmax(dem) - vmin
+        if vrange < 1:
+            return "DEM 高程无变化"
+        rows, cols = ny, nx
+        lng0 = bounds_wgs84[0]
+        lat0 = bounds_wgs84[1]
+        lng_step = (bounds_wgs84[2] - bounds_wgs84[0]) / (nx - 1) if nx > 1 else 1
+        lat_step = (bounds_wgs84[3] - bounds_wgs84[1]) / (ny - 1) if ny > 1 else 1
+        vert_lines = []
+        for i in range(rows):
+            for j in range(cols):
+                z = dem[i, j]
+                if np.isnan(z):
+                    z = vmin
+                x = j * lng_step
+                y = (rows - 1 - i) * lat_step
+                h = (z - vmin) / vrange * exaggeration
+                vert_lines.append(f"{x:.6f} {y:.6f} {h:.6f}")
+        tri_lines = []
+        for i in range(rows - 1):
+            for j in range(cols - 1):
+                a = i * cols + j
+                b = i * cols + j + 1
+                c = (i + 1) * cols + j
+                d = (i + 1) * cols + j + 1
+                tri_lines.append(f"{a} {b} {c}")
+                tri_lines.append(f"{b} {d} {c}")
+        color_lines = []
+        for i in range(rows):
+            for j in range(cols):
+                z = dem[i, j]
+                if np.isnan(z):
+                    z = vmin
+                t = (z - vmin) / vrange
+                r = 255 * (1 - t)
+                g = 255 * (0.3 + 0.7 * t)
+                b = 255 * t
+                color_lines.append(f"{r/255:.3f} {g/255:.3f} {b/255:.3f}")
+        ctr_lng = (bounds_wgs84[0] + bounds_wgs84[2]) / 2
+        ctr_lat = (bounds_wgs84[1] + bounds_wgs84[3]) / 2
+        size_x = bounds_wgs84[2] - bounds_wgs84[0]
+        size_y = bounds_wgs84[3] - bounds_wgs84[1]
+        max_dim = max(size_x, size_y, vrange * exaggeration / 1000)
+        verts_str = ",".join(vert_lines)
+        tris_str = ",".join(tri_lines)
+        colors_str = ",".join(color_lines)
+        legend_html = f"""
+<div style="position:absolute;bottom:10px;left:10px;color:#fff;font:12px sans-serif;background:rgba(0,0,0,.5);padding:4px 10px;border-radius:4px;pointer-events:none">{layer_name} | 3D Terrain | Drag to rotate | Scroll to zoom</div>"""
+        html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>3D Terrain</title>
+<style>body{{margin:0;overflow:hidden;background:#1a1a2e}}</style></head><body>
+{legend_html}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+var scene=new THREE.Scene();
+var cam=new THREE.PerspectiveCamera(60,window.innerWidth/window.innerHeight,0.01,1000);
+var renderer=new THREE.WebGLRenderer({{antialias:true}});
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled=true;
+document.body.appendChild(renderer.domElement);
+var geo=new THREE.BufferGeometry();
+var vertices=new Float32Array([{verts_str}]);
+var indices=new Uint16Array([{tris_str}]);
+var colors=new Float32Array([{colors_str}]);
+geo.setAttribute('position',new THREE.BufferAttribute(vertices,3));
+geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+geo.setIndex(new THREE.BufferAttribute(indices,1));
+geo.computeVertexNormals();
+var mat=new THREE.MeshPhongMaterial({{vertexColors:true,side:THREE.DoubleSide,shininess:30}});
+var mesh=new THREE.Mesh(geo,mat);
+mesh.castShadow=true;mesh.receiveShadow=true;
+scene.add(mesh);
+var centerX={ctr_lng:.4f},centerY={ctr_lat:.4f},sizeX={size_x:.4f},sizeY={size_y:.4f};
+var maxDim=Math.max(sizeX,sizeY,{max_dim:.2f});
+var dist=maxDim*3;
+mesh.position.set(-centerX,-centerY,0);
+cam.position.set(dist*.6,dist*.3,dist*.8);
+cam.lookAt(0,0,0);
+var ambient=new THREE.AmbientLight(0x404060);
+scene.add(ambient);
+var dir=new THREE.DirectionalLight(0xffffff,1);
+dir.position.set(-50,100,50);
+dir.castShadow=true;scene.add(dir);
+var dir2=new THREE.DirectionalLight(0xffffff,0.3);
+dir2.position.set(50,-50,30);
+scene.add(dir2);
+var controls=new THREE.OrbitControls(cam,renderer.domElement);
+controls.target.set(0,0,0);controls.update();
+var grid=new THREE.GridHelper(maxDim*2,20,0x88aaff,0x446688);
+grid.position.y=-{max_dim:.2f}*0.5;
+scene.add(grid);
+window.addEventListener('resize',function(){{cam.aspect=window.innerWidth/window.innerHeight;cam.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);}});
+function animate(){{requestAnimationFrame(animate);controls.update();renderer.render(scene,cam);}}
+animate();
+</script></body></html>"""
+        import hashlib
+        fname = f"terrain_{layer_name}_{hashlib.md5(html.encode()[:100]).hexdigest()[:8]}.html"
+        output_dir = os.path.join(_temp_output_dir, "output")
+        os.makedirs(output_dir, exist_ok=True)
+        fpath = os.path.join(output_dir, fname)
+        with open(fpath, 'w', encoding='utf-8') as f:
+            f.write(html)
+        _pending_images.append({
+            "type": "html",
+            "url": f"/output/{fname}"
+        })
+        return f"已生成3D地形视图，可在聊天窗口中查看"
+    except Exception as e:
+        return f"3D地形生成失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: animate_time — 时序动画
+# ============================================================
+
+@tool
+def animate_time(layer_name: str, time_field: str, interval_ms: int = 500) -> str:
+    """对图层的时序字段进行动画播放。time_field为日期/数字字段，
+    interval_ms为每帧间隔（毫秒，默认500）。前端会按时间顺序逐帧显示。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if time_field not in gdf.columns:
+            return f"图层 '{name}' 没有字段 '{time_field}'"
+        time_vals = gdf[time_field].dropna().unique()
+        if len(time_vals) < 2:
+            return f"字段 '{time_field}' 只有 {len(time_vals)} 个唯一值，至少需要2个"
+        time_vals = sorted(time_vals)
+        _pending_layer_ops.append({
+            "action": "time_animation",
+            "name": name,
+            "time_field": time_field,
+            "time_values": [str(v) for v in time_vals[:100]],
+            "interval_ms": interval_ms,
+        })
+        return f"已启动时序动画，共 {len(time_vals)} 帧，间隔 {interval_ms}ms"
+    except Exception as e:
+        return f"时序动画失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: link_chart_map — 图表联动
+# ============================================================
+
+@tool
+def link_chart_map(layer_name: str, chart_field: str) -> str:
+    """建立图层面要素与图表的联动。选中地图要素时高亮图表对应项，
+    点击图表项时地图聚焦到对应要素。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if chart_field not in gdf.columns:
+            return f"图层 '{name}' 没有字段 '{chart_field}'"
+        _pending_layer_ops.append({
+            "action": "chart_link",
+            "name": name,
+            "chart_field": chart_field,
+        })
+        return f"已建立图层 '{name}' 的图表联动（字段: {chart_field}）"
+    except Exception as e:
+        return f"图表联动设置失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: terrain_profile — 地形剖面
+# ============================================================
+
+@tool
+def terrain_profile(layer_name: str, line_coords: str) -> str:
+    """沿一条线从DEM提取高程并生成地形剖面图。
+    layer_name为DEM图层名，line_coords为JSON数组 [[lng,lat],[lng,lat],...]。
+    结果在聊天窗口显示高程剖面图表。"""
+    try:
+        import numpy as np
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        if not os.path.isdir(upload_dir):
+            return "未找到上传目录"
+        tif_path = None
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name:
+                    tif_path = os.path.join(upload_dir, f)
+                    break
+        if tif_path is None:
+            return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
+        import rasterio
+        import json as _json
+        coords = _json.loads(line_coords)
+        if not isinstance(coords, list) or len(coords) < 2:
+            return "line_coords需为包含至少2个[lng,lat]的JSON数组"
+        pts = np.array(coords)
+        # 沿线段采样100个点
+        total_len = 0
+        segments = []
+        for i in range(len(pts) - 1):
+            dx = pts[i + 1][0] - pts[i][0]
+            dy = pts[i + 1][1] - pts[i][1]
+            seg_len = np.sqrt(dx ** 2 + dy ** 2)
+            segments.append((seg_len, pts[i], pts[i + 1]))
+            total_len += seg_len
+        n_samples = 100
+        sample_pts = []
+        cum_dist = 0
+        distances = [0]
+        sample_pts.append(pts[0])
+        for seg_len, p1, p2 in segments:
+            n_seg = max(1, int(seg_len / total_len * n_samples))
+            for j in range(1, n_seg + 1):
+                t = j / n_seg
+                x = p1[0] + (p2[0] - p1[0]) * t
+                y = p1[1] + (p2[1] - p1[1]) * t
+                sample_pts.append(np.array([x, y]))
+                distances.append(cum_dist + seg_len * t)
+            cum_dist += seg_len
+        sample_pts = np.array(sample_pts)
+        distances = np.array(distances)
+        # 从DEM采样高程
+        with rasterio.open(tif_path) as src:
+            dem = src.read(1).astype(np.float64)
+            nodata = src.nodata
+            if nodata is not None:
+                dem[dem == nodata] = np.nan
+            transform = src.transform
+        elevations = []
+        for pt in sample_pts:
+            col, row = ~transform * (pt[0], pt[1])
+            col, row = int(round(col)), int(round(row))
+            if 0 <= row < dem.shape[0] and 0 <= col < dem.shape[1]:
+                z = dem[row, col]
+                elevations.append(z if np.isfinite(z) else np.nan)
+            else:
+                elevations.append(np.nan)
+        elevations = np.array(elevations)
+        valid = np.isfinite(elevations)
+        if not np.any(valid):
+            return "所有采样点均落在DEM有效范围外"
+        from matplotlib import pyplot as plt
+        fig, ax = plt.subplots(figsize=(10, 4), facecolor='white')
+        ax.fill_between(distances, elevations, alpha=0.3, color='#8B4513')
+        ax.plot(distances, elevations, color='#5C3317', linewidth=1.5)
+        ax.fill_between(distances, elevations, elevations.min(), alpha=0.1, color='#8B4513')
+        ax.set_xlabel('Distance (degree)', fontsize=10)
+        ax.set_ylabel('Elevation', fontsize=10)
+        ax.set_title(f'Terrain Profile — {layer_name}', fontsize=12)
+        ax.grid(True, alpha=0.3)
+        vmin, vmax = np.nanmin(elevations), np.nanmax(elevations)
+        ax.set_ylim(vmin - (vmax - vmin) * 0.1, vmax + (vmax - vmin) * 0.1)
+        from matplotlib.ticker import MaxNLocator
+        ax.yaxis.set_major_locator(MaxNLocator(8))
+        fig.tight_layout()
+        import hashlib, io
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=120)
+        plt.close(fig)
+        fname = f"profile_{layer_name}_{hashlib.md5(str(coords).encode()).hexdigest()[:8]}.png"
+        output_dir = os.path.join(_temp_output_dir, "output")
+        os.makedirs(output_dir, exist_ok=True)
+        fpath = os.path.join(output_dir, fname)
+        with open(fpath, 'wb') as f:
+            f.write(buf.getvalue())
+        _pending_images.append({
+            "type": "image",
+            "url": f"/output/{fname}",
+            "caption": f"{layer_name} 高程剖面 | 距离 {total_len:.4f}° | 高程 {vmin:.1f}–{vmax:.1f}"
+        })
+        return f"已生成地形剖面图，高程范围 {vmin:.1f}–{vmax:.1f}，距离 {total_len:.4f}°"
+    except Exception as e:
+        return f"地形剖面生成失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: topology_check — 拓扑检查
+# ============================================================
+
+@tool
+def topology_check(layer_name: str) -> str:
+    """对面要素图层进行拓扑检查。检测自相交、无效几何、要素间重叠和缝隙。
+    结果生成标注图层，标注出每个拓扑错误的位置和类型。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if not any(gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"])):
+            return f"图层 '{name}' 不含面要素，拓扑检查仅支持面图层"
+        from shapely.validation import explain_validity
+        from shapely.geometry import Polygon
+        import shapely.wkt
+        issues = []
+        gdf_single = gdf.copy()
+        if 'geometry' in gdf_single.columns:
+            gdf_single = gdf_single.set_geometry('geometry')
+        for idx, row in gdf_single.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                issues.append({
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "properties": {"type": "空几何", "fid": int(idx)}
+                })
+                continue
+            if not geom.is_valid:
+                reason = explain_validity(geom)
+                rep = geom.representative_point()
+                issues.append({
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [rep.x, rep.y]},
+                    "properties": {"type": "无效几何", "detail": reason, "fid": int(idx)}
+                })
+        # 重叠和缝隙
+        if len(gdf_single) >= 2:
+            from shapely.ops import unary_union
+            polys = [(i, g) for i, g in gdf_single.geometry.items()
+                     if g is not None and not g.is_empty and g.geom_type in ("Polygon", "MultiPolygon")]
+            for i, a in polys:
+                for j, b in polys:
+                    if j <= i:
+                        continue
+                    if a.intersects(b) and not a.touches(b):
+                        try:
+                            inter = a.intersection(b)
+                            if inter is not None and not inter.is_empty and inter.area > 1e-10:
+                                rep = inter.representative_point()
+                                issues.append({
+                                    "type": "Feature",
+                                    "geometry": {"type": "Point", "coordinates": [rep.x, rep.y]},
+                                    "properties": {"type": "重叠", "fid_pair": f"{i}-{j}"}
+                                })
+                        except:
+                            pass
+            try:
+                all_valid = [g for _, g in polys]
+                if len(all_valid) >= 2:
+                    merged = unary_union(all_valid)
+                    envelope = Polygon(merged.exterior)
+                    gaps = envelope.difference(merged)
+                    if gaps is not None and not gaps.is_empty:
+                        if gaps.geom_type == "GeometryCollection":
+                            for g in gaps.geoms:
+                                if not g.is_empty and g.geom_type in ("Polygon",) and g.area > 1e-10:
+                                    rep = g.representative_point()
+                                    issues.append({
+                                        "type": "Feature",
+                                        "geometry": {"type": "Point", "coordinates": [rep.x, rep.y]},
+                                        "properties": {"type": "缝隙", "area": round(g.area, 6)}
+                                    })
+                        elif gaps.geom_type == "Polygon" and gaps.area > 1e-10:
+                            rep = gaps.representative_point()
+                            issues.append({
+                                "type": "Feature",
+                                "geometry": {"type": "Point", "coordinates": [rep.x, rep.y]},
+                                "properties": {"type": "缝隙", "area": round(gaps.area, 6)}
+                            })
+            except:
+                pass
+        if not issues:
+            return f"图层 '{name}' 未发现拓扑错误"
+        fc = {"type": "FeatureCollection", "features": issues}
+        out_name = f"{name}_拓扑错误"
+        _push_layer(out_name, fc)
+        _register_layer(out_name, fc)
+        return f"拓扑检查完成，发现 {len(issues)} 个问题，已生成图层 '{out_name}'"
+    except Exception as e:
+        return f"拓扑检查失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: extract_contours — 等高线提取
+# ============================================================
+
+@tool
+def extract_contours(layer_name: str, interval: float = 0) -> str:
+    """从DEM栅格图层提取等高线矢量。interval为等高距（米），0表示自动计算。
+    layer_name为上传DEM时创建的图层名（如dem.tif→图层名为dem）。
+    结果将作为新矢量图层加载到地图上。"""
+    try:
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        if not os.path.isdir(upload_dir):
+            return "未找到上传目录，请先上传DEM文件"
+        tif_path = None
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name:
+                    tif_path = os.path.join(upload_dir, f)
+                    break
+        if tif_path is None:
+            return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件，请先上传DEM"
+        import rasterio
+        from rasterio.warp import transform_bounds
+        import numpy as np
+        from skimage import measure
+        with rasterio.open(tif_path) as src:
+            dem = src.read(1).astype(np.float64)
+            nodata = src.nodata
+            if nodata is not None:
+                dem[dem == nodata] = np.nan
+            transform = src.transform
+            bounds = list(src.bounds)
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
+        ny, nx = dem.shape
+        vmin, vmax = np.nanmin(dem), np.nanmax(dem)
+        drange = vmax - vmin
+        if interval <= 0:
+            interval = max(round(drange / 15, -1), 1) if drange > 10 else drange / 15
+        levels = np.arange(vmin, vmax + interval, interval)
+        features = []
+        for level in levels:
+            for seg in measure.find_contours(dem, level):
+                if len(seg) < 2:
+                    continue
+                coords = []
+                for row, col in seg:
+                    x = transform[2] + (col + 0.5) * transform[0] + (row + 0.5) * transform[1]
+                    y = transform[5] + (col + 0.5) * transform[3] + (row + 0.5) * transform[4]
+                    coords.append([round(x, 6), round(y, 6)])
+                features.append({
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": coords},
+                    "properties": {"elevation": round(float(level), 1)}
+                })
+        fc = {"type": "FeatureCollection", "features": features}
+        name = f"{layer_name}_contour"
+        _pending_layers.append({
+            "type": "FeatureCollection",
+            "features": fc["features"],
+            "name": name,
+        })
+        _registered_layers[name] = {"type": "FeatureCollection", "name": name}
+        return f"已提取 {len(features)} 条等高线（等高距 {interval:.1f}m），生成图层 '{name}'"
+    except ImportError as e:
+        return f"等高线提取需要依赖库: {str(e)[:200]}，请安装: pip install scikit-image"
+    except Exception as e:
+        import traceback
+        return f"等高线提取失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: enable_snapping — 捕捉
+# ============================================================
+
+@tool
+def enable_snapping(enabled: bool = True) -> str:
+    """启用或禁用绘制时的折点捕捉功能。enabled: True(启用) / False(禁用)。启用后绘制
+    点/线/面时会自动吸附到现有要素的顶点和线段上。"""
+    try:
+        _pending_layer_ops.append({
+            "action": "snapping",
+            "enabled": enabled,
+        })
+        return f"已{'启用' if enabled else '禁用'}捕捉功能"
+    except Exception as e:
+        return f"捕捉设置失败: {str(e)[:200]}"
+
+
+# ============================================================
+# 工具: convert_crs / convert_coordinates — 坐标转换
+# ============================================================
+
+@tool
+def convert_crs(layer_name: str, target_crs: str = "wgs84") -> str:
+    """将图层的坐标参考系转换为目标CRS并生成新图层。
+    target_crs支持: wgs84(EPSG:4326), web_mercator(EPSG:3857),
+    utm_auto(自动UTM分区), gcj02(高德/腾讯火星坐标)。
+    原图层不变，结果生成新图层。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        epsg_map = {
+            "wgs84": "EPSG:4326",
+            "web_mercator": "EPSG:3857",
+            "mercator": "EPSG:3857",
+            "gcj02": "EPSG:4326",  # 本系统全面使用WGS84，GCJ02暂不做偏移转换
+        }
+        target = epsg_map.get(target_crs.lower(), target_crs)
+        if target.startswith("utm"):
+            pts = gdf.geometry.representative_point()
+            avg_lon = pts.x.mean()
+            avg_lat = pts.y.mean()
+            zone = int((avg_lon + 180) / 6) + 1
+            epsg = 32600 if avg_lat >= 0 else 32700
+            target = f"EPSG:{epsg + zone}"
+        if gdf.crs and gdf.crs.to_string() == target:
+            return f"图层 '{name}' 已经是 {target_crs} 坐标系"
+        if not gdf.crs and target == "EPSG:4326":
+            return f"图层 '{name}' 已经是 WGS84 坐标系"
+        gdf_proj = gdf.to_crs(target)
+        if gdf_proj is None or gdf_proj.empty:
+            return f"坐标系转换失败: {target}"
+        out_name = f"{name}_{target_crs}"
+        _gdf_to_layer(gdf_proj, out_name)
+        return f"已将图层 '{name}' 转换为 {target_crs}({target})，生成新图层 '{out_name}'"
+    except Exception as e:
+        return f"坐标系转换失败: {str(e)[:200]}"
+
+
+@tool
+def convert_coordinates(coords: str, source_crs: str = "wgs84",
+                         target_crs: str = "web_mercator") -> str:
+    """转换单个坐标点在两个坐标参考系之间。
+    coords格式: "lng,lat" 或 "lng1,lat1;lng2,lat2" 批处理。
+    source_crs/target_crs支持: wgs84, web_mercator, utm_auto。
+    返回转换后的坐标对。"""
+    try:
+        import pyproj
+        p1 = {"wgs84": "EPSG:4326", "mercator": "EPSG:3857",
+              "web_mercator": "EPSG:3857", "gcj02": "EPSG:4326"}.get(source_crs.lower(), source_crs)
+        p2 = {"wgs84": "EPSG:4326", "mercator": "EPSG:3857",
+              "web_mercator": "EPSG:3857", "gcj02": "EPSG:4326"}.get(target_crs.lower(), target_crs)
+        if p1 == p2:
+            return f"源和目标CRS相同: {source_crs} = {target_crs}, 无需转换"
+        transformer = pyproj.Transformer.from_crs(p1, p2, always_xy=True)
+        parts = coords.replace("，", ",").replace("；", ";").split(";")
+        results = []
+        for part in parts:
+            xy = part.strip().split(",")
+            if len(xy) != 2:
+                continue
+            try:
+                lng, lat = float(xy[0].strip()), float(xy[1].strip())
+                x2, y2 = transformer.transform(lng, lat)
+                results.append(f"{x2:.6f},{y2:.6f}")
+            except:
+                continue
+        if not results:
+            return "坐标格式错误，请输入 lng,lat 或 lng1,lat1;lng2,lat2"
+        return f"{source_crs}→{target_crs}: {'; '.join(results)}"
+    except Exception as e:
+        return f"坐标转换失败: {str(e)[:200]}"
+
 
 tools = [
     search_web,
@@ -2468,6 +4650,7 @@ tools = [
     create_heatmap,
     field_calculate,
     measure_area,
+    measure_distance,
     clear_layers,
     get_session_logs,
     layer_control,
@@ -2476,6 +4659,8 @@ tools = [
     download_road_network,
     network_analysis,
     spatial_buffer,
+    spatial_multi_ring_buffer,
+    add_north_arrow,
     spatial_intersect,
     spatial_union,
     spatial_difference,
@@ -2495,5 +4680,38 @@ tools = [
     layer_merge,
     layer_split,
     layer_add_geometry,
+    add_labels,
+    spatial_graduated_colors,
+    spatial_unique_values,
+    spatial_select_by_attribute,
+    add_legend,
+    update_attribute,
+    delete_features,
+    add_field,
+    delete_field,
+    move_features,
+    rotate_features,
+    scale_features,
+    draw_feature,
+    edit_vertices,
+    export_map,
+    export_pdf,
+    undo,
+    redo,
+    enable_snapping,
+    dem_analysis,
+    ndvi_analysis,
+    raster_calculator,
+    spatial_interpolate,
+    topology_check,
+    hydrology_analysis,
+    create_workflow,
+    view_3d_terrain,
+    animate_time,
+    link_chart_map,
+    terrain_profile,
+    convert_crs,
+    convert_coordinates,
+    extract_contours,
 ]
 

@@ -350,7 +350,7 @@ async def upload(file: UploadFile = File(...)):
                 _register_layer(name, geojson_data)
                 return {"geojson": geojson_data, "name": name}
 
-    # ===== GPKG / KML 等（geopandas 支持的单文件格式） =====
+    # ===== GPKG / KML / GPX 等（geopandas 支持的多图层格式） =====
     supported = {'.gpkg', '.kml', '.kmz', '.gpx', '.dxf'}
     if ext in supported:
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
@@ -358,8 +358,20 @@ async def upload(file: UploadFile = File(...)):
             tmp_path = tmp.name
         try:
             import geopandas as gpd
-            gdf = await loop.run_in_executor(None, functools.partial(gpd.read_file, tmp_path))
-            if gdf.empty:
+            import pyogrio
+            # 探测所有图层，取首个非空图层
+            layers = pyogrio.list_layers(tmp_path)
+            gdf = None
+            for lname, _ in layers:
+                try:
+                    gdf = await loop.run_in_executor(
+                        None, functools.partial(gpd.read_file, tmp_path, layer=lname)
+                    )
+                    if gdf is not None and not gdf.empty:
+                        break
+                except Exception:
+                    continue
+            if gdf is None or gdf.empty:
                 return {"error": "文件未包含有效的地理数据"}
             geojson_data = gdf.__geo_interface__
             name = os.path.splitext(filename)[0]
@@ -370,6 +382,73 @@ async def upload(file: UploadFile = File(...)):
         finally:
             try: os.unlink(tmp_path)
             except: pass
+
+    # ===== GeoTIFF 栅格加载 =====
+    if ext in ('.tif', '.tiff'):
+        try:
+            import rasterio
+            from rasterio.warp import transform_bounds
+            import numpy as np
+            from PIL import Image
+
+            with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
+                tmp.write(content)
+                tif_path = tmp.name
+
+            with rasterio.open(tif_path) as src:
+                nodata = src.nodata
+                if src.count >= 3:
+                    red = src.read(1).astype(np.float64)
+                    green = src.read(2).astype(np.float64)
+                    blue = src.read(3).astype(np.float64)
+                else:
+                    band = src.read(1).astype(np.float64)
+                    red = green = blue = band
+
+                if nodata is not None:
+                    mask = (red == nodata) & (green == nodata) & (blue == nodata)
+                else:
+                    mask = None
+
+                def norm(b):
+                    b = np.clip(b, np.percentile(b[~np.isnan(b)], 2), np.percentile(b[~np.isnan(b)], 98)) if np.isfinite(b).any() else b
+                    b = (b - b.min()) / (b.max() - b.min() + 1e-10) * 255
+                    return b.astype(np.uint8)
+
+                rgb = np.stack([norm(red), norm(green), norm(blue)], axis=-1)
+                if mask is not None:
+                    rgb[mask] = 0
+
+                img = Image.fromarray(rgb)
+                name = os.path.splitext(filename)[0]
+                png_name = f"{name}.png"
+                png_path = os.path.join(upload_dir, png_name)
+                img.save(png_path)
+
+                if src.crs and src.crs.to_string() != 'EPSG:4326':
+                    bounds_wgs84 = transform_bounds(src.crs, 'EPSG:4326', *src.bounds)
+                else:
+                    bounds_wgs84 = src.bounds
+                w, h = src.width, src.height
+
+            try: os.unlink(tif_path)
+            except: pass
+
+            return {
+                "raster_info": {
+                    "filename": png_name,
+                    "url": f"/output/uploads/{png_name}",
+                    "bounds": list(bounds_wgs84),
+                    "width": w,
+                    "height": h,
+                },
+                "message": f"已加载栅格图层: {name}"
+            }
+        except ImportError:
+            return {"error": "栅格处理依赖 rasterio/PIL，请安装: pip install rasterio pillow numpy"}
+        except Exception as e:
+            import traceback
+            return {"error": f"GeoTIFF 处理失败: {str(e)[:300]}"}
 
     # ===== CSV（保存文件，让AI处理转换） =====
     if ext == '.csv':
@@ -394,7 +473,7 @@ async def upload(file: UploadFile = File(...)):
         except Exception as e:
             return {"error": f"CSV 读取失败: {str(e)[:200]}"}
 
-    return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .zip(含shp)"}
+    return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .tif .tiff .zip(含shp)"}
 
 	# ===== 工程保存/加载 =====
 class ProjectSaveRequest(BaseModel):
