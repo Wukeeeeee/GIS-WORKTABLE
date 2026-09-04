@@ -73,6 +73,7 @@ link_chart_map = T.link_chart_map
 terrain_profile = T.terrain_profile
 convert_crs = T.convert_crs
 convert_coordinates = T.convert_coordinates
+clip_raster = T.clip_raster
 
 
 @pytest.fixture(autouse=True)
@@ -1416,3 +1417,57 @@ class TestConvertCRS:
     def test_convert_coords_same_crs(self):
         r = convert_coordinates.invoke({"coords": "116.4,39.9", "source_crs": "wgs84", "target_crs": "wgs84"})
         assert "无需转换" in r
+
+
+class TestClipRaster:
+    def setup_method(self):
+        T.reset_state()
+
+    def _make_clip_tif(self, name, rows=20, cols=20):
+        from rasterio.transform import from_bounds
+        import numpy as np, tempfile, os, rasterio
+        transform = from_bounds(116, 39, 117, 40, cols, rows)
+        dem = np.random.rand(rows, cols).astype(np.float64) * 500 + 100
+        tmp = tempfile.NamedTemporaryFile(suffix='.tif', delete=False)
+        tmp.close()
+        with rasterio.open(tmp.name, 'w', driver='GTiff', height=rows, width=cols,
+                           count=1, dtype='float64', crs=None,
+                           transform=transform) as dst:
+            dst.write(dem, 1)
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        dest = os.path.join(upload_dir, f"{name}.tif")
+        shutil.copy(tmp.name, dest)
+        os.unlink(tmp.name)
+        return dest
+
+    def test_clip_nonexistent_raster(self):
+        r = clip_raster.invoke({"layer_name": "nope", "clip_layer_name": "clip"})
+        assert "未找到" in r or "请先上传" in r
+
+    def test_clip_nonexistent_clip_layer(self):
+        self._make_clip_tif("clip_test1", 20, 20)
+        r = clip_raster.invoke({"layer_name": "clip_test1", "clip_layer_name": "nope"})
+        assert "未找到" in r or "没有" in r
+
+    def test_clip_basic(self):
+        dest = self._make_clip_tif("clip_test2", 20, 20)
+        clip_geom = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[[116.2,39.2],[116.8,39.2],[116.8,39.8],[116.2,39.8],[116.2,39.2]]]}
+        }]}
+        _register_layer("clip_poly", clip_geom)
+        r = clip_raster.invoke({"layer_name": "clip_test2", "clip_layer_name": "clip_poly"})
+        os.unlink(dest)
+        assert "裁剪" in r
+
+    def test_clip_no_overlap(self):
+        dest = self._make_clip_tif("clip_test3", 20, 20)
+        far_geom = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[[10,10],[11,10],[11,11],[10,11],[10,10]]]}
+        }]}
+        _register_layer("far_poly", far_geom)
+        r = clip_raster.invoke({"layer_name": "clip_test3", "clip_layer_name": "far_poly"})
+        os.unlink(dest)
+        assert "失败" in r or "无重叠" in r or "为空" in r

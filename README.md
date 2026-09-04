@@ -191,8 +191,12 @@ Gis-WorkTable/
 │
 ├── skills/                      # AI 技能文档（12 个领域）
 ├── data/                        # 示例路网数据
-├── output/                      # AI 生成的 GeoJSON 输出
-└── test/                        # 测试数据与报告
+├── goal/                        # 项目目标与更新日志
+├── study/                       # 学习笔记与示例代码
+├── scripts/                     # 辅助脚本
+├── docs/                        # 设计文档
+├── test_data/                   # 测试数据（KML/GPX）
+└── test/                        # 测试计划
 ```
 
 ## API
@@ -226,11 +230,12 @@ python -m pytest backend/tests/ -v
 
 ## 已知限制
 
-- `requirements.txt` 未完整列出所有运行时依赖（`rasterio`、`scipy`、`scikit-image`、`pyproj`、`langchain`、`langgraph`、`pyogrio`、`Pillow`、`networkx`、`requests`、`pyogrio` 等在代码中使用但未声明），安装后可能需要手动补装
+- `requirements.txt` 未完整列出所有运行时依赖（`rasterio`、`scipy`、`scikit-image`、`pyproj`、`langchain`、`langgraph`、`pyogrio`、`Pillow`、`networkx`、`requests` 等在代码中使用但未声明），安装后可能需要手动补装
 - 无 Docker 配置，无 CI/CD 流水线
 - API Key 通过前端设置弹窗管理，存储在本地 `apikey.txt`（已 gitignore）
 - 前端为原生 HTML/CSS/JS，无构建工具和包管理
 - 部分高级功能（时序动画、图表联动）的前端交互仍在迭代中
+- 临时文件（`cache/`、`uploads/`、`logs/`、`output/`）在运行时自动生成，已通过 `.gitignore` 排除
 
 ## 许可证
 

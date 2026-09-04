@@ -31,6 +31,90 @@ from langchain.tools import tool
 
 
 # ============================================================
+# 安全表达式求值（替代 eval/exec）
+# ============================================================
+
+_ALLOWED_OPS = {
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.Mod,
+    ast.USub, ast.UAdd,
+    ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
+    ast.And, ast.Or, ast.Not,
+    ast.BitXor, ast.BitAnd, ast.BitOr,
+}
+
+
+def _safe_expr_eval(expression, variables):
+    """安全求值数学/逻辑表达式，只允许白名单操作和变量引用。"""
+    tree = ast.parse(expression, mode="eval")
+    _validate_ast(tree.body)
+    code = compile(tree, "<safe>", "eval")
+    return eval(code, {"__builtins__": {}}, variables)
+
+
+def _validate_ast(node):
+    """递归检查 AST 节点是否在白名单内。"""
+    if isinstance(node, ast.Expression):
+        _validate_ast(node.body)
+    elif isinstance(node, ast.BinOp):
+        if type(node.op) not in _ALLOWED_OPS:
+            raise ValueError(f"不支持的操作: {type(node.op).__name__}")
+        _validate_ast(node.left)
+        _validate_ast(node.right)
+    elif isinstance(node, ast.UnaryOp):
+        if type(node.op) not in _ALLOWED_OPS:
+            raise ValueError(f"不支持的操作: {type(node.op).__name__}")
+        _validate_ast(node.operand)
+    elif isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("只支持直接函数名调用")
+        for arg in node.args:
+            _validate_ast(arg)
+        for kw in node.keywords:
+            _validate_ast(kw.value)
+    elif isinstance(node, ast.Name):
+        pass
+    elif isinstance(node, ast.Constant):
+        pass
+    elif isinstance(node, ast.List):
+        for elt in node.elts:
+            _validate_ast(elt)
+    elif isinstance(node, ast.Tuple):
+        for elt in node.elts:
+            _validate_ast(elt)
+    elif isinstance(node, ast.Attribute):
+        _validate_ast(node.value)
+    elif isinstance(node, ast.Compare):
+        _validate_ast(node.left)
+        for c in node.comparators:
+            _validate_ast(c)
+        for op in node.ops:
+            if type(op) not in {ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE}:
+                raise ValueError(f"不支持的比较操作: {type(op).__name__}")
+    elif isinstance(node, ast.IfExp):
+        _validate_ast(node.test)
+        _validate_ast(node.body)
+        _validate_ast(node.orelse)
+    elif isinstance(node, ast.Subscript):
+        _validate_ast(node.value)
+        _validate_ast(node.slice)
+    elif isinstance(node, ast.Slice):
+        if node.lower:
+            _validate_ast(node.lower)
+        if node.upper:
+            _validate_ast(node.upper)
+        if node.step:
+            _validate_ast(node.step)
+    elif isinstance(node, ast.Dict):
+        for k in node.keys:
+            if k:
+                _validate_ast(k)
+        for v in node.values:
+            _validate_ast(v)
+    else:
+        raise ValueError(f"不支持的表达式语法: {type(node).__name__}")
+
+
+# ============================================================
 # 共享状态（每次请求开始时由 reset_state() 清空）
 # ============================================================
 
@@ -4633,6 +4717,133 @@ def convert_coordinates(coords: str, source_crs: str = "wgs84",
         return f"坐标转换失败: {str(e)[:200]}"
 
 
+# ============================================================
+# 工具: clip_raster — 栅格裁剪
+# ============================================================
+
+@tool
+def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") -> str:
+    """用矢量面裁剪栅格图层，保留面内的栅格像元。
+    layer_name: 栅格图层名（上传的GeoTIFF）；clip_layer_name: 矢量裁剪面图层名；
+    output_name: 结果图层名（可选，默认自动生成）。
+    结果作为新栅格图层叠加到地图。"""
+    try:
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        if not os.path.isdir(upload_dir):
+            return "未找到上传目录，请先上传栅格文件"
+
+        tif_path = None
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name:
+                    tif_path = os.path.join(upload_dir, f)
+                    break
+        if tif_path is None:
+            return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件，请先上传"
+
+        import geopandas as gpd
+        import rasterio
+        from rasterio.mask import mask as rio_mask
+        from rasterio.warp import transform_bounds
+        import numpy as np
+        from PIL import Image
+        from shapely.geometry import Polygon, MultiPolygon
+
+        clip_info = _registered_layers.get(clip_layer_name)
+        if not clip_info:
+            matches = [n for n in _registered_layers.keys() if clip_layer_name in n]
+            if len(matches) == 1:
+                clip_info = _registered_layers[matches[0]]
+                clip_layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到裁剪面图层 '{clip_layer_name}'"
+
+        clip_gdf = gpd.GeoDataFrame.from_features(clip_info["geojson"]["features"], crs="EPSG:4326")
+        if clip_gdf.empty:
+            return f"裁剪面图层 '{clip_layer_name}' 为空"
+
+        # 合并所有面要素为一个几何体
+        union_geom = clip_gdf.geometry.union_all()
+        if union_geom.is_empty:
+            return "裁剪面几何为空"
+        if union_geom.geom_type not in ("Polygon", "MultiPolygon"):
+            return "裁剪面必须是面要素"
+
+        with rasterio.open(tif_path) as src:
+            bounds = list(src.bounds)
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
+
+            # 将裁剪面转为栅格 CRS
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                clip_gdf_proj = clip_gdf.to_crs(src.crs)
+            else:
+                clip_gdf_proj = clip_gdf
+
+            # 提取裁剪面几何列表
+            geoms = [g for g in clip_gdf_proj.geometry.values if not g.is_empty]
+
+            try:
+                out_image, out_transform = rio_mask(src, geoms, crop=True, nodata=0)
+            except Exception:
+                return f"裁剪失败：裁剪面与栅格无重叠或几何无效"
+
+            if out_image.shape[1] == 0 or out_image.shape[2] == 0:
+                return "裁剪结果为空：裁剪面与栅格无重叠区域"
+
+            # 处理波段
+            if out_image.shape[0] == 1:
+                data = out_image[0].astype(np.float64)
+                valid = data > 0
+                if not np.any(valid):
+                    return "裁剪结果为空"
+                vmin, vmax = np.nanmin(data[valid]), np.nanmax(data[valid])
+                from matplotlib import cm
+                cmap_obj = cm.colormaps['viridis'] if hasattr(cm, 'colormaps') else cm.get_cmap('viridis')
+                norm_data = np.clip((data - vmin) / (vmax - vmin + 1e-10), 0, 1)
+                norm_data[~valid] = 0
+                rgba = cmap_obj(norm_data)
+                rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
+            else:
+                # 多波段：取前3波段合成RGB
+                bands = []
+                for i in range(min(3, out_image.shape[0])):
+                    b = out_image[i].astype(np.float64)
+                    p2, p98 = np.percentile(b[b > 0], [2, 98]) if np.any(b > 0) else (0, 1)
+                    if p98 > p2:
+                        b = np.clip((b - p2) / (p98 - p2) * 255, 0, 255).astype(np.uint8)
+                    else:
+                        b = np.zeros_like(b, dtype=np.uint8)
+                    bands.append(b)
+                while len(bands) < 3:
+                    bands.append(np.zeros_like(bands[0], dtype=np.uint8))
+                rgb = np.stack(bands, axis=-1)
+
+            img = Image.fromarray(rgb)
+            out_name = output_name or f"{layer_name}_clip_{clip_layer_name}"
+            out_path = os.path.join(upload_dir, f"{out_name}.png")
+            img.save(out_path)
+
+            _pending_layer_ops.append({
+                "action": "dem_result",
+                "name": f"{out_name}.png",
+                "url": f"/output/uploads/{out_name}.png",
+                "bounds": bounds,
+                "label": f"栅格裁剪: {layer_name}",
+            })
+
+            feat_count = len(clip_gdf)
+            return (f"已用 {clip_layer_name}（{feat_count} 个面）裁剪 {layer_name}"
+                    f"，结果已叠加到地图")
+
+    except Exception as e:
+        import traceback
+        return f"栅格裁剪失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
 tools = [
     search_web,
     fetch_webpage,
@@ -4713,5 +4924,6 @@ tools = [
     convert_crs,
     convert_coordinates,
     extract_contours,
+    clip_raster,
 ]
 
