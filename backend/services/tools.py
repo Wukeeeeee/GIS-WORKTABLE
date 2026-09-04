@@ -3813,9 +3813,9 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
         else:
             from matplotlib import cm
             if cmap == "slope":
-                cmap_obj = cm.colormaps['YlOrRd'] if hasattr(cm, 'colormaps') else cm.get_cmap('YlOrRd')
+                cmap_obj = matplotlib.colormaps['YlOrRd']
             else:
-                cmap_obj = cm.colormaps['hsv'] if hasattr(cm, 'colormaps') else cm.get_cmap('hsv')
+                cmap_obj = matplotlib.colormaps['hsv']
             vmin = np.nanmin(data)
             vmax = np.nanmax(data)
             norm_data = (data - vmin) / (vmax - vmin + 1e-10)
@@ -3886,7 +3886,7 @@ def ndvi_analysis(layer_name: str, red_band: int = 1, nir_band: int = 4) -> str:
         ndvi = np.clip(ndvi, -1, 1)
         # 红绿渐变：NDVI=-1→红色，0→黄色，1→绿色
         from matplotlib import cm
-        cmap = cm.colormaps['RdYlGn'] if hasattr(cm, 'colormaps') else cm.get_cmap('RdYlGn')
+        cmap = matplotlib.colormaps['RdYlGn']
         valid = np.isfinite(ndvi)
         norm = (ndvi - (-1)) / (1 - (-1))  # -1~1 → 0~1
         norm = np.clip(norm, 0, 1)
@@ -3979,7 +3979,7 @@ def raster_calculator(layer_name: str, expression: str) -> str:
             norm = (result - vmin) / (vmax - vmin + 1e-10)
             norm = np.clip(norm, 0, 1)
             from matplotlib import cm
-            cmap = cm.colormaps['viridis'] if hasattr(cm, 'colormaps') else cm.get_cmap('viridis')
+            cmap = matplotlib.colormaps['viridis']
             rgba = cmap(norm)
             rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
             nan_mask = np.isnan(result)
@@ -4057,7 +4057,7 @@ def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
         norm = (z - vmin) / (vmax - vmin + 1e-10)
         norm = np.clip(norm, 0, 1)
         from matplotlib import cm
-        cmap = cm.colormaps['viridis'] if hasattr(cm, 'colormaps') else cm.get_cmap('viridis')
+        cmap = matplotlib.colormaps['viridis']
         rgba = cmap(norm)
         rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
         nan_mask = ~np.isfinite(z)
@@ -4191,7 +4191,7 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
             for k in range(8):
                 dir_deg[direction == k] = angle_map[k]
             from matplotlib import cm
-            cmap = cm.colormaps['hsv'] if hasattr(cm, 'colormaps') else cm.get_cmap('hsv')
+            cmap = matplotlib.colormaps['hsv']
             norm_data = np.full_like(dir_deg, np.nan)
             valid_dir = dir_deg >= 0
             if np.any(valid_dir):
@@ -4208,7 +4208,7 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
             norm_data = log_fa / (vmax + 1e-10)
             norm_data = np.clip(norm_data, 0, 1)
             from matplotlib import cm
-            cmap = cm.colormaps['Blues'] if hasattr(cm, 'colormaps') else cm.get_cmap('Blues')
+            cmap = matplotlib.colormaps['Blues']
             rgba = cmap(norm_data)
             rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
             rgb[~valid_cells] = 0
@@ -4973,7 +4973,7 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
                     return "裁剪结果为空"
                 vmin, vmax = np.nanmin(data[valid]), np.nanmax(data[valid])
                 from matplotlib import cm
-                cmap_obj = cm.colormaps['viridis'] if hasattr(cm, 'colormaps') else cm.get_cmap('viridis')
+                cmap_obj = matplotlib.colormaps['viridis']
                 norm_data = np.clip((data - vmin) / (vmax - vmin + 1e-10), 0, 1)
                 norm_data[~valid] = 0
                 rgba = cmap_obj(norm_data)

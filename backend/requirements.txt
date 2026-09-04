@@ -14,3 +14,21 @@ scrapling>=0.4.7
 markdownify>=1.0.0
 orjson>=3.10.0
 pytest>=9.0.0
+
+# ---- AI Agent / LangGraph 1.x（代码基于 1.x API，勿降到 0.x）----
+langgraph>=1.0.0,<2.0.0
+langchain>=1.0.0,<2.0.0
+langchain-core>=1.0.0,<2.0.0
+langchain-openai>=1.0.0,<2.0.0
+
+# ---- GIS 数据科学栈（此前未声明的运行时依赖）----
+pandas>=2.0.0
+requests>=2.31.0
+networkx>=3.0.0
+rasterio>=1.3.0
+pyproj>=3.5.0
+pyogrio>=0.8.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+scikit-image>=0.22.0
+Pillow>=10.0.0
