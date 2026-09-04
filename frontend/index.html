@@ -1092,53 +1092,7 @@
 
       document.getElementById('app').classList.add('ready');
 
-      // ---- 地图缩放控件绑定 ----
-      document.getElementById('zoomIn').addEventListener('click', function() {
-        if (window.GIS && window.GIS.map) {
-          var state = window.GIS.map.getState();
-          if (state) window.GIS.map.setView(state.center, state.zoom + 1);
-        }
-      });
-
-      document.getElementById('zoomOut').addEventListener('click', function() {
-        if (window.GIS && window.GIS.map) {
-          var state = window.GIS.map.getState();
-          if (state) window.GIS.map.setView(state.center, state.zoom - 1);
-        }
-      });
-
-      var locateMarker = null;
-      document.getElementById('zoomLocate').addEventListener('click', function() {
-        if (navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(function(pos) {
-            if (window.GIS && window.GIS.map) {
-              var lat = pos.coords.latitude;
-              var lng = pos.coords.longitude;
-              window.GIS.map.setView([lat, lng], 15);
-
-              if (locateMarker) {
-                window.GIS.map.getMap().removeLayer(locateMarker);
-              }
-
-              var icon = L.divIcon({
-                className: '',
-                html: '<div class="map-locate-dot"></div>',
-                iconSize: [24, 24],
-                iconAnchor: [12, 12],
-              });
-              locateMarker = L.marker([lat, lng], { icon: icon }).addTo(window.GIS.map.getMap());
-            }
-          }, function() {
-            if (window.GIS && window.GIS.map) {
-              window.GIS.map.setView([35, 110], 4);
-            }
-          });
-        } else {
-          if (window.GIS && window.GIS.map) {
-            window.GIS.map.setView([35, 110], 4);
-          }
-        }
-      });
+      // ---- 地图缩放控件（由 Leaflet 原生控件处理，此处留空） ----
 
       // ---- 清会话（调用 chat.js 的 clearSession） ----
       document.getElementById('clearMemoryBtn').addEventListener('click', async function() {

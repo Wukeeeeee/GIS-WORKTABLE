@@ -1,30 +1,37 @@
 <p align="center">
-  <img src="frontend/assets/logo-readme.svg" alt="GeoMind" width="320">
+  <img src="frontend/assets/logo-readme.svg" alt="GIS WorkTable" width="320">
 </p>
 
 <p align="center">
-  <b>地理空间分析工作台 · AI 驱动的 GIS 工具</b>
+  <b>Web GIS 数据处理与可视化工作台</b>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" />
   <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" />
-  <img src="https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black" />
   <img src="https://img.shields.io/badge/Leaflet-199900?style=flat-square&logo=leaflet&logoColor=white" />
+  <img src="https://img.shields.io/badge/LangGraph-2B6CB0?style=flat-square" />
   <img src="https://img.shields.io/badge/License-AGPL%20v3-1a1a2e?style=flat-square" />
+  <img src="https://img.shields.io/badge/Tests-238%20passed-2ea44f?style=flat-square" />
 </p>
 
 ---
 
-一个基于 Web 的 GIS 数据处理与可视化工作台，内置三模型 AI Agent，通过自然语言对话即可驱动地图操作、空间分析、栅格处理和数据加载。**目标：复刻 ArcGIS 核心功能，全部通过自然语言调用。**
+基于 Web 的 GIS 数据处理与可视化工作台，内置 AI Agent（LangGraph ReAct），支持通过自然语言对话驱动地图操作、空间分析、栅格处理和第三方数据加载。
 
 ## 截图
 
-![界面截图](firstHtml.png)
+暂无。
 
 ## 快速开始
 
+**环境要求**: Python 3.10+, pip
+
 ```bash
+# 克隆项目
+git clone <repo-url>
+cd Gis-WorkTable
+
 # 安装后端依赖
 cd backend
 pip install -r requirements.txt
@@ -36,176 +43,195 @@ python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 
 打开浏览器访问 `http://localhost:8000`。
 
-## 功能一览（80+ 功能，全部可自然语言调用）
+首次使用需在右上角设置中配置 AI API Key（支持 GLM / DeepSeek / Agnes），配置后即可通过自然语言对话操作 GIS。
+
+## 功能
 
 ### 数据加载
-GeoJSON / Shapefile（ZIP）/ GeoPackage / KML / GPX / CSV 经纬度转点 / GeoTIFF / 数据预览
 
-### 图层管理
-浮动面板（显隐/排序/分组/重命名/删除）/ 右键菜单 / 独立颜色/透明度/线宽 / 面填充样式（斜线/网格/点阵）
+支持 GeoJSON、Shapefile（ZIP 压缩包）、GeoPackage、KML、KMZ、GPX、DXF、GeoTIFF、CSV（经纬度转点）格式上传。GeoTIFF 自动渲染为栅格底图叠加。
+
+### 图层面板
+
+浮动面板支持图层显隐、排序、分组、重命名、删除。右键菜单提供快捷操作。支持独立颜色、透明度、线宽设置，面要素可选斜线/网格/点阵填充样式。
 
 ### 符号化
-分级设色（6 色带）/ 唯一值渲染 / 标注（字段值 tooltip）/ 图例
+
+分级设色（6 种色带可选）、唯一值渲染、属性标注（tooltip）、图例卡片。
 
 ### 属性表
-弹出面板 / 排序筛选 / CSV 导出 / 字段统计 / 按属性选择 / 字段计算 / 添加/删除字段 / 属性编辑
 
-### 自然语言编辑
-移动 / 旋转 / 缩放 / 缓冲区 / 分割 / 合并 / 删除要素
+弹出面板展示属性数据，支持排序筛选、CSV 导出、字段统计、按属性选择、字段计算、添加/删除字段、属性值编辑。
 
-### 绘制
-点 / 线 / 面 / 矩形 / 圆 / 折点编辑 / 捕捉 / 撤销重做 / 测距测面积
+### 绘制与编辑
+
+点/线/面/矩形/圆绘制，折点编辑，捕捉（自动吸附顶点和线段），撤销/重做（最大 50 步）。测距与测面积。
+
+### 要素操作（自然语言可调用）
+
+移动、旋转、缩放、缓冲区、分割、合并、删除要素。
 
 ### 空间分析
-缓冲区 / 相交 / 合并 / 裁剪 / 差异 / 质心 / 简化 / 融合(Dissolve) / 空间连接 / 图层拆分 / 图层合并 / 空间选择 / 随机采样 / 邻近查找 / DBSCAN 聚类 / 泰森多边形 / 多点缓冲区 / 字段统计 / 反向地理编码
+
+缓冲区（单环/多环）、相交、合并、裁剪、差异、质心、简化、融合（Dissolve）、空间连接、图层拆分/合并、空间选择、随机采样、邻近查找、DBSCAN 聚类、泰森多边形、字段统计、反向地理编码、批量地理编码。
 
 ### 网络分析
-**面板**：最短路径（途经点/方向箭头）/ 服务区（多级断值）/ 最近设施（混合选点）
-**AI 驱动**：自然语言 → 下载路网 → 分析 → 加载结果，全流程自动
+
+基于 OSMnx 的路网分析。面板支持最短路径（途经点 + 方向箭头）、服务区（多级断值）、最近设施（混合选点）。AI 可通过自然语言自动完成"下载路网 → 分析 → 加载结果"全流程。
 
 ### 栅格分析
-**DEM 地形**：坡度 / 坡向 / 山体阴影（Horn 公式，不依赖 GDAL）
-**提取**：等高线（skimage）/ 水文分析（流向/流量/河网提取）
-**计算**：NDVI / 栅格计算器（波段算术 + 数学函数）
-**插值**：IDW / RBF
 
-### 质量控制
-拓扑检查（重叠/缝隙/无效几何）/ 批量处理链
+| 类别 | 功能 |
+|------|------|
+| DEM 地形 | 坡度、坡向、山体阴影（Horn 公式，NumPy 实现，不依赖 GDAL） |
+| 提取 | 等高线（scikit-image）、水文分析（D8 填洼 → 流向 → 汇流累积 → 河网） |
+| 计算 | NDVI、栅格计算器（波段算术 + 数学函数） |
+| 插值 | IDW（反距离加权）、RBF（径向基函数） |
+| 裁剪 | 用矢量面裁剪栅格（rasterio.mask） |
 
 ### 制图导出
-图例 / 比例尺 / 指北针 / 图片导出（PNG/JPEG）/ PDF 出图（A4 横向）/ Shapefile / GeoPackage / CSV 导出
+
+图例、比例尺、指北针。图片导出（PNG/JPEG）、PDF 出图（A4 横向）、Shapefile 导出（ZIP）、GeoPackage 导出、CSV 导出。
+
+### 拓扑检查
+
+面图层拓扑错误检测：自相交、无效几何、要素间重叠、缝隙。结果生成标注图层。
+
+### 3D 地形
+
+Three.js 嵌入 HTML，展示 DEM 三维地形，支持夸张系数调节。
+
+### 时序动画
+
+按时间字段逐帧播放图层要素变化。
+
+### 图表联动
+
+柱状图、饼图、折线图、散点图。选中要素高亮图表，点击图表聚焦要素。
 
 ### AI Agent 系统
-- 三模型支持：**GLM-4.7-Flash+**（免费默认）、**DeepSeek V4 Flash+**、**Agnes 2.0 Flash+**
-- LangGraph 驱动的 ReAct Agent，自动管理多轮工具调用
-- GLM 路由系统，自动加载技能文档辅助任务
-- SSE 流式响应，前端实时展示工具调用进度
+
+- **80+ 工具**：通过 `@tool` 装饰器注册，覆盖空间分析、栅格处理、数据加载、网络分析、制图导出等全流程
+- **三模型支持**：GLM-4.7-Flash+（免费默认）、DeepSeek V4 Flash+、Agnes 2.0 Flash+
+- **LangGraph ReAct Agent**：自动管理多轮工具调用循环，替代手写 if/elif 路由
+- **GLM 路由系统**：自动加载 `skills/` 目录下的技能文档辅助任务
+- **SSE 流式响应**：前端实时展示工具调用进度
+- **沙箱代码执行**：AST 白名单验证 + 安全 eval，支持数学表达式和受控 Python 执行
 
 ### 第三方数据
-高德 POI 搜索 / 地理编码 / 行政边界（DataV）/ 百度 AOI 建筑轮廓 / OSM 路网 / 热力图
 
-## 项目结构
+- 高德地图：POI 搜索、地理编码
+- DataV：行政区划边界
+- 百度地图：AOI 建筑轮廓（Playwright 自动化提取）
+- OSM：路网下载与分析
+- 热力图
 
-```
-frontend/
-├── index.html              # 主页面（菜单栏 + 绘图工具栏 + 图层面板）
-├── css/style.css            # 样式
-└── js/
-    ├── app.js              # 应用初始化
-    ├── chat.js             # AI 对话 + 斜杠命令面板
-    ├── map.js              # 地图控制 + 菜单栏交互
-    ├── layers.js           # 图层面板 + 样式控制
-    ├── settings.js         # 设置弹窗
-    ├── task.js             # 任务管理
-    ├── api.js              # API 通信
-    ├── upload.js           # 文件上传
-    ├── aoi.js              # AOI 交互
-    ├── network.js          # 网络分析面板
-    ├── spatial.js          # 空间分析面板
-    ├── debug.js            # 调试面板
-    ├── project.js          # 工程持久化
-    └── time.js             # 时序动画
+### 工程管理
 
-backend/
-├── main.py                 # FastAPI 入口
-├── tests/
-│   └── test_spatial_tools.py  # 195 个测试
-└── services/
-    ├── ai_service.py       # AI 服务层
-    ├── graph.py            # LangGraph Agent
-    ├── tools.py            # 31 个 @tool 工具（核心逻辑）
-    ├── layer_service.py
-    ├── amap_service.py
-    ├── baidu_aoi_service.py
-    ├── datav_service.py
-    ├── geo_coords.py
-    ├── log_service.py
-    ├── network_service.py
-    └── project_service.py
-
-goal/                       # 项目目标与进度
-├── goal.md                 # 更新日志
-└── features.md             # 功能清单（全部完成）
-
-test/                       # 测试数据与报告
-├── test_plan.md            # 测试计划
-├── data/                   # 测试数据（自动生成）
-└── reports/                # 测试报告（自动生成）
-```
+自动保存、手动保存/加载、重命名、导出/导入工程。
 
 ## 技术栈
 
 | 类别 | 技术 |
 |------|------|
-| 前端 | HTML + CSS + JavaScript |
-| 地图 | Leaflet + Leaflet.Draw |
+| 前端 | HTML + CSS + JavaScript（原生） |
+| 地图渲染 | Leaflet + Leaflet.Draw |
 | 后端 | FastAPI + Python |
-| AI 框架 | LangGraph (ReAct Agent) |
-| 模型 | GLM-4.7-Flash+ / DeepSeek V4 Flash+ / Agnes 2.0 Flash+ |
+| AI 框架 | LangGraph（ReAct Agent）+ LangChain Tools |
+| LLM | GLM-4.7-Flash+ / DeepSeek V4 Flash+ / Agnes 2.0 Flash+ |
 | GIS | GeoPandas + Shapely + PyProj + Rasterio |
-| 栅格 | NumPy + scikit-image + Matplotlib |
+| 栅格处理 | NumPy + scikit-image + Matplotlib |
+| 网络分析 | OSMnx + NetworkX |
+| 网页抓取 | Playwright + scrapling + markdownify |
 
-## 更新日志
+## 项目结构
 
-### 2026-07-28
-- 坐标转换/投影工具：WGS84 / Web Mercator / UTM 互转
-- 地形剖面工具：沿线采样 → matplotlib 折线图
-- 3D 地形：Three.js 嵌入 HTML 展示 DEM
-- 时序动画：按时间字段逐帧播放
-- 图表联动：选中要素高亮图表、点击图表聚焦要素
-- 水文分析：D8 算法（填洼→流向→汇流累积量→河网）
-- 拓扑检查：检测重叠/缝隙/无效几何
-- 空间插值：IDW / RBF 插值
-- 栅格计算器：波段算术 + 数学函数
-- NDVI 计算：多光谱植被指数
-- 等高线提取：skimage 从 DEM 提取
-- DEM 分析：坡度/坡向/山体阴影（Horn 公式）
-- 地质剖面：三维地形纵断面分析
-- 多点缓冲区
-- 测距工具
-- 属性标注（tooltip）
-- 图例组件
-- 指北针
-- 绘制工具：点/线/面/矩形/圆
-- 折点编辑 / 捕捉 / 撤销重做
-- 移动/旋转/缩放要素
-- 按属性选择 / 属性编辑 / 添加删除字段
-- Shapefile/GeoPackage 上传
-- CSV/Excel 经纬度转点
-- GeoTIFF 栅格加载
-- 数据预览弹窗
-- 独立颜色/透明度/线宽
-- 面填充样式（斜线/网格/点阵）
-- 图层分组 / 右键菜单
-- PDF 出图 / 图片导出
-- Shapefile/GPKG/CSV 导出
-- 斜杠命令面板新增 17 个命令
-- 顶部菜单栏新增「栅格」菜单
-- 195 个测试全通过
+```
+Gis-WorkTable/
+├── frontend/                    # 前端
+│   ├── index.html               # 主页面（SPA，菜单栏 + 绘图工具栏 + 图层面板）
+│   ├── css/style.css            # 样式表
+│   ├── js/
+│   │   ├── app.js               # 应用初始化
+│   │   ├── chat.js              # AI 对话 + 斜杠命令面板
+│   │   ├── map.js               # 地图控制 + 菜单栏交互
+│   │   ├── layers.js            # 图层面板 + 符号化控制
+│   │   ├── api.js               # API 通信层
+│   │   ├── upload.js            # 文件上传处理
+│   │   ├── settings.js          # 设置弹窗
+│   │   ├── network.js           # 网络分析面板
+│   │   ├── spatial.js           # 空间分析面板
+│   │   ├── aoi.js               # AOI 交互
+│   │   ├── debug.js             # 调试面板
+│   │   ├── project.js           # 工程持久化
+│   │   ├── task.js              # 任务管理
+│   │   └── time.js              # 时序动画
+│   ├── assets/                  # 图标和 Logo
+│   └── samples/                 # 示例 GeoJSON 数据
+│
+├── backend/                     # 后端
+│   ├── main.py                  # FastAPI 入口（路由、上传、工程管理）
+│   ├── requirements.txt         # Python 依赖
+│   ├── services/
+│   │   ├── tools.py             # 核心工具集（80+ @tool 函数，~4900 行）
+│   │   ├── graph.py             # LangGraph ReAct Agent 构建
+│   │   ├── ai_service.py        # AI 服务层（LLM 调用、历史管理、技能路由）
+│   │   ├── network_service.py   # 网络分析（OSMnx + NetworkX）
+│   │   ├── amap_service.py      # 高德 POI / 地理编码
+│   │   ├── baidu_aoi_service.py # 百度 AOI 建筑轮廓
+│   │   ├── datav_service.py     # DataV 行政边界
+│   │   ├── geo_coords.py        # 坐标工具函数
+│   │   ├── layer_service.py     # 图层检查
+│   │   ├── project_service.py   # 工程 CRUD
+│   │   └── log_service.py       # 日志
+│   └── tests/
+│       ├── test_spatial_tools.py   # 空间分析工具测试
+│       ├── test_network.py         # 网络分析测试
+│       └── test_coverage_gap.py    # 覆盖率补充测试
+│
+├── skills/                      # AI 技能文档（12 个领域）
+├── data/                        # 示例路网数据
+├── output/                      # AI 生成的 GeoJSON 输出
+└── test/                        # 测试数据与报告
+```
 
-### 2026-07-27
-- Main 测试网络分析面板
-- Fix 操作手册 HTML 结构断裂导致地图不加载：补回 4 个缺失的 `</div>` 闭合标签
-- Fix 手册中 emoji 图标统一替换为 SVG
-- Fix AI 工具路由：`execute_python` docstring 改为"最后选择"、系统提示词新增工具优先级规则
-- Fix `_push_layer` 推图层不生效：`get_pending_state()` 改为读取即消费 + 线程锁，修复校验器路径图层重复累积
-- Fix SSE 端点冗余 `reset_state` 调用，`run_agent_stream` `msgs` 变量初始化
-- Update 操作手册：新增空间分析 section（网络分析/AOI/行政边界/热力图）、AI 斜杠命令完整表格（18 条）、图层管理补充导出/字段计算/图表、顶部菜单更新
-- Add 网络分析面板单元测试（26 项）
-- Add 网络分析面板重构（三栏结构，与设置弹窗风格统一）
-- Add 面板拖拽约束（左边界限定在聊天面板右侧，底部限 vh-10）
-- Add 导入性能优化：json.loads/gpd.read_file 移至线程池，SHP/GPKG/KML 路径省掉 JSON 序列化往返
-- Fix 选点卡死：snap 失败时重置 _inputMode 和光标
-- Fix 后端 error 字段被忽略：路网为空时显示具体错误
-- Fix 面板关闭后 _initialized 被重置导致每次打开全量重建 DOM
-- Fix 导出空白：_exportResult 调用 addLayer 传参错误
-- Fix 方向箭头 ▶ 残留：添加 _arrowMarker 变量跟踪并随结果清理
+## API
 
-### 2026-07-21
-- ...
+核心 API 端点：
 
-详见完整更新日志 [`goal/goal.md`](goal/goal.md)。
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/chat` | 非流式 AI 对话 |
+| POST | `/api/chat/stream` | SSE 流式 AI 对话 |
+| POST | `/api/cancel` | 取消当前 AI 请求 |
+| POST | `/api/upload` | 文件上传（GeoJSON/SHP/GPKG/KML/GPX/DXF/GeoTIFF/CSV） |
+| GET | `/api/layers` | 获取已注册图层列表 |
+| POST | `/api/layer/inspect` | 图层数据检查 |
+| POST | `/api/layer/export-shp` | 导出 Shapefile |
+| POST | `/api/network/snap` | 路网点吸附 |
+| POST | `/api/network/solve` | 网络分析求解 |
+| GET | `/api/boundary` | 获取行政边界 |
+| GET/POST | `/api/projects` | 工程列表/创建 |
+| POST | `/api/projects/auto-save` | 自动保存 |
+| GET | `/api/version` | 版本信息 |
+| DELETE | `/api/chat/memory` | 清空对话历史 |
+
+## 运行测试
+
+```bash
+python -m pytest backend/tests/ -v
+```
+
+当前 238 个测试全部通过。
+
+## 已知限制
+
+- `requirements.txt` 未完整列出所有运行时依赖（`rasterio`、`scipy`、`scikit-image`、`pyproj`、`langchain`、`langgraph`、`pyogrio`、`Pillow`、`networkx`、`requests`、`pyogrio` 等在代码中使用但未声明），安装后可能需要手动补装
+- 无 Docker 配置，无 CI/CD 流水线
+- API Key 通过前端设置弹窗管理，存储在本地 `apikey.txt`（已 gitignore）
+- 前端为原生 HTML/CSS/JS，无构建工具和包管理
+- 部分高级功能（时序动画、图表联动）的前端交互仍在迭代中
 
 ## 许可证
 
-AGPL v3 — 详见 [LICENSE](LICENSE)。
+[AGPL v3](LICENSE) -- 可自由使用和修改，但分发时需提供源码。
