@@ -28,71 +28,215 @@ window.GIS.api = (() => {
     return 'http://localhost:8000';
   })();
 
-  // ===== API 密钥管理 (localStorage) =====
-  // 密钥存在浏览器本地，每次发请求时带上，后端用完就丢不存盘
-  const DS_STORAGE_KEY = 'gis_deepseek_api_key';
+  // ============================================================
+  // Provider 列表 —— 唯一数据源（旧的三把 key 只做一次性迁移）
+  // ============================================================
+  // 以前：gis_deepseek_api_key / gis_glm_api_key / gis_agnes_api_key 三把散 key
+  // 现在：gis_llm_providers = ProviderItem[]
+  //   ProviderItem: { id, name, base_url, model, api_key,
+  //                   glm_prompt, router, reasoning, temperature?, max_tokens? }
+  // Key 只存浏览器 localStorage，随每次请求经 llm_config 携带，后端即用即弃。
+  const DS_STORAGE_KEY = 'gis_deepseek_api_key';      // 兼容/迁移用
   const GLM_STORAGE_KEY = 'gis_glm_api_key';
   const AGNES_STORAGE_KEY = 'gis_agnes_api_key';
   const AMAP_STORAGE_KEY = 'gis_amap_api_key';
-  const MODEL_STORAGE_KEY = 'gis_selected_model';
+  const MODEL_STORAGE_KEY = 'gis_selected_model';     // 历史 key，保留读写做兼容
   const MODEL_STATUS_KEY = 'gis_model_status';
+  const PROVIDERS_STORAGE_KEY = 'gis_llm_providers';
 
   function _lsGet(key) { try { return localStorage.getItem(key); } catch(e) { return null; } }
   function _lsSet(key, val) { try { localStorage.setItem(key, val); } catch(e) {} }
   function _lsRemove(key) { try { localStorage.removeItem(key); } catch(e) {} }
 
-  /** 从 localStorage 读取保存的 DeepSeek 密钥 */
-  function getApiKey() {
-    return _lsGet(DS_STORAGE_KEY) || '';
+  /** 默认 Provider 种子（首装 / 损坏时重建） */
+  function _seedProviders() {
+    return [
+      { id: 'deepseek-routed', name: 'DeepSeek V4 Flash+',
+        base_url: 'https://api.deepseek.com', model: 'deepseek-chat', api_key: '',
+        glm_prompt: false, router: true, reasoning: false, temperature: 0.7, max_tokens: null },
+      { id: 'glm-routed', name: 'GLM-4.7-Flash+',
+        base_url: 'https://open.bigmodel.cn/api/paas/v4/', model: 'glm-4.7-flash', api_key: '',
+        glm_prompt: true, router: true, reasoning: false, temperature: 0.7, max_tokens: null },
+      { id: 'agnes', name: 'Agnes 2.0 Flash+',
+        base_url: 'https://apihub.agnes-ai.com/v1', model: 'agnes-2.0-flash', api_key: '',
+        glm_prompt: false, router: true, reasoning: false, temperature: 0.7, max_tokens: null },
+      { id: 'openrouter', name: 'OpenRouter GLM-5.2 (free)',
+        base_url: 'https://openrouter.ai/api/v1', model: 'z-ai/glm-5.2:free', api_key: '',
+        glm_prompt: true, router: false, reasoning: false, temperature: 0.7, max_tokens: null },
+      { id: 'custom', name: '自定义（OpenAI 兼容）',
+        base_url: '', model: '', api_key: '',
+        glm_prompt: false, router: false, reasoning: false, temperature: null, max_tokens: null },
+    ];
   }
 
-  /** 把 DeepSeek 密钥保存到 localStorage（关掉浏览器再打开还在） */
-  function setApiKey(key) {
-    if (key) { _lsSet(DS_STORAGE_KEY, key); } else { _lsRemove(DS_STORAGE_KEY); }
+  /** 一次性迁移：把旧的三把 key 搬进种子 Provider，然后删旧 key */
+  function _migrateLegacyKeys() {
+    var moved = false;
+    var legacyMap = {
+      'deepseek-routed': _lsGet(DS_STORAGE_KEY),
+      'glm-routed': _lsGet(GLM_STORAGE_KEY),
+      'agnes': _lsGet(AGNES_STORAGE_KEY),
+    };
+    var list = _seedProviders();
+    Object.keys(legacyMap).forEach(function(id) {
+      var key = legacyMap[id];
+      if (key) {
+        var p = list.find(function(x) { return x.id === id; });
+        if (p) { p.api_key = key; moved = true; }
+      }
+    });
+    return { list: list, moved: moved };
   }
 
-  /** 从 localStorage 读取保存的 GLM 密钥 */
-  function getGLMApiKey() {
-    return _lsGet(GLM_STORAGE_KEY) || '';
+  function _saveProviders(list) {
+    _lsSet(PROVIDERS_STORAGE_KEY, JSON.stringify(list));
   }
 
-  /** 把 GLM 密钥保存到 localStorage */
-  function setGLMApiKey(key) {
-    if (key) { _lsSet(GLM_STORAGE_KEY, key); } else { _lsRemove(GLM_STORAGE_KEY); }
+  /** 读取 Provider 列表（首次自动种子 + 迁移旧 key） */
+  function getProviders() {
+    var raw = _lsGet(PROVIDERS_STORAGE_KEY);
+    if (!raw) {
+      var migrated = _migrateLegacyKeys();
+      _saveProviders(migrated.list);
+      // 迁移完成即删旧 key（仅当本函数首次种出列表时删一次）
+      if (raw === null) {
+        _lsRemove(DS_STORAGE_KEY);
+        _lsRemove(GLM_STORAGE_KEY);
+        _lsRemove(AGNES_STORAGE_KEY);
+      }
+      return migrated.list;
+    }
+    try {
+      var arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) {
+        // 补缺省字段（老数据可能没有新开关）
+        arr.forEach(function(p) {
+          if (p.base_url === undefined) p.base_url = '';
+          if (p.model === undefined) p.model = '';
+          if (p.glm_prompt === undefined) p.glm_prompt = false;
+          if (p.router === undefined) p.router = false;
+          if (p.reasoning === undefined) p.reasoning = false;
+        });
+        return arr;
+      }
+    } catch (e) { /* 损坏则重建 */ }
+    var seed = _seedProviders();
+    _saveProviders(seed);
+    return seed;
   }
 
-  /** 从 localStorage 读取保存的 Agnes 密钥 */
-  function getAgnesApiKey() {
-    return _lsGet(AGNES_STORAGE_KEY) || '';
+  /** 整体保存 Provider 列表 */
+  function setProviders(list) {
+    if (!Array.isArray(list)) return;
+    _saveProviders(list);
   }
 
-  /** 把 Agnes 密钥保存到 localStorage */
-  function setAgnesApiKey(key) {
-    if (key) { _lsSet(AGNES_STORAGE_KEY, key); } else { _lsRemove(AGNES_STORAGE_KEY); }
+  /** 按 id 找一个 Provider */
+  function getProvider(id) {
+    if (!id) return null;
+    return getProviders().find(function(p) { return p.id === id; }) || null;
   }
 
-  /** 从 localStorage 读取保存的高德地图密钥 */
+  /** 新增 Provider，返回完整对象（带新 id） */
+  function addProvider(item) {
+    var p = Object.assign({}, {
+      id: 'p' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36),
+      name: '新 Provider', base_url: '', model: '', api_key: '',
+      glm_prompt: false, router: false, reasoning: false, temperature: null, max_tokens: null,
+    }, item || {});
+    var list = getProviders();
+    list.push(p);
+    setProviders(list);
+    return p;
+  }
+
+  /** 整体更新某个 Provider（按 id 定位；找不到就追加） */
+  function upsertProvider(item) {
+    if (!item || !item.id) return null;
+    var list = getProviders();
+    var idx = list.findIndex(function(p) { return p.id === item.id; });
+    if (idx >= 0) list[idx] = item; else list.push(item);
+    setProviders(list);
+    return item;
+  }
+
+  /** 删除 Provider */
+  function removeProvider(id) {
+    var list = getProviders();
+    setProviders(list.filter(function(p) { return p.id !== id; }));
+    // 若删的是当前选中项，回退到第一条
+    if (_lsGet(MODEL_STORAGE_KEY) === id) setSelectedProvider(list.length ? list[0].id : 'glm-routed');
+  }
+
+  /** 复制一个 Provider（新 id） */
+  function duplicateProvider(id) {
+    var src = getProvider(id);
+    if (!src) return null;
+    var copy = JSON.parse(JSON.stringify(src));
+    copy.id = 'p' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+    copy.name = (src.name || 'Provider') + ' 副本';
+    return addProvider(copy);
+  }
+
+  // ===== 兼容别名：老代码 getApiKey()/getGLMApiKey()/getAgnesApiKey() =====
+  function _entryKey(id) { var p = getProvider(id); return p ? (p.api_key || '') : ''; }
+  function _setEntryKey(id, key) {
+    var list = getProviders();
+    var p = list.find(function(x) { return x.id === id; });
+    if (p) { p.api_key = key || ''; setProviders(list); }
+  }
+  function getApiKey()    { return _entryKey('deepseek-routed'); }
+  function setApiKey(key) { _setEntryKey('deepseek-routed', key); }
+  function getGLMApiKey() { return _entryKey('glm-routed'); }
+  function setGLMApiKey(key) { _setEntryKey('glm-routed', key); }
+  function getAgnesApiKey() { return _entryKey('agnes'); }
+  function setAgnesApiKey(key) { _setEntryKey('agnes', key); }
+
+  /** 从 localStorage 读取保存的高德地图密钥（保持独立，不并入 Provider 列表） */
   function getAmapKey() {
     return _lsGet(AMAP_STORAGE_KEY) || '';
   }
-
-  /** 把高德地图密钥保存到 localStorage */
   function setAmapKey(key) {
     if (key) { _lsSet(AMAP_STORAGE_KEY, key); } else { _lsRemove(AMAP_STORAGE_KEY); }
   }
 
-  /** 获取保存的模型偏好 */
+  // ===== 当前选中 Provider =====
+  /** 读取当前选中 Provider 的 id（默认 glm-routed） */
   function getSelectedModel() {
-    return _lsGet(MODEL_STORAGE_KEY) || 'glm-routed';
+    var id = _lsGet(MODEL_STORAGE_KEY) || 'glm-routed';
+    return getProvider(id) ? id : 'glm-routed';
   }
 
-  /** 保存模型偏好 */
+  /** 保存当前选中的 Provider id */
   function setSelectedModel(model) {
-    _lsSet(MODEL_STORAGE_KEY, model);
+    if (model && getProvider(model)) _lsSet(MODEL_STORAGE_KEY, model);
+  }
+  function setSelectedProvider(id) { setSelectedModel(id); }
+
+  /** 取当前选中的 Provider 对象（深拷贝，避免外部误改） */
+  function currentProvider() {
+    var p = getProvider(getSelectedModel());
+    return p ? JSON.parse(JSON.stringify(p)) : null;
   }
 
-  // ===== 模型状态追踪 =====
-  /** 获取指定模型的测速状态: 'untested' | 'online' | 'offline' */
+  /**
+   * 解析一个 Provider 参数（兼容旧调用）：
+   *   - 对象（含 base_url）→ 直接用
+   *   - 字符串 id / null → 从列表取，取不到回退当前选中
+   * 找不到时给一份「legacy 默认」占位，保证老 provider 名字仍能发请求。
+   */
+  function resolveProvider(p) {
+    if (p && typeof p === 'object' && p.base_url !== undefined) return JSON.parse(JSON.stringify(p));
+    var id = (typeof p === 'string' && p) ? p : getSelectedModel();
+    var found = getProvider(id);
+    if (found) return JSON.parse(JSON.stringify(found));
+    // 兜底：deepseek 形态，api_key 由老 key 别名给（尽力而为）
+    return { id: id || 'deepseek', name: id || 'deepseek', base_url: 'https://api.deepseek.com',
+             model: 'deepseek-chat', api_key: _entryKey('deepseek-routed'),
+             glm_prompt: false, router: true, reasoning: false, temperature: 0.7, max_tokens: null };
+  }
+
+  // ===== 模型状态追踪（按 Provider id） =====
   function getModelStatus(provider) {
     try {
       var stored = JSON.parse(_lsGet(MODEL_STATUS_KEY)) || {};
@@ -101,8 +245,6 @@ window.GIS.api = (() => {
       return 'untested';
     }
   }
-
-  /** 设置指定模型的测速状态 */
   function setModelStatus(provider, status) {
     try {
       var stored = JSON.parse(_lsGet(MODEL_STATUS_KEY)) || {};
@@ -110,8 +252,6 @@ window.GIS.api = (() => {
       _lsSet(MODEL_STATUS_KEY, JSON.stringify(stored));
     } catch (e) {}
   }
-
-  /** 清除所有模型的测速状态 */
   function clearModelStatus() {
     _lsRemove(MODEL_STATUS_KEY);
   }
@@ -150,10 +290,16 @@ window.GIS.api = (() => {
   }
 
   // ===== 聊天 / AI =====
-  /** @param {string} message @param {string} [sessionId='default'] @param {string} [provider='deepseek'] @param {string[]} [forceSkills=[]] */
-  async function chat(message, sessionId = 'default', provider = 'glm', forceSkills = []) {
-    // 根据 provider 选择对应的 API 密钥
-    const apiKey = provider === 'agnes' ? getAgnesApiKey() : (provider === 'glm' || provider === 'glm-routed') ? getGLMApiKey() : getApiKey();
+  /**
+   * 普通聊天请求。
+   * @param {string} message
+   * @param {string} [sessionId='default']
+   * @param {ProviderItem|string} [provider] Provider 对象或 id；缺省用当前选中项
+   * @param {string[]} [forceSkills=[]]
+   */
+  async function chat(message, sessionId = 'default', provider = null, forceSkills = []) {
+    // 解析出完整 Provider 条目作为唯一配置来源
+    const prov = resolveProvider(provider);
     const controller = new AbortController();
     const timeoutId = setTimeout(function() { controller.abort(); }, 600000);
     let res;
@@ -165,8 +311,9 @@ window.GIS.api = (() => {
         body: JSON.stringify({
           message,
           session_id: sessionId,
-          api_key: apiKey || undefined,
-          provider,
+          provider: prov.id || 'deepseek',
+          api_key: prov.api_key || undefined,   // 迁移兼容
+          llm_config: prov,                      // 主数据源
           force_skills: forceSkills,
           amap_key: getAmapKey() || undefined
         })
@@ -177,30 +324,44 @@ window.GIS.api = (() => {
     if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
     const data = await res.json();
     return data;
-
-
-    // TODO: POST /chat  { message, session_id }
   }
 
-  // ===== 测试 API 密钥 =====
-  /** 向后端发一个测试请求，验证 DeepSeek 密钥能不能用 */
-  async function testApiKey(apiKey) {
+  // ===== 测试 LLM 连接（通用） =====
+  /** 通用测速：入参即 Provider 条目（llm_config） */
+  async function testProvider(prov) {
+    const resolved = resolveProvider(prov);
     const res = await fetch(`${BASE_URL}/api/test-key`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: apiKey }),
+      body: JSON.stringify({
+        llm_config: resolved,
+        provider: resolved.id || '',
+        api_key: resolved.api_key || '',
+      }),
     });
     if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
     // 返回 { success: true/false, message: "连接成功 ✓" / "密钥无效" }
     return res.json();
   }
 
-  /** 向后端发一个测试请求，验证 GLM 密钥能不能用 */
-  async function testGLMApiKey(apiKey) {
-    const res = await fetch(`${BASE_URL}/api/test-key-glm`, {
+  // ===== 兼容旧测速入口 =====
+  /** 向后端发一个测试请求，验证 DeepSeek 密钥能不能用 */
+  async function testApiKey(apiKey) {
+    const res = await fetch(`${BASE_URL}/api/test-key`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: apiKey }),
+      body: JSON.stringify({ provider: 'deepseek', api_key: apiKey }),
+    });
+    if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
+    return res.json();
+  }
+
+  /** 向后端发一个测试请求，验证 GLM 密钥能不能用 */
+  async function testGLMApiKey(apiKey) {
+    const res = await fetch(`${BASE_URL}/api/test-key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: 'glm', api_key: apiKey }),
     });
     if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
     return res.json();
@@ -208,10 +369,10 @@ window.GIS.api = (() => {
 
   /** 向后端发一个测试请求，验证 Agnes 密钥能不能用 */
   async function testAgnesApiKey(apiKey) {
-    const res = await fetch(`${BASE_URL}/api/test-key-agnes`, {
+    const res = await fetch(`${BASE_URL}/api/test-key`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: apiKey }),
+      body: JSON.stringify({ provider: 'agnes', api_key: apiKey }),
     });
     if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
     return res.json();
@@ -395,15 +556,19 @@ window.GIS.api = (() => {
     downloadLayer, executeGISAction, getBoundary,
     saveProject, loadProject, listProjects,
     deleteProject, deleteAllProjects, renameProject, exportProject, autoSaveProject,
-    healthCheck, testApiKey, testGLMApiKey, testAgnesApiKey,
+    healthCheck, testApiKey, testGLMApiKey, testAgnesApiKey, testProvider,
     getApiKey, setApiKey, getGLMApiKey, setGLMApiKey,
     getAgnesApiKey, setAgnesApiKey,
     getAmapKey, setAmapKey,
-    getSelectedModel, setSelectedModel,
+    getSelectedModel, setSelectedModel, setSelectedProvider,
+    getProviders, setProviders, getProvider,
+    addProvider, upsertProvider, removeProvider, duplicateProvider,
+    currentProvider, resolveProvider,
     getModelStatus, setModelStatus, clearModelStatus,
     inspectLayer, unregisterLayer, registerLayer,
     exportShp,
-    BASE_URL, DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
+    BASE_URL, PROVIDERS_STORAGE_KEY,
+    DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };
 })();
 

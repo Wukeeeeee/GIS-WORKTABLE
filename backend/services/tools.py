@@ -29,6 +29,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 from langchain.tools import tool
 
+# Task Manager 集成：持久化 Python 源代码 + Artifact 注册
+from backend.services.task_manager import (
+    save_code, register_artifact, log_execution,
+    get_latest_code, update_gis_context, get_task,
+)
+
 
 # ============================================================
 # 安全表达式求值（替代 eval/exec）
@@ -127,9 +133,11 @@ _pending_layer_ops: list = []
 _current_amap_key: str = ""
 _search_call_count: int = 0    # 搜索次数计数，每次请求重置
 _exec_call_count: int = 0       # Python 执行次数计数，每次请求重置
+_exec_log: list = []            # 执行日志：记录每次execute_python的用途和结果
 _temp_output_dir: str = ""          # 在 reset_state 时设置
 _workspace_dir: str = ""
 _registered_layers: dict = {}       # 已注册的图层信息
+_current_task_id: str = ""          # 当前任务 ID（由 graph.py 设置）
 
 # 这些列表会被主模块读取，所以要导出
 # 线程锁，保证 get_pending_state 的"读取+清空"操作原子性
@@ -147,6 +155,7 @@ def get_pending_state():
             "clear_layers": _clear_layers_flag,
             "registered_layers": dict(_registered_layers),
             "layer_ops": list(_pending_layer_ops),
+            "exec_log": list(_exec_log),  # 执行日志
         }
         # 消费：清空已收集的状态，避免：
         # 1. 校验器重新调用 agent 时重复累积
@@ -159,9 +168,20 @@ def get_pending_state():
         return result
 
 
-def reset_state(amap_key: str = ""):
+def set_current_task(task_id: str):
+    """设置当前任务 ID（由 graph.py 在每轮请求开始时调用）"""
+    global _current_task_id
+    _current_task_id = task_id or ""
+
+
+def get_current_task_id() -> str:
+    """获取当前任务 ID"""
+    return _current_task_id
+
+
+def reset_state(amap_key: str = "", task_id: str = ""):
     """每次请求开始时调用，清空所有共享状态"""
-    global _current_amap_key, _clear_layers_flag, _search_call_count, _exec_call_count
+    global _current_amap_key, _clear_layers_flag, _search_call_count, _exec_call_count, _exec_log, _current_task_id
     with _state_lock:
         _pending_layers.clear()
         _pending_images.clear()
@@ -172,6 +192,8 @@ def reset_state(amap_key: str = ""):
         _current_amap_key = amap_key
         _search_call_count = 0
         _exec_call_count = 0
+        _exec_log.clear()
+        _current_task_id = task_id or ""
 
 
 def init_temp_dir():
@@ -577,7 +599,7 @@ def save_file(filename: str, content: str) -> str:
 ALLOWED_IMPORTS = {
     'geopandas', 'shapely', 'numpy', 'pandas', 'matplotlib',
     'pyecharts', 'json', 'math', 're', 'datetime', 'io',
-    'tempfile', 'requests', 'pyproj', 'rasterio',
+    'tempfile', 'pyproj', 'rasterio', 'osmnx',
 }
 BANNED_FUNCTIONS = {'eval', 'exec', '__import__', 'getattr', 'setattr', 'compile', 'vars', 'locals', 'globals', 'delattr', 'input', 'breakpoint'}
 BANNED_ATTR_CALLS = {
@@ -586,8 +608,9 @@ BANNED_ATTR_CALLS = {
     'spawnv', 'spawnve', 'spawnvp', 'spawnvpe', 'posix_spawn', 'posix_spawnp',
     'load_library',
 }
-BANNED_MAGIC_ATTRS = {'__dict__', '__globals__', '__builtins__', '__class__', '__bases__', '__subclasses__', '__mro__', '__getattribute__', '__self__', '__func__', '__code__', '__traceback__'}
-BANNED_SYSTEM_MODULES = {'os', 'subprocess', 'shutil', 'sys', 'ctypes', 'ctypeslib', 'socket'}
+BANNED_MAGIC_ATTRS = {'__dict__', '__globals__', '__builtins__', '__class__', '__bases__', '__subclasses__', '__mro__', '__getattribute__', '__self__', '__func__', '__code__', '__traceback__', '__qualname__', '__module__', '__init_subclass__', '__set_name__'}
+BANNED_BUILTINS = {'type', 'object', 'super', 'staticmethod', 'classmethod', 'property', 'memoryview', 'bytearray'}
+BANNED_SYSTEM_MODULES = {'os', 'subprocess', 'shutil', 'sys', 'ctypes', 'ctypeslib', 'socket', 'pathlib', 'shlex', 'signal'}
 # 帧/追踪属性——经典内省逃逸链的关键跳板
 BANNED_FRAME_ATTRS = {'tb_frame', 'tb_next', 'f_back', 'f_globals', 'f_locals', 'f_builtins', 'f_code', 'f_trace'}
 
@@ -621,9 +644,14 @@ def _ast_sandbox_check(code: str) -> str | None:
                 if base not in ALLOWED_IMPORTS:
                     return f'沙箱拦截：禁止导入库「{node.module}」（非白名单库）'
                 # 阻止 from numpy import os 等跨白名单导入系统模块
+                # 阻止 from geopandas import type 等导入内省逃逸工具
                 for alias in node.names:
                     if alias.name in BANNED_SYSTEM_MODULES:
                         return f'沙箱拦截：禁止通过白名单库导入系统模块「{alias.name}」'
+                    if alias.name in BANNED_BUILTINS:
+                        return f'沙箱拦截：禁止通过白名单库导入内置类型「{alias.name}」'
+                    if alias.name in BANNED_MAGIC_ATTRS:
+                        return f'沙箱拦截：禁止通过白名单库导入魔法属性「{alias.name}」'
 
         # ---- 函数调用检查（含属性链调用，防 __builtins__.eval） ----
         if isinstance(node, ast.Call):
@@ -634,16 +662,21 @@ def _ast_sandbox_check(code: str) -> str | None:
                 if node.func.attr in BANNED_FUNCTIONS:
                     return f'沙箱拦截：禁止通过属性链调用危险函数「{node.func.attr}」'
 
-        # ---- 裸名检查：__builtins__ 等魔法名作为标识符直写 ----
+        # ---- 裸名检查：__builtins__ 等魔法名 / 内置类型作为标识符直写 ----
         if isinstance(node, ast.Name):
             if node.id in BANNED_MAGIC_ATTRS:
                 return f'沙箱拦截：禁止直接使用魔法标识符「{node.id}」'
+            if node.id in BANNED_BUILTINS:
+                return f'沙箱拦截：禁止直接使用内置类型「{node.id}」（可用于内省逃逸）'
 
         # ---- 属性访问检查（全面覆盖：读取、赋值、调用均逃不掉） ----
         if isinstance(node, ast.Attribute):
             # 魔法属性——经典内省逃逸链的源头
             if node.attr in BANNED_MAGIC_ATTRS:
                 return f'沙箱拦截：禁止访问魔法属性「{node.attr}」'
+            # 内置类型属性——type、object 等通过属性链访问也拦截
+            if node.attr in BANNED_BUILTINS:
+                return f'沙箱拦截：禁止访问内置类型「{node.attr}」'
             # 危险系统方法——即使 os 通过任何途径泄漏也拦到最后一步
             if node.attr in BANNED_ATTR_CALLS:
                 return f'沙箱拦截：禁止访问危险系统方法「{node.attr}」'
@@ -666,6 +699,31 @@ def _ast_sandbox_check(code: str) -> str | None:
                 return '沙箱拦截：禁止使用绝对路径'
             if s.lower().startswith('file://'):
                 return '沙箱拦截：禁止通过 file:// 协议读取本地文件'
+
+        # ---- open() 写入路径检查：仅允许写 output/ 目录 ----
+        if isinstance(node, ast.Call):
+            func = node.func
+            # open(path, mode) 或 open(path, 'w', ...)
+            is_open_call = (
+                (isinstance(func, ast.Name) and func.id == 'open') or
+                (isinstance(func, ast.Attribute) and func.attr == 'open')
+            )
+            if is_open_call and node.args:
+                first_arg = node.args[0]
+                # 检查模式参数（第二个参数或 keyword）
+                write_mode = False
+                if len(node.args) >= 2:
+                    mode_arg = node.args[1]
+                    if isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str):
+                        write_mode = any(m in mode_arg.value for m in ('w', 'a', 'x'))
+                for kw in node.keywords:
+                    if kw.arg == 'mode' and isinstance(kw.value, ast.Constant):
+                        write_mode = any(m in kw.value.value for m in ('w', 'a', 'x'))
+                if write_mode and isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+                    path = first_arg.value
+                    if not (path.startswith('output/') or path.startswith('output\\') or
+                            path.startswith('/output/') or path.startswith('./output/')):
+                        return f'沙箱拦截：禁止写入非 output 目录「{path[:60]}」（仅允许写 output/）'
 
     return None
 
@@ -766,17 +824,42 @@ def execute_python(code: str) -> str:
     plt.savefig('chart_xxx.png') 生成图表
 
     安全：严禁在代码中硬编码 API Key（高德 Key 已自动注入 _AMAP_KEY 变量）"""
-    global _exec_call_count
+    global _exec_call_count, _exec_log
     _exec_call_count += 1
-    if _exec_call_count > 5:
-        return f"【执行过热】本次请求已执行 {_exec_call_count} 次 Python 代码，请基于已有结果继续，不要再执行了。"
+    
+    # 记录执行日志（提取代码前50个字符作为摘要）
+    code_summary = code.strip()[:50].replace('\n', ' ')
+    _exec_log.append({
+        "seq": _exec_call_count,
+        "code_summary": code_summary,
+        "timestamp": datetime.datetime.now().strftime('%H:%M:%S'),
+    })
+    
+    # 软警告：超过7次提醒但不阻断，超过20次才阻断
+    if _exec_call_count > 20:
+        return f"【执行过热】本次请求已执行 {_exec_call_count} 次 Python 代码（上限20次）。请基于已有结果继续，不要再执行了。"
     init_temp_dir()
+
+    # === Task Manager: 保存 Python 源代码到代码缓存 ===
+    _task_step = 0
+    if _current_task_id:
+        try:
+            _task_step = save_code(_current_task_id, code, label=code_summary)
+        except Exception as _e:
+            print(f"[TaskManager] 保存代码失败（忽略）: {_e}", flush=True)
 
     # ================================================================
     # 第一层：AST 静态代码校验（只查用户代码，不注入代码）
     # ================================================================
     ast_error = _ast_sandbox_check(code)
     if ast_error:
+        # 记录执行失败
+        if _current_task_id and _task_step:
+            try:
+                log_execution(_current_task_id, _task_step, code, "", "failed",
+                              stderr=ast_error, exit_code=1)
+            except Exception:
+                pass
         return ast_error
 
     # ================================================================
@@ -828,6 +911,10 @@ for _fp in [
     except Exception:
         continue
 plt.style.use("ggplot")
+
+# 创建 output/ 子目录，支持 plt.savefig('output/chart.png') 路径
+import os as _os
+_os.makedirs('output', exist_ok=True)
 """
 
         _amap_injection = f'_AMAP_KEY = {_current_amap_key!r}\n\n'
@@ -860,28 +947,42 @@ plt.style.use("ggplot")
         elapsed = time.time() - start_time
 
         # 将临时目录中生成的文件复制到真实输出目录
+        # 扫描 exec_dir 根目录和 output/ 子目录
         try:
-            for fname in os.listdir(exec_dir):
-                if fname == '_user_code_.py':
-                    continue
-                fpath = os.path.join(exec_dir, fname)
-                if os.path.isfile(fpath):
-                    dest = os.path.join(_temp_output_dir, fname)
-                    if os.path.exists(dest):
-                        ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-                        name_part, ext = os.path.splitext(fname)
-                        dest = os.path.join(_temp_output_dir, f'{name_part}_{ts}{ext}')
-                    shutil.copy2(fpath, dest)
+            _dirs_to_scan = [exec_dir]
+            _output_subdir = os.path.join(exec_dir, 'output')
+            if os.path.isdir(_output_subdir):
+                _dirs_to_scan.append(_output_subdir)
+            for _scan_dir in _dirs_to_scan:
+                for fname in os.listdir(_scan_dir):
+                    if fname == '_user_code_.py':
+                        continue
+                    fpath = os.path.join(_scan_dir, fname)
+                    if os.path.isfile(fpath):
+                        dest = os.path.join(_temp_output_dir, fname)
+                        if os.path.exists(dest):
+                            ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+                            name_part, ext = os.path.splitext(fname)
+                            dest = os.path.join(_temp_output_dir, f'{name_part}_{ts}{ext}')
+                        shutil.copy2(fpath, dest)
         except Exception:
             pass
 
         if result.returncode != 0:
             stderr = result.stderr.strip()
+            # Task Manager: 记录执行失败
+            if _current_task_id and _task_step:
+                try:
+                    log_execution(_current_task_id, _task_step, code, "",
+                                  "failed", stderr=stderr, exit_code=result.returncode)
+                except Exception:
+                    pass
             return f'代码执行错误（{elapsed:.1f}s）：{stderr[:2000]}\n请根据错误信息修改代码后重试。'
 
         output = result.stdout.strip()
 
         # 检测新生成的图片和 HTML
+        new_images = []
         try:
             after_files = set(os.listdir(_temp_output_dir))
             new_files = after_files - before_files
@@ -889,10 +990,42 @@ plt.style.use("ggplot")
             _rename_output_files(new_files, '.png', _temp_output_dir)
             _rename_output_files(new_files, '.html', _temp_output_dir)
             _cleanup_charts(_temp_output_dir)
+            
+            # 收集新生成的图片文件
+            for f in new_files:
+                if f.lower().endswith('.png'):
+                    new_images.append(f)
         except Exception:
             pass
 
         if not output:
+            # 即使无输出，如果有图片也要报告
+            if new_images:
+                # Task Manager: 注册图片 Artifact
+                _registered_artifacts = []
+                if _current_task_id:
+                    for img_name in new_images:
+                        img_path = os.path.join(_temp_output_dir, img_name)
+                        try:
+                            art = register_artifact(_current_task_id, img_name, img_path,
+                                                    artifact_type="image", created_by_step=_task_step)
+                            _registered_artifacts.append(art.get("artifact_id", ""))
+                        except Exception:
+                            pass
+                    try:
+                        log_execution(_current_task_id, _task_step, code, "",
+                                      "success", stdout=f"生成了 {len(new_images)} 张图片",
+                                      output_artifacts=_registered_artifacts)
+                    except Exception:
+                        pass
+                return f'代码执行成功（{elapsed:.1f}s，无文本输出），生成了 {len(new_images)} 张图片：{", ".join(new_images[:3])}'
+            # Task Manager: 记录执行成功（无输出无图片）
+            if _current_task_id and _task_step:
+                try:
+                    log_execution(_current_task_id, _task_step, code, "",
+                                  "success", stdout="无输出")
+                except Exception:
+                    pass
             return f'代码执行成功（{elapsed:.1f}s，无输出）'
 
         # 检测 GeoJSON（先逐行扫，再整体解析）
@@ -926,14 +1059,52 @@ plt.style.use("ggplot")
                 pass
 
         if geojson_found:
+            # Task Manager: 注册 GeoJSON Artifact + 记录执行
+            if _current_task_id and _task_step:
+                try:
+                    log_execution(_current_task_id, _task_step, code, "",
+                                  "success", stdout=f"GIS 结果 {feature_count} 个要素")
+                except Exception:
+                    pass
             return f'GIS 结果已生成并加载到地图（{feature_count} 个要素，耗时 {elapsed:.1f}s）\n---\n{output[:3000]}'
 
-        return f'代码执行成功（{elapsed:.1f}s）\n---\n{output[:3000]}'
+        # 返回执行结果，包含图片信息
+        image_info = f'，生成了 {len(new_images)} 张图片' if new_images else ''
+        # Task Manager: 注册图片 Artifact + 记录执行
+        _registered_artifacts = []
+        if _current_task_id and _task_step:
+            for img_name in new_images:
+                img_path = os.path.join(_temp_output_dir, img_name)
+                try:
+                    art = register_artifact(_current_task_id, img_name, img_path,
+                                            artifact_type="image", created_by_step=_task_step)
+                    _registered_artifacts.append(art.get("artifact_id", ""))
+                except Exception:
+                    pass
+            try:
+                log_execution(_current_task_id, _task_step, code, "",
+                              "success", stdout=output[:2000],
+                              output_artifacts=_registered_artifacts)
+            except Exception:
+                pass
+        return f'代码执行成功（{elapsed:.1f}s{image_info}）\n---\n{output[:3000]}'
 
     except subprocess.TimeoutExpired:
         elapsed = time.time() - start_time
+        if _current_task_id and _task_step:
+            try:
+                log_execution(_current_task_id, _task_step, code, "",
+                              "timeout", stderr="执行超时 >120s", exit_code=-1)
+            except Exception:
+                pass
         return f'代码执行超时（{elapsed:.1f}s > 120s），已强制终止进程。请简化操作或分批处理。'
     except Exception as e:
+        if _current_task_id and _task_step:
+            try:
+                log_execution(_current_task_id, _task_step, code, "",
+                              "error", stderr=str(e)[:500], exit_code=-1)
+            except Exception:
+                pass
         return f'执行异常：{str(e)[:500]}'
     finally:
         try:
@@ -4844,6 +5015,195 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
         return f"栅格裁剪失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
 
 
+# ============================================================
+# 工具: discover_gis_data / download_gis_data — GIS 开放数据发现与获取
+# （数据 Provider 抽象见 backend/services/data_providers；此处只做调度）
+# ============================================================
+
+def _format_discover_hits(hits: list) -> str:
+    """把发现结果格式化为 Markdown 表格。"""
+    if not hits:
+        return "（无命中）"
+    lines = [
+        "| 数据源 | 类型 | 区域 | 格式 | CRS | 来源 | 状态 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for h in hits:
+        status = "可获取"
+        if not h.get("downloadable"):
+            status = "需认证" + (f"：{str(h.get('note'))[:40]}" if h.get('note') else "")
+        lines.append(
+            f"| {h.get('provider', '-')} | {h.get('kind_label', '-')} "
+            f"| {h.get('area', '-')} | {h.get('file_format', '-')} "
+            f"| {h.get('crs', '-')} | {h.get('provider_id', '-')} | {status} |"
+        )
+    return "\n".join(lines)
+
+
+@tool
+def discover_gis_data(query: str = "", kind: str = "", area: str = "",
+                      bbox: str = "", provider: str = "auto",
+                      file_format: str = "", time_start: str = "",
+                      time_end: str = "") -> str:
+    """发现/检索公开 GIS 数据的元信息（不下载）。数据源：OSM/Copernicus/USGS/地理空间数据云。
+参数说明：
+- kind: 数据类型（英文），road/道路/路网→roads，building/建筑→buildings，poi/兴趣点→pois，
+  water/水系/河流→waterways，landuse/土地利用→landuse，transport/铁路→transport，
+  imagery/影像/sentinel/landsat→imagery，dem/高程→dem。
+- area: 城市/区域名（中文也可，如 长沙、长沙市）；或用 bbox='minLng,minLat,maxLng,maxLat'。
+- provider: 数据源 osm/copernicus/usgs/gscloud，默认 auto 自动选。
+- time_start/time_end: 遥感数据可选时间范围（如 2024-01-01）。
+用法：用户想找开放 GIS 数据时先用本工具返回来源与可获取状态，再调用 download_gis_data 获取。"""
+    from backend.services import data_discovery
+    try:
+        r = data_discovery.discover(
+            query=query, kind=kind, area=area, bbox=bbox,
+            provider_id="" if provider in ("", "auto") else provider,
+            file_format=file_format, time_start=time_start, time_end=time_end,
+        )
+    except Exception as e:
+        from backend.services.data_providers.errors import DataProviderError
+        if isinstance(e, DataProviderError):
+            return f"无法完成发现：{e.message}" + (f"\n提示：{e.hint}" if e.hint else "")
+        return f"发现失败：{str(e)[:200]}"
+
+    parts = [f"**{r['message']}**"]
+    parts.append(f"\n发现的候选（{len(r['hits'])} 条）：")
+    parts.append(_format_discover_hits(r['hits']))
+    if r["notes"]:
+        parts.append("\n数据源说明：")
+        for n in r["notes"]:
+            parts.append(f"- {n['message']}" + (f"（{n['hint']}）" if n.get('hint') else ""))
+    if r["hits"]:
+        parts.append(
+            "\n下一步：确认后调用 **download_gis_data** 获取并加载到地图。"
+            f"（kind='{r['kind']}', area='{r['area']}', provider 见表格）"
+        )
+    return "\n".join(parts)
+
+
+@tool
+def download_gis_data(query: str = "", kind: str = "", area: str = "",
+                      bbox: str = "", provider: str = "", file_format: str = "geojson",
+                      time_start: str = "", time_end: str = "",
+                      layer_name: str = "", max_items: int = 0) -> str:
+    """从开放 GIS 数据源获取数据 → 保存为标准 GIS 文件(GeoJSON/GPKG/SHP) → 完整性/CRS 校验 → 加载到地图。
+矢量数据源现支持 OpenStreetMap（provider=osm，公开免认证）。
+- kind：road/道路/路网→roads，building/建筑→buildings，poi/兴趣点→pois，
+  water/水系/河流→waterways，landuse/土地利用→landuse，transport/铁路→transport。
+- area：城市/区域名（如 长沙/长沙市），或 bbox='minLng,minLat,maxLng,maxLat'。
+- file_format：geojson/gpkg/shp，默认 geojson。
+- layer_name：自定义图层名（可选）。
+示例：kind='roads', area='长沙市' → 下载道路数据并加载。用户已看到 discover 结果后，直接调用本工具获取。"""
+    from backend.services import data_discovery
+    try:
+        asset = data_discovery.download(
+            query=query, kind=kind, area=area, bbox=bbox,
+            provider_id=provider, file_format=file_format,
+            time_start=time_start, time_end=time_end,
+            max_items=max_items, layer_name=layer_name,
+        )
+    except Exception as e:
+        from backend.services.data_providers.errors import DataProviderError
+        if isinstance(e, DataProviderError):
+            return f"获取失败：{e.message}" + (f"\n提示：{e.hint}" if e.hint else "")
+        import traceback
+        return f"获取失败：{str(e)[:200]}\n{traceback.format_exc()[:150]}"
+
+    # 矢量：直接加载到地图（复用现有图层链路）
+    geojson = asset.get("geojson")
+    if geojson is not None:
+        layer = asset["layer_name"]
+        _push_layer(layer, geojson)
+        _register_layer(layer, geojson)
+        loaded = f"已加载到地图，图层名「{layer}」。"
+    else:
+        loaded = ""
+
+    meta = asset.get("metadata", {})
+    lines = [
+        f"获取成功（{asset['provider_name']} · {asset['kind_label']}）",
+        f"- 图层：{asset['layer_name']}，要素数：{asset.get('feature_count') or 0}，"
+        f"几何：{', '.join(asset.get('geometry_types') or [])}",
+        f"- 格式：{asset.get('file_format')}，CRS：{asset.get('crs')}，大小：{_human_size(asset.get('size_bytes') or 0)}",
+        f"- 下载：{asset.get('url')}（服务器可下载路径）",
+        f"- 元数据：{meta.get('metadata_file', '')}",
+    ]
+    if asset.get("note"):
+        lines.append(f"- 注意：{asset['note']}")
+    if loaded:
+        lines.append(loaded)
+    return "\n".join(lines)
+
+
+def _human_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}TB"
+
+
+@tool
+def hold_layer_for_confirm(name: str = "", geojson: str = "",
+                           source: str = "", file_path: str = "",
+                           summary: str = "") -> str:
+    """把已经获取/生成、但尚未展示到地图的图层“挂起”，等用户确认后再加载。
+
+    适用场景：数据已就绪（已下载/已生成 GeoJSON），但希望用户回复“继续/确认”后再显示到地图
+    （例如一次数据量较大、或流程上需要用户拍板）。调用本工具会登记一个待确认动作，不会立刻把
+    图层推到地图；用户回复“继续/确认/执行”时由系统确定性加载，“取消”则放弃。
+    参数：
+    - name: 图层名（必填）。若该名字已在“当前已注册图层”里，可不传 geojson 直接复用其数据；
+      否则必须用 geojson 传入图层数据。
+    - geojson: 图层 GeoJSON 的 JSON 字符串（FeatureCollection/Feature），可省略（当 name 已注册）。
+    - source: 数据来源描述，如 geoBoundaries / OpenStreetMap / 文件。
+    - file_path: 数据所在文件路径（若有）。
+    - summary: 给用户看的一句话说明（可选）。
+    调用后请在回复里告诉用户：“数据已准备好，回复‘继续’即可加载到地图；回复‘取消’可放弃。”"""
+    import json as _json
+    from backend.services import pending_action
+
+    name = (name or "").strip()
+    if not name:
+        return "错误：hold_layer_for_confirm 需要 name（图层名）。"
+    data = None
+    if geojson and geojson.strip():
+        try:
+            data = _json.loads(geojson)
+        except Exception:
+            return f"错误：geojson 不是有效的 JSON：{str(geojson)[:120]}"
+
+    # 若 name 已注册则复用其数据，否则用传入 geojson 注册（不推送）
+    if data is None:
+        info = _registered_layers.get(name)
+        if not info or info.get("geojson") is None:
+            return (f"错误：找不到图层「{name}」的数据，且未提供 geojson。"
+                    f"请先用获取/下载工具注册该图层，或直接传入 geojson。")
+    else:
+        _register_layer(name, data)
+
+    action = pending_action.build_load_layer_action(
+        layer_name=name,
+        geojson=data or None,
+        source=source,
+        file_path=file_path,
+        dataset=source,
+        summary=summary,
+    )
+    pending_action.set_pending_action(pending_action.get_active_session(), action)
+    shown = "；".join(filter(None, [
+        f"数据已就绪（图层「{name}」）",
+        f"来源：{source}" if source else "",
+        f"文件：{file_path}" if file_path else "",
+    ]))
+    return (shown or f"图层「{name}」已就绪") + (
+        "。请回复“继续”加载到地图，或回复“取消”放弃。")
+
+
+
+
+
 tools = [
     search_web,
     fetch_webpage,
@@ -4925,5 +5285,8 @@ tools = [
     convert_coordinates,
     extract_contours,
     clip_raster,
+    discover_gis_data,
+    download_gis_data,
+    hold_layer_for_confirm,
 ]
 

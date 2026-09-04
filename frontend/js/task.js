@@ -96,11 +96,12 @@ window.GIS = window.GIS || {};
       'deepseek': 'DeepSeek V4 Flash',
       'agnes': 'Agnes 2.0 Flash+',
     };
+    var _taskProv = (GIS.api && GIS.api.resolveProvider) ? GIS.api.resolveProvider(provider) : null;
     var task = {
       id: String(_nextId++),
       goal: goal || '',
       provider: provider || 'glm-routed',
-      model: modelNames[provider] || 'DeepSeek V4 Flash+',
+      model: (_taskProv && _taskProv.name) || modelNames[provider] || 'DeepSeek V4 Flash+',
       timestamp: Date.now(),
       completedAt: null,
       status: 'pending',

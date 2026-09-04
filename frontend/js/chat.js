@@ -526,9 +526,10 @@ if (typeof marked !== 'undefined') {
     // 检查当前选中的模型是否已配置 API Key（优先用 providerOverride）
     const selModel = document.getElementById('modelSelector');
     const curProvider = providerOverride || (selModel ? selModel.value : 'glm-routed');
-    const hasKey = curProvider === 'agnes' ? window.GIS.api.getAgnesApiKey() : (curProvider === 'glm' || curProvider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey();
+    const _prov = window.GIS.api.resolveProvider(curProvider);
+    const hasKey = !!(_prov && _prov.api_key);
     if (!hasKey) {
-        const modelName = curProvider === 'agnes' ? 'Agnes 2.0 Flash+' : (curProvider === 'glm-routed' || curProvider === 'glm') ? 'GLM-4.7-Flash+' : 'DeepSeek V4 Flash+';
+        const modelName = _prov && _prov.name ? _prov.name : curProvider;
         addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
       // 恢复输入框（placeholder 还没被改过，不需要还原）
       if (inputEl) inputEl.disabled = false;
@@ -576,12 +577,13 @@ if (typeof marked !== 'undefined') {
       if (el.getAttribute('data-action') !== 'copy-coords') el.classList.add('is-disabled');
     });
 
-    // 获取当前模型显示名（优先用 providerOverride）
+    // 获取当前模型显示名（优先用 providerOverride → 取 Provider 列表的 name）
     const modelDisplayEl = document.getElementById('modelSelectValue');
     let modelDisplayName = modelDisplayEl ? modelDisplayEl.textContent : 'AI';
-    if (providerOverride === 'deepseek-routed') modelDisplayName = 'DeepSeek V4 Flash+'; else if (providerOverride === 'glm-routed') modelDisplayName = 'GLM-4.7-Flash+';
-    else if (providerOverride === 'deepseek') modelDisplayName = 'DeepSeek V4 Flash';
-    else if (providerOverride === 'agnes') modelDisplayName = 'Agnes 2.0 Flash+';
+    if (providerOverride) {
+      const _po = window.GIS.api.resolveProvider(providerOverride);
+      if (_po && _po.name) modelDisplayName = _po.name;
+    }
     
 
     // 添加"模型名 思考中..."占位气泡，让用户知道 AI 正在处理
@@ -592,11 +594,7 @@ if (typeof marked !== 'undefined') {
     // 路由模式：先显示路由阶段，再切换到执行阶段
     if (isRouted && loadingMsg) {
       const loadingContent = loadingMsg.querySelector('.message-bubble > div');
-      if (loadingContent) {
-        if (providerOverride === 'glm-routed') loadingContent.textContent = 'GLM-4.7-Flash+ 路由分析中...';
-        else if (providerOverride === 'agnes') loadingContent.textContent = 'Agnes 2.0 Flash+ GLM 路由分析中...';
-        else loadingContent.textContent = 'DeepSeek V4 Flash+ GLM 路由分析中...';
-      }
+      if (loadingContent) loadingContent.textContent = modelDisplayName + ' 路由分析中...';
     }
 
     // 给气泡文本加流光 scan 动画
@@ -621,11 +619,7 @@ if (typeof marked !== 'undefined') {
         const el = document.getElementById('ai-loading-msg');
         if (el) {
           const c = el.querySelector('.message-bubble > div');
-          if (c) {
-            if (providerOverride === 'glm-routed') c.textContent = 'GLM-4.7-Flash+ 执行中...';
-            else if (providerOverride === 'agnes') c.textContent = 'Agnes 2.0 Flash+ 执行中...';
-            else c.textContent = 'DeepSeek V4 Flash+ 执行中...';
-          }
+          if (c) c.textContent = modelDisplayName + ' 执行中...';
         }
       }, 1500);
     }
@@ -641,6 +635,7 @@ if (typeof marked !== 'undefined') {
       // 读取当前选择的模型（优先用 providerOverride）
       const modelSelector = document.getElementById('modelSelector');
       const rawProvider = providerOverride || (modelSelector ? modelSelector.value : 'glm-routed'); const provider = rawProvider;
+      const sendProv = window.GIS.api.resolveProvider(provider); // 当前完整 Provider 条目 → llm_config
       const forceSkills = _skillChips.map(function(c) { return CHIP_TO_SKILL[c.name]; }).filter(Boolean);
       // 解析 displayOpt 中的任务信息
       var taskId = displayOpt && displayOpt._taskId ? displayOpt._taskId : null;
@@ -681,8 +676,9 @@ if (typeof marked !== 'undefined') {
           body: JSON.stringify({
             message: text,
             session_id: 'default',
-            api_key: provider === 'agnes' ? window.GIS.api.getAgnesApiKey() : (provider === 'glm' || provider === 'glm-routed') ? window.GIS.api.getGLMApiKey() : window.GIS.api.getApiKey(),
-            provider: provider,
+            api_key: sendProv.api_key || undefined,
+            provider: sendProv.id || provider,
+            llm_config: sendProv,
             force_skills: forceSkills,
             amap_key: window.GIS.api.getAmapKey() || undefined,
             pending_layer: layerSnapshot ? {
@@ -784,7 +780,7 @@ if (typeof marked !== 'undefined') {
         if (streamErr.name === 'AbortError') {
           throw new Error('AI 请求超时（' + (_timeoutMs === Infinity ? '不限时' : _timeoutMs/1000 + 's') + '），请简化操作或重试');
         }
-        result = await GIS.api.chat(text, 'default', provider, forceSkills);
+        result = await GIS.api.chat(text, 'default', sendProv, forceSkills);
       }
 
       // 发送后清除 chip 标签（已消费）
@@ -830,7 +826,57 @@ if (typeof marked !== 'undefined') {
         addMessage('AI 未返回有效响应', 'ai');
         return;
       }
+      removePendingActionBars();   // 新一轮结果出来，清掉旧按钮
       const msgEl = addMessage(result.response || '(空响应)', 'ai');
+
+      // 折叠「思考过程」块：reasoning 开启时后端在 done 事件带 reasoning（不进正文）
+      if (result.reasoning && msgEl) {
+        try {
+          var bubbleEl = msgEl.querySelector('.message-bubble') || msgEl;
+          var sumEl = document.createElement('summary');
+          sumEl.textContent = '思考过程';
+          sumEl.style.cssText = 'cursor:pointer;font-size:12px;color:var(--ui-gray-500,#888);user-select:none;';
+          var bodyEl = document.createElement('div');
+          bodyEl.style.cssText = 'white-space:pre-wrap;word-break:break-word;margin-top:6px;color:var(--ui-gray-600,#666);font-size:12px;line-height:1.6;';
+          bodyEl.textContent = result.reasoning;
+          var details = document.createElement('details');
+          details.style.cssText = 'margin-bottom:8px;padding:6px 8px;border:1px solid var(--ui-gray-200,#e5e7eb);border-radius:6px;background:rgba(120,120,120,0.05);';
+          details.appendChild(sumEl);
+          details.appendChild(bodyEl);
+          bubbleEl.insertBefore(details, bubbleEl.firstChild);
+        } catch (e) { /* reasoning 展示失败不阻塞回复 */ }
+      }
+
+      // 有「待确认动作」（后端 confirm_pending）→ 渲染 继续/取消 按钮，免手打“继续”
+      if (result.confirm_pending && msgEl) {
+        try {
+          var cp = result.confirm_pending;
+          var bubbleEl2 = msgEl.querySelector('.message-bubble') || msgEl;
+          var bar = document.createElement('div');
+          bar.className = 'pending-action-bar';
+          bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center;';
+          var tip = document.createElement('span');
+          tip.textContent = (cp.summary || '已就绪').slice(0, 80);
+          tip.style.cssText = 'font-size:11px;color:var(--ui-gray-500,#888);margin-right:2px;';
+          bar.appendChild(tip);
+          var mkBtn = function(label, word, primary) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = label;
+            b.style.cssText =
+              'border:none;border-radius:14px;padding:5px 14px;font-size:12px;cursor:pointer;' +
+              (primary ? 'background:#2f7bf6;color:#fff;' : 'background:transparent;color:var(--ui-gray-500,#666);border:1px solid var(--ui-gray-300,#ddd);');
+            b.onclick = function() {
+              bar.remove();
+              window.GIS.chat.sendMessage(word);   // 走确定性 pending 处理（继续/取消）
+            };
+            return b;
+          };
+          bar.appendChild(mkBtn('✓ 加载到地图', '继续', true));
+          bar.appendChild(mkBtn('✕ 取消', '取消', false));
+          bubbleEl2.appendChild(bar);
+        } catch (e) { /* 按钮渲染失败不阻塞回复 */ }
+      }
 
       // 如果有 AI 生成的图表图片，追加到最后一条回复下方
       if (result.images && result.images.length > 0) {
@@ -1189,16 +1235,21 @@ if (typeof marked !== 'undefined') {
         inputEl.placeholder = '输入指令或查询...';
         inputEl.focus();
       }
-      // 恢复模型选择器显示名
+      // 恢复模型选择器显示名：一律取 Provider 列表里的 name，避免硬编码映射对不上
       var selEl = document.getElementById('modelSelector');
       var valEl = document.getElementById('modelSelectValue');
-      if (selEl && valEl) {
-        var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'deepseek': 'DeepSeek V4 Flash', 'glm-routed': 'GLM-4.7-Flash+', 'glm': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
-        valEl.textContent = names[selEl.value] || selEl.value;
-      }
+      var _restoreProv = window.GIS.api && window.GIS.api.resolveProvider(selEl ? selEl.value : null);
+      if (valEl && _restoreProv && _restoreProv.name) valEl.textContent = _restoreProv.name;
       const modelBar = document.querySelector('.chat-input-model-bar');
       if (modelBar) modelBar.classList.remove('is-disabled');
     }
+  }
+
+  function removePendingActionBars() {
+    // 每次新的 AI 结果出来都清掉旧的「继续/取消」按钮，避免残留多个
+    document.querySelectorAll('.pending-action-bar').forEach(function(el) {
+      el.remove();
+    });
   }
 
   function addMessage(text, type, options) {

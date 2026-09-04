@@ -112,9 +112,10 @@ Three.js 嵌入 HTML，展示 DEM 三维地形，支持夸张系数调节。
 ### AI Agent 系统
 
 - **80+ 工具**：通过 `@tool` 装饰器注册，覆盖空间分析、栅格处理、数据加载、网络分析、制图导出等全流程
-- **三模型支持**：GLM-4.7-Flash+（免费默认）、DeepSeek V4 Flash+、Agnes 2.0 Flash+
+- **Provider 列表化**：支持任意 OpenAI 兼容接口（内置 deepseek / 智谱GLM / agnes / OpenRouter GLM-5.2 / 自定义空模板），Key 只存浏览器 localStorage，加模型 = 设置里加一行
+- **Reasoning 推理**：Provider 可开关 reasoning；开启时思考过程不进正文，完成后以可折叠「思考过程」块展示，并支持跨轮/工具循环续推回传
 - **LangGraph ReAct Agent**：自动管理多轮工具调用循环，替代手写 if/elif 路由
-- **GLM 路由系统**：自动加载 `skills/` 目录下的技能文档辅助任务
+- **技能路由系统**：按 Provider 开关可选，自动加载 `skills/` 目录下的技能文档辅助任务
 - **SSE 流式响应**：前端实时展示工具调用进度
 - **沙箱代码执行**：AST 白名单验证 + 安全 eval，支持数学表达式和受控 Python 执行
 
@@ -125,6 +126,28 @@ Three.js 嵌入 HTML，展示 DEM 三维地形，支持夸张系数调节。
 - 百度地图：AOI 建筑轮廓（Playwright 自动化提取）
 - OSM：路网下载与分析
 - 热力图
+
+### 开放数据发现与获取（Data Discovery）
+
+通过自然语言发现并获取公开 GIS 数据，走确定性 Provider 代码（LLM 只负责解析需求，不直接访问互联网）：
+
+```
+用户需求 → 数据类型/空间范围识别 → 选择 Provider → 搜索(元信息) → 下载 → GIS 文件(GeoJSON/GPKG/SHP)
+       → 完整性 + CRS 校验 → metadata → 加载到地图
+```
+
+| Provider | 数据 | 认证 | 阶段 |
+|----------|------|------|------|
+| OpenStreetMap（Overpass 官方 API） | 道路 / 建筑 / POI / 水系 / 土地利用 / 交通 | 公开免认证 | ✅ 已可用（含下载） |
+| Copernicus Data Space | Sentinel 遥感影像等 | ESA 账号（OAuth token） | 🔍 发现/元信息（下载待下阶段） |
+| USGS | Landsat（landsatlook STAC） | 目录匿名可发现，下载需账号 | 🔍 发现/元信息（下载待下阶段） |
+| 地理空间数据云 | DEM / Landsat / MODIS | 需注册登录 | 🔍 仅指引（不自动抓取） |
+
+**认证分级**：公开免认证（OSM）/ 需 API Key（走环境变量，不写进项目）/ 需账号授权（提供指引，密码不硬编码）。
+
+对话示例：`帮我找长沙市的道路数据` → 返回 `Provider/类型/格式/区域/来源/状态` → `获取数据` → 文件落盘 + metadata → `加载到地图`。
+
+**API**：`GET /api/data/providers`、`POST /api/data/discover`、`POST /api/data/download`。
 
 ### 工程管理
 
@@ -138,7 +161,7 @@ Three.js 嵌入 HTML，展示 DEM 三维地形，支持夸张系数调节。
 | 地图渲染 | Leaflet + Leaflet.Draw |
 | 后端 | FastAPI + Python |
 | AI 框架 | LangGraph（ReAct Agent）+ LangChain Tools |
-| LLM | GLM-4.7-Flash+ / DeepSeek V4 Flash+ / Agnes 2.0 Flash+ |
+| LLM | 任意 OpenAI 兼容接口（GLM-4.7-Flash+ / DeepSeek V4 / GLM-5.2 via OpenRouter / 自定义） |
 | GIS | GeoPandas + Shapely + PyProj + Rasterio |
 | 栅格处理 | NumPy + scikit-image + Matplotlib |
 | 网络分析 | OSMnx + NetworkX |
@@ -174,6 +197,17 @@ Gis-WorkTable/
 │   ├── requirements.txt         # Python 依赖
 │   ├── services/
 │   │   ├── tools.py             # 核心工具集（80+ @tool 函数，~4900 行）
+│   │   ├── data_discovery.py    # 开放数据发现入口（发现/下载/导入调度）
+│   │   ├── data_providers/      # 数据 Provider 抽象与实现
+│   │   │   ├── base.py          #   DataProvider ABC + 注册表 + 能力列表
+│   │   │   ├── models.py        #   数据模型（DataRequest/DataHit/Asset）
+│   │   │   ├── errors.py        #   明确错误类型（禁静默失败）
+│   │   │   ├── http.py          #   统一 HTTP：超时/受限重试/大小上限
+│   │   │   ├── storage.py       #   GIS 文件落盘 + CRS + metadata
+│   │   │   ├── osm_provider.py  #   OpenStreetMap（Overpass 官方 API）
+│   │   │   ├── copernicus_provider.py  # Copernicus Data Space
+│   │   │   ├── usgs_provider.py        # USGS Landsat（STAC）
+│   │   │   └── gscloud_provider.py     # 地理空间数据云（指引）
 │   │   ├── graph.py             # LangGraph ReAct Agent 构建
 │   │   ├── ai_service.py        # AI 服务层（LLM 调用、历史管理、技能路由）
 │   │   ├── network_service.py   # 网络分析（OSMnx + NetworkX）
@@ -187,7 +221,9 @@ Gis-WorkTable/
 │   └── tests/
 │       ├── test_spatial_tools.py   # 空间分析工具测试
 │       ├── test_network.py         # 网络分析测试
-│       └── test_coverage_gap.py    # 覆盖率补充测试
+│       ├── test_coverage_gap.py    # 覆盖率补充测试
+│       ├── test_llm_config.py      # LLM 配置测试
+│       └── test_data_discovery.py  # 开放数据发现/获取测试
 │
 ├── skills/                      # AI 技能文档（12 个领域）
 ├── data/                        # 示例路网数据
@@ -215,10 +251,14 @@ Gis-WorkTable/
 | POST | `/api/network/snap` | 路网点吸附 |
 | POST | `/api/network/solve` | 网络分析求解 |
 | GET | `/api/boundary` | 获取行政边界 |
+| GET | `/api/data/providers` | 列出开放数据源及其能力/认证 |
+| POST | `/api/data/discover` | 数据发现（返回各源元信息） |
+| POST | `/api/data/download` | 获取数据 → GIS 文件 → 注册图层 |
 | GET/POST | `/api/projects` | 工程列表/创建 |
 | POST | `/api/projects/auto-save` | 自动保存 |
 | GET | `/api/version` | 版本信息 |
 | DELETE | `/api/chat/memory` | 清空对话历史 |
+| POST | `/api/test-key` | 通用测速（入参即 Provider 的 `llm_config`） |
 
 ## 运行测试
 
@@ -226,13 +266,13 @@ Gis-WorkTable/
 python -m pytest backend/tests/ -v
 ```
 
-当前 238 个测试全部通过。
+当前 291 个测试全部通过（原 263 + 开放数据发现/获取 28）。
 
 ## 已知限制
 
 - `requirements.txt` 未完整列出所有运行时依赖（`rasterio`、`scipy`、`scikit-image`、`pyproj`、`langchain`、`langgraph`、`pyogrio`、`Pillow`、`networkx`、`requests` 等在代码中使用但未声明），安装后可能需要手动补装
 - 无 Docker 配置，无 CI/CD 流水线
-- API Key 通过前端设置弹窗管理，存储在本地 `apikey.txt`（已 gitignore）
+- API Key 由前端「AI 模型」设置面板的 Provider 列表管理，存浏览器 localStorage、随请求携带即用即弃；后端不再读 `apikey.txt` / `glm_apikey.txt` 兜底
 - 前端为原生 HTML/CSS/JS，无构建工具和包管理
 - 部分高级功能（时序动画、图表联动）的前端交互仍在迭代中
 - 临时文件（`cache/`、`uploads/`、`logs/`、`output/`）在运行时自动生成，已通过 `.gitignore` 排除

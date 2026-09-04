@@ -1471,3 +1471,198 @@ class TestClipRaster:
         r = clip_raster.invoke({"layer_name": "clip_test3", "clip_layer_name": "far_poly"})
         os.unlink(dest)
         assert "失败" in r or "无重叠" in r or "为空" in r
+
+
+# ============================================================
+# 沙箱安全测试（E1 加固验证）
+# ============================================================
+
+class TestSandboxSecurity:
+    """验证 execute_python 沙箱的 AST 检查是否正确拦截内省逃逸"""
+
+    def test_bans_type_direct(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("x = type(1)")
+        assert r is not None and "内置类型" in r
+
+    def test_bans_object_direct(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("x = object()")
+        assert r is not None and "内置类型" in r
+
+    def test_bans_super_direct(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("class A:\n  def f(self): return super()")
+        assert r is not None and "内置类型" in r
+
+    def test_bans_type_attribute(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("x = foo.type")
+        assert r is not None and "内置类型" in r
+
+    def test_bans_object_subclasses(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("x = object.__subclasses__()")
+        assert r is not None
+
+    def test_bans_requests_import(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("import requests")
+        assert r is not None and "非白名单" in r
+
+    def test_bans_requests_from_import(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("from requests import get")
+        assert r is not None and "非白名单" in r
+
+    def test_bans_from_module_import_banned_name(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("from geopandas import os")
+        assert r is not None and "系统模块" in r
+
+    def test_bans_from_module_import_builtin(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("from geopandas import type")
+        assert r is not None and "内置类型" in r
+
+    def test_bans_from_module_import_magic(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("from geopandas import __dict__")
+        assert r is not None and "魔法属性" in r
+
+    def test_bans_open_write_outside_output(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("open('/etc/passwd', 'w')")
+        assert r is not None and "非 output" in r
+
+    def test_allows_open_write_output(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("open('output/result.json', 'w')")
+        assert r is None
+
+    def test_allows_open_read(self):
+        from backend.services.tools import _ast_sandbox_check
+        r = _ast_sandbox_check("open('data.csv').read()")
+        assert r is None
+
+    def test_bans_osmnx_submodule(self):
+        from backend.services.tools import _ast_sandbox_check
+        # osmnx 子模块不在白名单
+        r = _ast_sandbox_check("from osmnx import something")
+        # osmnx 在白名单，但 something 不在 banned → 不拦截 import 本身
+        # 但如果是 from osmnx import os → 拦截
+        r2 = _ast_sandbox_check("from osmnx import os")
+        assert r2 is not None
+
+    def test_allows_normal_gis_code(self):
+        from backend.services.tools import _ast_sandbox_check
+        code = """
+import geopandas as gpd
+from shapely.geometry import Point
+gdf = gpd.GeoDataFrame(geometry=[Point(1, 1)], crs='EPSG:4326')
+print(gdf.to_json())
+"""
+        r = _ast_sandbox_check(code)
+        assert r is None
+
+
+# ============================================================
+# execute_python matplotlib PNG 生成测试
+# ============================================================
+
+class TestMatplotlibPNG:
+    """验证 execute_python 能真正执行 matplotlib 并产出 PNG"""
+
+    def setup_method(self):
+        reset_state()
+        T.init_temp_dir()
+
+    def test_savefig_with_output_prefix(self):
+        """系统提示词告诉 Agent 用 plt.savefig('output/chart.png')，必须能成功"""
+        code = (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig, ax = plt.subplots()\n"
+            "ax.plot([1, 2, 3], [1, 4, 9])\n"
+            "fig.savefig('output/chart.png', dpi=72)\n"
+            "plt.close(fig)\n"
+            "print('saved')\n"
+        )
+        result = T.execute_python.invoke({"code": code})
+        assert "执行成功" in result or "图片" in result
+        assert len(T._pending_images) > 0
+        item = T._pending_images[-1]
+        assert item["type"] == "png"
+        url = item["url"]
+        assert url.startswith("/output/")
+        fname = url.split("/output/", 1)[1]
+        fpath = os.path.join(T._temp_output_dir, fname)
+        assert os.path.exists(fpath), f"PNG file not found: {fpath}"
+        assert os.path.getsize(fpath) > 0
+
+    def test_savefig_without_prefix(self):
+        """plt.savefig('chart.png') 直接保存也必须能成功"""
+        code = (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig, ax = plt.subplots()\n"
+            "ax.bar([1, 2, 3], [3, 7, 2])\n"
+            "fig.savefig('chart.png', dpi=72)\n"
+            "plt.close(fig)\n"
+            "print('saved')\n"
+        )
+        result = T.execute_python.invoke({"code": code})
+        assert "执行成功" in result or "图片" in result
+        assert len(T._pending_images) > 0
+        item = T._pending_images[-1]
+        assert item["type"] == "png"
+        fname = item["url"].split("/output/", 1)[1]
+        fpath = os.path.join(T._temp_output_dir, fname)
+        assert os.path.exists(fpath), f"PNG file not found: {fpath}"
+        assert os.path.getsize(fpath) > 0
+
+    def test_multiple_savefig_in_one_call(self):
+        """一次 execute_python 生成多张图片，必须全部检测到"""
+        code = (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "for i in range(3):\n"
+            "    fig, ax = plt.subplots()\n"
+            "    ax.plot([1,2,3], [i,i+1,i+2])\n"
+            "    fig.savefig(f'output/fig_{i}.png', dpi=72)\n"
+            "    plt.close(fig)\n"
+            "print('saved 3 figures')\n"
+        )
+        before_count = len(T._pending_images)
+        result = T.execute_python.invoke({"code": code})
+        assert "执行成功" in result or "图片" in result
+        new_items = T._pending_images[before_count:]
+        assert len(new_items) == 3, f"Expected 3 images, got {len(new_items)}"
+        for item in new_items:
+            assert item["type"] == "png"
+            fname = item["url"].split("/output/", 1)[1]
+            fpath = os.path.join(T._temp_output_dir, fname)
+            assert os.path.exists(fpath), f"PNG not found: {fpath}"
+            assert os.path.getsize(fpath) > 0
+
+    def test_png_file_not_cleaned_after_exec(self):
+        """execute_python 结束后 PNG 文件必须保留在输出目录"""
+        code = (
+            "import matplotlib\n"
+            "matplotlib.use('Agg')\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig, ax = plt.subplots()\n"
+            "ax.plot([1,2], [3,4])\n"
+            "fig.savefig('output/persist_test.png', dpi=72)\n"
+            "plt.close(fig)\n"
+            "print('done')\n"
+        )
+        T.execute_python.invoke({"code": code})
+        assert len(T._pending_images) > 0
+        fname = T._pending_images[-1]["url"].split("/output/", 1)[1]
+        fpath = os.path.join(T._temp_output_dir, fname)
+        assert os.path.exists(fpath), "PNG was cleaned up after execute_python"
+        assert os.path.getsize(fpath) > 1000, "PNG too small to be valid"

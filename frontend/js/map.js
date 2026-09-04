@@ -888,18 +888,18 @@ var _undoSkip = false;
       var selEl = document.getElementById('modelSelector');
       var curProvider = selEl ? selEl.value : 'glm-routed';
 
-      // 检查 API Key
+      // 检查 API Key（从 Provider 列表解析，支持任意 OpenAI 兼容 Provider）
       var _api = window.GIS.api;
-      var _key = curProvider === 'agnes' ? (_api ? _api.getAgnesApiKey() : '') : (curProvider === 'glm' || curProvider === 'glm-routed') ? (_api ? _api.getGLMApiKey() : '') : (_api ? _api.getApiKey() : '');
+      var _prov = _api && _api.resolveProvider ? _api.resolveProvider(curProvider) : null;
+      var _key = _prov ? (_prov.api_key || '') : '';
       if (!_key) {
         var _names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
-        if (window.GIS.chat.addMessage) window.GIS.chat.addMessage((_names[curProvider] || curProvider) + ' 未配置 API Key，请点击齿轮按钮配置', 'system');
+        if (window.GIS.chat.addMessage) window.GIS.chat.addMessage(((_prov && _prov.name) || _names[curProvider] || curProvider) + ' 未配置 API Key，请点击齿轮按钮配置', 'system');
         return;
       }
 
       var valEl = document.getElementById('modelSelectValue');
-      var names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
-      if (valEl) valEl.textContent = names[curProvider] || curProvider;
+      if (valEl && _prov && _prov.name) valEl.textContent = _prov.name;
       try {
         var _sendResult = window.GIS.chat.send(msg, { displayText: displayMsg || undefined, provider: curProvider });
         if (_sendResult && typeof _sendResult.catch === 'function') {
