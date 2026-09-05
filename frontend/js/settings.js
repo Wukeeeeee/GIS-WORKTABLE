@@ -23,6 +23,7 @@ window.GIS = window.GIS || {};
     // 各块互相隔离：任何一块报错都不影响顶栏模型名同步等其余功能
     try { bindSettingsModal(); } catch (e) { console.warn('[GIS settings] bindSettingsModal', e); }
     try { bindAmap(); } catch (e) { console.warn('[GIS settings] bindAmap', e); }
+    try { bindGeoCredentials(); } catch (e) { console.warn('[GIS settings] geo credentials', e); }
     try { initProviderPanel(); } catch (e) { console.warn('[GIS settings] provider panel', e); }
     try { initTheme(); } catch (e) {}
     try { initFontSize(); } catch (e) {}
@@ -75,21 +76,29 @@ window.GIS = window.GIS || {};
     };
   }
 
-  function openModal() {
+  function openModal(initialPanel) {
     var modal = document.getElementById('settingsModal');
     if (!modal) return;
+    var targetPanel = initialPanel || 'appearance';
     var sidenavItems = document.querySelectorAll('.modal-sidenav-item');
     var panels = _panels();
     sidenavItems.forEach(function(s) { s.classList.remove('active'); });
-    var firstNav = document.querySelector('.modal-sidenav-item[data-panel="appearance"]');
-    if (firstNav) firstNav.classList.add('active');
+    var targetNav = document.querySelector('.modal-sidenav-item[data-panel="' + targetPanel + '"]');
+    if (targetNav) {
+      targetNav.classList.add('active');
+    } else {
+      var firstNav = document.querySelector('.modal-sidenav-item[data-panel="appearance"]');
+      if (firstNav) firstNav.classList.add('active');
+      targetPanel = 'appearance';
+    }
     Object.keys(panels).forEach(function(k) {
-      if (panels[k]) panels[k].classList.toggle('active', k === 'appearance');
+      if (panels[k]) panels[k].classList.toggle('active', k === targetPanel);
     });
 
     // 打开设置前把当前 Provider 列表渲染进面板
     renderProviderList();
     populateAmapInput();
+    populateGeoCredentials();
     modal.style.display = 'flex';
     updateModelStatusDot();
   }
@@ -325,6 +334,70 @@ window.GIS = window.GIS || {};
   // ============================================================
   // 高德地图 Key（仍单独存，放 #panelGeoApi）
   // ============================================================
+
+  // ============================================================
+  // 数据下载服务账号凭据（Copernicus / USGS / GSCloud）
+  // ============================================================
+
+  var GEO_SERVICES = ['copernicus', 'usgs', 'gscloud', 'nasa', 'opentopo', 'asf', 'tianditu', 'resdc', 'geoss', 'pie'];
+  // key 型服务（单字段 API Key）；其余为 account 型（用户名+密码）
+  var GEO_KEY_SERVICES = ['opentopo', 'tianditu'];
+
+  function populateGeoCredentials() {
+    var all = GIS.api.getGeoCredentials();
+    GEO_SERVICES.forEach(function(svc) {
+      var cred = all[svc] || {};
+      var userEl = document.querySelector('.geo-cred-user[data-cred="' + svc + '"]');
+      var passEl = document.querySelector('.geo-cred-pass[data-cred="' + svc + '"]');
+      var keyEl = document.querySelector('.geo-cred-key[data-cred="' + svc + '"]');
+      if (userEl) userEl.value = cred.username || '';
+      if (passEl) passEl.value = cred.password || '';
+      if (keyEl) keyEl.value = cred.api_key || '';
+      updateGeoCredStatus(svc, cred);
+    });
+  }
+
+  function updateGeoCredStatus(svc, cred) {
+    var el = document.querySelector('[data-cred-status="' + svc + '"]');
+    if (!el) return;
+    var c = cred || {};
+    var has = (c.type === 'key' || GEO_KEY_SERVICES.indexOf(svc) >= 0) ? !!c.api_key : !!(c.username && c.password);
+    el.textContent = has ? '已配置' : '未配置';
+    el.className = 'model-config-badge' + (has ? ' configured' : '');
+  }
+
+  function bindGeoCredentials() {
+    // 保存
+    document.querySelectorAll('.geo-cred-save').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var svc = btn.dataset.cred;
+        var isKey = GEO_KEY_SERVICES.indexOf(svc) >= 0;
+        var userEl = document.querySelector('.geo-cred-user[data-cred="' + svc + '"]');
+        var passEl = document.querySelector('.geo-cred-pass[data-cred="' + svc + '"]');
+        var keyEl = document.querySelector('.geo-cred-key[data-cred="' + svc + '"]');
+        var cred;
+        if (isKey) {
+          cred = { type: 'key', api_key: (keyEl ? keyEl.value : '').trim() };
+        } else {
+          cred = { type: 'account', username: (userEl ? userEl.value : '').trim(), password: passEl ? passEl.value : '' };
+        }
+        GIS.api.setGeoCredential(svc, cred);
+        updateGeoCredStatus(svc, cred);
+        var msg = document.querySelector('.geo-cred-msg[data-cred="' + svc + '"]');
+        if (msg) { msg.textContent = '已保存'; msg.className = 'modal-test-result modal-test-success'; }
+        setTimeout(function() { if (msg) { msg.textContent = ''; msg.className = 'modal-test-result'; } }, 2000);
+      });
+    });
+    // 密码显隐切换
+    document.querySelectorAll('.geo-cred-eye').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var wrap = this.closest('.modal-input-wrapper');
+        var inp = wrap ? wrap.querySelector('input') : null;
+        if (inp) inp.type = inp.type === 'password' ? 'text' : 'password';
+      });
+    });
+    populateGeoCredentials();
+  }
 
   function bindAmap() {
     var input = document.getElementById('amapApiKeyInput');

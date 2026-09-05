@@ -40,6 +40,7 @@ window.GIS.api = (() => {
   const GLM_STORAGE_KEY = 'gis_glm_api_key';
   const AGNES_STORAGE_KEY = 'gis_agnes_api_key';
   const AMAP_STORAGE_KEY = 'gis_amap_api_key';
+  const GEO_CRED_STORAGE_KEY = 'gis_geo_credentials'; // { copernicus/usgs/gscloud: {username, password} }
   const MODEL_STORAGE_KEY = 'gis_selected_model';     // 历史 key，保留读写做兼容
   const MODEL_STATUS_KEY = 'gis_model_status';
   const PROVIDERS_STORAGE_KEY = 'gis_llm_providers';
@@ -198,6 +199,27 @@ window.GIS.api = (() => {
   }
   function setAmapKey(key) {
     if (key) { _lsSet(AMAP_STORAGE_KEY, key); } else { _lsRemove(AMAP_STORAGE_KEY); }
+  }
+
+  /** 读取数据下载服务账号凭据（Copernicus / USGS / GSCloud），不存在返回空对象 */
+  function getGeoCredentials() {
+    try {
+      var raw = _lsGet(GEO_CRED_STORAGE_KEY);
+      if (!raw) return {};
+      var obj = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return (obj && typeof obj === 'object') ? obj : {};
+    } catch (e) { return {}; }
+  }
+  /** 保存数据下载服务账号凭据 */
+  function setGeoCredentials(creds) {
+    _lsSet(GEO_CRED_STORAGE_KEY, JSON.stringify(creds || {}));
+  }
+  /** 更新单个服务凭据（保留其他服务）。cred 为对象：{type:'account',username,password} 或 {type:'key',api_key} */
+  function setGeoCredential(service, cred) {
+    var all = getGeoCredentials();
+    all[service] = (cred && typeof cred === 'object') ? cred : {};
+    setGeoCredentials(all);
+    return all;
   }
 
   // ===== 当前选中 Provider =====
@@ -560,6 +582,7 @@ window.GIS.api = (() => {
     getApiKey, setApiKey, getGLMApiKey, setGLMApiKey,
     getAgnesApiKey, setAgnesApiKey,
     getAmapKey, setAmapKey,
+    getGeoCredentials, setGeoCredentials, setGeoCredential,
     getSelectedModel, setSelectedModel, setSelectedProvider,
     getProviders, setProviders, getProvider,
     addProvider, upsertProvider, removeProvider, duplicateProvider,

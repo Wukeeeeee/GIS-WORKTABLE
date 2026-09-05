@@ -265,8 +265,8 @@ def run_agent(
     _simple = True
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _need_tools = any(kw in _last for kw in ['搜索','搜','查','画','图','分析','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','找','获取','道路','建筑','水系','影像','遥感','DEM','要素','求','多少','什么','哪','?','？','继续','确认','取消','接着'])
-        if _need_tools or len(_last) > 80:
+        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','帮我','对图层','对这个图层'])
+        if _need_tools or len(_last) > 120:
             _simple = False
     if _simple:
         if _ai_svc._request_cancelled:
@@ -374,37 +374,13 @@ def run_agent(
         except Exception as _pe:
             print(f"[GIS] 强制补执行失败（保留原结果）: {_pe}", flush=True)
 
-    # === 自校验：Agent 2 验证 ===
-    # Verifier 复用同一份 cfg，但强制关 reasoning，保证吐纯 JSON
-    if original_message and len(original_message) > 3:
-        verdict = _run_verifier(build_llm(disable_reasoning(cfg)), original_message, final_text, pending)
-        if not verdict.get("pass", True):
-            reason = verdict.get("reason", "未知原因")
-            print(f"[GIS] 自校验未通过，启动修正: {reason}", flush=True)
-            # 修正：追加一条 HumanMessage，让 Agent 1 修正结果
-            try:
-                fix_msg = HumanMessage(
-                    content=(
-                        f"你上一轮的结果未通过质量检查。\n"
-                        f"问题：{reason}\n"
-                        f"请针对上述问题，在现有结果基础上修复后重新输出。"
-                        f"不要从头开始，只修正问题所在。"
-                    )
-                )
-                corrected = agent.invoke(
-                    {"messages": final_messages + [fix_msg]},
-                    {"recursion_limit": 40},
-                )
-                corr_msgs = corrected.get("messages", [])
-                final_text, final_reasoning = _last_ai_text(corr_msgs)
-                # 合并修正中产生的新图层/图片
-                corr_pending = get_pending_state()
-                for key in ("layers", "images", "layer_ops"):
-                    if corr_pending.get(key):
-                        pending[key].extend(corr_pending[key])
-                print(f"[GIS] 修正完成", flush=True)
-            except Exception as fix_err:
-                print(f"[GIS] 修正尝试失败，使用原结果: {fix_err}", flush=True)
+    # === 自校验已停用（2026-09-05）===
+    # 原因：Verifier 每轮额外一次 LLM 调用，增加延迟和 API 成本；
+    # 实际运行中极少抓到错误（大量默认通过的兜底逻辑导致放行率高）。
+    # _run_verifier 函数保留，如需恢复取消下方注释即可。
+    # if original_message and len(original_message) > 3:
+    #     verdict = _run_verifier(build_llm(disable_reasoning(cfg)), original_message, final_text, pending)
+    #     ...
 
     # 一轮结束：新注册但未展示的图层 → 挂起为 pending（用户“继续/确认”即加载）
     _auto_promote_pending(
@@ -469,8 +445,8 @@ def run_agent_stream(
     _simple = True
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _need_tools = any(kw in _last for kw in ['搜索','搜','查','画','图','分析','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','找','获取','道路','建筑','水系','影像','遥感','DEM','要素','求','多少','什么','哪','?','？','继续','确认','取消','接着'])
-        if _need_tools or len(_last) > 80:
+        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','帮我','对图层','对这个图层'])
+        if _need_tools or len(_last) > 120:
             _simple = False
     if _simple:
         _resp = llm.invoke(messages)
@@ -608,33 +584,9 @@ def run_agent_stream(
         except Exception as _pe:
             print(f"[GIS] 流式强制补执行失败（保留原结果）: {_pe}", flush=True)
 
-    # === 自校验（流式模式也做，只做一轮修正，防止延迟过长） ===
-    if original_message and len(original_message) > 3:
-        yield "data: {\"type\":\"verifying\"}\n\n"
-        verdict = _run_verifier(build_llm(disable_reasoning(cfg)), original_message, final_text, pending)
-        if not verdict.get("pass", True):
-            reason = verdict.get("reason", "未知原因")
-            print(f"[GIS] 流式自校验未通过，启动修正: {reason}", flush=True)
-            try:
-                fix_msg = HumanMessage(
-                    content=(
-                        f"你上一轮的结果未通过质量检查。\n"
-                        f"问题：{reason}\n"
-                        f"请在现有结果基础上修复后重新输出，不要从头开始。"
-                    )
-                )
-                corrected = agent.invoke(
-                    {"messages": msgs + [fix_msg]},
-                    {"recursion_limit": 40},
-                )
-                corr_msgs = corrected.get("messages", [])
-                final_text, final_reasoning = _last_ai_text(corr_msgs)
-                corr_pending = get_pending_state()
-                for key in ("layers", "images", "layer_ops"):
-                    if corr_pending.get(key):
-                        pending[key].extend(corr_pending[key])
-            except Exception as fix_err:
-                print(f"[GIS] 流式修正失败，使用原结果: {fix_err}", flush=True)
+    # === 自校验已停用（2026-09-05，流式版本）===
+    # 同 run_agent：节省一次 LLM 调用，降低延迟和成本。
+    # yield "data: {\"type\":\"verifying\"}\n\n" 行已一并移除。
 
     # 一轮结束：新注册但未展示的图层 → 挂起为 pending（用户“继续/确认”即加载）
     _auto_promote_pending(

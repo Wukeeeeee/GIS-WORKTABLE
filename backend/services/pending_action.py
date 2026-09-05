@@ -134,14 +134,20 @@ def pending_action_snapshot() -> dict:
 
 
 def describe_action(action: dict) -> dict | None:
-    """给前端渲染「继续/取消」按钮用的轻量描述（不含 geojson 本体）。"""
+    """给前端渲染「继续/取消」或「选项按钮」用的轻量描述（不含 geojson 本体）。"""
     if not isinstance(action, dict):
         return None
-    return {
+    result = {
         "action": action.get("action", ""),
         "summary": action.get("summary", "")[:200],
         "layer_names": [l.get("name") for l in (action.get("layers") or []) if l.get("name")],
     }
+    # choose_option 动作：返回选项列表供前端渲染按钮组
+    if action.get("action") == "choose_option":
+        result["options"] = action.get("options", [])
+        result["choice_key"] = action.get("choice_key", "")
+        result["selected"] = action.get("selected")
+    return result
 
 
 # ============================================================

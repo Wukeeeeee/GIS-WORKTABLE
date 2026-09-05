@@ -1088,6 +1088,9 @@ var _undoSkip = false;
       case 'tool-spatial-analysis':
         if (GIS.spatial && GIS.spatial.toggle) GIS.spatial.toggle();
         break;
+      case 'tool-spatial-stats':
+        if (GIS.spatialStats && GIS.spatialStats.toggle) GIS.spatialStats.toggle();
+        break;
       case 'tool-debug-panel':
         if (GIS.debug && GIS.debug.toggle) GIS.debug.toggle();
         break;

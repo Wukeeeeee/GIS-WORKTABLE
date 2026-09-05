@@ -173,7 +173,9 @@ window.GIS = window.GIS || {};
             try { GIS.map.loadGeoJSON(layer.geojson, uniqueName); } catch(_) {}
             if (GIS.layers && GIS.layers.addLayer) {
               GIS.layers.addLayer({
+                layer_id: layer.layer_id || undefined,
                 filename: layer.name || '加载图层',
+                _rawName: uniqueName,
                 geojson: layer.geojson,
                 geometry_type: layer.geometry_type || '未知',
                 crs: 'WGS-84',
@@ -198,6 +200,13 @@ window.GIS = window.GIS || {};
     GIS.api.deleteProject(pid).then(function() {
       if (itemEl && itemEl.parentNode) itemEl.remove();
       _refreshList();
+      // 若删除的是当前正在查看的工程，联动清空会话和图层，避免残留
+      if (pid === _currentProjectId) {
+        _currentProjectId = null;
+        GIS.chat.clear();
+        if (GIS.layers && typeof GIS.layers.clearAll === 'function') GIS.layers.clearAll();
+        if (GIS.map && typeof GIS.map.resetView === 'function') { try { GIS.map.resetView(); } catch(_) {} }
+      }
     }).catch(function(err) {
       GIS.chat.addMessage('删除失败: ' + err.message, 'system');
     });

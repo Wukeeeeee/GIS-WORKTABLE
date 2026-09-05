@@ -720,11 +720,14 @@ html, body {
   color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
-/* 请求中禁用状态（只禁用模型选择器和上传按钮，停止按钮保持醒目） */
-.chat-input-model-bar.is-disabled .model-select-wrapper,
+/* 请求中禁用状态（只禁用上传按钮；模型选择器保持可用，切换模型下次请求生效，停止按钮保持醒目） */
 .chat-input-model-bar.is-disabled #uploadTrigger {
   opacity: 0.4;
   pointer-events: none;
+}
+.chat-input-model-bar.is-disabled .model-select-wrapper {
+  opacity: 0.6;
+  cursor: pointer;
 }
 
 /* ========== Main Content Area ========== */
@@ -794,7 +797,7 @@ html, body {
   gap: 4px;
   padding: 4px 10px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-12, 12px);
   color: var(--ui-gray-600, #666);
   white-space: nowrap;
   transition: background var(--transition-fast, 0.15s);
@@ -830,7 +833,7 @@ html, body {
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-12, 12px);
   color: var(--ui-gray-700, #444);
   text-align: left;
   transition: background var(--transition-fast, 0.15s);
@@ -2111,6 +2114,41 @@ html.theme-dark .step-running { color:var(--on-surface); }
   width: 14px;
   height: 14px;
 }
+/* 引用回复按钮（复制按钮左侧） */
+.btn-quote-ai {
+  position: absolute;
+  right: 36px;
+  bottom: 6px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 4px;
+  background: var(--surface-container-low);
+  color: var(--ui-gray-400);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+}
+.message-bubble-ai:hover .btn-quote-ai {
+  opacity: 1;
+}
+.btn-quote-ai:hover {
+  color: var(--ui-gray-900);
+  border-color: var(--ui-gray-300);
+  opacity: 1;
+}
+.btn-quote-ai.quoted {
+  color: var(--ui-gray-900);
+  border-color: var(--ui-gray-300);
+  opacity: 1;
+}
+.btn-quote-ai svg {
+  width: 14px;
+  height: 14px;
+}
 /* ========== 模型标记徽章（右上角圆角矩形） ========== */
 .msg-badge {
   display: inline-block;
@@ -2493,10 +2531,10 @@ html.theme-dark .step-running { color:var(--on-surface); }
 /* ===== 三栏侧边栏设置弹窗 ===== */
 .modal-sidebar {
   display: flex;
-  width: 720px;
-  max-width: 94vw;
-  height: 520px;
-  max-height: 85vh;
+  width: 1248px;
+  max-width: 96vw;
+  height: 1092px;
+  max-height: 92vh;
   padding: 0;
   overflow: hidden;
   border-radius: 6px;
@@ -4531,3 +4569,173 @@ html.theme-dark .debug-empty { color: #666; }
 tr[data-group] { transition: none; }
 html.theme-dark .group-header { background: var(--surface-container-highest, #2a2a2a); }
 html.theme-dark .group-name-text:hover { background: var(--surface-dim, #333); }
+
+/* ============================================================
+   连接器（数据源）浮层面板
+   ============================================================ */
+.connector-panel {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  width: 380px;
+  max-height: 480px;
+  background: var(--ui-bg-white, #fff);
+  border: 1px solid var(--ui-gray-200, #e0e0e0);
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-size: var(--fs-13, 13px);
+}
+.connector-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ui-gray-100, #f0f0f0);
+  background: var(--ui-gray-50, #fafafa);
+}
+.connector-panel-title {
+  font-weight: 600;
+  color: var(--ui-gray-800, #333);
+  flex: 1;
+}
+.connector-panel-count {
+  font-size: var(--fs-12, 12px);
+  color: var(--ui-gray-500, #888);
+}
+.connector-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ui-gray-400, #aaa);
+  padding: 2px;
+  display: flex;
+  align-items: center;
+}
+.connector-close:hover { color: var(--ui-gray-700, #555); }
+.connector-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 6px 0;
+}
+.connector-item {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--ui-gray-50, #f5f5f5);
+  transition: background 0.15s;
+}
+.connector-item:hover { background: var(--ui-gray-50, #fafafa); }
+.connector-item.is-configured .connector-name { color: var(--ui-gray-900, #1a1a1a); }
+.connector-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+.connector-name {
+  font-weight: 500;
+  color: var(--ui-gray-600, #666);
+}
+.connector-status {
+  font-size: var(--fs-11, 11px);
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-weight: 500;
+}
+.connector-status.configured {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+.connector-status.unconfigured {
+  background: #f5f5f5;
+  color: #999;
+}
+.connector-desc {
+  font-size: var(--fs-12, 12px);
+  color: var(--ui-gray-500, #888);
+  margin-bottom: 6px;
+}
+.connector-actions {
+  display: flex;
+  gap: 6px;
+}
+.connector-test, .connector-setup {
+  font-size: var(--fs-12, 12px);
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--ui-gray-200, #ddd);
+  background: var(--ui-bg-white, #fff);
+  color: var(--ui-gray-600, #666);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.connector-test:hover, .connector-setup:hover {
+  border-color: #1976d2;
+  color: #1976d2;
+}
+.connector-test.test-ok {
+  background: #e8f5e9;
+  border-color: #4caf50;
+  color: #2e7d32;
+}
+.connector-test.test-fail {
+  background: #ffebee;
+  border-color: #ef5350;
+  color: #c62828;
+}
+.connector-panel-footer {
+  padding: 8px 14px;
+  border-top: 1px solid var(--ui-gray-100, #f0f0f0);
+  background: var(--ui-gray-50, #fafafa);
+  font-size: var(--fs-11, 11px);
+  color: var(--ui-gray-500, #888);
+}
+
+/* 引用预览条 */
+.quote-attach-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--ui-gray-200, #e0e0e0);
+  border-radius: 6px;
+  background: var(--ui-gray-50, #f8f9fa);
+}
+.quote-attach-icon {
+  color: #2f7bf6;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.quote-attach-body {
+  flex: 1;
+  min-width: 0;
+}
+.quote-attach-label {
+  font-size: 11px;
+  color: var(--ui-gray-400, #999);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.quote-attach-text {
+  font-size: 12px;
+  color: var(--ui-gray-600, #666);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quote-attach-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--ui-gray-400, #aaa);
+  padding: 2px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.quote-attach-close:hover { color: var(--ui-gray-700, #555); }

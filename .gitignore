@@ -65,3 +65,9 @@ scripts/
 
 # 本地测试数据（不上传）
 test_data/
+
+# 临时环境与脚本
+.tmpenv/
+
+# AI 代码解析学习笔记（本地，不提交）
+code_notes/

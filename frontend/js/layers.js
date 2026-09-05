@@ -134,13 +134,15 @@ window.GIS = window.GIS || {};
     const color = layer.color || colors[layerData.length % colors.length];
     // 重名自动加 (1) (2)
     var name = layer.filename || '未命名';
-    var _rawName = layer.filename || layer.layer_id || '未命名'; // 保留原始名称用于地图模块查找
+    var _rawName = layer._rawName || layer.filename || layer.layer_id || '未命名'; // 保留原始名称用于地图模块查找（工程加载时传入带 _loaded 后缀的注册名）
     if (layerData.some(function(l) { return l.filename === name; })) {
       var suffix = 1;
       while (layerData.some(function(l) { return l.filename === name + '(' + suffix + ')'; })) { suffix++; }
       name = name + '(' + suffix + ')';
     }
-    layerData.push({ ...layer, filename: name, _rawName, visible: true, color });
+    // 兜底生成 layer_id：工程恢复等场景可能不带 layer_id，缺失会导致删除按钮 data-id 为空而失效
+    var _layerId = layer.layer_id || ('layer_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e6).toString(36));
+    layerData.push({ ...layer, layer_id: _layerId, filename: name, _rawName, visible: true, color });
     renderList();
     _syncLayerOrder();
     if (!skipRegister && window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
@@ -165,6 +167,12 @@ window.GIS = window.GIS || {};
         window.GIS.api.unregisterLayer(target.filename || target.layer_id || '');
       }
     }
+  }
+
+  // 清空所有图层（新建会话/删除工程时调用）：逐个走 removeLayer 保证地图与后端同步清理
+  function clearAll() {
+    var ids = layerData.map(function(l) { return l.layer_id; });
+    ids.forEach(function(id) { removeLayer(id); });
   }
 
   // 切换图层显隐
@@ -1791,7 +1799,7 @@ window.GIS = window.GIS || {};
   }
 
   GIS.layers = {
-    init, renderList, addLayer, removeLayer, toggleVisibility, downloadLayer,
+    init, renderList, addLayer, removeLayer, clearAll, toggleVisibility, downloadLayer,
     analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
     syncLayerOrder: _syncLayerOrder,
     getLayers: () => [...layerData],
@@ -1804,6 +1812,10 @@ window.GIS = window.GIS || {};
       var layer = layerData.find(function(l) { return l.filename === name; });
       if (!layer) return null;
       return layer.geojson || null;
+    },
+    /** 按图层名称获取完整图层对象（供空间统计面板使用） */
+    getLayerByName: function(name) {
+      return layerData.find(function(l) { return l.filename === name || l.layer_id === name; }) || null;
     },
     /** AI 自然语言调用：对图层应用分级色彩 */
     applyGraduatedColors: _applyGraduatedFromAI,

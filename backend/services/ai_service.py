@@ -26,6 +26,24 @@ _current_provider = "deepseek"
 # 技能目录（ Markdown 文件，由 GLM 路由加载）
 _SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "skills")
 
+# GIS 专业知识库目录（结构化知识模块，服务于 Agent 任务规划和方法选择）
+_KNOWLEDGE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "knowledge")
+
+# 知识库标签到文件名映射（文件名带数字前缀，标签用于路由匹配）
+_KNOWLEDGE_MAP = {
+    "gis_index": "00_index.md",
+    "gis_basics": "01_gis_basics.md",
+    "coordinate_systems": "02_coordinate_systems.md",
+    "vector_processing": "03_vector_processing.md",
+    "raster_processing": "04_raster_processing.md",
+    "spatial_analysis": "05_spatial_analysis.md",
+    "spatial_statistics": "06_spatial_statistics.md",
+    "remote_sensing_advanced": "07_remote_sensing.md",
+    "dem_terrain": "08_dem_terrain.md",
+    "cartography": "09_cartography.md",
+    "gis_workflows": "10_workflows.md",
+}
+
 # 内联技能缓存
 _INLINE_SKILLS = {
     "matplotlib": "Matplotlib 数据可视化，支持线图/散点图/柱状图/直方图/热图/六边形分箱/3D图。中文字体已配。plt.savefig('output/chart_name.png')",
@@ -112,6 +130,19 @@ _GLM_ROUTER_PROMPT = """你是一个技能路由分析器。分析用户的请�
 - amap：需要搜索 POI、查天气、地理编码、逆地理编码等高德地图数据时
 - road_network：需要获取道路网络、路网分析、道路统计时（用 OSMnx + Overpass 多镜像自动切换；注意 OSM 中国数据不完整，城市可接受，乡村缺失）
 
+===== GIS 专业知识库（结构化方法指导，优先于普通技能）=====
+- gis_basics：GIS 基础概念、标准处理流程、空间关系选择、数据质量检查（任何 GIS 任务均可参考）
+- coordinate_systems：坐标系与投影、CRS 选择与转换、面积距离计算的投影要求
+- vector_processing：矢量数据清洗、拓扑修复、属性操作、几何编辑
+- raster_processing：栅格读取、重采样、裁剪、NoData 处理、大影像分块
+- spatial_analysis：缓冲区、叠置分析、空间连接、空间查询、聚类、方法选择依据
+- spatial_statistics：空间自相关(Moran I)、热点分析(Getis-Ord)、核密度(KDE)、空间插值
+- remote_sensing_advanced：遥感指数(NDVI/NDWI/NDBI/EVI)、影像分类、变化检测、阈值选择
+- dem_terrain：DEM 坡度坡向、水文分析(D8)、等高线、地形剖面、3D 可视化
+- cartography：地图制图规范、符号化方法、分级设色、颜色方案、出图标准
+- gis_workflows：综合项目工作流（选址分析、适宜性评价、灾害评估、服务覆盖）
+- gis_index：知识库索引和 Agent 使用指南（不确定加载哪个模块时参考）
+
 只返回 JSON 数组格式，例如：["geometry", "visualization"]
 不要有任何其他文字。如果不需要任何技能，返回 []"""
 
@@ -146,7 +177,23 @@ def _route_skills(message: str, cfg) -> list:
 
 
 def _load_skill_from_file(skill_name: str) -> str:
-    """从 skills/ 目录加载技能 Markdown 文件"""
+    """从 skills/ 或 knowledge/ 目录加载 Markdown 文件
+
+    加载优先级：
+    1. knowledge/ 专业知识库（通过 _KNOWLEDGE_MAP 映射标签到文件名）
+    2. skills/ 普通技能（标签名即文件名）
+    3. _INLINE_SKILLS 内联缓存
+    """
+    # 优先加载 GIS 专业知识库
+    if skill_name in _KNOWLEDGE_MAP:
+        kpath = os.path.join(_KNOWLEDGE_DIR, _KNOWLEDGE_MAP[skill_name])
+        if os.path.isfile(kpath):
+            try:
+                with open(kpath, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception:
+                pass
+    # 其次加载普通技能
     path = os.path.join(_SKILLS_DIR, f"{skill_name}.md")
     if os.path.isfile(path):
         try:
@@ -217,7 +264,61 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
 
   每个工具的具体使用规则（参数、约束、最佳实践）见各工具的 description，不必事先记忆。
 
- ## 国外地点
+ ## 数据下载的两阶段确认（必须遵守）
+ 当用户需要下载遥感影像、DEM、OSM 数据等需要外部数据源的数据时，必须分两步确认：
+ 1. **第一次弹选项（选数据源）**：调用 ask_user_choice 工具，弹出数据源列表，每个选项标注配置状态（已配置/未配置）。常用数据源：地理空间数据云、Copernicus（哥白尼）、USGS EarthExplorer、NASA Earthdata、ASF（SAR数据）、OpenTopography（DEM）。prompt 写"请选择数据来源"。
+ 2. **用户选择后**：从系统提示的"用户已做出的选择"中读取选中的数据源，用该数据源搜索可用数据。
+ 3. **第二次弹选项（选具体数据）**：搜索到多景/多个结果时，再次调用 ask_user_choice，选项包含关键信息（日期、云量、分辨率、传感器等），让用户选具体要下载哪一个。
+ 4. **用户选择后**：下载选中的数据并加载到地图，给出数据说明。
+ - 未配置的数据源用户仍可选择，选择后提示"该数据源未配置，请在设置→连接器中添加账号"。
+ - 不要跳过选项直接下载，也不要在一次回复里连续弹两次选项（必须等用户选完第一次再弹第二次）。
+ - 如果只有一个数据源可用或只有一个搜索结果，直接说明并执行，不必弹选项。
+
+ ## GIS 专业工作规范（必须遵守）
+
+  ### 角色定位
+  你不是普通的代码助手，而是具备 GIS 专业判断能力的空间分析助手。你的价值不仅在于调用工具，更在于：
+  - 选择正确的分析方法（而非随便用一个工具）
+  - 判断分析结果是否合理
+  - 用专业语言解释结论和局限性
+
+  ### 任务规划（复杂任务必须先规划）
+  当用户请求涉及多步骤、多图层或多方法时（如选址分析、适宜性评价、灾害评估、多因子叠加），
+  必须先在回复开头简要说明分析流程，再开始执行：
+  1. 数据准备：需要哪些数据，是否已加载
+  2. 数据检查：CRS 是否一致、几何是否有效、属性是否完整
+  3. 方法选择：用什么分析方法，为什么选这个方法
+  4. 工具调用：按流程逐步执行
+  5. 结果验证：要素数、面积、空间位置是否合理
+  6. 结果展示：符号化、图表、导出
+  简单任务（单步操作、纯知识问答）不需要规划，直接执行即可。
+
+  ### 方法选择决策树
+  - 算面积/距离前：检查 CRS，WGS84 经纬度必须先投影（measure_area/measure_distance 已自动处理，自定义代码需注意）
+  - 缓冲区分析：经纬度下做缓冲会变形，unit=m 时工具内部自动投影
+  - 空间连接：predicate 默认用 intersects，严格包含用 within，找相邻用 touches
+  - 叠置分析：求共同区域用 intersect，合并用 union，去掉部分用 difference，截取用 clip
+  - 插值：点密集用 IDW，需要平滑用 RBF，需要误差估计用克里金（execute_python）
+  - 分类：有训练样本用 RandomForest，无样本用 KMeans，单指数提取用阈值分割
+  - 不确定用什么方法时：参考已加载的 GIS 专业知识库（knowledge/ 模块）中的"方法选择依据"
+
+  ### 结果验证清单（分析完成后必须自查）
+  1. 输出图层的要素数是否合理（与输入对比，不应暴增或暴减）
+  2. 面积/距离数值是否在合理范围（如城市级面积应为平方公里级，不应是平方米级或平方度）
+  3. 空间位置是否正确（结果应在研究区内，不应飞到别处）
+  4. 统计结果是否有异常值（如均值远超最大值）
+  5. 拓扑是否有效（面图层无自相交、无重叠）
+  发现异常时主动说明，不要把错误结果当正确结论交付。
+
+  ### 结果解释要求
+  分析完成后，回复中必须包含：
+  - 关键统计数字（如"缓冲区覆盖了 XX 个 POI，占总数的 XX%"）
+  - 空间分布特征（如"高值区主要集中在东部沿海"）
+  - 方法和参数说明（如"使用 DBSCAN 聚类，eps=0.01，min_samples=3"）
+  - 局限性说明（如"数据仅覆盖主城区，乡村区域未包含"或"权重为主观设定，建议做敏感性分析"）
+  不要只返回原始数据或说"已完成"，要给出专业解读。
+
+ ### 国外地点
   - 国外边界用 execute_python 调 osmnx（Overpass 镜像）获取
   - 搜索国外内容时用当地语言和英文搜关键词
   - 不要用高德 POI 搜索国外地点（只覆盖中国）
@@ -492,6 +593,23 @@ def _build_system_content(cfg, message: str, force_skills: list = None) -> tuple
         if skill_text:
             appendix_parts.append(f"## 参考技能文档\n{skill_text}")
 
+    # 待确认选项的用户选择结果（choose_option 动作中用户已选的项）
+    try:
+        from backend.services import pending_action as _pa_ctx
+        _pending_act = _pa_ctx.get_pending_action(session_id)
+        if _pending_act and _pending_act.get("action") == "choose_option" and _pending_act.get("selected"):
+            _sel = _pending_act["selected"]
+            _ck = _pending_act.get("choice_key", "")
+            appendix_parts.append(
+                f"## 用户已做出的选择\n"
+                f"选择类别：{_ck}\n"
+                f"用户选择：{_sel.get('label', '')}" +
+                (f"（{_sel.get('desc')}）" if _sel.get('desc') else "") +
+                "\n请基于此选择继续执行，不要再次询问用户选什么。"
+            )
+    except Exception:
+        pass
+
     # 当前已注册的图层信息（让 AI 知道已有图层，避免重复下载）
     try:
         from backend.services.tools import get_registered_layers_snapshot
@@ -571,10 +689,26 @@ def _try_handle_confirm_command(session_id: str, message: str) -> dict | None:
     """
     from backend.services import pending_action
 
+    # choose_option：用户消息匹配某个选项时，记录选择并走正常 AI 流程
+    action = pending_action.get_pending_action(session_id)
+    if action and action.get("action") == "choose_option":
+        options = action.get("options", [])
+        msg_norm = (message or "").strip()
+        for opt in options:
+            label = (opt.get("label") or "").strip()
+            value = (opt.get("value") or "").strip()
+            if label and (msg_norm == label or msg_norm == value or
+                          msg_norm.startswith(label) or label in msg_norm):
+                action["selected"] = opt
+                pending_action.set_pending_action(session_id, action)
+                return None  # 走正常 AI 流程，AI 从上下文看到选择后继续
+        # 用户输入了非选项内容，清除 pending 让 AI 自由处理
+        pending_action.clear_pending_action(session_id)
+        return None
+
     cmd = pending_action.classify_short_command(message)
     if cmd is None:
         return None
-    action = pending_action.get_pending_action(session_id)
     if action is None:
         return None  # 没有 pending：短指令也交给正常 AI（测试 3 语义）
 
@@ -745,12 +879,26 @@ def clear_memory(session_id: str = "default"):
         pending_action.clear_pending_action(session_id)
     except Exception:
         pass
-    # 清除注册的图层
+    # 清除注册的图层和所有共享状态
     try:
-        from backend.services.tools import _registered_layers, _pending_layers, _pending_images
+        from backend.services.tools import (
+            _registered_layers, _pending_layers, _pending_images,
+            _pending_layer_ops, reset_state, get_current_task_id,
+        )
+        # 先删除 task_manager 中的当前任务（磁盘文件 + 内存），避免旧任务上下文残留
+        try:
+            _tid = get_current_task_id()
+            if _tid:
+                from backend.services.task_manager import delete_task
+                delete_task(_tid)
+        except Exception:
+            pass
         _registered_layers.clear()
         _pending_layers.clear()
         _pending_images.clear()
+        _pending_layer_ops.clear()
+        # 重置当前任务 ID，避免 system prompt 注入旧任务上下文（代码/Artifact/执行历史）
+        reset_state()
     except Exception:
         pass
     try:

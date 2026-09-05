@@ -131,6 +131,7 @@ if (typeof marked !== 'undefined') {
   let _skillChips = [];         // [{name, label, prompt}]
   // ---- 图层附件（分析按钮→暂存到输入框上方） ----
   let _pendingLayer = null;     // { name, type, coords, count, geojson, ... }
+  let _quotedMessage = null;     // { text, time } 用户点击"引用"暂存的 AI 回复，随下一条消息发送
 
   /**
    * 初始化聊天模块
@@ -177,7 +178,7 @@ if (typeof marked !== 'undefined') {
     if (stopBtn) {
       stopBtn.addEventListener('click', function() {
         window._aiRunning = false;
-        if (window._aiAbortController) window._aiAbortController.abort();
+        if (window._aiAbortController) window._aiAbortController.abort('user-cancel');
         _resetUIAfterStop();
         fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
         const loadingEl = document.getElementById('ai-loading-msg');
@@ -198,6 +199,11 @@ if (typeof marked !== 'undefined') {
     var attachClose = document.getElementById('attachLayerClose');
     if (attachClose) {
       attachClose.addEventListener('click', function() { _clearPendingLayer(); if (inputEl) inputEl.focus(); });
+    }
+    // 引用预览条取消按钮
+    var quoteClose = document.getElementById('quoteAttachClose');
+    if (quoteClose) {
+      quoteClose.addEventListener('click', _hideQuoteBar);
     }
   }
 
@@ -425,6 +431,24 @@ if (typeof marked !== 'undefined') {
     if (inputEl) { inputEl.placeholder = '输入你对 ' + (info.name || '图层') + ' 的分析指令...'; inputEl.focus(); }
   }
 
+  // 显示引用预览条（被引用内容前 60 字符）
+  function _showQuoteBar(fullText) {
+    var bar = document.getElementById('quoteAttachBar');
+    var textEl = document.getElementById('quoteAttachText');
+    if (!bar || !textEl) return;
+    var preview = fullText.replace(/\s+/g, ' ').trim();
+    if (preview.length > 60) preview = preview.slice(0, 60) + '...';
+    textEl.textContent = preview;
+    bar.style.display = 'flex';
+  }
+
+  // 隐藏引用预览条并清除引用状态
+  function _hideQuoteBar() {
+    _quotedMessage = null;
+    var bar = document.getElementById('quoteAttachBar');
+    if (bar) bar.style.display = 'none';
+  }
+
   function _resetUIAfterStop() {
     window._aiRunning = false;
     if (!inputEl) return;
@@ -471,8 +495,13 @@ if (typeof marked !== 'undefined') {
     var historyPanel = document.getElementById('chatHistory');
     if (historyPanel) historyPanel.style.display = 'none';
 
-    // 3. 清除图层
-    if (window.GIS.layers) {
+    // 清除引用预览条
+    _hideQuoteBar();
+
+    // 3. 清除图层（clearAll 会处理无 layer_id 的工程恢复图层）
+    if (window.GIS.layers && typeof window.GIS.layers.clearAll === 'function') {
+      window.GIS.layers.clearAll();
+    } else if (window.GIS.layers) {
       var allLayers = window.GIS.layers.getLayers();
       allLayers.forEach(function(l) {
         if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
@@ -507,7 +536,7 @@ if (typeof marked !== 'undefined') {
     // 如果有正在跑的 AI 请求，先取消
     if (window._aiRunning) {
       if (window._aiAbortController) {
-        window._aiAbortController.abort();
+        window._aiAbortController.abort('user-cancel');
       }
       fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
       var oldLoading = document.getElementById('ai-loading-msg');
@@ -539,16 +568,20 @@ if (typeof marked !== 'undefined') {
       return;
     }
 
-    // 捕获当前 chips 和待发送的图层附件
+    // 捕获当前 chips、待发送的图层附件和被引用的回复
     var chipsSnapshot = _skillChips.slice();
     var layerSnapshot = _pendingLayer ? Object.assign({}, _pendingLayer) : null;
+    var quotedSnapshot = _quotedMessage ? Object.assign({}, _quotedMessage) : null;
     // 渲染用户消息（如果传了 displayText 就显示它）
     var msgOpts = badge ? {badge: badge} : {};
     if (chipsSnapshot.length > 0) msgOpts.chips = chipsSnapshot;
     if (layerSnapshot) msgOpts.attachLayer = layerSnapshot;
+    if (quotedSnapshot) msgOpts.quoted = quotedSnapshot;
     addMessage(displayText || text, 'user', msgOpts);
-    // 清除图层附件条
+    // 清除图层附件条和引用
     _clearPendingLayer();
+    _quotedMessage = null;
+    _hideQuoteBar();
     // 只有从输入框发送时才清空输入框
     if (inputEl && arguments.length === 0) {
       inputEl.value = '';
@@ -663,7 +696,7 @@ if (typeof marked !== 'undefined') {
       if (_timeoutMs < Infinity) {
         _streamTimeout = setTimeout(function() {
           if (window._aiAbortController && !window._aiAbortController.signal.aborted) {
-            window._aiAbortController.abort();
+            window._aiAbortController.abort('timeout');
             console.warn('[GIS Chat] SSE 流请求超时（' + (_timeoutMs/1000) + 's），已强制终止');
           }
         }, _timeoutMs);
@@ -688,6 +721,7 @@ if (typeof marked !== 'undefined') {
               count: layerSnapshot.count,
               geojson: layerSnapshot.geojson,
             } : undefined,
+            quoted: quotedSnapshot ? quotedSnapshot.text : undefined,
           }),
         });
         if (!streamRes.ok) throw new Error('Stream API error: ' + streamRes.status);
@@ -722,7 +756,7 @@ if (typeof marked !== 'undefined') {
             if (evt.type === 'error') {
               throw new Error(evt.message || 'Agent 执行失败');
             } else if (evt.type === 'cancelled') {
-              throw new Error('用户取消');
+              throw new Error('__USER_CANCELLED__');
             }
             try {
               if (evt.type === 'tool_start') {
@@ -776,8 +810,12 @@ if (typeof marked !== 'undefined') {
         if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
         // SSE 流失败时，降级到普通 API
         console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
-        // 超时终止 → 直接报错，不再降级重试
+        // 中止分两种：用户点击取消（abort('user-cancel')） vs 超时（abort('timeout')）
         if (streamErr.name === 'AbortError') {
+          var _abortReason = window._aiAbortController ? window._aiAbortController.signal.reason : undefined;
+          if (_abortReason === 'user-cancel') {
+            throw new Error('__USER_CANCELLED__');
+          }
           throw new Error('AI 请求超时（' + (_timeoutMs === Infinity ? '不限时' : _timeoutMs/1000 + 's') + '），请简化操作或重试');
         }
         result = await GIS.api.chat(text, 'default', sendProv, forceSkills);
@@ -847,7 +885,7 @@ if (typeof marked !== 'undefined') {
         } catch (e) { /* reasoning 展示失败不阻塞回复 */ }
       }
 
-      // 有「待确认动作」（后端 confirm_pending）→ 渲染 继续/取消 按钮，免手打“继续”
+      // 有「待确认动作」（后端 confirm_pending）→ 渲染按钮
       if (result.confirm_pending && msgEl) {
         try {
           var cp = result.confirm_pending;
@@ -855,25 +893,65 @@ if (typeof marked !== 'undefined') {
           var bar = document.createElement('div');
           bar.className = 'pending-action-bar';
           bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center;';
-          var tip = document.createElement('span');
-          tip.textContent = (cp.summary || '已就绪').slice(0, 80);
-          tip.style.cssText = 'font-size:11px;color:var(--ui-gray-500,#888);margin-right:2px;';
-          bar.appendChild(tip);
-          var mkBtn = function(label, word, primary) {
-            var b = document.createElement('button');
-            b.type = 'button';
-            b.textContent = label;
-            b.style.cssText =
-              'border:none;border-radius:14px;padding:5px 14px;font-size:12px;cursor:pointer;' +
-              (primary ? 'background:#2f7bf6;color:#fff;' : 'background:transparent;color:var(--ui-gray-500,#666);border:1px solid var(--ui-gray-300,#ddd);');
-            b.onclick = function() {
-              bar.remove();
-              window.GIS.chat.sendMessage(word);   // 走确定性 pending 处理（继续/取消）
+
+          if (cp.action === 'choose_option' && cp.options && cp.options.length > 0) {
+            // 多选项确认：渲染选项按钮组
+            var tip = document.createElement('span');
+            tip.textContent = (cp.summary || '请选择').slice(0, 100);
+            tip.style.cssText = 'font-size:12px;color:var(--ui-gray-600,#666);width:100%;margin-bottom:4px;font-weight:500;';
+            bar.appendChild(tip);
+            cp.options.forEach(function(opt) {
+              var b = document.createElement('button');
+              b.type = 'button';
+              var isConfigured = opt.configured;
+              var labelText = opt.label + (opt.configured === true ? ' ✓' : (opt.configured === false ? ' (未配置)' : ''));
+              b.textContent = labelText;
+              b.title = opt.desc || opt.label;
+              b.style.cssText =
+                'border-radius:14px;padding:6px 16px;font-size:12px;cursor:pointer;transition:all 0.15s;' +
+                (isConfigured === true
+                  ? 'background:#e3f2fd;color:#1565c0;border:1px solid #90caf9;'
+                  : isConfigured === false
+                    ? 'background:#fafafa;color:#999;border:1px dashed #ddd;'
+                    : 'background:#fff;color:#333;border:1px solid var(--ui-gray-300,#ddd);');
+              b.onmouseenter = function() { this.style.transform = 'translateY(-1px)'; this.style.boxShadow = '0 2px 6px rgba(0,0,0,0.1)'; };
+              b.onmouseleave = function() { this.style.transform = ''; this.style.boxShadow = ''; };
+              b.onclick = function() {
+                bar.remove();
+                // 发送选项 label，后端 choose_option 逻辑会记录选择并注入 AI 上下文
+                window.GIS.chat.sendMessage(opt.label);
+              };
+              bar.appendChild(b);
+            });
+            // 取消按钮
+            var cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.textContent = '取消';
+            cancelBtn.style.cssText = 'border:none;background:transparent;color:var(--ui-gray-400,#aaa);font-size:11px;cursor:pointer;padding:4px 8px;';
+            cancelBtn.onclick = function() { bar.remove(); };
+            bar.appendChild(cancelBtn);
+          } else {
+            // 普通确认：继续/取消
+            var tip2 = document.createElement('span');
+            tip2.textContent = (cp.summary || '已就绪').slice(0, 80);
+            tip2.style.cssText = 'font-size:11px;color:var(--ui-gray-500,#888);margin-right:2px;';
+            bar.appendChild(tip2);
+            var mkBtn = function(label, word, primary) {
+              var b = document.createElement('button');
+              b.type = 'button';
+              b.textContent = label;
+              b.style.cssText =
+                'border:none;border-radius:14px;padding:5px 14px;font-size:12px;cursor:pointer;' +
+                (primary ? 'background:#2f7bf6;color:#fff;' : 'background:transparent;color:var(--ui-gray-500,#666);border:1px solid var(--ui-gray-300,#ddd);');
+              b.onclick = function() {
+                bar.remove();
+                window.GIS.chat.sendMessage(word);
+              };
+              return b;
             };
-            return b;
-          };
-          bar.appendChild(mkBtn('✓ 加载到地图', '继续', true));
-          bar.appendChild(mkBtn('✕ 取消', '取消', false));
+            bar.appendChild(mkBtn('✓ 加载到地图', '继续', true));
+            bar.appendChild(mkBtn('✕ 取消', '取消', false));
+          }
           bubbleEl2.appendChild(bar);
         } catch (e) { /* 按钮渲染失败不阻塞回复 */ }
       }
@@ -1218,6 +1296,10 @@ if (typeof marked !== 'undefined') {
         if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
         loadingEl.remove();
       }
+      // 用户主动取消：不显示"请求失败"，stopBtn 已提示"操作已取消"、任务状态已更新
+      if (err && err.message === '__USER_CANCELLED__') {
+        return;
+      }
       // 更新任务状态为失败
       if (taskId && window.GIS.task) {
         window._currentTaskId = null;
@@ -1322,6 +1404,21 @@ if (typeof marked !== 'undefined') {
       bubble.appendChild(attachRow);
     }
 
+    // 用户消息：显示被引用的回复内容
+    if (type === 'user' && options.quoted && options.quoted.text) {
+      var quotedInfo = options.quoted;
+      var quotedRow = document.createElement('div');
+      quotedRow.style.cssText = 'margin-top:8px;padding:6px 10px;border-left:3px solid var(--ui-gray-300,#d0d5dd);background:var(--ui-gray-50,#f8f9fa);font-size:12px;color:var(--ui-gray-500,#777);white-space:pre-wrap;word-break:break-word;max-height:140px;overflow:hidden;';
+      var quotedHead = document.createElement('div');
+      quotedHead.textContent = '引用回复';
+      quotedHead.style.cssText = 'font-size:11px;color:var(--ui-gray-400,#999);margin-bottom:4px;font-weight:600;';
+      var quotedBody = document.createElement('div');
+      quotedBody.textContent = quotedInfo.text;
+      quotedRow.appendChild(quotedHead);
+      quotedRow.appendChild(quotedBody);
+      bubble.appendChild(quotedRow);
+    }
+
     if (options.code) {
       const codeBlock = document.createElement('div');
       codeBlock.className = 'message-code-block';
@@ -1329,12 +1426,25 @@ if (typeof marked !== 'undefined') {
       bubble.appendChild(codeBlock);
     }
 
-    // AI 消息右下角复制按钮（跳过加载气泡）
+    // AI 消息右下角引用按钮（复制按钮左侧，跳过加载气泡）
     if (type === 'ai' && !options.noMarkdown) {
+      const quoteBtn = document.createElement('button');
+      quoteBtn.className = 'btn-quote-ai';
+      quoteBtn.title = '引用此回复';
+      quoteBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/></svg>';
+      quoteBtn.addEventListener('click', function() {
+        const plainText = content.textContent || content.innerText || text;
+        _quotedMessage = { text: plainText.slice(0, 3000), time: Date.now() };
+        _showQuoteBar(plainText);
+        if (inputEl) inputEl.focus();
+      });
+      bubble.appendChild(quoteBtn);
+
+      // AI 消息右下角复制按钮（跳过加载气泡）
       const copyBtn = document.createElement('button');
       copyBtn.className = 'btn-copy-ai';
       copyBtn.title = '复制回复';
-      copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
       copyBtn.addEventListener('click', function() {
         // 取纯文本（跳过 markdown HTML 标签）
         const plainText = content.textContent || content.innerText || text;

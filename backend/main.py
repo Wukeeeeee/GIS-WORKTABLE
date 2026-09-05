@@ -1,3 +1,11 @@
+import os
+# ===== PROJ 数据目录修复 =====
+# 部分机器安装了 PostGIS 等软件，会在系统环境变量 PROJ_LIB / PROJ_DATA 写入不兼容的
+# proj.db 路径（版本过旧），导致 rasterio 的 EPSG 解析失败（CRSError: DATABASE.LAYOUT.VERSION.MINOR）。
+# 这里在导入任何 GIS 库之前删除这两个变量，让 rasterio/pyproj 回退到各自捆绑的 proj 数据。
+os.environ.pop("PROJ_LIB", None)
+os.environ.pop("PROJ_DATA", None)
+
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,7 +16,7 @@ from typing import Optional
 import io
 from io import BytesIO
 import json
-import subprocess, datetime, time, os, asyncio, functools
+import subprocess, datetime, time, asyncio, functools
 from backend.services.ai_service import chat_with_ai, clear_memory, test_key, request_cancel, _TEMP_OUTPUT_DIR
 from backend.services.llm_config import LLMConfig, resolve_llm_config
 from backend.services.tools import _register_layer, _unregister_layer
@@ -59,6 +67,7 @@ class ChatRequest(BaseModel):
     force_skills: list = []              # 用户通过 chip 标签指定的技能
     amap_key: Optional[str] = None        # 高德地图 Web API 密钥
     pending_layer: Optional[dict] = None  # 待分析的图层附件（前端输入框上方暂存）
+    quoted: Optional[str] = None          # 用户点击"引用"的上一条 AI 回复（作为上下文注入）
     task_id: Optional[str] = None         # 任务 ID（跨轮保持）
 
 class TestKeyRequest(BaseModel):
@@ -104,6 +113,13 @@ async def chat(request: ChatRequest):
             f"坐标: {layer_coords}\n"
             f"要素数: {layer_count}\n\n"
             f"GeoJSON:\n```json\n{geo_json_str}\n```\n\n"
+        ) + msg
+    # 如果前端附带了被引用的上一条回复，注入到消息中（让 Agent 明确讨论上下文）
+    if request.quoted:
+        msg = (
+            f"[用户引用了上一条回复，请围绕其内容理解下面的问题]\n"
+            f"{request.quoted[:4000]}\n\n"
+            f"[当前问题]\n"
         ) + msg
     cfg = resolve_llm_config(request.llm_config, request.provider or "", request.api_key or "")
     loop = asyncio.get_event_loop()
@@ -263,6 +279,16 @@ async def chat_stream(request: ChatRequest):
             history[-1]["content"] = layer_ctx + history[-1]["content"]
         # 也注入到 original_message（给校验器）
         original_message = layer_ctx + original_message
+
+    # 如果前端附带了被引用的上一条回复，注入到上下文（让 Agent 明确讨论围绕该回复）
+    if request.quoted:
+        quoted_ctx = (
+            f"[用户引用了上一条回复，请围绕其内容理解下面的问题]\n"
+            f"{request.quoted[:4000]}\n\n"
+        )
+        if history and history[-1].get("role") == "user":
+            history[-1]["content"] = quoted_ctx + history[-1]["content"]
+        original_message = quoted_ctx + original_message
 
     langgraph_messages = _build_langgraph_messages(system_content, history)
 
@@ -939,5 +965,16 @@ async def delete_task(task_id: str):
 
 
 # ===== 前端静态文件（必须放在所有 /api 路由之后，否则 catch-all 会遮蔽 API） =====
+# 自定义 StaticFiles：响应加 Cache-Control: no-cache，保证改前端后浏览器拿到最新资源（避免强刷）
+from starlette.responses import Response
+
+class _NoCacheStaticFiles(StaticFiles):
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
+
 _frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
-app.mount("/", StaticFiles(directory=_frontend_dir, html=True), name="frontend")
+app.mount("/", _NoCacheStaticFiles(directory=_frontend_dir, html=True), name="frontend")
