@@ -12,7 +12,6 @@
   <img src="https://img.shields.io/badge/Leaflet-199900?style=flat-square&logo=leaflet&logoColor=white" />
   <img src="https://img.shields.io/badge/LangGraph-2B6CB0?style=flat-square" />
   <img src="https://img.shields.io/badge/License-AGPL%20v3-1a1a2e?style=flat-square" />
-  <img src="https://img.shields.io/badge/Tests-410%20passed-2ea44f?style=flat-square" />
 </p>
 
 > 项目持续开发中，部分功能仍在测试，可能存在已知或未发现的 Bug。使用前请阅读免责声明。
@@ -182,8 +181,6 @@ AI 给出专业解读（统计数据、空间分布、方法局限性）
 - 用户在设置中自行配置 API Key 和 Base URL
 
 **工程化**
-- Docker + docker-compose
-- GitHub Actions CI（pytest 自动化测试）
 - pytest（410 项测试）
 
 ---
@@ -235,9 +232,6 @@ Gis-WorkTable/
 ├── cache/                       # 会话历史与 pending 状态
 ├── data/                        # 下载的数据文件
 ├── reports/                     # 生成的分析报告
-├── .github/workflows/ci.yml     # GitHub Actions CI
-├── Dockerfile                   # Docker 镜像
-├── docker-compose.yml           # Docker Compose 配置
 ├── start.bat                    # Windows 一键启动
 └── README.md
 ```
@@ -272,12 +266,6 @@ pip install -r backend/requirements.txt
 # 3. 启动后端
 cd backend
 uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-### 方式三：Docker
-
-```bash
-docker-compose up --build
 ```
 
 ### 访问
@@ -421,7 +409,6 @@ python -m pytest tests/ -v
 - 新增连接器管理面板（11 个数据平台账号配置）
 - 新增消息引用功能（引用 AI 回复继续对话）
 - 新增空间统计前端面板
-- 新增 Docker 支持和 GitHub Actions CI
 - 新增 Windows 一键启动脚本
 - 取消自校验环节（减少一次 LLM 调用，提升响应速度）
 - 优化简单文本响应速度（短路机制，避免简单问题走 ReAct 循环）
