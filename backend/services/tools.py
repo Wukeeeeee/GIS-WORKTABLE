@@ -6041,6 +6041,286 @@ ask_user_choice(
         return f"弹出选项失败: {str(e)[:200]}"
 
 
+
+# ============================================================
+# 工具: fetch_weather_data — Open-Meteo 天气数据获取（免费无 Key）
+# ============================================================
+
+@tool
+def fetch_weather_data(latitude: float, longitude: float,
+                       past_days: int = 7, forecast_days: int = 0,
+                       variables: str = "",
+                       start_date: str = "", end_date: str = "",
+                       location_name: str = "") -> str:
+    """从 Open-Meteo 获取指定坐标的天气时序数据（免费，无需 API Key）。
+
+    【适用场景】
+    - 用户询问某地点的天气、降水、温度、风速等情况
+    - 需要过去 N 天的天气趋势分析
+    - 气象数据与 GIS 区域叠加分析
+
+    【输入】
+    - latitude / longitude：坐标（WGS84）。如果用户给的是地名，先用 amap_geocode 转坐标。
+    - past_days：过去天数（默认 7，最大 90）
+    - forecast_days：未来预报天数（默认 0，最大 16）
+    - variables：变量列表，逗号分隔，可选 temperature_2m_max, temperature_2m_min,
+      precipitation_sum, windspeed_10m_max, relativehumidity_2m_mean, pressure_msl_mean。
+      留空默认 temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max
+    - start_date / end_date：自定义日期范围（YYYY-MM-DD），设置后忽略 past_days/forecast_days
+    - location_name：地点名称，用于图表标题和结果描述
+
+    【输出】
+    - 自动生成天气趋势折线图（温度双轴 + 降水柱状）
+    - 返回统计摘要（平均/最高/最低温度、总降水量、最大风速）
+    - 图表注册到待发送图片列表
+
+    【常见问题】
+    - 国内网络可直连 Open-Meteo，偶尔超时会返回错误提示
+    - 坐标用 WGS84，不要用 GCJ-02（高德坐标），否则位置偏移
+    - 过去数据最多 90 天，需要更早数据用 start_date/end_date 指定（Open-Meteo 历史数据有范围限制）"""
+    try:
+        import requests
+        import datetime
+
+        if not variables:
+            variables = "temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max"
+
+        params = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "daily": variables,
+            "timezone": "auto",
+        }
+        if start_date and end_date:
+            params["start_date"] = start_date
+            params["end_date"] = end_date
+        else:
+            params["past_days"] = min(max(past_days, 0), 90)
+            params["forecast_days"] = min(max(forecast_days, 0), 16)
+
+        resp = requests.get("https://api.open-meteo.com/v1/forecast",
+                            params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+
+        daily = data.get("daily", {})
+        dates = daily.get("time", [])
+        if not dates:
+            return "未获取到天气数据，请检查坐标和时间范围。"
+
+        var_list = [v.strip() for v in variables.split(",")]
+        title = f"{location_name + ' ' if location_name else ''}天气趋势 ({dates[0]} ~ {dates[-1]})"
+
+        # 生成图表
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
+
+            fig, ax1 = plt.subplots(figsize=(10, 5))
+            x = range(len(dates))
+
+            if "precipitation_sum" in var_list and "precipitation_sum" in daily:
+                precip = daily["precipitation_sum"]
+                ax1.bar(x, precip, alpha=0.3, color="#42a5f5", label="降水 (mm)")
+                ax1.set_ylabel("降水 (mm)", color="#1976d2")
+                ax1.tick_params(axis="y", labelcolor="#1976d2")
+
+            ax2 = ax1.twinx()
+            if "temperature_2m_max" in var_list and "temperature_2m_max" in daily:
+                ax2.plot(x, daily["temperature_2m_max"], "r-o", markersize=3, label="最高温")
+            if "temperature_2m_min" in var_list and "temperature_2m_min" in daily:
+                ax2.plot(x, daily["temperature_2m_min"], "b--o", markersize=3, label="最低温")
+            ax2.set_ylabel("温度 (°C)", color="#d32f2f")
+            ax2.tick_params(axis="y", labelcolor="#d32f2f")
+
+            ax1.set_xticks(x)
+            ax1.set_xticklabels([d[5:] for d in dates], rotation=45, fontsize=8)
+            ax1.set_title(title, fontsize=12)
+            lines1, labels1 = ax1.get_legend_handles_labels()
+            lines2, labels2 = ax2.get_legend_handles_labels()
+            ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=8)
+            plt.tight_layout()
+
+            import os, uuid
+            os.makedirs("cache/charts", exist_ok=True)
+            fname = f"weather_{uuid.uuid4().hex[:8]}.png"
+            fpath = os.path.join("cache/charts", fname)
+            plt.savefig(fpath, dpi=120)
+            plt.close()
+            _pending_images.append({"url": f"/cache/charts/{fname}", "type": "png"})
+        except Exception as e:
+            pass
+
+        # 统计摘要
+        parts = [f"已获取 {len(dates)} 天天气数据（{dates[0]} ~ {dates[-1]}）。"]
+        if "temperature_2m_max" in daily:
+            vals = [v for v in daily["temperature_2m_max"] if v is not None]
+            if vals:
+                parts.append(f"最高温：平均 {np.mean(vals):.1f}°C，最高 {max(vals):.1f}°C，最低 {min(vals):.1f}°C")
+        if "precipitation_sum" in daily:
+            vals = [v for v in daily["precipitation_sum"] if v is not None]
+            if vals:
+                total = sum(vals)
+                max_i = vals.index(max(vals))
+                parts.append(f"总降水：{total:.1f}mm，最大日降水 {max(vals):.1f}mm（{dates[max_i]}）")
+        if "windspeed_10m_max" in daily:
+            vals = [v for v in daily["windspeed_10m_max"] if v is not None]
+            if vals:
+                parts.append(f"最大风速：{max(vals):.1f} km/h")
+        parts.append("图表已生成，可继续进行空间叠加分析。")
+        return "\n".join(parts)
+    except Exception as e:
+        return f"获取天气数据失败: {str(e)[:200]}（可能是网络问题，Open-Meteo 国内偶尔不稳定）"
+
+
+# ============================================================
+# 工具: fetch_earthquake_data — USGS 地震数据获取（免费无 Key）
+# ============================================================
+
+@tool
+def fetch_earthquake_data(start_time: str = "", end_time: str = "",
+                          min_magnitude: float = 2.5,
+                          min_lat: float = -90, max_lat: float = 90,
+                          min_lon: float = -180, max_lon: float = 180,
+                          limit: int = 500) -> str:
+    """从 USGS 获取地震数据并加载到地图（免费，无需 API Key）。
+
+    【适用场景】
+    - 用户询问近期地震分布、震中位置
+    - 地震灾害空间分析（热点、缓冲区、影响范围）
+    - 与人口/建筑数据叠加做灾害评估
+
+    【输入】
+    - start_time / end_time：时间范围（YYYY-MM-DD），默认过去 30 天
+    - min_magnitude：最小震级（默认 2.5）
+    - min_lat / max_lat / min_lon / max_lon：经纬度边界，默认全球
+    - limit：最大返回条数（默认 500）
+
+    【输出】
+    - 地震点 GeoJSON，自动注册并推送到地图（震级分级着色）
+    - 返回统计摘要（地震数量、震级分布、最强地震信息）
+    - 自动生成震级分布直方图
+
+    【常见问题】
+    - USGS 国内访问不稳定，超时会返回错误提示
+    - 数据为实时更新，过去 30 天内数据最完整
+    - 震级 >=5 的地震才有完整的震源深度和位置信息"""
+    try:
+        import requests
+        import datetime
+
+        if not end_time:
+            end_time = datetime.date.today().isoformat()
+        if not start_time:
+            start_time = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+
+        params = {
+            "format": "geojson",
+            "starttime": start_time,
+            "endtime": end_time,
+            "minmagnitude": min_magnitude,
+            "minlatitude": min_lat,
+            "maxlatitude": max_lat,
+            "minlongitude": min_lon,
+            "maxlongitude": max_lon,
+            "limit": limit,
+        }
+        resp = requests.get("https://earthquake.usgs.gov/fdsnws/event/1/query",
+                            params=params, timeout=25)
+        resp.raise_for_status()
+        data = resp.json()
+
+        features = data.get("features", [])
+        if not features:
+            return f"未找到 {start_time} ~ {end_time} 期间震级 >= {min_magnitude} 的地震记录。"
+
+        # 构建 GeoJSON
+        geojson_features = []
+        mags = []
+        for f in features:
+            props = f.get("properties", {})
+            coords = f.get("geometry", {}).get("coordinates", [])
+            if len(coords) < 2:
+                continue
+            mag = props.get("mag")
+            if mag is not None:
+                mags.append(mag)
+            geojson_features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [coords[0], coords[1]]},
+                "properties": {
+                    "title": props.get("place", "未知位置"),
+                    "magnitude": mag,
+                    "depth_km": coords[2] if len(coords) > 2 else None,
+                    "time": datetime.datetime.fromtimestamp(props.get("time", 0) / 1000).strftime("%Y-%m-%d %H:%M") if props.get("time") else "",
+                    "url": props.get("url", ""),
+                }
+            })
+
+        fc = {"type": "FeatureCollection", "features": geojson_features}
+        layer_name = f"地震_{start_time}_{end_time}_M{min_magnitude}+"
+
+        # 震级分级着色样式
+        def mag_color(m):
+            if m >= 7: return "#d32f2f"
+            if m >= 6: return "#f57c00"
+            if m >= 5: return "#fbc02d"
+            if m >= 4: return "#7cb342"
+            return "#42a5f5"
+
+        style = {
+            "circleRadius": 5,
+            "circleColor": "#d32f2f",
+            "circleOpacity": 0.8,
+        }
+
+        _register_layer(layer_name, fc)
+        _push_layer(layer_name, fc, style=style)
+
+        # 生成震级分布直方图
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
+
+            fig, ax = plt.subplots(figsize=(8, 4))
+            bins = [2.5, 3, 4, 5, 6, 7, 8, 10]
+            labels = ["2.5-3", "3-4", "4-5", "5-6", "6-7", "7-8", "8+"]
+            counts, _ = np.histogram(mags, bins=bins)
+            colors = ["#42a5f5", "#7cb342", "#fbc02d", "#f57c00", "#e64a19", "#d32f2f", "#b71c1c"]
+            ax.bar(labels, counts, color=colors[:len(labels)])
+            ax.set_title(f"震级分布（共 {len(mags)} 次地震）", fontsize=12)
+            ax.set_ylabel("地震次数")
+            ax.set_xlabel("震级")
+            plt.tight_layout()
+            import os, uuid
+            os.makedirs("cache/charts", exist_ok=True)
+            fname = f"quake_{uuid.uuid4().hex[:8]}.png"
+            fpath = os.path.join("cache/charts", fname)
+            plt.savefig(fpath, dpi=120)
+            plt.close()
+            _pending_images.append({"url": f"/cache/charts/{fname}", "type": "png"})
+        except Exception:
+            pass
+
+        # 统计摘要
+        strongest = max(features, key=lambda f: (f.get("properties", {}).get("mag") or 0))
+        sp = strongest.get("properties", {})
+        parts = [
+            f"已获取 {len(geojson_features)} 次地震（{start_time} ~ {end_time}，震级 >= {min_magnitude}），已加载到地图。",
+            f"最强地震：{sp.get('place', '未知')}，震级 {sp.get('mag')}，时间 {datetime.datetime.fromtimestamp(sp.get('time', 0)/1000).strftime('%Y-%m-%d %H:%M') if sp.get('time') else '未知'}",
+        ]
+        if mags:
+            parts.append(f"震级范围：{min(mags):.1f} ~ {max(mags):.1f}，平均 {np.mean(mags):.1f}")
+        parts.append("可继续进行热点分析（spatial_hotspot）、缓冲区分析（spatial_buffer）等空间操作。")
+        return "\n".join(parts)
+    except Exception as e:
+        return f"获取地震数据失败: {str(e)[:200]}（USGS 国内访问不稳定，可能需要检查网络）"
+
+
 tools = [
     search_web,
     fetch_webpage,
@@ -6136,5 +6416,7 @@ tools = [
     spatial_fix_geometry,
     spatial_check_duplicates,
     ask_user_choice,
+    fetch_weather_data,
+    fetch_earthquake_data,
 ]
 
