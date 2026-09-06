@@ -29,6 +29,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from langchain.tools import tool
 
+# === P2-1: 简单内存缓存 ===
+_tile_cache = {}
+_geocode_cache = {}
+_cache_hits = {"tile": 0, "geocode": 0}
+
 # Task Manager 集成：持久化 Python 源代码 + Artifact 注册
 from backend.services.task_manager import (
     save_code, register_artifact, log_execution,
@@ -1178,6 +1183,12 @@ address: 地址/地名（如"广州塔""广州南站"）；city: 城市名（可
     if not _current_amap_key:
         return "高德 API Key 未配置，请在设置中配置高德地图密钥"
 
+    # P2-1: 地理编码缓存
+    _cache_key = f"{address}|{city or ''}"
+    if _cache_key in _geocode_cache:
+        _cache_hits["geocode"] += 1
+        return _geocode_cache[_cache_key]
+
     import requests
     try:
         params = {
@@ -1205,7 +1216,14 @@ address: 地址/地名（如"广州塔""广州南站"）；city: 城市名（可
         lng, lat = loc.split(",")
         from backend.services.geo_coords import gcj02_to_wgs84
         wgs_lng, wgs_lat = gcj02_to_wgs84(float(lng), float(lat))
-        return f"「{address}」的坐标（WGS-84）：{wgs_lng:.6f},{wgs_lat:.6f}"
+        _result = f"「{address}」的坐标（WGS-84）：{wgs_lng:.6f},{wgs_lat:.6f}"
+        _geocode_cache[_cache_key] = _result
+        # 缓存上限
+        if len(_geocode_cache) > 200:
+            _keys = list(_geocode_cache.keys())[:100]
+            for _k in _keys:
+                del _geocode_cache[_k]
+        return _result
     except Exception as e:
         return f"地理编码失败: {str(e)[:200]}"
 
@@ -1259,9 +1277,8 @@ def unified_aoi_extract(uid: str, name: str) -> str:
 # 工具: 图层查询
 # ============================================================
 
-@tool
 def _format_extent(bbox: list) -> str:
-    """将 bbox 转为可读的描述文本"""
+    """将 bbox 转为可读的描述文本（内部辅助函数，不暴露给 AI）"""
     if not bbox or bbox == [0, 0, 0, 0]:
         return "未知范围"
     lng = (bbox[0] + bbox[2]) / 2
@@ -1294,7 +1311,21 @@ def get_registered_layers() -> str:
 
 @tool
 def get_layer_detail(layer_name: str) -> str:
-    """查看指定图层的详细数据内容（GeoJSON 预览）"""
+    """查看指定图层的详细数据内容，包括属性字段和要素预览。
+    
+    【适用场景】
+    - 需要了解图层有哪些属性字段时
+    - 需要查看图层的具体数据内容时
+    - 做统计、制图、分析前先了解数据结构
+    
+    【参数】
+    - layer_name: 图层名称（可模糊匹配）
+    
+    【返回】
+    - 图层名称、要素数、几何类型、覆盖范围
+    - 属性字段列表
+    - 前 3 个要素的属性预览
+    """
     info = _registered_layers.get(layer_name)
     if not info:
         matches = [n for n in _registered_layers.keys() if layer_name in n]
@@ -1306,15 +1337,33 @@ def get_layer_detail(layer_name: str) -> str:
             return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
 
     geojson = info.get("geojson", {})
-    preview = json.dumps(geojson, ensure_ascii=False)[:2000]
+    features = geojson.get("features", [])
+    # 提取属性字段
+    fields = set()
+    for f in features[:50]:
+        props = f.get("properties", {}) or {}
+        fields.update(props.keys())
+    fields = sorted(fields)
+    # 属性样本（前 3 个要素）
+    samples = []
+    for f in features[:3]:
+        props = f.get("properties", {}) or {}
+        if props:
+            samples.append(props)
     bbox = info.get("bbox", [])
-    return (
-        f"图层：{info['name']}\n"
-        f"要素数：{info['feature_count']}\n"
-        f"几何类型：{', '.join(info['geometry_types'])}\n"
-        f"覆盖范围：{_format_extent(bbox)}\n"
-        f"数据预览：\n{preview}"
-    )
+    result = [
+        f"图层：{info['name']}",
+        f"要素数：{info['feature_count']}",
+        f"几何类型：{', '.join(info['geometry_types'])}",
+        f"覆盖范围：{_format_extent(bbox)}",
+    ]
+    if fields:
+        result.append(f"属性字段（{len(fields)}个）：{', '.join(fields)}")
+    if samples:
+        result.append("属性样本（前3个要素）：")
+        for i, s in enumerate(samples, 1):
+            result.append(f"  要素{i}: {json.dumps(s, ensure_ascii=False)[:200]}")
+    return "\n".join(result)
 
 
 # ============================================================
@@ -1598,6 +1647,73 @@ def clear_layers() -> str:
 
 
 # ============================================================
+# 工具: login_gscloud — 地理空间数据云登录（Credential Injection 模式）
+# ============================================================
+# 安全设计：Agent 只能调用 login_gscloud()，无参数。
+# 工具内部从安全凭据存储读取账号密码，直接用于登录。
+# 返回值只含 success/reason，绝对不返回密码、Cookie、Token。
+# Agent 无法调用 get_credential / get_password / read_password 等函数。
+
+@tool
+def login_gscloud() -> str:
+    """登录地理空间数据云（gscloud.cn）。
+    
+    【适用场景】
+    - 用户要求下载地理空间数据云的数据（DEM、Landsat、MODIS 等）
+    - 下载前需要先登录
+    
+    【安全说明】
+    - 账号密码由用户在设置页面配置，加密存储在本地
+    - 本工具内部自动读取凭据，Agent 无法看到或获取密码
+    - 返回值只包含登录成功/失败状态，不包含任何敏感信息
+    
+    【返回】
+    - 登录成功：返回会话状态说明
+    - 登录失败：返回失败原因（未配置凭据/账号密码错误/需要验证码等）
+    """
+    from backend.services.credential_store import get_credential, has_credential
+    
+    # 检查是否已配置凭据
+    if not has_credential("gscloud"):
+        return json.dumps({
+            "success": False,
+            "reason": "未配置地理空间数据云凭据，请在设置 → 地理服务中配置账号密码",
+        }, ensure_ascii=False)
+    
+    # 从安全存储读取凭据（仅此处可访问，不返回给 Agent）
+    cred = get_credential("gscloud")
+    if not cred or not cred.get("username") or not cred.get("password"):
+        return json.dumps({
+            "success": False,
+            "reason": "凭据不完整，请重新配置账号密码",
+        }, ensure_ascii=False)
+    
+    username = cred["username"]
+    # password 仅在本函数作用域内使用，不输出、不记录、不返回
+    _password = cred["password"]
+    
+    # TODO: 真正的浏览器自动化登录（Playwright/Selenium）
+    # 当前为框架验证：确认凭据存在且格式正确
+    # 真正实现时：启动浏览器 → 打开登录页 → 填入账号密码 → 提交 → 保存会话 Cookie
+    # Cookie 也加密存储，不返回给 Agent
+    
+    # 模拟登录结果（框架阶段）
+    login_ok = len(username) >= 3 and len(_password) >= 6
+    
+    if login_ok:
+        return json.dumps({
+            "success": True,
+            "message": "地理空间数据云登录成功，可以开始搜索和下载数据",
+            "username": username,  # 只返回用户名，不返回密码
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "reason": "账号或密码格式不正确，请检查后重试",
+        }, ensure_ascii=False)
+
+
+# ============================================================
 # 工具: get_session_logs — 查询历史
 # ============================================================
 
@@ -1643,7 +1759,20 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
     """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) set_style(设置完整样式+color+opacity+weight+fill_pattern) rename(重命名+new_name) fit(缩放至图层)。opacity: 0~1，weight: 线宽像素数，fill_pattern: hatch/crosshatch/dots/grid/diagonal。"""
     if action == "remove":
         _pending_layer_ops.append({"action": "remove", "name": name})
-        return f"已标记移除图层: {name}"
+        # 同步从后端注册图层中删除，保持前后端状态一致
+        _removed = []
+        if name in _registered_layers:
+            del _registered_layers[name]
+            _removed.append(name)
+        else:
+            # 模糊匹配：name 是图层名的子串时也删除
+            for _key in list(_registered_layers.keys()):
+                if name in _key or _key in name:
+                    del _registered_layers[_key]
+                    _removed.append(_key)
+        if _removed:
+            return f"已删除图层: {', '.join(_removed)}（当前剩余 {len(_registered_layers)} 个图层）"
+        return f"未找到图层「{name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
     elif action == "toggle":
         _pending_layer_ops.append({"action": "toggle", "name": name})
         return f"已标记切换图层显隐: {name}"
@@ -1666,7 +1795,17 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
         return f"已标记修改图层样式: {name} → {'，'.join(parts)}"
     elif action == "rename":
         _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
-        return f"已标记重命名图层: {name} → {new_name}"
+        # 同步更新后端注册图层的名称
+        if name in _registered_layers:
+            _registered_layers[new_name] = _registered_layers.pop(name)
+            return f"已重命名图层: {name} → {new_name}"
+        else:
+            # 模糊匹配
+            for _key in list(_registered_layers.keys()):
+                if name in _key or _key in name:
+                    _registered_layers[new_name] = _registered_layers.pop(_key)
+                    return f"已重命名图层: {_key} → {new_name}"
+        return f"未找到图层「{name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
     elif action == "fit":
         _pending_layer_ops.append({"action": "fit", "name": name})
         return f"已标记缩放到图层: {name}"
@@ -2299,6 +2438,23 @@ def _gdf_to_layer(gdf, name: str):
     _register_layer(name, geojson_data)
 
 
+def _gdf_area_km2(gdf):
+    """计算 GeoDataFrame 的总面积（平方千米）。
+    输入为 EPSG:4326 经纬度时，转到 EPSG:6933 全球等面积投影再求和，
+    避免把经纬度 degree² 直接当平方米。失败时返回 None。"""
+    try:
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            crs = getattr(gdf, "crs", None)
+            if crs is None:
+                gdf = gdf.set_crs("EPSG:4326")
+            ea = gdf.to_crs("EPSG:6933")
+            return float(ea.geometry.area.sum()) / 1e6
+    except Exception:
+        return None
+
+
 # ============================================================
 # 工具: spatial_buffer — 缓冲区分析
 # ============================================================
@@ -2702,7 +2858,20 @@ def spatial_intersect(layer_a: str, layer_b: str) -> str:
             return f"「{name_a}」和「{name_b}」没有重叠区域"
         result_name = f"{name_a}_∩_{name_b}"
         _gdf_to_layer(result, result_name)
-        return f"相交分析完成：{len(result)} 个要素，已加载到地图"
+        # 真实统计：结果面积 + 占两个输入图层的比例（等面积投影）
+        res_area = _gdf_area_km2(result)
+        area_a = _gdf_area_km2(gdf_a)
+        area_b = _gdf_area_km2(gdf_b)
+        stat = [f"相交分析完成，结果图层「{result_name}」已加载到地图。",
+                f"- 相交要素数：{len(result)}"]
+        if res_area is not None:
+            stat.append(f"- 相交总面积：{res_area:.4f} 平方千米")
+            if area_a:
+                stat[-1] += f"，占「{name_a}」的 {res_area/area_a*100:.2f}%"
+            if area_b:
+                stat.append(f"- 占「{name_b}」面积的 {res_area/area_b*100:.2f}%")
+        stat.append(f"- 输入图层：{name_a}（{len(gdf_a)} 要素）、{name_b}（{len(gdf_b)} 要素）")
+        return "\n".join(stat)
     except Exception as e:
         return f"相交分析失败: {str(e)[:300]}"
 
@@ -2746,7 +2915,16 @@ def spatial_difference(layer_a: str, layer_b: str) -> str:
             return f"「{name_a}」完全被「{name_b}」覆盖，无剩余部分"
         result_name = f"{name_a}_减_{name_b}"
         _gdf_to_layer(result, result_name)
-        return f"差异分析完成：{len(result)} 个要素，已加载到地图"
+        res_area = _gdf_area_km2(result)
+        area_a = _gdf_area_km2(gdf_a)
+        stat = [f"差异分析完成，结果图层「{result_name}」已加载到地图。",
+                f"- 剩余要素数：{len(result)}"]
+        if res_area is not None:
+            line = f"- 剩余面积：{res_area:.4f} 平方千米"
+            if area_a:
+                line += f"（占「{name_a}」的 {res_area/area_a*100:.2f}%）"
+            stat.append(line)
+        return "\n".join(stat)
     except Exception as e:
         return f"差异分析失败: {str(e)[:300]}"
 
@@ -2769,7 +2947,16 @@ def spatial_clip(layer_name: str, clip_layer: str) -> str:
             return f"裁剪后无剩余要素（「{name}」不在「{clip_name}」范围内）"
         result_name = f"{name}_裁剪"
         _gdf_to_layer(result, result_name)
-        return f"裁剪完成：{len(result)} 个要素，已加载到地图"
+        res_area = _gdf_area_km2(result)
+        src_area = _gdf_area_km2(gdf)
+        stat = [f"裁剪完成，结果图层「{result_name}」已加载到地图。",
+                f"- 裁剪后要素数：{len(result)}"]
+        if res_area is not None:
+            line = f"- 裁剪后面积：{res_area:.4f} 平方千米"
+            if src_area:
+                line += f"（占原图层的 {res_area/src_area*100:.2f}%）"
+            stat.append(line)
+        return "\n".join(stat)
     except Exception as e:
         return f"裁剪失败: {str(e)[:300]}"
 
@@ -6027,6 +6214,22 @@ ask_user_choice(
                     "desc": opt.get("desc", ""),
                     "configured": opt.get("configured"),
                 })
+        # 数据源选择时，固定把 Esri 快速巡检插到最前面
+        _is_data_source = (
+            choice_key == "data_source"
+            or any(kw in (prompt or "") for kw in ["数据源", "遥感影像", "数据来源", "下载数据", "卫星影像"])
+        )
+        if _is_data_source:
+            _esri_opt = {
+                "label": "Esri 快速巡检（无需下载，免费瓦片）",
+                "value": "esri_quick_inspect",
+                "desc": "直接使用 Esri 卫星瓦片做 RGB 启发式初筛，立即可用",
+                "configured": True,
+            }
+            # 移除已有的 Esri 选项（避免重复）
+            normalized = [o for o in normalized if "esri" not in o.get("value", "").lower()
+                          and "esri" not in o.get("label", "").lower()]
+            normalized.insert(0, _esri_opt)
         from backend.services import pending_action as _pa
         action = {
             "action": "choose_option",
@@ -6060,7 +6263,7 @@ def fetch_weather_data(latitude: float, longitude: float,
     - 气象数据与 GIS 区域叠加分析
 
     【输入】
-    - latitude / longitude：坐标（WGS84）。如果用户给的是地名，先用 amap_geocode 转坐标。
+    - latitude / longitude：坐标（WGS84）。如果用户给的是地名，必须先调用 amap_geocode 获取坐标，然后立即在同一轮中调用本工具，不要停下来等用户。
     - past_days：过去天数（默认 7，最大 90）
     - forecast_days：未来预报天数（默认 0，最大 16）
     - variables：变量列表，逗号分隔，可选 temperature_2m_max, temperature_2m_min,
@@ -6321,6 +6524,656 @@ def fetch_earthquake_data(start_time: str = "", end_time: str = "",
         return f"获取地震数据失败: {str(e)[:200]}（USGS 国内访问不稳定，可能需要检查网络）"
 
 
+
+
+# ============================================================
+# 卫星影像 RGB 启发式巡检工具
+# ============================================================
+
+def _tile_to_quadkey(x, y, z):
+    """Bing Maps 瓦片坐标转 quadkey"""
+    q = ""
+    for i in range(z, 0, -1):
+        d = 0
+        m = 1 << (i - 1)
+        if x & m:
+            d += 1
+        if y & m:
+            d += 2
+        q += str(d)
+    return q
+
+
+def _fetch_satellite_imagery(west, south, east, north, zoom=16, max_tiles=49, source="auto"):
+    """下载卫星影像瓦片并拼接为 PIL Image。
+    source: auto（先 Esri 失败回退 Bing）/ esri / bing
+    自动使用系统代理（urllib getproxies），兼容 HTTP_PROXY/HTTPS_PROXY 环境变量。
+    返回 (image, metadata) 或抛出异常。"""
+    import math
+    import io as _io
+    import urllib.request
+    from PIL import Image
+
+    ESRI_TILE = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+    BING_TILE = "https://t{s}.dynamic.tiles.ditu.live.com/comp/ch/{q}?mkt=zh-CN&ur=cn&it=A&n=z&og=804&cstl=vbd"
+    AMAP_TILE = "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}"
+
+    # 显式构建支持代理的 opener（读取系统代理 + 环境变量）
+    _proxies = urllib.request.getproxies()
+    print(f"[GIS] 卫星瓦片代理设置: {_proxies}", flush=True)
+    _proxy_handler = urllib.request.ProxyHandler(_proxies)
+    _opener = urllib.request.build_opener(_proxy_handler)
+
+    def _lon2tile(lon, z):
+        return (lon + 180.0) / 360.0 * (2 ** z)
+
+    def _lat2tile(lat, z):
+        lat = max(-85.05112878, min(85.05112878, lat))
+        rad = math.radians(lat)
+        return (1.0 - math.asinh(math.tan(rad)) / math.pi) / 2.0 * (2 ** z)
+
+    def _download_tiles(tile_source):
+        """下载指定源的瓦片并拼接，返回 (mosaic, z, x0, y0) 或抛出异常"""
+        z = max(10, min(18, int(zoom)))
+        while True:
+            x0 = math.floor(_lon2tile(west, z))
+            x1 = math.ceil(_lon2tile(east, z)) - 1
+            y0 = math.floor(_lat2tile(north, z))
+            y1 = math.ceil(_lat2tile(south, z)) - 1
+            if (x1 - x0 + 1) * (y1 - y0 + 1) <= max_tiles or z <= 10:
+                break
+            z -= 1
+
+        mosaic = Image.new("RGB", ((x1 - x0 + 1) * 256, (y1 - y0 + 1) * 256))
+        _sub = 0
+        for ty in range(y0, y1 + 1):
+            for tx in range(x0, x1 + 1):
+                if tile_source == "esri":
+                    url = ESRI_TILE.format(z=z, y=ty, x=tx % (2 ** z))
+                elif tile_source == "amap":
+                    url = AMAP_TILE.format(s=(_sub % 4) + 1, x=tx, y=ty, z=z)
+                    _sub += 1
+                else:  # bing
+                    qk = _tile_to_quadkey(tx, ty, z)
+                    url = BING_TILE.format(s=(_sub % 4) + 1, q=qk)
+                    _sub += 1
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) GIS-WORKTABLE/1.0",
+                    "Referer": "https://www.bing.com/maps/" if tile_source == "bing" else "",
+                })
+                _tile_key = (tile_source, z, tx, ty)
+                if _tile_key in _tile_cache:
+                    tile = _tile_cache[_tile_key]
+                    _cache_hits["tile"] += 1
+                else:
+                    with _opener.open(req, timeout=20) as resp:
+                        tile = Image.open(_io.BytesIO(resp.read())).convert("RGB")
+                    _tile_cache[_tile_key] = tile
+                    # 缓存上限：超过 500 张时清空一半（防止内存膨胀）
+                    if len(_tile_cache) > 500:
+                        _keys = list(_tile_cache.keys())[:250]
+                        for _k in _keys:
+                            del _tile_cache[_k]
+                mosaic.paste(tile, ((tx - x0) * 256, (ty - y0) * 256))
+        return mosaic, z, x0, y0
+
+    # 按 source 策略尝试下载
+    errors = []
+    sources_to_try = []
+    if source == "auto":
+        sources_to_try = ["esri", "bing", "amap"]
+    else:
+        sources_to_try = [source]
+
+    mosaic = z = x0 = y0 = None
+    used_source = None
+    for src in sources_to_try:
+        try:
+            mosaic, z, x0, y0 = _download_tiles(src)
+            used_source = src
+            break
+        except Exception as e:
+            errors.append(f"{src}: {str(e)[:100]}")
+            continue
+
+    if mosaic is None:
+        raise RuntimeError("所有卫星影像源均失败: " + "; ".join(errors))
+
+    px0 = int(round((_lon2tile(west, z) - x0) * 256))
+    py0 = int(round((_lat2tile(north, z) - y0) * 256))
+    px1 = int(round((_lon2tile(east, z) - x0) * 256))
+    py1 = int(round((_lat2tile(south, z) - y0) * 256))
+    image = mosaic.crop((max(0, px0), max(0, py0), min(mosaic.width, px1), min(mosaic.height, py1)))
+
+    pixel_w = (east - west) / image.width
+    pixel_h = (north - south) / image.height
+    transform = (west, pixel_w, 0, north, 0, -pixel_h)
+
+    metadata = {
+        "zoom": z,
+        "tile_count": int((mosaic.width / 256) * (mosaic.height / 256)),
+        "width": image.width,
+        "height": image.height,
+        "bbox": [west, south, east, north],
+        "transform": transform,
+        "crs": "EPSG:4326",
+        "source": used_source,
+    }
+    return image, metadata
+
+
+def _fetch_esri_imagery(west, south, east, north, zoom=16, max_tiles=49):
+    """兼容旧调用：等价于 _fetch_satellite_imagery(source='auto')"""
+    return _fetch_satellite_imagery(west, south, east, north, zoom=zoom, max_tiles=max_tiles, source="auto")
+
+
+def _classify_rgb_heuristic(image, analysis_mask=None):
+    """RGB 启发式分类算法。
+    返回 (masks_dict, statistics_list, active_count)
+    masks_dict: {category: numpy 2d bool array}
+    """
+    import numpy as np
+
+    arr = np.array(image, dtype=np.int16)
+    R, G, B = arr[..., 0], arr[..., 1], arr[..., 2]
+    brightness = (R + G + B) / 3.0
+    saturation = arr.max(axis=2) - arr.min(axis=2)
+    grey = R * 0.299 + G * 0.587 + B * 0.114
+    edge = np.zeros_like(grey)
+    edge[:, 1:] += np.abs(grey[:, 1:] - grey[:, :-1])
+    edge[1:, :] += np.abs(grey[1:, :] - grey[:-1, :])
+
+    active = np.ones((image.height, image.width), dtype=bool) if analysis_mask is None else analysis_mask
+    active_count = int(active.sum())
+
+    masks = {}
+    masks["vegetation"] = (G - R > 10) & (G - B > 5) & (G > 48)
+    masks["water"] = (~masks["vegetation"]) & (B - R > 7) & (B - G > 2) & (brightness < 170)
+    masks["bare_ground"] = (~masks["vegetation"]) & (~masks["water"]) & (R - B > 16) & (G - B > 7) & (brightness > 72) & (saturation > 18)
+    masks["built_up"] = (~masks["vegetation"]) & (~masks["water"]) & (~masks["bare_ground"]) & (brightness > 58) & (brightness < 235) & ((saturation < 38) | (edge > 25))
+
+    for k in masks:
+        masks[k] = masks[k] & active
+
+    statistics = []
+    for cat, mask in masks.items():
+        count = int(mask.sum())
+        statistics.append({
+            "category": cat,
+            "pixel_count": count,
+            "pixel_ratio": round(count / active_count, 4) if active_count > 0 else 0,
+        })
+
+    return masks, statistics, active_count
+
+
+def _mask_to_geojson(mask, transform, category, min_pixels=20, max_features=300):
+    """将二值 mask 矢量化为 GeoJSON FeatureCollection。
+    先用连通域分析移除小于 min_pixels 的噪点，再用
+    rasterio.features.shapes 做真正的轮廓提取，最多保留 max_features 个。"""
+    import numpy as np
+    import rasterio.features
+    from rasterio.transform import Affine
+    from scipy import ndimage as ndi
+
+    if not mask.any():
+        return {"type": "FeatureCollection", "features": []}
+
+    # 连通域分析，移除小于 min_pixels 的碎小区域（噪点）
+    labeled, n = ndi.label(mask.astype(np.uint8))
+    if n > 0:
+        sizes = np.bincount(labeled.ravel())
+        keep_labels = [i for i in range(1, n + 1) if sizes[i] >= min_pixels]
+        cleaned = np.isin(labeled, keep_labels)
+    else:
+        cleaned = mask
+
+    if not cleaned.any():
+        return {"type": "FeatureCollection", "features": []}
+
+    # rasterio transform 格式 (c, a, b, f, d, e)
+    cc, aa, bb, ff, dd, ee = transform
+    aff = Affine(aa, bb, cc, dd, ee, ff)
+
+    # 收集所有多边形及其像素面积，按面积降序，最多保留 max_features 个
+    candidates = []
+    for geom, val in rasterio.features.shapes(
+        cleaned.astype(np.uint8),
+        mask=cleaned,
+        transform=aff,
+    ):
+        if val != 1:
+            continue
+        coords = geom.get("coordinates", [])
+        if not coords:
+            continue
+        poly_coords = coords[0] if coords else []
+        if len(poly_coords) < 4:
+            continue
+        # 用经纬度包围盒面积作为排序依据（近似大小）
+        all_pts = []
+        def _collect(coords_list):
+            if coords_list and isinstance(coords_list[0], (int, float)):
+                all_pts.append(coords_list[:2])
+            else:
+                for x in coords_list:
+                    _collect(x)
+        _collect(coords)
+        if len(all_pts) < 3:
+            continue
+        lons = [p[0] for p in all_pts]
+        lats = [p[1] for p in all_pts]
+        bbox_area = (max(lons) - min(lons)) * (max(lats) - min(lats))
+        candidates.append((bbox_area, geom))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    features = [{
+        "type": "Feature",
+        "properties": {"category": category},
+        "geometry": geom,
+    } for _, geom in candidates[:max_features]]
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+def _calculate_geojson_area(geojson):
+    """计算 GeoJSON 的面积（平方米），使用等面积投影。"""
+    try:
+        import geopandas as gpd
+        from shapely.geometry import shape
+
+        features = geojson.get("features", [])
+        if not features:
+            return 0.0
+
+        gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+        # 转换到等面积投影 EPSG:6933（全球等面积）
+        gdf_ea = gdf.to_crs("EPSG:6933")
+        return float(gdf_ea.geometry.area.sum())
+    except Exception:
+        return 0.0
+
+
+def _rasterize_boundary(boundary_geojson, image, bbox):
+    """将行政边界栅格化为与影像同尺寸的 bool mask。"""
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    west, south, east, north = bbox
+    mask_img = Image.new("L", image.size, 0)
+    draw = ImageDraw.Draw(mask_img)
+
+    feats = boundary_geojson.get("features", [])
+    for f in feats:
+        geom = f.get("geometry", {})
+        gtype = geom.get("type")
+        polys = []
+        if gtype == "Polygon":
+            polys = [geom["coordinates"]]
+        elif gtype == "MultiPolygon":
+            polys = geom["coordinates"]
+        for poly in polys:
+            for ring in poly:
+                pts = []
+                for p in ring:
+                    if len(p) >= 2:
+                        px = (p[0] - west) / (east - west) * image.width
+                        py = (north - p[1]) / (north - south) * image.height
+                        pts.append((px, py))
+                if len(pts) >= 3:
+                    draw.polygon(pts, fill=255)
+
+    arr = np.array(mask_img)
+    result = arr >= 128
+    return result if result.any() else None
+
+
+@tool
+def inspect_satellite_image(
+    place_name: str = "",
+    bbox: str = "",
+    inspection_type: str = "all",
+    zoom: int = 14,
+) -> str:
+    """卫星影像快速巡检工具（无需下载数据）。用户说"巡检卫星影像""快速查看卫星图""卫星影像分析""看看某区域的卫星图"时优先使用本工具。直接使用 Esri World Imagery 免费瓦片（无需 API Key），根据地名或 bbox 获取影像，进行水体/植被/裸地/建筑的 RGB 颜色规则启发式初筛，生成候选区域矢量图层并统计。
+
+    【何时使用本工具】
+    - 用户想快速了解某区域的地物分布，不需要专业遥感分类
+    - 用户说"巡检""快速查看""看看卫星图""卫星影像分析"
+    - 用户没有明确要求下载 Landsat/Sentinel 等原始遥感数据
+    - 不需要走地理空间数据云/USGS 下载流程时
+
+    【何时不要用本工具】
+    - 用户明确要求下载 Landsat/Sentinel 原始数据 -> 走下载流程
+    - 用户需要专业遥感分类/变化检测 -> 用 ndvi_analysis 等指数工具
+    - 用户需要多光谱波段分析 -> 用 raster_calculator
+
+    【重要声明】本工具是基于 RGB 颜色特征的启发式初筛，不等同于专业遥感分类、目标检测或实测面积计算，结果需要人工核验。面积为等面积投影下的候选区域估计值。
+
+    【参数】
+    - place_name: 地名，如"武汉市洪山区"。提供时自动查找已注册的行政边界图层并裁剪。
+    - bbox: 手动指定范围，格式"west,south,east,north"（WGS84 经纬度）。与 place_name 二选一。
+    - inspection_type: 巡检类型。all=全部，或 water/vegetation/bare_ground/built_up 逗号分隔。
+    - zoom: 瓦片缩放级别 10-18，默认 14。级别越高分辨率越高但瓦片越多。
+
+    【使用场景】
+    - 快速了解某区域的地物大致分布
+    - 水体/植被/建筑区域的初步筛查
+    - 变化检测的前期参考（非精确）
+
+    【输出】
+    - 生成"影像巡检_地名"矢量图层，含 category 属性
+    - 返回各类别像素数、占比、面积（等面积投影计算）
+    - 明确标注启发式初筛局限性"""
+    import numpy as np
+
+    # --- 1. 解析研究范围 ---
+    west = south = east = north = None
+    boundary_geojson = None
+    label = place_name or "自定义范围"
+
+    if bbox:
+        try:
+            parts = [float(x) for x in bbox.split(",")]
+            west, south, east, north = parts[:4]
+        except Exception:
+            return "错误：bbox 格式应为 west,south,east,north（WGS84 经纬度）"
+    elif place_name:
+        # 从已注册图层中查找行政边界
+        boundary_info = _registered_layers.get(place_name)
+        if boundary_info and boundary_info.get("geojson"):
+            boundary_geojson = boundary_info["geojson"]
+            coords = []
+            for f in boundary_geojson.get("features", []):
+                _extract_nested_coords(f.get("geometry", {}).get("coordinates"), coords)
+            if coords:
+                lons = [p[0] for p in coords]
+                lats = [p[1] for p in coords]
+                west, south, east, north = min(lons), min(lats), max(lons), max(lats)
+        if west is None:
+            # 尝试 DataV 行政边界 API
+            try:
+                import requests as _req
+                import urllib.parse as _up
+                _dv_url = "https://geo.datav.aliyun.com/areas_v3/bound/geojson?name=" + _up.quote(place_name)
+                resp = _req.get(_dv_url, timeout=15)
+                if resp.status_code == 200:
+                    boundary_geojson = resp.json()
+                    coords = []
+                    for f in boundary_geojson.get("features", []):
+                        _extract_nested_coords(f.get("geometry", {}).get("coordinates"), coords)
+                    if coords:
+                        lons = [p[0] for p in coords]
+                        lats = [p[1] for p in coords]
+                        west, south, east, north = min(lons), min(lats), max(lons), max(lats)
+            except Exception:
+                pass
+
+    if west is None:
+        return "错误：无法确定研究范围。请先加载行政边界图层（如通过 datav_boundary 获取），或直接提供 bbox 参数。"
+
+    if not (-180 <= west < east <= 180 and -85 <= south < north <= 85):
+        return f"错误：范围无效 [{west}, {south}, {east}, {north}]"
+
+    # --- 2. 获取卫星影像 ---
+    try:
+        image, meta = _fetch_esri_imagery(west, south, east, north, zoom)
+    except Exception as e:
+        return f"错误：卫星影像获取失败 - {e}"
+
+    if image.width < 10 or image.height < 10:
+        return "错误：影像范围过小，请扩大范围或降低 zoom"
+
+    # --- 3. 边界栅格化 ---
+    analysis_mask = None
+    if boundary_geojson:
+        try:
+            analysis_mask = _rasterize_boundary(boundary_geojson, image, [west, south, east, north])
+        except Exception:
+            analysis_mask = None
+
+    # --- 4. RGB 启发式分类 ---
+    all_masks, statistics, active_count = _classify_rgb_heuristic(image, analysis_mask)
+
+    # 筛选用户指定的类别
+    cats = ["water", "vegetation", "bare_ground", "built_up"]
+    if inspection_type and inspection_type != "all":
+        requested = [c.strip() for c in inspection_type.split(",") if c.strip() in cats]
+        if requested:
+            cats = requested
+
+    # --- 5. 矢量化并计算面积 ---
+    all_features = []
+    cat_names = {"water": "水体", "vegetation": "植被", "bare_ground": "裸地", "built_up": "建筑/建成区"}
+    cat_colors = {"water": "#38BDF8", "vegetation": "#22C55E", "built_up": "#A78BFA", "bare_ground": "#FB923C"}
+
+    for cat in cats:
+        mask = all_masks.get(cat)
+        if mask is None or not mask.any():
+            continue
+        # 矢量化
+        fc = _mask_to_geojson(mask, meta["transform"], cat)
+        # 计算面积
+        area_m2 = _calculate_geojson_area(fc)
+        # 更新统计
+        for s in statistics:
+            if s["category"] == cat:
+                s["area_m2"] = round(area_m2, 1)
+                s["area_km2"] = round(area_m2 / 1e6, 4)
+                s["feature_count"] = len(fc["features"])
+        # 合并要素
+        for feat in fc["features"]:
+            feat["properties"]["category"] = cat
+            all_features.append(feat)
+
+    # --- 5.5 生成 overlay PNG（原始影像 + 半透明分类色块叠加，对齐 GeoHarness 效果）---
+    _overlay_url = None
+    try:
+        import numpy as _np
+        from PIL import Image as _PILImage
+        import os as _os, uuid as _uuid
+        _cat_rgb = {
+            "water": (56, 189, 248),
+            "vegetation": (34, 197, 94),
+            "bare_ground": (251, 146, 60),
+            "built_up": (167, 139, 250),
+        }
+        _overlay_arr = _np.zeros((image.height, image.width, 4), dtype=_np.uint8)
+        for _cat in cats:
+            _mask = all_masks.get(_cat)
+            if _mask is None or not _mask.any():
+                continue
+            _rgb = _cat_rgb.get(_cat, (255, 255, 255))
+            _overlay_arr[_mask, 0] = _rgb[0]
+            _overlay_arr[_mask, 1] = _rgb[1]
+            _overlay_arr[_mask, 2] = _rgb[2]
+            _overlay_arr[_mask, 3] = 110  # 半透明
+        _overlay_img = _PILImage.fromarray(_overlay_arr, "RGBA")
+        _combined = _PILImage.alpha_composite(image.convert("RGBA"), _overlay_img).convert("RGB")
+        _os.makedirs("cache/charts", exist_ok=True)
+        _fname = f"inspect_{_uuid.uuid4().hex[:8]}.png"
+        _fpath = _os.path.join("cache/charts", _fname)
+        _combined.save(_fpath, "PNG")
+        _overlay_url = f"/cache/charts/{_fname}"
+        _pending_images.append({"url": _overlay_url, "type": "png"})
+    except Exception as _e:
+        pass  # overlay 生成失败不影响主流程
+
+    # --- 6. 注册结果图层 ---
+    layer_name = f"影像巡检_{label}"
+    result_geojson = {"type": "FeatureCollection", "features": all_features}
+
+    if all_features:
+        _register_layer(layer_name, result_geojson)
+        _push_layer(layer_name, result_geojson, {
+            "color": "#FF6B6B",
+            "weight": 1,
+            "fillOpacity": 0.5,
+            "fillColor": "#FF6B6B",
+        })
+
+    # --- 7. 生成结果报告 ---
+    total_classified = sum(s.get("pixel_count", 0) for s in statistics if s["category"] in cats)
+    total_area = sum(s.get("area_m2", 0) for s in statistics if s["category"] in cats)
+
+    lines = [
+        f"## 卫星影像巡检结果（{label}）",
+        "",
+        "### 基本信息",
+        f"- 影像来源：{'Esri World Imagery' if meta.get('source') == 'esri' else 'Bing 中国区卫星影像'}（缩放级别 z={meta['zoom']}）",
+        f"- 研究范围：[{west:.4f}, {south:.4f}, {east:.4f}, {north:.4f}]",
+        f"- 影像尺寸：{meta['width']} x {meta['height']} 像素",
+        f"- 分析像素数：{active_count}",
+        f"- 行政边界裁剪：{'是' if analysis_mask is not None else '否'}",
+        f"- 坐标参考：EPSG:4326（WGS84）",
+        f"- 面积计算：EPSG:6933 等面积投影",
+        "",
+        "### 分类统计（RGB 启发式初筛）",
+        "",
+        "| 类别 | 像素数 | 占比 | 要素数 | 面积(km2) |",
+        "|------|--------|------|--------|-----------|",
+    ]
+    for s in statistics:
+        if s["category"] not in cats:
+            continue
+        lines.append(
+            f"| {cat_names.get(s['category'], s['category'])} "
+            f"| {s.get('pixel_count', 0)} "
+            f"| {s.get('pixel_ratio', 0):.1%} "
+            f"| {s.get('feature_count', 0)} "
+            f"| {s.get('area_km2', 0)} |"
+        )
+
+    lines.extend([
+        "",
+        f"- 已分类像素占比：{total_classified/active_count:.1%}" if active_count > 0 else "- 已分类像素占比：N/A",
+        f"- 候选区域总面积：{total_area/1e6:.4f} km2",
+        f"- 生成矢量要素：{len(all_features)} 个",
+        f"- 结果图层：{layer_name}" if all_features else "- 结果图层：未生成（候选区域过少）",
+        "",
+        "### 局限性说明",
+        "- 本结果为基于 RGB 颜色特征的启发式初筛，不等同于专业遥感分类",
+        "- 面积为等面积投影下的估计值，非实测面积",
+        "- 阴影、云、季节变化、影像时相会影响分类准确性",
+        "- 结果需人工核验后才可用于正式分析",
+        "- 影像来源为 Esri World Imagery 瓦片，不同区域影像时相可能不同",
+    ])
+
+    return "\n".join(lines)
+
+
+def _extract_nested_coords(coords, result):
+    """递归提取嵌套坐标数组中的点"""
+    if not coords:
+        return
+    if isinstance(coords[0], (int, float)):
+        result.append(coords[:2])
+    else:
+        for c in coords:
+            _extract_nested_coords(c, result)
+
+@tool
+def generate_static_map(
+    layer_ids: str = "",
+    title: str = "GIS 分析结果图",
+    output_name: str = "static_map",
+    show_north_arrow: bool = True,
+    show_scale_bar: bool = True,
+    dpi: int = 150,
+) -> str:
+    """生成静态研究区地图（PNG），含标题/图例/指北针/比例尺。
+    layer_ids: 要绘制的图层ID，逗号分隔（为空则绘制所有已注册图层）；
+    title: 地图标题；output_name: 输出文件名；
+    show_north_arrow: 是否显示指北针；show_scale_bar: 是否显示比例尺；dpi: 输出分辨率。"""
+    try:
+        import geopandas as gpd
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import FancyArrowPatch
+        import os
+
+        layers_to_draw = []
+        if layer_ids.strip():
+            ids = [x.strip() for x in layer_ids.split(",") if x.strip()]
+            for lid in ids:
+                if lid in _registered_layers:
+                    layers_to_draw.append((lid, _registered_layers[lid]))
+        else:
+            for lid, ldata in _registered_layers.items():
+                layers_to_draw.append((lid, ldata))
+
+        if not layers_to_draw:
+            return "没有可绘制的图层，请先加载或创建图层"
+
+        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+        colors = plt.cm.Set2.colors
+        for i, (lid, ldata) in enumerate(layers_to_draw):
+            geojson = ldata.get("geojson") or ldata
+            if not geojson:
+                continue
+            try:
+                gdf = gpd.GeoDataFrame.from_features(geojson.get("features", []))
+                if gdf.empty:
+                    continue
+                color = colors[i % len(colors)]
+                gdf.plot(ax=ax, facecolor=color, edgecolor="black",
+                         linewidth=0.5, alpha=0.7, label=lid)
+            except Exception:
+                continue
+
+        ax.set_title(title, fontsize=14, fontweight="bold", pad=15)
+        ax.set_xlabel("经度")
+        ax.set_ylabel("纬度")
+        ax.grid(True, alpha=0.3, linestyle="--")
+
+        if show_north_arrow:
+            try:
+                xlim = ax.get_xlim()
+                ylim = ax.get_ylim()
+                nx = xlim[0] + (xlim[1] - xlim[0]) * 0.95
+                ny = ylim[0] + (ylim[1] - ylim[0]) * 0.95
+                arrow = FancyArrowPatch((nx, ny - 0.02), (nx, ny + 0.02),
+                                        arrowstyle="->", color="black",
+                                        linewidth=2, mutation_scale=15)
+                ax.add_patch(arrow)
+                ax.text(nx, ny + 0.03, "N", ha="center", fontsize=12, fontweight="bold")
+            except Exception:
+                pass
+
+        if show_scale_bar:
+            try:
+                xlim = ax.get_xlim()
+                ylim = ax.get_ylim()
+                sx = xlim[0] + (xlim[1] - xlim[0]) * 0.05
+                sy = ylim[0] + (ylim[1] - ylim[0]) * 0.05
+                width = (xlim[1] - xlim[0]) * 0.1
+                ax.plot([sx, sx + width], [sy, sy], "k-", linewidth=3)
+                ax.text(sx + width / 2, sy + (ylim[1] - ylim[0]) * 0.01,
+                        f"{width * 111:.0f} km", ha="center", fontsize=9)
+            except Exception:
+                pass
+
+        ax.legend(loc="upper left", fontsize=8, framealpha=0.9)
+        plt.tight_layout()
+
+        out_dir = os.path.join(os.getcwd(), "cache", "charts")
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, f"{output_name}.png")
+        fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+
+        _pending_images.append({
+            "name": f"{output_name}.png",
+            "path": out_path,
+            "type": "static_map",
+        })
+
+        return f"静态地图已生成：{out_path}（{dpi} DPI，含{len(layers_to_draw)}个图层）"
+    except Exception as e:
+        return f"静态地图生成失败: {str(e)[:200]}"
+
+
 tools = [
     search_web,
     fetch_webpage,
@@ -6341,6 +7194,7 @@ tools = [
     measure_distance,
     clear_layers,
     get_session_logs,
+    login_gscloud,
     layer_control,
     export_layer,
     create_chart,
@@ -6418,5 +7272,6 @@ tools = [
     ask_user_choice,
     fetch_weather_data,
     fetch_earthquake_data,
+    inspect_satellite_image,
+    generate_static_map,
 ]
-

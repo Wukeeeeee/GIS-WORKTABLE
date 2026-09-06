@@ -22,7 +22,8 @@ window.GIS = window.GIS || {};
   const layers = {};
   const geoStore = {};
   let baseLayer = null;
-  let _currentBaseMap = 'satellite'; // 'satellite' | 'light'
+  let _currentBaseMap = 'esri';
+  let _satelliteSource = 'esri'; // 'esri' | 'bing' // 'satellite' | 'light'
 let drawnItems = null;        // Leaflet.Draw 绘制的图形集合
 let _featureMap = {};         // { "layerName:idx": LeafletLayer } — 要素索引→Leaflet 图层
 let _highlightedFeature = null; // 当前高亮的 Leaflet 图层
@@ -149,13 +150,19 @@ var _undoSkip = false;
       preferCanvas: true,  // Canvas 渲染，大幅提升大数据性能
     });
 
-    // Bing 卫星底图
-    _currentBaseMap = localStorage.getItem('gis_basemap') || 'satellite';
+    // 卫星底图（Esri / Bing 中国区 / 白底）
+    _currentBaseMap = localStorage.getItem('gis_basemap') || 'esri';
+    // 兼容旧版本存储值 'satellite'，统一迁移为 esri
+    if (_currentBaseMap === 'satellite') { _currentBaseMap = 'esri'; }
+    _satelliteSource = localStorage.getItem('gis_sat_source') || 'esri';
     baseLayer = _createBaseLayer(_currentBaseMap);
     baseLayer.addTo(mapInstance);
-    // 初始化底图切换勾选
-    var swCheck = document.querySelector('.map-menu-item-toggle[data-action="switch-basemap"] .toggle-check');
-    if (swCheck) swCheck.classList.toggle('off', _currentBaseMap !== 'satellite');
+    // 初始化底图开关勾选状态（白底=关闭，其余=开启）
+    var swCheck = document.querySelector('.map-menu-item-toggle[data-action="toggle-basemap"] .toggle-check');
+    if (swCheck) swCheck.classList.toggle('off', _currentBaseMap === 'light');
+    // 同步卫星源按钮文字
+    var srcLabel = document.getElementById('sat-source-label');
+    if (srcLabel) srcLabel.textContent = _satelliteSource === 'bing' ? 'Bing' : 'Esri';
 
     // 缓存 DOM 引用，避免每次 mousemove 都 querySelector
     _coordsEl = document.querySelector('.map-coords');
@@ -216,11 +223,20 @@ var _undoSkip = false;
         drawnItems.addLayer(layer);
         var name = '绘制_' + Date.now().toString(36);
         layer._name = name;
+        var geojson = layer.toGeoJSON();
         if (window.GIS && window.GIS.layers && window.GIS.layers.addLayer) {
           window.GIS.layers.addLayer({
             layer_id: name, name: name, filename: name, checked: true,
-            geojson: layer.toGeoJSON(), source: '绘制'
+            geojson: geojson, source: '绘制'
           });
+        }
+        // 同步注册到后端，让 AI 能看到这个图层（否则 AI 会说"找不到图层"）
+        if (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) {
+          fetch(window.GIS.api.BASE_URL + '/api/layer/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, geojson: geojson }),
+          }).catch(function(e) { console.warn('图层注册到后端失败:', e); });
         }
         // 连续绘制：如果绘制按钮仍高亮，自动重新启用同款工具
         var activeBtn = document.querySelector('.map-draw-btn.active:not([data-tool="delete"])');
@@ -357,18 +373,27 @@ var _undoSkip = false;
         noWrap: true,
       });
     }
-    // satellite (default)
-    var layer = new L.TileLayer('', {
-      attribution: '&copy; Microsoft, 必应地图',
+    if (type === 'bing') {
+      // Bing 中国区卫星影像（国内访问快）
+      var layer = new L.TileLayer('', {
+        attribution: '&copy; Microsoft, 必应地图',
+        maxZoom: 19,
+      });
+      layer.getTileUrl = function(coords) {
+        return TILE_URL.replace('{q}', toQuadkey(coords.x, coords.y, coords.z));
+      };
+      return layer;
+    }
+    // esri (default) - Esri World Imagery（全球覆盖，需翻墙）
+    return new L.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
       maxZoom: 19,
+      maxNativeZoom: 18,
+      tileSize: 256,
     });
-    layer.getTileUrl = function(coords) {
-      return TILE_URL.replace('{q}', toQuadkey(coords.x, coords.y, coords.z));
-    };
-    return layer;
   }
 
-  /** 切换底图 'satellite' | 'light' */
+  /** 切换底图 */
   function switchBaseMap(type) {
     if (!mapInstance || type === _currentBaseMap) return;
     if (baseLayer) mapInstance.removeLayer(baseLayer);
@@ -376,9 +401,23 @@ var _undoSkip = false;
     baseLayer.addTo(mapInstance);
     _currentBaseMap = type;
     localStorage.setItem('gis_basemap', type);
-    // 更新菜单项勾选
-    var satCheck = document.querySelector('.map-menu-item-toggle[data-action="switch-basemap"] .toggle-check');
-    if (satCheck) satCheck.classList.toggle('off', type !== 'satellite');
+    // 更新勾选状态
+    var satCheck = document.querySelector('.map-menu-item-toggle[data-action="toggle-basemap"] .toggle-check');
+    if (satCheck) satCheck.classList.toggle('off', type === 'light');
+  }
+
+  /** 切换卫星底图源 Esri <-> Bing */
+  function cycleSatelliteSource() {
+    if (_currentBaseMap === 'light') {
+      // 如果当前是白底，先切到卫星
+      switchBaseMap(_satelliteSource);
+      return;
+    }
+    _satelliteSource = (_satelliteSource === 'esri') ? 'bing' : 'esri';
+    localStorage.setItem('gis_sat_source', _satelliteSource);
+    var label = document.getElementById('sat-source-label');
+    if (label) label.textContent = _satelliteSource === 'esri' ? 'Esri' : 'Bing';
+    switchBaseMap(_satelliteSource);
   }
 
   function toQuadkey(x, y, z) {
@@ -1078,9 +1117,13 @@ var _undoSkip = false;
           if (check) check.classList.toggle('off', !nowHidden);
         }
         break;
-      case 'switch-basemap':
-        var newType = _currentBaseMap === 'satellite' ? 'light' : 'satellite';
-        switchBaseMap(newType);
+      case 'toggle-basemap':
+        // 开关卫星底图：白底 <-> 当前卫星源
+        var t = (_currentBaseMap === 'light') ? _satelliteSource : 'light';
+        switchBaseMap(t);
+        break;
+      case 'cycle-satellite-source':
+        cycleSatelliteSource();
         break;
       case 'tool-network-analysis':
         if (GIS.network && GIS.network.toggle) GIS.network.toggle();

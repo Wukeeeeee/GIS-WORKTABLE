@@ -143,11 +143,29 @@ def _run_verifier(llm: ChatOpenAI, original_message: str, response: str, pending
 # 运行 Agent（核心入口）
 # ============================================================
 
+def _clean_ai_text(text: str) -> str:
+    """清理 AI 回复中的工具调用协议文本，避免内部协议泄露给用户。"""
+    if not text:
+        return text
+    cleaned = text
+    # 移除 GLM DSML 格式的工具调用：<｜｜DSML｜｜tool_calls>...</｜｜DSML｜｜tool_calls>
+    cleaned = re.sub(r'<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'<\|DSML\|tool_calls>.*?</\|DSML\|tool_calls>', '', cleaned, flags=re.DOTALL)
+    # 移除常见的工具调用标记
+    cleaned = re.sub(r'<tool_call>.*?</tool_call>', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'```tool_call.*?```', '', cleaned, flags=re.DOTALL)
+    # 移除残留的空行（最多保留一个空行）
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
+
+
 def _last_ai_text(msgs: list):
     """返回 (最后一条非空 AI 文本, 它的 reasoning/None)"""
     for msg in reversed(msgs):
         if isinstance(msg, AIMessage) and msg.content:
-            return msg.content, get_message_reasoning(msg)
+            text = _clean_ai_text(msg.content)
+            if text:
+                return text, get_message_reasoning(msg)
     return "", None
 
 
@@ -249,6 +267,12 @@ def run_agent(
     """
     # 重置共享状态（tools.py 中的全局变量）
     reset_state(amap_key)
+    # === P1-1: Agent 运行状态 ===
+    _run_id = uuid.uuid4().hex[:12]
+    _run_status = "planning"
+    _run_started_at = time.time()
+    _run_retry_count = 0
+    print(f"[GIS] run_id={_run_id} status=planning", flush=True)
     # 绑定本请求会话（hold 等工具写 pending 用）
     pending_action.set_active_session(session_id or "default")
     _start_registered = set(getattr(_tools_mod, "_registered_layers", {}).keys())
@@ -262,11 +286,12 @@ def run_agent(
     llm = build_llm(cfg)
 
     # 简单文本对话（无关键词）直接调 LLM，不走 LangGraph 省掉框架开销
+    # A+ 优化：去掉"帮我"等易误判词，短路时用精简版 system prompt
     _simple = True
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','帮我','对图层','对这个图层'])
-        if _need_tools or len(_last) > 120:
+        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被'])
+        if _need_tools or len(_last) > 150:
             _simple = False
     if _simple:
         if _ai_svc._request_cancelled:
@@ -274,7 +299,15 @@ def run_agent(
                     "heatmap": None, "clear_layers": False, "layer_ops": [],
                     "pending_suggestions": None}
         try:
-            _resp = llm.invoke(messages)
+            # 用精简版 system prompt 替换，减少 token 开销
+            from backend.services.ai_service import SIMPLE_SYSTEM_PROMPT
+            _simple_msgs = []
+            for _m in messages:
+                if isinstance(_m, SystemMessage):
+                    _simple_msgs.append(SystemMessage(content=SIMPLE_SYSTEM_PROMPT))
+                else:
+                    _simple_msgs.append(_m)
+            _resp = llm.invoke(_simple_msgs)
             return {
                 "response": _resp.content,
                 "reasoning": get_message_reasoning(_resp),
@@ -295,6 +328,7 @@ def run_agent(
     # 处理：自动降级重试一次（追加“请纯文本收尾，不再调工具”），有界且保留已产出图层/数据。
     result = None
     _msgs = list(messages)
+    _run_status = "calling_llm"
     for _attempt in range(2):
         try:
             if _ai_svc._request_cancelled:
@@ -313,6 +347,18 @@ def run_agent(
                 print("[GIS] 工具调度 TypeError，自动纯文本收尾重试一次", flush=True)
                 _msgs = list(messages) + [HumanMessage(
                     content="请停止调用任何工具，直接用文字总结最终结果（可引用前面已经完成的数据/图层）。")]
+                continue
+            # P1-2: 网络临时异常重试一次（不重试确定性错误）
+            _err_lower = str(e).lower()
+            _is_temp = any(k in _err_lower for k in [
+                "timeout", "timed out", "connection", "502", "503", "504",
+                "rate limit", "429", "temporarily", "server error",
+                "api connection", "network", "reset by peer",
+            ])
+            if _attempt == 0 and _is_temp:
+                _run_retry_count = 1
+                print("[GIS] 网络临时异常，自动重试一次: " + str(e)[:100], flush=True)
+                import time as _time; _time.sleep(1)
                 continue
             error_msg = str(e)
             if "recursion_limit" in error_msg or "RecursionError" in error_msg:
@@ -333,6 +379,37 @@ def run_agent(
     # 提取最终回复
     final_messages = result.get("messages", [])
     final_text, final_reasoning = _last_ai_text(final_messages)
+
+    # === P0-2: 检查 LLM finish_reason ===
+    for _msg in reversed(final_messages):
+        if isinstance(_msg, AIMessage):
+            _fr = (_msg.response_metadata or {}).get("finish_reason", "")
+            if _fr == "length":
+                final_text = (final_text or "") + "\n\n[注意] 回复因模型输出长度限制被截断，内容可能不完整。"
+            elif _fr == "content_filter":
+                final_text = (final_text or "") + "\n\n[注意] 回复因内容安全策略被部分拦截。"
+            elif _fr == "insufficient_system_resource":
+                final_text = (final_text or "") + "\n\n[注意] 模型服务资源不足，回复可能不完整，请稍后重试。"
+            break
+
+    # 空响应处理：content 为空且无工具调用时，重试一次
+    if not final_text and not _has_tool_messages(final_messages):
+        print("[GIS] 空响应，重试一次", flush=True)
+        try:
+            _retry = agent.invoke(
+                {"messages": list(messages) + [HumanMessage(content="请直接回答用户的问题，不要调用工具。")]},
+                {"recursion_limit": 30},
+            )
+            _retry_msgs = _retry.get("messages", [])
+            _retry_text, _retry_reasoning = _last_ai_text(_retry_msgs)
+            if _retry_text:
+                final_text = _retry_text
+                final_reasoning = _retry_reasoning
+                final_messages = _retry_msgs
+        except Exception as _re:
+            print(f"[GIS] 空响应重试失败: {_re}", flush=True)
+        if not final_text:
+            final_text = "AI 未返回有效响应，请重试或更换模型。"
 
     # 收集本轮产生的共享状态
     pending = get_pending_state()
@@ -413,6 +490,7 @@ def run_agent_stream(
     skill_text: str = "",
     original_message: str = "",
     session_id: str = "default",
+    mode: str = "full",
 ):
     """运行 Agent 并逐步 yield 事件（供 SSE 端点使用）
 
@@ -439,25 +517,77 @@ def run_agent_stream(
     # === Task Manager: 解析/创建任务，绑定到 tools ===
     _task_id = task_manager.find_or_create_task(session_id or "default", original_message or "")
     set_current_task(_task_id)
-    print(f"[GIS] 流式 Task ID: {_task_id}", flush=True)
+    print(f"[GIS] 流式 Task ID: {_task_id} mode={mode}", flush=True)
 
-    # 简单问题快速 bypass
+    # === Fast 模式：直接单轮 LLM，不走 ReAct 工具调用 ===
+    if mode == "fast":
+        from backend.services.ai_service import SIMPLE_SYSTEM_PROMPT
+        from backend.services.llm_config import disable_reasoning
+        _fast_llm = build_llm(disable_reasoning(cfg))
+        _fast_system = SIMPLE_SYSTEM_PROMPT
+        # 注入当前图层列表
+        try:
+            _snap = get_pending_state()
+            from backend.services.tools import get_registered_layers_snapshot
+            _layers = get_registered_layers_snapshot()
+            if _layers:
+                _names = [l.get("filename") or l.get("name", "") for l in _layers if l.get("filename") or l.get("name")]
+                if _names:
+                    _fast_system += "\n\n## 当前已加载图层\n" + "\n".join(f"- {n}" for n in _names[:20])
+        except Exception:
+            pass
+        _fast_msgs = []
+        for _m in messages:
+            if isinstance(_m, SystemMessage):
+                _fast_msgs.append(SystemMessage(content=_fast_system))
+            else:
+                _fast_msgs.append(_m)
+        try:
+            _fast_resp = _fast_llm.invoke(_fast_msgs)
+            _fast_text = (_fast_resp.content or "").strip()
+            if not _fast_text:
+                # 空响应重试一次
+                _fast_resp = _fast_llm.invoke(_fast_msgs)
+                _fast_text = (_fast_resp.content or "").strip()
+            yield "data: {\"type\":\"thinking\"}\n\n"
+            result = {
+                "response": _fast_text,
+                "reasoning": get_message_reasoning(_fast_resp),
+                "layers": [], "images": [], "heatmap": None,
+                "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+                "mode": "fast",
+            }
+            yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
+            return
+        except Exception as _fe:
+            yield "data: " + json.dumps({"type": "error", "message": "Fast模式回复失败: " + str(_fe)[:200]}, ensure_ascii=False) + "\n\n"
+            return
+
+    # 简单问题快速 bypass（A+ 优化：精简 prompt + 去掉易误判词）
     _simple = True
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','帮我','对图层','对这个图层'])
-        if _need_tools or len(_last) > 120:
+        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被'])
+        if _need_tools or len(_last) > 150:
             _simple = False
     if _simple:
-        _resp = llm.invoke(messages)
-        yield f"data: {{\"type\":\"thinking\"}}\n\n"
+        # 用精简版 system prompt 替换，减少 token 开销
+        from backend.services.ai_service import SIMPLE_SYSTEM_PROMPT
+        _simple_msgs = []
+        for _m in messages:
+            if isinstance(_m, SystemMessage):
+                _simple_msgs.append(SystemMessage(content=SIMPLE_SYSTEM_PROMPT))
+            else:
+                _simple_msgs.append(_m)
+        _resp = llm.invoke(_simple_msgs)
+        yield "data: {\"type\":\"thinking\"}\n\n"
         result = {
             "response": _resp.content,
             "reasoning": get_message_reasoning(_resp),
             "layers": [], "images": [], "heatmap": None,
             "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
         }
-        yield f"data: {json.dumps({'type': 'done', **result}, ensure_ascii=False)}\n\n"
+        yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
         return
 
     agent = create_react_agent(llm, tools)
@@ -546,6 +676,18 @@ def run_agent_stream(
     except Exception:
         pass
 
+    # === P0-2: 流式版本 finish_reason 检查 ===
+    for _msg in reversed(msgs):
+        if isinstance(_msg, AIMessage):
+            _fr = (_msg.response_metadata or {}).get("finish_reason", "")
+            if _fr == "length":
+                final_text = (final_text or "") + "\n\n[注意] 回复因模型输出长度限制被截断，内容可能不完整。"
+            elif _fr == "content_filter":
+                final_text = (final_text or "") + "\n\n[注意] 回复因内容安全策略被部分拦截。"
+            elif _fr == "insufficient_system_resource":
+                final_text = (final_text or "") + "\n\n[注意] 模型服务资源不足，回复可能不完整，请稍后重试。"
+            break
+
     # === 防“只说开始就结束”：只承诺未执行（无任何工具调用）时强制补一轮真实执行 ===
     _initial_tool_calls = _count_tool_calls(msgs)
     _initial_has_tools = _has_tool_messages(msgs)
@@ -606,5 +748,6 @@ def run_agent_stream(
         "confirm_pending": pending_action.describe_action(
             pending_action.get_pending_action(session_id)),
         "task_id": _task_id,
+        "mode": "full",
     }
-    yield f"data: {json.dumps({'type': 'done', **result}, ensure_ascii=False)}\n\n"
+    yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"

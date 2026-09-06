@@ -1211,7 +1211,7 @@ html, body {
 .map-coords {
   position: absolute;
   bottom: 16px;
-  right: 16px;
+  left: 320px;
   background: rgba(255,255,255,0.9);
   border: 1px solid var(--ui-gray-300) /* -> --on-surface-variant */;
   border-radius: 4px;
@@ -2079,75 +2079,83 @@ html.theme-dark .step-running { color:var(--on-surface); }
 /* ========== AI 回复复制按钮 ========== */
 .btn-copy-ai {
   position: absolute;
-  right: 6px;
-  bottom: 6px;
-  width: 26px;
-  height: 26px;
+  right: 8px;
+  bottom: 2px;
+  width: 24px;
+  height: 24px;
   padding: 0;
-  border: 1px solid var(--ui-gray-200) /* -> --outline-variant */;
+  margin: 0;
+  border: none;
   border-radius: 4px;
-  background: var(--surface-container-low);
-  color: var(--ui-gray-400) /* -> --on-surface */;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ui-gray-400);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.6;
-  transition: opacity 0.15s, color 0.15s;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
   z-index: 5;
   line-height: 1;
+  outline: none;
 }
 .message-bubble-ai:hover .btn-copy-ai {
-  opacity: 1;
+  opacity: 0.7;
 }
 .btn-copy-ai:hover {
-  color: var(--ui-gray-900) /* -> --on-surface */;
-  border-color: var(--ui-gray-300) /* -> --on-surface-variant */;
+  color: var(--ui-gray-900);
+  background: var(--ui-gray-100, #f0f0f0);
   opacity: 1;
 }
 .btn-copy-ai.copied {
   color: #2e7d32;
-  border-color: #2e7d32;
   opacity: 1;
 }
 .btn-copy-ai svg {
   width: 14px;
   height: 14px;
 }
-/* 引用回复按钮（复制按钮左侧） */
+/* 引用回复按钮（复制按钮左侧，样式与复制按钮完全一致） */
 .btn-quote-ai {
   position: absolute;
   right: 36px;
-  bottom: 6px;
-  width: 26px;
-  height: 26px;
+  bottom: 2px;
+  width: 24px;
+  height: 24px;
   padding: 0;
-  border: 1px solid var(--ui-gray-200);
+  margin: 0;
+  border: none;
   border-radius: 4px;
-  background: var(--surface-container-low);
+  background: transparent;
+  box-shadow: none;
   color: var(--ui-gray-400);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0.6;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+  z-index: 5;
+  line-height: 1;
+  outline: none;
 }
 .message-bubble-ai:hover .btn-quote-ai {
-  opacity: 1;
+  opacity: 0.7 !important;
 }
 .btn-quote-ai:hover {
-  color: var(--ui-gray-900);
-  border-color: var(--ui-gray-300);
-  opacity: 1;
+  color: var(--ui-gray-900) !important;
+  background: var(--ui-gray-100, #f0f0f0) !important;
+  opacity: 1 !important;
 }
 .btn-quote-ai.quoted {
-  color: var(--ui-gray-900);
-  border-color: var(--ui-gray-300);
-  opacity: 1;
+  color: #2f7bf6 !important;
+  opacity: 1 !important;
 }
 .btn-quote-ai svg {
-  width: 14px;
-  height: 14px;
+  width: 14px !important;
+  height: 14px !important;
+  display: block !important;
 }
 /* ========== 模型标记徽章（右上角圆角矩形） ========== */
 .msg-badge {
@@ -4698,11 +4706,12 @@ html.theme-dark .group-name-text:hover { background: var(--surface-dim, #333); }
 .quote-attach-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 0 12px 6px;
-  padding: 6px 10px;
+  gap: 8px;
+  margin: 0 16px 6px;
+  padding: 8px 12px;
   border: 1px solid var(--ui-gray-200, #e0e0e0);
-  border-radius: 6px;
+  border-left: 3px solid #2f7bf6;
+  border-radius: 4px;
   background: var(--ui-gray-50, #f8f9fa);
 }
 .quote-attach-icon {
@@ -4739,3 +4748,129 @@ html.theme-dark .group-name-text:hover { background: var(--surface-dim, #333); }
   align-items: center;
 }
 .quote-attach-close:hover { color: var(--ui-gray-700, #555); }
+
+
+/* ========== 日志导出面板 ========== */
+.logs-stats {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.logs-stat-card {
+  flex: 1;
+  padding: 16px;
+  border: 1px solid var(--ui-gray-200, #e0e0e0);
+  border-radius: 8px;
+  background: var(--ui-gray-50, #f8f9fa);
+  text-align: center;
+}
+.logs-stat-num {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--ui-gray-900, #212121);
+  line-height: 1.2;
+}
+.logs-stat-label {
+  font-size: 12px;
+  color: var(--ui-gray-500, #757575);
+  margin-top: 4px;
+}
+.logs-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.logs-actions .btn-primary,
+.logs-actions .btn-secondary,
+.logs-actions .btn-danger {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+}
+.logs-actions .btn-primary {
+  background: #2f7bf6;
+  color: white;
+  border-color: #2f7bf6;
+}
+.logs-actions .btn-primary:hover {
+  background: #1a66e0;
+}
+.logs-actions .btn-secondary {
+  background: var(--ui-gray-100, #f0f0f0);
+  color: var(--ui-gray-700, #424242);
+  border-color: var(--ui-gray-200, #e0e0e0);
+}
+.logs-actions .btn-secondary:hover {
+  background: var(--ui-gray-200, #e0e0e0);
+}
+.logs-actions .btn-danger {
+  background: #fff;
+  color: #d32f2f;
+  border-color: #d32f2f;
+}
+.logs-actions .btn-danger:hover {
+  background: #ffebee;
+}
+.logs-info-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--ui-gray-600, #616161);
+  line-height: 1.8;
+}
+.logs-path {
+  display: inline-block;
+  padding: 6px 10px;
+  background: var(--ui-gray-100, #f0f0f0);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: monospace;
+  color: var(--ui-gray-700, #424242);
+  word-break: break-all;
+}
+.setting-desc {
+  font-size: 13px;
+  color: var(--ui-gray-500, #757575);
+  margin: 0 0 16px 0;
+  line-height: 1.6;
+}
+
+
+/* ========== 模式切换按钮（快速聊天/完整GIS） ========== */
+.mode-switch-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--ui-gray-200, #e0e0e0);
+  border-radius: 4px;
+  background: var(--ui-white, #fff);
+  color: var(--ui-gray-600, #616161);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+  margin-left: 8px;
+}
+.mode-switch-wrapper:hover {
+  border-color: var(--ui-gray-300, #bdbdbd);
+  background: var(--ui-gray-50, #fafafa);
+}
+.mode-switch-wrapper.mode-fast {
+  border-color: #2f7bf6;
+  color: #2f7bf6;
+  background: #eef4ff;
+}
+.mode-switch-wrapper.mode-fast:hover {
+  background: #dde9ff;
+}
+.mode-switch-wrapper svg {
+  flex-shrink: 0;
+}
+.mode-switch-wrapper #modeSwitchLabel {
+  font-weight: 500;
+}

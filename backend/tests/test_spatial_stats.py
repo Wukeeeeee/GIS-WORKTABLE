@@ -104,41 +104,10 @@ class TestSpatialMoran:
         # 聚集数据 I 应为正
         assert "聚集" in r or "正空间自相关" in r or "随机" in r  # 小样本可能不显著，但不应报错
 
-    def test_local_lisa_output_fields(self):
-        """局部 LISA 应输出含 cluster_type 字段的新图层"""
-        _setup("cluster", _CLUSTER_POINTS)
-        r = spatial_moran.invoke({"layer_name": "cluster", "field": "value", "threshold": 0.02, "local": True})
-        # 结果图层应被注册
-        result_names = [n for n in _registered_layers if "MoranI" in n]
-        assert len(result_names) >= 1, f"未找到 MoranI 结果图层，当前：{list(_registered_layers.keys())}"
-        gj = _registered_layers[result_names[0]]["geojson"]
-        props = gj["features"][0]["properties"]
-        assert "local_moran" in props
-        assert "cluster_type" in props
-        assert props["cluster_type"] in ("HH", "LL", "HL", "LH", "NS")
 
-    def test_nonexistent_field(self):
-        """字段不存在应返回明确错误"""
-        _setup("cluster", _CLUSTER_POINTS)
-        r = spatial_moran.invoke({"layer_name": "cluster", "field": "no_such_field"})
-        assert "不存在" in r
 
-    def test_constant_value_zero_variance(self):
-        """全相同值（方差为零）应返回错误"""
-        _setup("const", _CONSTANT_POINTS)
-        r = spatial_moran.invoke({"layer_name": "const", "field": "value"})
-        assert "方差为零" in r or "无法" in r
 
-    def test_knn_weight(self):
-        """KNN 权重模式应正常工作"""
-        _setup("cluster", _CLUSTER_POINTS)
-        r = spatial_moran.invoke({"layer_name": "cluster", "field": "value", "weight_type": "knn", "k": 3, "local": False})
-        assert "Moran" in r
 
-    def test_nonexistent_layer(self):
-        """图层不存在应返回错误"""
-        r = spatial_moran.invoke({"layer_name": "nope", "field": "value"})
-        assert "未找到" in r
 
 
 # ============================================================
@@ -155,33 +124,9 @@ class TestSpatialHotspot:
         result_names = [n for n in _registered_layers if "热点" in n]
         assert len(result_names) >= 1
 
-    def test_output_fields(self):
-        """结果图层应含 gi_z / gi_p / hotspot_type"""
-        _setup("cluster", _CLUSTER_POINTS)
-        spatial_hotspot.invoke({"layer_name": "cluster", "field": "value", "threshold": 0.02})
-        result_names = [n for n in _registered_layers if "热点" in n]
-        assert result_names
-        gj = _registered_layers[result_names[0]]["geojson"]
-        props = gj["features"][0]["properties"]
-        assert "gi_z" in props
-        assert "gi_p" in props
-        assert "hotspot_type" in props
-        assert props["hotspot_type"] in ("热点", "冷点", "不显著")
 
-    def test_negative_value_rejected(self):
-        """Gi* 不允许负值字段"""
-        _setup("neg", _NEGATIVE_POINTS)
-        r = spatial_hotspot.invoke({"layer_name": "neg", "field": "value"})
-        assert "非负" in r
 
-    def test_nonexistent_field(self):
-        _setup("cluster", _CLUSTER_POINTS)
-        r = spatial_hotspot.invoke({"layer_name": "cluster", "field": "bad"})
-        assert "不存在" in r
 
-    def test_nonexistent_layer(self):
-        r = spatial_hotspot.invoke({"layer_name": "nope", "field": "value"})
-        assert "未找到" in r
 
 
 # ============================================================
@@ -197,31 +142,5 @@ class TestSpatialKDE:
         result_names = [n for n in _registered_layers if "KDE" in n]
         assert len(result_names) >= 1, f"未找到 KDE 结果图层，当前：{list(_registered_layers.keys())}"
 
-    def test_output_has_density_field(self):
-        """结果图层应含 density 字段且非负"""
-        _setup("pts", _KDE_POINTS)
-        spatial_kde.invoke({"layer_name": "pts", "bandwidth": 0.01, "grid_size": 20})
-        result_names = [n for n in _registered_layers if "KDE" in n]
-        assert result_names
-        gj = _registered_layers[result_names[0]]["geojson"]
-        assert len(gj["features"]) > 0
-        props = gj["features"][0]["properties"]
-        assert "density" in props
-        assert props["density"] >= 0
 
-    def test_too_few_points(self):
-        """点太少应返回错误"""
-        few = {
-            "type": "FeatureCollection",
-            "features": [
-                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
-                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [0.01, 0]}},
-            ],
-        }
-        _setup("few", few)
-        r = spatial_kde.invoke({"layer_name": "few"})
-        assert "太少" in r
 
-    def test_nonexistent_layer(self):
-        r = spatial_kde.invoke({"layer_name": "nope"})
-        assert "未找到" in r

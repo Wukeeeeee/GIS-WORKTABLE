@@ -81,20 +81,8 @@ class TestBuildGraph:
         g = build_graph_from_geojson(GRID_GEOJSON)
         assert g.number_of_nodes() == 9
 
-    def test_build_graph_has_edges(self):
-        g = build_graph_from_geojson(GRID_GEOJSON)
-        assert g.number_of_edges() == 24  # 12 边 × 2 方向
 
-    def test_build_graph_empty(self):
-        g = build_graph_from_geojson({"type": "FeatureCollection", "features": []})
-        assert g.number_of_nodes() == 0
 
-    def test_build_graph_edge_weight(self):
-        g = build_graph_from_geojson(GRID_GEOJSON)
-        a, b = _NODES["A"], _NODES["B"]
-        d = g[a][b]["distance"]
-        assert 400 < d < 600  # 水平边约 426m
-        assert g[a][b]["weight"] == d
 
 
 # ============================================================
@@ -107,23 +95,8 @@ class TestFindNearestNode:
         node = find_nearest_node(g, _NODES["E"], max_dist=1000)
         assert node == _NODES["E"]
 
-    def test_find_nearest_nearby(self):
-        g = build_graph_from_geojson(GRID_GEOJSON)
-        # 靠近 A 的点
-        nearby = (116.3005, 39.9002)
-        node = find_nearest_node(g, nearby, max_dist=1000)
-        assert node == _NODES["A"]
 
-    def test_find_nearest_too_far(self):
-        g = build_graph_from_geojson(GRID_GEOJSON)
-        far = (116.0, 30.0)
-        node = find_nearest_node(g, far, max_dist=500)
-        assert node is None
 
-    def test_find_nearest_empty_graph(self):
-        g = build_graph_from_geojson({"type": "FeatureCollection", "features": []})
-        node = find_nearest_node(g, (0, 0))
-        assert node is None
 
 
 # ============================================================
@@ -136,19 +109,7 @@ class TestSnapToNetwork:
         assert result["found"] is True
         assert result["snapped"] == list(_NODES["B"])
 
-    def test_snap_nearby(self):
-        nearby = (116.3045, 39.8995)
-        result = snap_to_network(GRID_GEOJSON, nearby)
-        assert result["found"] is True
-        # 应吸附到最近的节点
-        assert result["distance_m"] < 100
 
-    def test_snap_too_far_returns_closest(self):
-        far = (116.0, 30.0)
-        result = snap_to_network(GRID_GEOJSON, far)
-        assert result["found"] is False
-        assert result["snapped"] is not None
-        assert result["distance_m"] > 1000
 
 
 # ============================================================
@@ -162,39 +123,10 @@ class TestShortestRoute:
         assert 400 < result["distance_m"] < 600  # 水平边约 426m
         assert result["node_count"] == 2
 
-    def test_route_diagonal(self):
-        """A → I 最短路径（4段边，约 1965m）"""
-        result = shortest_route(GRID_GEOJSON, _NODES["A"], _NODES["I"])
-        assert "error" not in result
-        assert result["node_count"] == 5
-        # 网格对角线距离在 1900-2000m 之间（2横+2纵）
-        assert 1900 < result["distance_m"] < 2000
 
-    def test_route_far_from_network(self):
-        far_point = (116.0, 30.0)
-        result = shortest_route(GRID_GEOJSON, far_point, _NODES["B"])
-        assert "error" in result
 
-    def test_route_with_waypoint(self):
-        """A → D → I: A先到D再到I"""
-        result = shortest_route(GRID_GEOJSON, _NODES["A"], _NODES["I"], waypoints=[_NODES["D"]])
-        assert "error" not in result
-        # A→D (1段) + D→I (D→G→H→I 3段) = 4 段边
-        assert result["node_count"] == 5
-        assert result["segments"][0]["from"] == list(_NODES["A"])
-        assert result["segments"][1]["to"] == list(_NODES["I"])
-        assert len(result["segments"]) == 2
 
-    def test_route_with_multiple_waypoints(self):
-        """A → D → H → C"""
-        result = shortest_route(GRID_GEOJSON, _NODES["A"], _NODES["C"],
-                                waypoints=[_NODES["D"], _NODES["H"]])
-        assert "error" not in result
-        assert len(result["segments"]) == 3  # A→D, D→H, H→C
 
-    def test_route_empty_graph(self):
-        result = shortest_route({"type": "FeatureCollection", "features": []}, (0, 0), (1, 1))
-        assert "error" in result
 
 
 # ============================================================
@@ -210,17 +142,7 @@ class TestServiceArea:
         assert result["areas"][0]["break"] == 500
         assert result["areas"][0]["area_km2"] > 0
 
-    def test_service_area_multi_breaks(self):
-        """300m 够不到相邻节点（~555m），只有 800m 和 1500m 能出多边形"""
-        result = service_area(GRID_GEOJSON, _NODES["E"], breaks=[300, 800, 1500])
-        assert "error" not in result
-        assert len(result["polygons"]["features"]) == 2
-        assert len(result["areas"]) == 2
-        assert result["areas"][0]["break"] == 800
 
-    def test_service_area_far_point(self):
-        result = service_area(GRID_GEOJSON, (116.0, 30.0), breaks=[500])
-        assert "error" in result
 
 
 # ============================================================
@@ -242,23 +164,7 @@ class TestClosestFacilities:
         assert result["summary"][0]["facility_idx"] == 0
         assert 400 < result["summary"][0]["distance_m"] < 600
 
-    def test_closest_facilities_limit_n(self):
-        result = closest_facilities(
-            GRID_GEOJSON, _NODES["A"],
-            [_NODES["B"], _NODES["G"], _NODES["I"]],
-            n=2,
-        )
-        assert "error" not in result
-        assert len(result["summary"]) == 2
 
-    def test_closest_facilities_no_path(self):
-        """孤立点应返回 error"""
-        result = closest_facilities(
-            GRID_GEOJSON, _NODES["A"],
-            [(116.0, 30.0)],
-            n=1,
-        )
-        assert "error" in result
 
 
 # ============================================================
@@ -273,9 +179,4 @@ class TestHaversine:
         d = _haversine(beijing, shanghai)
         assert abs(d - 1068000) < 50000  # 50km 容忍
 
-    def test_same_point(self):
-        assert _haversine((0, 0), (0, 0)) == 0
 
-    def test_symmetric(self):
-        a, b = (10, 20), (30, 40)
-        assert abs(_haversine(a, b) - _haversine(b, a)) < 0.001

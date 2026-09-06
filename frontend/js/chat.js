@@ -518,12 +518,16 @@ if (typeof marked !== 'undefined') {
       updateGreeting();
     }
 
-    // 6. 异步调 API
+    // 6. 异步调 API（等待清除完成，避免用户发消息时看到旧历史）
     if (window.GIS.project) {
       window.GIS.project.save().catch(function() {});
       window.GIS.project.setCurrentProjectId(null);
     }
-    window.GIS.api.clearMemory().catch(function() {});
+    try {
+      await window.GIS.api.clearMemory();
+    } catch (e) {
+      console.warn('清除记忆失败:', e);
+    }
   }
 
   async function send(text, displayOpt) {
@@ -644,6 +648,16 @@ if (typeof marked !== 'undefined') {
     const loadingBubble = loadingMsg ? loadingMsg.querySelector('.message-bubble') : null;
     if (loadingBubble) loadingBubble.appendChild(timerWrapper);
 
+    // 添加模式标签（完整/快速），计时器下方
+    const currentMode = (window.GIS && window.GIS.chat && window.GIS.chat.getMode) ? window.GIS.chat.getMode() : 'full';
+    const modeLabel = document.createElement('div');
+    modeLabel.style.cssText = 'margin-top:6px;display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500;' +
+      (currentMode === 'fast'
+        ? 'background:#eef4ff;color:#2f7bf6;border:1px solid #2f7bf6;'
+        : 'background:#f5f5f5;color:#616161;border:1px solid #e0e0e0;');
+    modeLabel.textContent = currentMode === 'fast' ? '快速模式' : '完整模式';
+    if (loadingBubble) loadingBubble.appendChild(modeLabel);
+
     const startTime = Date.now();
     // 路由模式：1.5 秒后从"路由中"切换到"执行中"
     let phaseTimer = null;
@@ -702,6 +716,28 @@ if (typeof marked !== 'undefined') {
         }, _timeoutMs);
       }
       try {
+        // 发送前同步所有图层到后端（后端重启后内存中的注册信息会丢失，这里重新注册）
+        try {
+          const allLayers = (window.GIS.layers && typeof window.GIS.layers.getLayers === 'function')
+            ? window.GIS.layers.getLayers() : [];
+          const registerPromises = [];
+          for (const lyr of allLayers) {
+            const lname = lyr.filename || lyr.name || lyr.layer_id;
+            if (lname && lyr.geojson) {
+              registerPromises.push(
+                fetch(window.GIS.api.BASE_URL + '/api/layer/register', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name: lname, geojson: lyr.geojson }),
+                }).catch(function() {})
+              );
+            }
+          }
+          if (registerPromises.length > 0) {
+            await Promise.all(registerPromises);
+          }
+        } catch(e) { console.warn('图层同步失败:', e); }
+
         const streamRes = await fetch(streamUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -709,6 +745,7 @@ if (typeof marked !== 'undefined') {
           body: JSON.stringify({
             message: text,
             session_id: 'default',
+            mode: window.GIS.chat.getMode(),
             api_key: sendProv.api_key || undefined,
             provider: sendProv.id || provider,
             llm_config: sendProv,
@@ -736,10 +773,17 @@ if (typeof marked !== 'undefined') {
         var decoder = new TextDecoder();
         var buffer = '';
         var lastStepEl = null;
+        var _receivedDone = false;
 
         while (true) {
           var chunk = await reader.read();
-          if (chunk.done) break;
+          if (chunk.done) {
+            // P0-3: SSE 连接中断但未收到 done 事件，不重复执行 Agent
+            if (!_receivedDone && !window._aiAbortController.signal.aborted) {
+              throw new Error('__SSE_INTERRUPTED__');
+            }
+            break;
+          }
           buffer += decoder.decode(chunk.value, { stream: true });
 
           var lines = buffer.split('\n');
@@ -786,6 +830,7 @@ if (typeof marked !== 'undefined') {
                 lastStepEl = verifyEl;
                 if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
               } else if (evt.type === 'done') {
+                _receivedDone = true;
                 result = evt;
                 if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
                 if (stepLog && stepLog.children.length > 1) {
@@ -808,9 +853,14 @@ if (typeof marked !== 'undefined') {
       } catch (streamErr) {
         // 清除超时计时器
         if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
-        // SSE 流失败时，降级到普通 API
-        console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
-        // 中止分两种：用户点击取消（abort('user-cancel')） vs 超时（abort('timeout')）
+        // P0-3: 明确区分异常类型
+        var _errMsg = streamErr.message || '';
+        if (_errMsg === '__USER_CANCELLED__') {
+          throw new Error('__USER_CANCELLED__');
+        }
+        if (_errMsg === '__SSE_INTERRUPTED__') {
+          throw new Error('AI 连接中断，未收到完整结果。请检查网络后重试。');
+        }
         if (streamErr.name === 'AbortError') {
           var _abortReason = window._aiAbortController ? window._aiAbortController.signal.reason : undefined;
           if (_abortReason === 'user-cancel') {
@@ -818,7 +868,11 @@ if (typeof marked !== 'undefined') {
           }
           throw new Error('AI 请求超时（' + (_timeoutMs === Infinity ? '不限时' : _timeoutMs/1000 + 's') + '），请简化操作或重试');
         }
-        result = await GIS.api.chat(text, 'default', sendProv, forceSkills);
+        // 其他流式错误：降级到普通 API（仅当未收到任何有效结果时）
+        if (!result) {
+          console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
+          result = await GIS.api.chat(text, 'default', sendProv, forceSkills, window.GIS.chat.getMode());
+        }
       }
 
       // 发送后清除 chip 标签（已消费）
@@ -865,7 +919,7 @@ if (typeof marked !== 'undefined') {
         return;
       }
       removePendingActionBars();   // 新一轮结果出来，清掉旧按钮
-      const msgEl = addMessage(result.response || '(空响应)', 'ai');
+      const msgEl = addMessage(result.response || '(空响应)', 'ai', { mode: result.mode || 'full' });
 
       // 折叠「思考过程」块：reasoning 开启时后端在 done 事件带 reasoning（不进正文）
       if (result.reasoning && msgEl) {
@@ -1363,8 +1417,8 @@ if (typeof marked !== 'undefined') {
     const avatar = document.createElement('div');
     avatar.className = 'message-avatar' + (type === 'user' ? ' message-avatar-user' : ' message-avatar-ai');
     avatar.innerHTML = type === 'user'
-      ? '<svg class="svg-icon-sm"><use href="assets/icons.svg#icon-user"/></svg>'
-      : '<svg class="svg-icon-sm"><use href="assets/icons.svg#icon-ai"/></svg>';
+      ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0 4 4 4 4 0 0 0 4-4V6a4 4 0 0 0-4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><circle cx="12" cy="6" r="1"/></svg>';
     row.appendChild(avatar);
 
     const bubble = document.createElement('div');
@@ -1467,6 +1521,18 @@ if (typeof marked !== 'undefined') {
         });
       });
       bubble.appendChild(copyBtn);
+
+      // 模式标签（和复制/引用按钮对齐）
+      const modeLabel = document.createElement('span');
+      modeLabel.className = 'mode-label-ai';
+      const _mode = (options && options.mode) ? options.mode : 'full';
+      modeLabel.textContent = _mode === 'fast' ? '快速' : '完整';
+      modeLabel.title = '本回复使用' + (_mode === 'fast' ? '快速模式（不调用工具）' : '完整模式（调用工具）');
+      modeLabel.style.cssText = 'display:inline-flex;align-items:center;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;vertical-align:middle;' +
+        (_mode === 'fast'
+          ? 'background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;'
+          : 'background:#e3f2fd;color:#1565c0;border:1px solid #90caf9;');
+      bubble.appendChild(modeLabel);
     }
 
     row.appendChild(bubble);
@@ -1603,5 +1669,56 @@ if (typeof marked !== 'undefined') {
     if (cmd) _applySlashCommand(cmd);
   }
 
-  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop, SLASH_COMMANDS, triggerSlash };
+  // ===== 回复模式切换（快速聊天/完整GIS） =====
+  let _currentMode = localStorage.getItem('gis_reply_mode') || 'full';
+
+  function getMode() {
+    return _currentMode;
+  }
+
+  function setMode(mode) {
+    _currentMode = mode;
+    localStorage.setItem('gis_reply_mode', mode);
+    var btn = document.getElementById('modeSwitchBtn');
+    var label = document.getElementById('modeSwitchLabel');
+    if (btn && label) {
+      if (mode === 'fast') {
+        btn.classList.add('mode-fast');
+        label.textContent = '快速';
+        btn.title = '快速聊天模式：不调用工具，响应快，适合问概念和闲聊。点击切换到完整模式';
+      } else {
+        btn.classList.remove('mode-fast');
+        label.textContent = '完整';
+        btn.title = '完整GIS模式：调用工具，支持数据下载和空间分析。点击切换到快速模式';
+      }
+    }
+  }
+
+  function _initModeSwitch() {
+    var btn = document.getElementById('modeSwitchBtn');
+    if (!btn) {
+      // 按钮还没渲染，100ms 后重试
+      setTimeout(_initModeSwitch, 100);
+      return;
+    }
+    if (!btn._modeBound) {
+      btn.addEventListener('click', function() {
+        if (_currentMode === 'fast') {
+          setMode('full');
+        } else {
+          setMode('fast');
+        }
+      });
+      btn._modeBound = true;
+    }
+    setMode(_currentMode);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _initModeSwitch);
+  } else {
+    _initModeSwitch();
+  }
+
+  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop, SLASH_COMMANDS, triggerSlash, getMode, setMode };
 })();

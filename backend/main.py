@@ -46,6 +46,26 @@ except Exception:
 
 app = FastAPI()
 
+# 启动 banner
+print("")
+print(r"""
+   ____ ___ ____
+  / ___|_ _/ ___|
+ | |  _ | |\___ \
+ | |_| || | ___) |
+  \____|___|____/
+ __        ____ _   _ ____  _____ _     ___
+ \ \      / /| | | |  _ \|_   _| |   |_ _|
+  \ \ /\ / / | | | | |_) | | | | |    | |
+   \ V  V /  | |_| |  _ <  | | | |___ | |
+    \_/\_/    \___/|_| \_\ |_| |_____|___|
+""")
+print("  ========================================================")
+print("    GIS-WORKTABLE  -  智能 GIS 工作平台")
+print("    AI Agent + GIS 专业知识库 + 空间分析工具链 + 自动化工作流")
+print("  ========================================================")
+print("")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -69,6 +89,7 @@ class ChatRequest(BaseModel):
     pending_layer: Optional[dict] = None  # 待分析的图层附件（前端输入框上方暂存）
     quoted: Optional[str] = None          # 用户点击"引用"的上一条 AI 回复（作为上下文注入）
     task_id: Optional[str] = None         # 任务 ID（跨轮保持）
+    mode: str = "full"                    # 回复模式：fast=快速聊天（不调工具），full=完整GIS（调工具）
 
 class TestKeyRequest(BaseModel):
     llm_config: Optional[LLMConfig] = None  # 通用测速入参即 cfg
@@ -131,6 +152,7 @@ async def chat(request: ChatRequest):
         force_skills=request.force_skills,
         amap_key=request.amap_key,
         provider=request.provider or "",
+        mode=request.mode,
     ))
     # result 已包含 layers / images / heatmap / clear_layers / pending_suggestions / reasoning
     # 从 chat_with_ai 直接返回给前端，不需要再读全局变量
@@ -303,6 +325,7 @@ async def chat_stream(request: ChatRequest):
                 skill_text=skill_text,
                 original_message=original_message,
                 session_id=session_id,
+                mode=request.mode,
             ):
                 if line.startswith("data: "):
                     try:
@@ -315,6 +338,19 @@ async def chat_stream(request: ChatRequest):
                             _evt.get("response", ""),
                             _evt.get("reasoning"),
                         )
+                        # 记录日志（SSE 流式路径之前漏了，导致导出的日志当前会话为 0 条）
+                        try:
+                            from backend.services.log_service import log_turn
+                            from backend.services.tools import _registered_layers
+                            log_turn(
+                                session_id=session_id,
+                                user_message=original_message or request.message,
+                                ai_reply=_evt.get("response", ""),
+                                layers_snapshot=dict(_registered_layers),
+                                saved_files=None,
+                            )
+                        except Exception:
+                            pass
                 yield line
         except GeneratorExit:
             pass
@@ -330,6 +366,48 @@ async def cancel_request():
     """取消当前 AI 请求"""
     result = request_cancel()
     return {"status": "ok", "message": result}
+
+@app.get("/favicon.ico")
+async def favicon():
+    from fastapi.responses import Response
+    import os
+    favicon_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "assets", "favicon.svg")
+    if os.path.exists(favicon_path):
+        with open(favicon_path, "r", encoding="utf-8") as f:
+            svg = f.read()
+        return Response(content=svg, media_type="image/svg+xml")
+    return Response(status_code=404)
+
+@app.post("/api/geo-credentials")
+async def save_geo_credential(req: dict):
+    """保存地理数据平台凭据（加密存储，不返回密码）"""
+    from backend.services.credential_store import save_credential
+    service = req.get("service", "")
+    username = req.get("username", "")
+    password = req.get("password", "")
+    if not service or not username or not password:
+        return {"status": "error", "message": "缺少 service/username/password"}
+    ok = save_credential(service, username, password)
+    if ok:
+        return {"status": "ok", "message": f"{service} 凭据已保存", "configured": True}
+    return {"status": "error", "message": "保存失败"}
+
+
+@app.get("/api/geo-credentials/status")
+async def geo_credentials_status():
+    """查询已配置的凭据（只返回服务名，不返回密码）"""
+    from backend.services.credential_store import get_configured_services
+    services = get_configured_services()
+    return {"configured": services, "count": len(services)}
+
+
+@app.delete("/api/geo-credentials/{service}")
+async def delete_geo_credential(service: str):
+    """删除指定服务的凭据"""
+    from backend.services.credential_store import delete_credential
+    ok = delete_credential(service)
+    return {"status": "ok" if ok else "error", "deleted": ok}
+
 
 @app.get("/api/health")
 async def health():
@@ -364,6 +442,101 @@ async def clear_session_logs():
     import backend.services.tools as tools_mod
     tools_mod._exec_call_count = 0
     return {"status": "ok", "message": "日志已清除"}
+
+
+@app.get("/api/logs/stats")
+async def logs_stats():
+    from backend.services.log_service import get_temp_log, get_perm_log
+    temp = get_temp_log()
+    perm = get_perm_log()
+    return {
+        "temp_count": len(temp),
+        "perm_count": len(perm),
+        "log_dir": os.path.join(os.path.dirname(__file__), "..", "logs"),
+    }
+
+
+@app.get("/api/logs/export")
+async def logs_export():
+    from backend.services.log_service import get_temp_log, get_perm_log
+    from fastapi.responses import Response
+    import datetime
+
+    temp = get_temp_log()
+    perm = get_perm_log()
+
+    lines = []
+    lines.append("# GIS-WORKTABLE 会话日志导出")
+    lines.append("")
+    lines.append(f"- 导出时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"- 当前会话问答记录：{len(temp)} 条")
+    lines.append(f"- 历史问题记录：{len(perm)} 条")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    if temp:
+        lines.append(f"## 当前会话问答记录（{len(temp)} 条）")
+        lines.append("")
+        for i, r in enumerate(temp, 1):
+            t = r.get("time", "")[:19].replace("T", " ")
+            lines.append(f"### {i}. [{t}]")
+            lines.append("")
+            lines.append(f"**用户：** {r.get('user', '')}")
+            lines.append("")
+            lines.append(f"**AI：** {r.get('ai', '')}")
+            lines.append("")
+            layers = r.get("layers", {})
+            if layers:
+                lines.append("**当时图层：**")
+                lines.append("")
+                for name, info in layers.items():
+                    fc = info.get("feature_count", 0)
+                    gt = ", ".join(info.get("geometry_types", [])) or "未知"
+                    lines.append(f"- {name}（要素数：{fc}，几何类型：{gt}）")
+                    fields = info.get("property_fields", [])
+                    if fields:
+                        lines.append(f"  - 属性字段：{', '.join(fields[:10])}")
+                lines.append("")
+            saved = r.get("saved_files", [])
+            if saved:
+                lines.append(f"**保存文件：** {', '.join(saved)}")
+                lines.append("")
+            lines.append("---")
+            lines.append("")
+
+    if perm:
+        lines.append(f"## 历史问题记录（{len(perm)} 条）")
+        lines.append("")
+        for i, r in enumerate(perm, 1):
+            t = r.get("time", "")[:19].replace("T", " ")
+            lines.append(f"### {i}. [{t}]")
+            lines.append("")
+            lines.append(f"**用户：** {r.get('user', '')}")
+            lines.append("")
+            lines.append(f"**AI：** {r.get('ai', '')}")
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+    if not temp and not perm:
+        lines.append("暂无日志记录。")
+        lines.append("")
+
+    content = chr(10).join(lines)
+    filename = f"gis_worktable_logs_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/logs/clear")
+async def logs_clear():
+    from backend.services.log_service import clear_temp_log
+    clear_temp_log()
+    return {"status": "ok", "message": "当前会话日志已清除"}
 
 @app.get("/api/version")
 async def version():

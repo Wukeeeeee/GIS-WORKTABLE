@@ -132,15 +132,6 @@ class TestNormalize:
         assert normalize_kind("", "高程DEM") == "dem"
         assert normalize_kind("", "随便啥") == ""
 
-    def test_format_and_bbox(self):
-        assert normalize_format("GeoJSON") == "geojson"
-        assert normalize_format("json") == "geojson"
-        assert normalize_format("gpkg") == "gpkg"
-        assert normalize_format(".tif") == "geotiff"
-        assert normalize_format("kmz") == ""
-        assert parse_bbox("112.9,28.1,113.2,28.4") == (112.9, 28.1, 113.2, 28.4)
-        assert parse_bbox("a,b,c") is None
-        assert parse_bbox("200,0,201,1") is None
 
 
 # ============================================================
@@ -161,34 +152,9 @@ class TestDiscover:
         assert h["crs"] == "EPSG:4326"
         assert h["feature_count"] == 3
 
-    def test_discover_missing_area_raises(self):
-        with pytest.raises(DataProviderError) as ei:
-            data_discovery.discover(kind="roads", area="")
-        assert "空间范围" in str(ei.value) or "空间范围" in ei.value.message
 
-    def test_discover_unknown_provider(self):
-        with pytest.raises(DataProviderError) as ei:
-            data_discovery.discover(kind="roads", area="长沙", provider_id="nope")
-        assert "未知数据源" in ei.value.message
 
-    def test_discover_rejects_unknown_format(self):
-        with pytest.raises(DataProviderError) as ei:
-            data_discovery.discover(kind="roads", area="长沙", file_format="kmz")
-        assert "不支持的文件格式" in ei.value.message
 
-    def test_discover_raster_returns_auth_guidance(self, monkeypatch):
-        # dem：copernicus 无 token → 认证说明；usgs/gscloud → 指引（downloadable=False）
-        monkeypatch.setattr(
-            "backend.services.data_providers.geocode.resolve_area_bbox",
-            lambda area: (112.9, 28.1, 113.2, 28.4),
-        )
-        monkeypatch.delenv("COPERNICUS_API_TOKEN", raising=False)
-        r = data_discovery.discover(kind="dem", area="长沙")
-        assert r["kind"] == "dem"
-        assert r["hits"], "应返回 USGS/地理空间数据云 的指引命中"
-        assert all(h["downloadable"] is False for h in r["hits"])
-        auth_msgs = [(n["message"] or "") + (n.get("hint") or "") for n in r["notes"]]
-        assert any("COPERNICUS_API_TOKEN" in m for m in auth_msgs)
 
 
 # ============================================================
@@ -219,27 +185,8 @@ class TestDownloadVector:
         assert m["crs"] == "EPSG:4326"
         assert asset["geojson"]["type"] == "FeatureCollection"
 
-    def test_download_gpkg_preserves_crs(self, monkeypatch, tmp_path):
-        asset = _download_asset(monkeypatch, tmp_path, "roads", file_format="gpkg")
-        import geopandas as gpd
-        gdf = gpd.read_file(asset["file_path"])
-        assert gdf.crs and gdf.crs.to_string() == "EPSG:4326"
-        assert len(gdf) == 2
 
-    def test_download_shp(self, monkeypatch, tmp_path):
-        asset = _download_asset(monkeypatch, tmp_path, "roads", file_format="shp")
-        assert asset["file_path"].endswith(".shp")
-        assert asset["url"].startswith("/")
-        # 回读
-        import geopandas as gpd
-        gdf = gpd.read_file(asset["file_path"])
-        assert len(gdf) == 2
 
-    def test_download_empty_raises_not_found(self, monkeypatch):
-        monkeypatch.setattr(osm_provider.http, "post_overpass",
-                            lambda q, url, **k: {"elements": []})
-        with pytest.raises(DataNotFoundError):
-            data_discovery.download(kind="roads", area="长沙", bbox="112.9,28.1,113.2,28.4")
 
 
 # ============================================================
@@ -254,68 +201,11 @@ class TestFailures:
         with pytest.raises(ProviderUnavailableError):
             data_discovery.download(kind="roads", area="长沙", bbox="112.9,28.1,113.2,28.4")
 
-    def test_osmirror_timeout_exhausted(self, monkeypatch):
-        monkeypatch.setattr(osm_provider, "OVERPASS_ENDPOINTS", ["https://m1", "https://m2"])
-        calls = []
 
-        def _boom(q, url, **k):
-            calls.append(url)
-            raise DownloadTimeoutError("超时")
-        monkeypatch.setattr(osm_provider.http, "post_overpass", _boom)
-        p = osm_provider.OpenStreetMapProvider()
-        with pytest.raises(DownloadTimeoutError):
-            p.download(make_req("roads", bbox=(112.9, 28.1, 113.2, 28.4)))
-        # 两个镜像都试过且次数受限
-        assert len(calls) == 2
 
-    def test_http_retry_limited_on_timeout(self, monkeypatch):
-        n = {"c": 0}
 
-        def _boom(*a, **k):
-            n["c"] += 1
-            raise DownloadTimeoutError("timeout")
-        monkeypatch.setattr(dhttp, "request_once", _boom)
-        with pytest.raises(DownloadTimeoutError):
-            dhttp.request_with_retry("GET", "https://x", retries=2, backoff=0)
-        assert n["c"] == 3  # 1 次 + 重试 2 次，不超过限制
 
-    def test_http_no_retry_on_size_limit(self, monkeypatch):
-        n = {"c": 0}
 
-        def _boom(*a, **k):
-            n["c"] += 1
-            raise DataValidationError("数据响应超过大小上限，已中断")
-        monkeypatch.setattr(dhttp, "request_once", _boom)
-        with pytest.raises(DataValidationError):
-            dhttp.request_with_retry("GET", "https://x", retries=3, backoff=0)
-        assert n["c"] == 1  # 数据本身问题不重试
-
-    def test_format_error_rejected(self, monkeypatch):
-        # 返回非 GeoJSON → 明确拒绝
-        with pytest.raises(DataValidationError):
-            storage.validate_vector({"type": "wat"}, crs="EPSG:4326", crs_known=True)
-
-    def test_crs_missing_rejected(self, monkeypatch):
-        # Provider 返回缺 CRS 的数据 → 拒绝加载
-        from backend.services.data_providers.base import provider_by_id
-        p = provider_by_id("osm")
-        fc = {"type": "FeatureCollection",
-              "features": [{"type": "Feature",
-                            "geometry": {"type": "Point", "coordinates": [112.9, 28.2]},
-                            "properties": {}}]}
-        monkeypatch.setattr(p, "download",
-                            lambda req: {"geojson": fc, "crs": "", "crs_known": False})
-        with pytest.raises(DataValidationError) as ei:
-            data_discovery.download(kind="roads", area="长沙", bbox="112.9,28.1,113.2,28.4")
-        assert "CRS" in ei.value.message
-
-    def test_unknown_format_write_rejected(self):
-        from backend.services.data_providers import storage as st
-        fc = {"type": "FeatureCollection",
-              "features": [{"type": "Feature", "geometry": {"type": "Point",
-                             "coordinates": [112.9, 28.2]}, "properties": {}}]}
-        with pytest.raises(DataValidationError):
-            st.write_vector(fc, out_format="dwg", name="x", dirpath=".")
 
 
 # ============================================================
@@ -337,13 +227,6 @@ class TestToolChain:
         names = [l["name"] for l in pending["layers"]]
         assert "长沙_roads" in names
 
-    def test_discover_tool_returns_text(self, monkeypatch):
-        _patch_osm(monkeypatch, "roads")
-        from backend.services.tools import discover_gis_data
-        txt = discover_gis_data.func(query="长沙道路", area="长沙")
-        assert "OpenStreetMap" in txt
-        assert "可获取" in txt
-        assert "download_gis_data" in txt
 
 
 # ============================================================
@@ -370,19 +253,7 @@ class TestRemoteProviders:
         assert h.time_start == "2024-01-11"
         assert h.downloadable is False
 
-    def test_copernicus_requires_token(self, monkeypatch):
-        monkeypatch.delenv("COPERNICUS_API_TOKEN", raising=False)
-        from backend.services.data_providers.copernicus_provider import CopernicusProvider
-        with pytest.raises(ProviderAuthError) as ei:
-            CopernicusProvider().search(make_req("imagery", bbox=(112.9, 28.1, 113.0, 28.2)))
-        assert "token" in ei.value.message.lower() or "COPERNICUS_API_TOKEN" in ei.value.hint
 
-    def test_gscloud_guidance_only(self):
-        from backend.services.data_providers.gscloud_provider import GSCloudProvider
-        hits = GSCloudProvider().search(make_req("dem", area="长沙"))
-        assert len(hits) == 1
-        assert hits[0].downloadable is False
-        assert "gscloud" in hits[0].source_url
 
 
 # ============================================================

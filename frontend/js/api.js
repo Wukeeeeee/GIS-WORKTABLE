@@ -319,7 +319,7 @@ window.GIS.api = (() => {
    * @param {ProviderItem|string} [provider] Provider 对象或 id；缺省用当前选中项
    * @param {string[]} [forceSkills=[]]
    */
-  async function chat(message, sessionId = 'default', provider = null, forceSkills = []) {
+  async function chat(message, sessionId = 'default', provider = null, forceSkills = [], mode = 'full') {
     // 解析出完整 Provider 条目作为唯一配置来源
     const prov = resolveProvider(provider);
     const controller = new AbortController();
@@ -337,7 +337,8 @@ window.GIS.api = (() => {
           api_key: prov.api_key || undefined,   // 迁移兼容
           llm_config: prov,                      // 主数据源
           force_skills: forceSkills,
-          amap_key: getAmapKey() || undefined
+          amap_key: getAmapKey() || undefined,
+          mode: mode
         })
       });
     } finally {

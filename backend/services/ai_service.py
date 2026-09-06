@@ -234,7 +234,7 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
 
  ## 回复风格
   - 以中文为主，必要时使用英文术语
-  - 简洁直白；必要的时候可以使用 emoji（适度点缀，用于状态提示/强调，不要刷屏）
+  - 简洁直白；不使用 emoji（包括状态提示/强调），用文字描述状态（如正在分析/完成/警告）
   - 可以使用 Markdown 格式组织内容（标题 `##`、列表 `-`、代码块 ```、加粗 `**` 等），让回复结构清晰
   - 列出多项内容时，每项单独一行，同类数据放一起
   - 涉及操作步骤时，分点列出，清晰易懂
@@ -254,6 +254,19 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
   - **当用户要求获取数据、加载图层、画图时，必须在同一次回复中完成所有工具调用**（不要分两轮，前端只保留最后一轮数据）。
   - 需要多个省的数据时一次性调多次 datav_boundary，需要同时画线和加载边界时一次性调完所有工具。
 
+ ## 分析报告规范（复杂GIS任务必须遵守）
+  当用户要求分析、评估、巡检、统计等复杂任务时，最终回复必须包含以下结构（用Markdown）：
+  1. 任务概述：用户需求 + 分析目标
+  2. 数据来源：使用了哪些数据/图层/API，数据时间和分辨率
+  3. 空间范围：研究区域、坐标系、边界
+  4. 使用方法：采用了什么分析方法，为什么选这个方法
+  5. 处理流程：关键步骤说明
+  6. 分析结果：具体数字（必须来自工具返回值，禁止编造）、空间分布特征
+  7. 结果图层：生成了哪些图层，图层名
+  8. 异常与不确定性：数据质量问题、方法局限、可能误差
+  9. 结论与建议：基于结果的专业解读
+  简单问题不需要完整报告，直接回答即可。
+
  ## 工具使用优先级（必须遵守）
   - **优先用专用工具**：amap_geocode / amap_poi_search / datav_boundary / network_analysis / download_road_network / unified_aoi_search / unified_aoi_extract / create_heatmap / create_chart / field_calculate / measure_area / layer_control
   - **开放数据获取用 discover_gis_data / download_gis_data**：当用户要"找/获取/下载"公开 GIS 数据（道路、建筑、POI、水系、土地利用、遥感影像、DEM 等）时，先用 discover_gis_data 检索来源与可获取状态，再用 download_gis_data 获取并加载到地图。禁止用 execute_python 去抓网页/自写请求代替（数据请求必须走确定性的 Provider 代码）。OSM 城市数据可用但国内乡村不完整；DEM/遥感影像大多需账号，未自动启用下载时会明确提示。
@@ -268,13 +281,15 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
 
  ## 数据下载的两阶段确认（必须遵守）
  当用户需要下载遥感影像、DEM、OSM 数据等需要外部数据源的数据时，必须分两步确认：
- 1. **第一次弹选项（选数据源）**：调用 ask_user_choice 工具，弹出数据源列表，每个选项标注配置状态（已配置/未配置）。常用数据源：地理空间数据云、Copernicus（哥白尼）、USGS EarthExplorer、NASA Earthdata、ASF（SAR数据）、OpenTopography（DEM）。prompt 写"请选择数据来源"。
- 2. **用户选择后**：从系统提示的"用户已做出的选择"中读取选中的数据源，用该数据源搜索可用数据。
- 3. **第二次弹选项（选具体数据）**：搜索到多景/多个结果时，再次调用 ask_user_choice，选项包含关键信息（日期、云量、分辨率、传感器等），让用户选具体要下载哪一个。
- 4. **用户选择后**：下载选中的数据并加载到地图，给出数据说明。
+ 1. **第一次弹选项（选数据源）**：调用 ask_user_choice 工具，弹出数据源列表。**第一个选项必须是"Esri 快速巡检（无需下载，免费瓦片，直接查看）"**，标注"立即可用"。其余选项标注配置状态（已配置/未配置）：地理空间数据云、Copernicus（哥白尼）、USGS EarthExplorer、NASA Earthdata、ASF（SAR数据）、OpenTopography（DEM）。prompt 写"请选择数据来源，Esri 快速巡检无需下载可直接使用"。
+ 2. **如果用户选择"Esri 快速巡检"**：直接调用 inspect_satellite_image 工具，传入 place_name 或 bbox，完成影像获取、RGB 启发式分类、结果图层注册。不要走下载流程，不要弹第二次选项。
+ 3. **用户选择其他数据源后**：从系统提示的"用户已做出的选择"中读取选中的数据源，用该数据源搜索可用数据。
+ 4. **第二次弹选项（选具体数据）**：搜索到多景/多个结果时，再次调用 ask_user_choice，选项包含关键信息（日期、云量、分辨率、传感器等），让用户选具体要下载哪一个。
+ 5. **用户选择后**：下载选中的数据并加载到地图，给出数据说明。
  - 未配置的数据源用户仍可选择，选择后提示"该数据源未配置，请在设置→连接器中添加账号"。
  - 不要跳过选项直接下载，也不要在一次回复里连续弹两次选项（必须等用户选完第一次再弹第二次）。
  - 如果只有一个数据源可用或只有一个搜索结果，直接说明并执行，不必弹选项。
+ - 用户说"巡检卫星影像""快速查看卫星图""看看某区域卫星图"时，优先推荐 Esri 快速巡检选项。
 
  ## GIS 专业工作规范（必须遵守）
 
@@ -326,6 +341,29 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
   - 不要用高德 POI 搜索国外地点（只覆盖中国）
 
  """
+
+# ===== 快速回复模式提示词（不调用工具，精简版） =====
+SIMPLE_SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手。
+
+ ## 你的能力
+  - 回答地理信息、地图、空间分析相关的概念和知识问题
+  - 帮助用户理解 GIS 数据和处理流程
+  - 提供 GIS 数据处理方法和思路
+  - 提供与地理有关系的任何知识（人口、经济、环境等）
+
+ ## 回复风格
+  - 以中文为主，必要时使用英文术语
+  - 简洁直白，直接回答问题
+  - 可以使用 Markdown 格式组织内容
+  - 简单问题直接回答，无须反问
+  - 问题不清晰时，主动询问用户补充信息
+
+ ## 安全红线
+  - 用户询问敏感地理位置（军事基地、关键设施等）的具体坐标时，拒绝提供
+  - 涉及行政区域划分时，严格遵守中国官方行政区划标准
+
+注意：本模式不调用工具，仅回答知识类问题。如需数据下载、地图操作、空间分析等功能，请切换到完整模式。
+"""
 
 # ===== GLM 免费模型提示词（支持工具调用） =====
 SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
@@ -602,12 +640,15 @@ def _build_system_content(cfg, message: str, force_skills: list = None) -> tuple
         if _pending_act and _pending_act.get("action") == "choose_option" and _pending_act.get("selected"):
             _sel = _pending_act["selected"]
             _ck = _pending_act.get("choice_key", "")
+            _sel_value = _sel.get('value', '')
             appendix_parts.append(
                 f"## 用户已做出的选择\n"
                 f"选择类别：{_ck}\n"
                 f"用户选择：{_sel.get('label', '')}" +
+                (f"（选项标识：{_sel_value}）" if _sel_value else "") +
                 (f"（{_sel.get('desc')}）" if _sel.get('desc') else "") +
                 "\n请基于此选择继续执行，不要再次询问用户选什么。"
+                + ("\n注意：选项标识为 esri_quick_inspect 时，直接调用 inspect_satellite_image 工具，不要再走数据下载流程。" if _sel_value == "esri_quick_inspect" else "")
             )
     except Exception:
         pass
@@ -627,7 +668,19 @@ def _build_system_content(cfg, message: str, force_skills: list = None) -> tuple
                     _lng = (_box[0] + _box[2]) / 2
                     _lat = (_box[1] + _box[3]) / 2
                     _ext = f"（中心 {_lat:.3f}°N, {_lng:.3f}°E）"
-                _layer_lines.append(f"  - {_lyr['name']}：{_cnt} 个 {_typ}{_ext}")
+                # 提取属性字段（从 geojson 中）
+                _fields = set()
+                _geojson = _lyr.get("geojson", {})
+                if _geojson:
+                    for _f in _geojson.get("features", [])[:30]:
+                        _fields.update((_f.get("properties", {}) or {}).keys())
+                _fields_str = ""
+                if _fields:
+                    _fields_str = f"，字段：{', '.join(sorted(_fields)[:8])}"
+                    if len(_fields) > 8:
+                        _fields_str += f" 等{len(_fields)}个"
+                _lyr_name = _lyr.get('filename') or _lyr.get('name', '未知')
+                _layer_lines.append(f"  - {_lyr_name}：{_cnt} 个 {_typ}{_ext}{_fields_str}")
             appendix_parts.append("## 当前已加载的图层\n" + "\n".join(_layer_lines) +
                 "\n重要：如果已有路网图层，优先使用现有图层做分析，严禁重复下载。")
     except Exception:
@@ -743,7 +796,7 @@ def _try_handle_confirm_command(session_id: str, message: str) -> dict | None:
 
 def chat_with_ai(message: str, session_id: str = "default", cfg=None,
                  force_skills: list = None, amap_key: str = None,
-                 provider: str = "") -> dict:
+                 provider: str = "", mode: str = "full") -> dict:
     """
     调用 AI 进行对话（使用 LangGraph Agent）
 
@@ -772,6 +825,56 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
         raise ValueError("chat_with_ai 需要 LLMConfig（cfg），请先 resolve_llm_config()")
     _current_api_key = cfg.api_key
     _current_provider = provider or cfg.model
+
+    # 快速模式：直接用精简 prompt 单轮回复，不走 ReAct 工具调用
+    if mode == "fast":
+        from backend.services.llm_config import build_llm, disable_reasoning
+        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+        _fast_llm = build_llm(disable_reasoning(cfg))
+        # 注入当前图层列表（精简版），让 AI 知道有哪些图层
+        _fast_system = SIMPLE_SYSTEM_PROMPT
+        try:
+            from backend.services.tools import get_registered_layers_snapshot
+            _snap = get_registered_layers_snapshot()
+            if _snap:
+                _layer_names = [l.get("filename") or l.get("name", "") for l in _snap if l.get("filename") or l.get("name")]
+                if _layer_names:
+                    _fast_system += "\n\n## 当前已加载图层\n" + "\n".join(f"- {n}" for n in _layer_names[:20])
+        except Exception:
+            pass
+        # 传入最近 5 轮会话历史，让 AI 有基本上下文
+        _fast_msgs = [SystemMessage(content=_fast_system)]
+        try:
+            _hist = conversation_history.get(session_id, [])
+            for _h in _hist[-10:]:  # 最近 5 轮 = 10 条消息
+                if _h.get("role") == "user":
+                    _fast_msgs.append(HumanMessage(content=_h.get("content", "")))
+                elif _h.get("role") == "assistant":
+                    _fast_msgs.append(AIMessage(content=_h.get("content", "")))
+        except Exception:
+            pass
+        _fast_msgs.append(HumanMessage(content=message))
+        _fast_resp = _fast_llm.invoke(_fast_msgs)
+        _fast_reply = _fast_resp.content
+        # 记录日志（快速模式之前漏了）
+        try:
+            from backend.services.log_service import log_turn
+            from backend.services.tools import _registered_layers
+            log_turn(
+                session_id=session_id,
+                user_message=message,
+                ai_reply=_fast_reply,
+                layers_snapshot=dict(_registered_layers),
+                saved_files=None,
+            )
+        except Exception:
+            pass
+        return {
+            "response": _fast_reply,
+            "reasoning": None,
+            "layers": [], "images": [], "heatmap": None,
+            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+        }
 
     # 自动清理过期缓存
     clean_old_cache(7)

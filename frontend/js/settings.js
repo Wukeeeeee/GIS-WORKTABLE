@@ -72,6 +72,7 @@ window.GIS = window.GIS || {};
       'ai-api': document.getElementById('panelAiApi'),
       'geo-api': document.getElementById('panelGeoApi'),
       history: document.getElementById('panelHistory'),
+      logs: document.getElementById('panelLogs'),
       about: document.getElementById('panelAbout'),
     };
   }
@@ -383,8 +384,22 @@ window.GIS = window.GIS || {};
         }
         GIS.api.setGeoCredential(svc, cred);
         updateGeoCredStatus(svc, cred);
+        // 同时保存到后端加密存储（Agent 登录时从后端读取，密码不进入 LLM）
+        if (cred.type === 'account' && cred.username && cred.password) {
+          fetch(GIS.api.BASE_URL + '/api/geo-credentials', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ service: svc, username: cred.username, password: cred.password }),
+          }).catch(function(e) { console.warn('后端凭据保存失败:', e); });
+        } else if (cred.type === 'key' && cred.api_key) {
+          fetch(GIS.api.BASE_URL + '/api/geo-credentials', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ service: svc, username: 'api_key', password: cred.api_key }),
+          }).catch(function(e) { console.warn('后端凭据保存失败:', e); });
+        }
         var msg = document.querySelector('.geo-cred-msg[data-cred="' + svc + '"]');
-        if (msg) { msg.textContent = '已保存'; msg.className = 'modal-test-result modal-test-success'; }
+        if (msg) { msg.textContent = '已保存（加密存储）'; msg.className = 'modal-test-result modal-test-success'; }
         setTimeout(function() { if (msg) { msg.textContent = ''; msg.className = 'modal-test-result'; } }, 2000);
       });
     });
@@ -685,3 +700,56 @@ window.GIS = window.GIS || {};
     syncModelUI,
   };
 })();
+
+
+  // ===== 日志导出面板 =====
+  function _initLogsPanel() {
+    var exportBtn = document.getElementById('logsExportBtn');
+    var refreshBtn = document.getElementById('logsRefreshBtn');
+    var clearBtn = document.getElementById('logsClearBtn');
+
+    function refreshStats() {
+      fetch('/api/logs/stats')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var tempEl = document.getElementById('logsTempCount');
+          var permEl = document.getElementById('logsPermCount');
+          var pathEl = document.getElementById('logsPath');
+          if (tempEl) tempEl.textContent = data.temp_count || 0;
+          if (permEl) permEl.textContent = data.perm_count || 0;
+          if (pathEl) pathEl.textContent = data.log_dir || 'logs/';
+        })
+        .catch(function() {});
+    }
+
+    if (exportBtn) {
+      exportBtn.addEventListener('click', function() {
+        window.open('/api/logs/export', '_blank');
+      });
+    }
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', refreshStats);
+    }
+    if (clearBtn) {
+      clearBtn.addEventListener('click', function() {
+        if (!confirm('确定清除当前会话的所有日志吗？此操作不可恢复。')) return;
+        fetch('/api/logs/clear', { method: 'POST' })
+          .then(function(r) { return r.json(); })
+          .then(function() {
+            refreshStats();
+            alert('日志已清除');
+          })
+          .catch(function() { alert('清除失败'); });
+      });
+    }
+
+    // 打开设置时自动刷新统计
+    refreshStats();
+  }
+
+  // 页面加载完成后初始化日志面板
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _initLogsPanel);
+  } else {
+    _initLogsPanel();
+  }
