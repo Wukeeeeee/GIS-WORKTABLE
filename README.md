@@ -33,7 +33,7 @@ GIS-WORKTABLE 是一个面向 GIS 专业人员的 AI 智能工作平台。它将
 ### AI Agent 智能助手
 - 自然语言 GIS 需求解析：自动识别分析目标、数据需求和方法选择
 - 任务规划：复杂任务自动分解为数据准备、数据检查、方法选择、工具调用、结果验证、结果展示的完整流程
-- 96 个专业 GIS 工具调用：覆盖矢量分析、栅格处理、空间统计、网络分析、数据获取等领域
+- 100 个专业 GIS 工具调用：覆盖矢量分析、栅格处理、空间统计、网络分析、数据获取等领域
 - 多轮上下文记忆：支持 Task Working Memory、会话历史、中间结果管理和长任务执行
 - 结果专业解读：对分析结果给出统计数据、空间分布特征和方法局限性说明
 - 两阶段数据源选择：下载数据前先让用户选数据源（带配置状态），搜索后再让用户选具体数据
@@ -91,6 +91,8 @@ GIS-WORKTABLE 是一个面向 GIS 专业人员的 AI 智能工作平台。它将
 - 工程保存/加载/重命名/删除/导出/导入
 - 图层管理：添加、删除、显隐控制、属性查看、导出 Shapefile
 - 分析报告自动生成：包含方法、参数、结果统计和结论的 Markdown 报告
+- **GIS Workflow 工作流引擎**：支持 DAG 工作流定义、节点依赖解析、顺序执行、状态追踪，Agent 可生成结构化工作流并调用 execute_workflow 工具执行
+- **网络代理设置**：独立面板配置 HTTP/HTTPS 代理（支持系统代理自动检测），卫星瓦片下载和外部 API 请求自动走代理，国内用户无需全局代理即可访问 Esri/Bing 等海外数据源
 
 ---
 
@@ -103,7 +105,7 @@ graph TB
     API -->|调用| AIService[ai_service.py]
     AIService -->|构建 System Prompt| Graph[LangGraph ReAct Agent]
     AIService -->|加载| KB[knowledge/ 知识库 11模块]
-    Graph -->|调用工具| Tools[tools.py 96个 GIS 工具]
+    Graph -->|调用工具| Tools[tools.py 100个 GIS 工具]
     Tools -->|空间计算| GeoStack[geopandas / shapely / rasterio / pyproj]
     Tools -->|统计分析| StatsStack[numpy / scipy / scikit-learn]
     Tools -->|网络分析| NetworkStack[osmnx / networkx]
@@ -123,11 +125,14 @@ graph TB
 | API 层 | `backend/main.py` | FastAPI 路由、静态文件服务、文件上传、工程管理接口 |
 | AI 服务 | `backend/services/ai_service.py` | System Prompt 构建、知识库路由、会话管理、流式响应 |
 | Agent 引擎 | `backend/services/graph.py` | LangGraph ReAct 循环、工具调用、简单文本短路 |
-| GIS 工具 | `backend/services/tools.py` | 96 个 @tool 函数，覆盖全部 GIS 能力 |
+| GIS 工具 | `backend/services/tools.py` | 100 个 @tool 函数，覆盖全部 GIS 能力 |
 | 知识库 | `knowledge/` | 11 个结构化 GIS 知识模块 |
 | 任务管理 | `backend/services/task_manager.py` | Task Working Memory、代码/产物/执行日志 |
 | 待确认动作 | `backend/services/pending_action.py` | 跨轮 pending 状态、选项确认、磁盘持久化 |
 | 开放数据 | `backend/services/data_discovery.py` | 开放 GIS 数据源检索与下载 |
+| Workflow 引擎 | `backend/services/workflow.py` | DAG 工作流定义、节点依赖解析、顺序执行、状态追踪 |
+| 坐标转换 | `backend/services/geo_coords.py` | WGS84 ↔ GCJ-02 ↔ Web Mercator 坐标转换，DataV 边界数据校正 |
+| 凭据存储 | `backend/services/credential_store.py` | Fernet 加密存储、Credential Injection 模式 |
 
 ### AI Agent 内部流程
 
@@ -225,7 +230,7 @@ AI 给出专业解读（统计数据、空间分布、方法局限性）
 - 用户在设置中自行配置 API Key 和 Base URL
 
 **工程化**
-- pytest（200 项测试，含 59 项 API 级集成测试）
+- pytest（235 项测试，含 59 项 API 级集成测试）
 
 ---
 
@@ -240,12 +245,12 @@ Gis-WorkTable/
 │   ├── services/
 │   │   ├── ai_service.py        # AI 服务：System Prompt、知识库、会话管理
 │   │   ├── graph.py             # LangGraph ReAct Agent 循环
-│   │   ├── tools.py             # 96 个 GIS 工具函数
+│   │   ├── tools.py             # 100 个 GIS 工具函数
 │   │   ├── task_manager.py      # Task Working Memory
 │   │   ├── pending_action.py    # 跨轮待确认动作与选项
 │   │   ├── data_discovery.py    # 开放数据发现与下载
 │   │   └── ...
-│   └── tests/                   # pytest 测试（200 passed）
+│   └── tests/                   # pytest 测试（235 passed）
 ├── frontend/
 │   ├── index.html               # 单页应用入口
 │   ├── css/style.css            # 样式
@@ -436,7 +441,7 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-当前测试覆盖：知识库加载、空间分析工具、栅格工具、网络分析、空间统计、遥感指数、报告质量、多轮状态、任务管理等，共 200 项测试通过（含 59 项 API 级集成测试）。
+当前测试覆盖：知识库加载、空间分析工具、栅格工具、网络分析、空间统计、遥感指数、报告质量、多轮状态、任务管理、坐标转换、Workflow 引擎等，共 235 项测试通过（含 59 项 API 级集成测试）。
 
 ### 新增 GIS 工具
 
@@ -495,6 +500,16 @@ python -m pytest tests/ -v
 - 卫星巡检增加高德卫星图作为第三备用源（国内直连，无需代理），Esri→Bing→高德三源自动回退
 - AI 回复底部增加模式标签（快速/完整），方便确认当前回复使用的模式
 - 降级到非流式 API 时正确传递 mode 参数，避免模式串配置
+
+**第三阶段优化（稳定性与坐标校正）**：
+- 修复 DataV 行政区划边界坐标系偏移 Bug：删除 datav_service.py 中有 bug 的重复 GCJ-02 转换代码（迭代公式错误导致过度修正约5倍），统一改用 geo_coords.gcj02_to_wgs84()，广州地区行政边界与卫星底图河道对齐
+- 修复 Agent 取消按钮失效：前端取消请求添加 keepalive:true 并调整发送顺序（先发 /api/cancel 再中断 SSE），后端 GeneratorExit 主动设置取消标志，长任务可正常中止
+- System Prompt 强化地理编码要求：查询坐标/定位类任务必须调用 amap_geocode 工具，禁止凭模型记忆返回坐标
+- 后端停止时错误提示优化：检测到 Failed to fetch / 网络错误时显示"无法连接到后端服务，请确认后端已启动"，而非原始报错
+- 新增 GIS Workflow 工作流引擎（backend/services/workflow.py）：DAG 节点依赖解析、顺序执行、状态追踪，Agent 可通过 execute_workflow 工具调用
+- 新增网络代理独立设置面板：支持 HTTP/HTTPS 代理配置和系统代理自动检测，卫星瓦片下载和外部 API 请求自动走代理
+- 修复 4 处 geographic CRS 下计算 centroid 的 warning（改用 total_bounds 中心确定 UTM 带号），测试 warnings 从 6 个降至 3 个（剩余均为第三方库）
+- 测试套件扩充至 235 项（新增坐标转换 15 项、Workflow 引擎 20 项）
 
 **注意**：以上部分功能仍在测试中，可能存在已知或未发现的 Bug。
 

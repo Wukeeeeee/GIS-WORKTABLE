@@ -146,7 +146,8 @@ class TestCredentialSecurityE2E:
         service = f"test_plain_{uuid.uuid4().hex[:6]}"
         save_credential(service, "user1", "mysecretpassword_xyz")
         if os.path.exists(_CRED_FILE):
-            content = open(_CRED_FILE, encoding="utf-8").read()
+            with open(_CRED_FILE, encoding="utf-8") as f:
+                content = f.read()
             assert "mysecretpassword_xyz" not in content, "密码明文存储在文件中！"
 
     def test_delete_credential(self):

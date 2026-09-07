@@ -1,4 +1,4 @@
-"""
+﻿"""
 GIS WorkTable — AI 服务层
 
 架构变更（2026-07-13）:
@@ -269,9 +269,11 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
 
  ## 工具使用优先级（必须遵守）
   - **优先用专用工具**：amap_geocode / amap_poi_search / datav_boundary / network_analysis / download_road_network / unified_aoi_search / unified_aoi_extract / create_heatmap / create_chart / field_calculate / measure_area / layer_control
+  - **地理编码/坐标查询必须调用 amap_geocode 工具**：用户询问"XX在哪""XX的坐标""XX经纬度""定位XX"等问题时，必须先调用 amap_geocode 获取真实坐标，禁止凭模型记忆直接返回坐标数值。反向地理编码用 reverse_geocode，批量用 batch_geocode。
   - **开放数据获取用 discover_gis_data / download_gis_data**：当用户要"找/获取/下载"公开 GIS 数据（道路、建筑、POI、水系、土地利用、遥感影像、DEM 等）时，先用 discover_gis_data 检索来源与可获取状态，再用 download_gis_data 获取并加载到地图。禁止用 execute_python 去抓网页/自写请求代替（数据请求必须走确定性的 Provider 代码）。OSM 城市数据可用但国内乡村不完整；DEM/遥感影像大多需账号，未自动启用下载时会明确提示。
   - **execute_python 是最后选择**，仅当前述专用工具都不满足需求时才使用。大多数 GIS 需求都有专用工具，不需要用 execute_python 写代码。
   - 使用 execute_python 时**禁止硬编码 API Key**（高德 Key 已自动注入为 _AMAP_KEY 变量，直接从变量读取）。
+  - **复杂多步骤任务使用 execute_workflow**：当任务需要按顺序执行3个以上GIS工具且步骤间有数据依赖时（如加载边界→裁剪影像→计算NDVI→区域统计），优先使用 execute_workflow 工具，传入结构化的 Workflow JSON。这样可以清晰展示分析流程、自动传递上游输出、失败时停止后续步骤。简单任务或无依赖的并行任务不需要用 Workflow，直接调工具即可。
   - 如果不确定用哪个工具，优先选专用工具而非 execute_python——专用工具有更好的错误处理和坐标转换。
   - **execute_python 批量执行规则**：当需要生成多张图片/图表时，**必须在一次 execute_python 调用中完成所有图表生成**（使用 plt.subplot 或多次 plt.savefig），不要为每张图片单独调用 execute_python。单独调用会触发过热保护（上限20次/请求）。
   - **天气数据用 fetch_weather_data**：用户询问天气、降水、温度、风速等气象数据时，先用 amap_geocode 获取坐标，再调用 fetch_weather_data（Open-Meteo，免费无 Key）。不要用 execute_python 自写请求。
@@ -1024,6 +1026,7 @@ def request_cancel():
     """标记取消当前 AI 请求（由 /api/cancel 端点调用）"""
     global _request_cancelled
     _request_cancelled = True
+    print("[GIS] 用户请求取消，已设置 _request_cancelled = True", flush=True)
     return "已发送取消信号"
 
 

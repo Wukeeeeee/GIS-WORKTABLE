@@ -178,9 +178,10 @@ if (typeof marked !== 'undefined') {
     if (stopBtn) {
       stopBtn.addEventListener('click', function() {
         window._aiRunning = false;
+        // 先发取消请求到后端（keepalive 确保页面卸载时也能发送），再中断 SSE 连接
+        fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST', keepalive: true }).catch(function(){});
         if (window._aiAbortController) window._aiAbortController.abort('user-cancel');
         _resetUIAfterStop();
-        fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
         const loadingEl = document.getElementById('ai-loading-msg');
         if (loadingEl) {
           if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
@@ -1360,7 +1361,12 @@ if (typeof marked !== 'undefined') {
         window.GIS.task.updateTask(taskId, { status: 'failed', error: err.message, completedAt: Date.now() });
       }
       // 显示错误消息
-      addMessage('请求失败: ' + (err.message || err), 'system');
+      var _errMsg = (err && err.message) ? err.message : String(err);
+      if (_errMsg === 'Failed to fetch' || _errMsg.indexOf('ERR_CONNECTION') >= 0 || _errMsg.indexOf('NetworkError') >= 0) {
+        addMessage('无法连接到后端服务，请确认后端已启动（默认地址 127.0.0.1:8000）。可在项目目录运行 start.bat 或 uvicorn backend.main:app --host 127.0.0.1 --port 8000', 'system');
+      } else {
+        addMessage('请求失败: ' + _errMsg, 'system');
+      }
       // 恢复默认 placeholder（防止并发发送覆盖）
       if (inputEl) inputEl.placeholder = '输入指令或查询...';
     } finally {

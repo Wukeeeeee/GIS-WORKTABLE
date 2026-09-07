@@ -71,3 +71,6 @@ test_data/
 
 # AI 代码解析学习笔记（本地，不提交）
 code_notes/
+
+# Prompt 模板（本地，不提交）
+prompt/

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * GIS AI WorkTable — API 接口层
  * 函数签名已预留，实现由你完成
  *
@@ -401,11 +401,6 @@ window.GIS.api = (() => {
     return res.json();
   }
 
-  // ===== 图层管理 =====
-  async function getLayers()        { /* TODO: GET /layers */ }
-  async function getLayer(layerId)  { /* TODO: GET /layers/:id */ }
-  async function deleteLayer(layerId) { /* TODO: DELETE /layers/:id */ }
-
   /** 通知后端取消注册已删除的图层 */
   async function unregisterLayer(name) {
     try {
@@ -441,18 +436,6 @@ window.GIS.api = (() => {
     });
     if (!res.ok) throw new Error(`Inspect API error: ${res.status}`);
     return res.json();
-  }
-
-  // ===== 下载导出 =====
-  /** @param {string} layerId @param {'geojson'|'shp'|'gpkg'} [format='geojson'] */
-  async function downloadLayer(layerId, format = 'geojson') {
-    // TODO: GET /download/:id?format=...
-  }
-
-  // ===== GIS 操作 =====
-  /** @param {string} action @param {object} params */
-  async function executeGISAction(action, params) {
-    // TODO: POST /execute  { action, params }
   }
 
   // ===== 边界加载 =====
@@ -575,8 +558,7 @@ window.GIS.api = (() => {
 
   return {
     request, upload, chat, clearMemory, healthCheck,
-    getLayers, getLayer, deleteLayer,
-    downloadLayer, executeGISAction, getBoundary,
+    getBoundary,
     saveProject, loadProject, listProjects,
     deleteProject, deleteAllProjects, renameProject, exportProject, autoSaveProject,
     healthCheck, testApiKey, testGLMApiKey, testAgnesApiKey, testProvider,

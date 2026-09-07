@@ -946,6 +946,12 @@
             </svg>
             <span>地理服务</span>
           </div>
+          <div class="modal-sidenav-item" data-panel="network">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+            <span>网络代理</span>
+          </div>
           <div class="modal-sidenav-item" data-panel="history">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
@@ -1295,6 +1301,32 @@
 
 
 <p class="modal-note">密钥仅保存在您的浏览器中，不会上传到服务器</p>
+        </div>
+
+        <!-- === 网络代理 === -->
+        <div class="modal-panel" id="panelNetwork">
+          <h3>网络代理</h3>
+          <p style="font-size:12px;color:var(--ui-gray-500);margin-bottom:16px;">配置 HTTP 代理地址，用于 Esri 等海外卫星瓦片下载。留空则自动检测系统代理。</p>
+
+          <div class="model-config-card">
+            <div class="model-config-header">
+              <span class="model-config-name">代理地址</span>
+              <span class="model-config-badge" id="proxyStatus">系统代理</span>
+            </div>
+            <div class="modal-input-wrapper" style="margin-top:8px;">
+              <input type="text" class="modal-input" id="proxyUrlInput" placeholder="如 http://127.0.0.1:7897，留空使用系统代理" autocomplete="off" />
+            </div>
+            <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
+              <span class="modal-test-result" id="proxyMsg" style="font-size:11px;color:var(--ui-gray-500);">留空则自动检测系统代理</span>
+              <button class="modal-btn modal-btn-save" id="saveProxyBtn">保存</button>
+            </div>
+          </div>
+
+          <div style="margin-top:16px;padding:12px;background:var(--ui-bg-2,#f5f5f5);border-radius:8px;font-size:12px;color:var(--ui-gray-600);line-height:1.6;">
+            <div style="font-weight:600;margin-bottom:6px;">说明</div>
+            <div>常见代理工具端口：Clash 7890、V2Ray 10809、Shadowrocket 7890 等</div>
+            <div>代理仅用于后端下载瓦片和数据，不影响浏览器访问</div>
+          </div>
         </div>
 
         <!-- === 面板4：历史记录 === -->

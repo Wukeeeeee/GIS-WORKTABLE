@@ -16,7 +16,7 @@ from typing import Optional
 import io
 from io import BytesIO
 import json
-import subprocess, datetime, time, asyncio, functools
+import subprocess, datetime, asyncio, functools
 from backend.services.ai_service import chat_with_ai, clear_memory, test_key, request_cancel, _TEMP_OUTPUT_DIR
 from backend.services.llm_config import LLMConfig, resolve_llm_config
 from backend.services.tools import _register_layer, _unregister_layer
@@ -353,7 +353,9 @@ async def chat_stream(request: ChatRequest):
                             pass
                 yield line
         except GeneratorExit:
-            pass
+            # 客户端断开（用户取消/页面关闭）时，主动标记取消，让 Agent Loop 尽快中止
+            import backend.services.ai_service as _ai_svc
+            _ai_svc._request_cancelled = True
 
     return StreamingResponse(
         _persisted_stream(),
@@ -407,6 +409,22 @@ async def delete_geo_credential(service: str):
     from backend.services.credential_store import delete_credential
     ok = delete_credential(service)
     return {"status": "ok" if ok else "error", "deleted": ok}
+
+
+@app.get("/api/proxy-config")
+async def get_proxy_config():
+    """获取当前代理配置"""
+    from backend.services.tools import get_proxy_config
+    return {"proxy": get_proxy_config()}
+
+
+@app.post("/api/proxy-config")
+async def save_proxy_config(req: dict):
+    """保存代理配置（如 http://127.0.0.1:7897，空字符串表示使用系统代理）"""
+    from backend.services.tools import set_proxy_config
+    proxy = req.get("proxy", "")
+    result = set_proxy_config(proxy)
+    return {"status": "ok", "message": result, "proxy": proxy}
 
 
 @app.get("/api/health")

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * GIS AI WorkTable — 设置模块（Provider 列表化版）
  * 设置弹窗、Provider 动态列表编辑器、模型选择器、主题/字号
  *
@@ -23,6 +23,7 @@ window.GIS = window.GIS || {};
     // 各块互相隔离：任何一块报错都不影响顶栏模型名同步等其余功能
     try { bindSettingsModal(); } catch (e) { console.warn('[GIS settings] bindSettingsModal', e); }
     try { bindAmap(); } catch (e) { console.warn('[GIS settings] bindAmap', e); }
+    try { bindProxy(); } catch (e) { console.warn('[GIS settings] bindProxy', e); }
     try { bindGeoCredentials(); } catch (e) { console.warn('[GIS settings] geo credentials', e); }
     try { initProviderPanel(); } catch (e) { console.warn('[GIS settings] provider panel', e); }
     try { initTheme(); } catch (e) {}
@@ -71,6 +72,7 @@ window.GIS = window.GIS || {};
       appearance: document.getElementById('panelAppearance'),
       'ai-api': document.getElementById('panelAiApi'),
       'geo-api': document.getElementById('panelGeoApi'),
+      network: document.getElementById('panelNetwork'),
       history: document.getElementById('panelHistory'),
       logs: document.getElementById('panelLogs'),
       about: document.getElementById('panelAbout'),
@@ -458,6 +460,47 @@ window.GIS = window.GIS || {};
     var has = !!GIS.api.getAmapKey();
     el.textContent = has ? '已配置' : '未配置';
     el.className = 'model-config-badge' + (has ? ' configured' : '');
+  }
+
+  // ============================================================
+  // 网络代理配置
+  // ============================================================
+  function bindProxy() {
+    var input = document.getElementById('proxyUrlInput');
+    var saveBtn = document.getElementById('saveProxyBtn');
+    var statusEl = document.getElementById('proxyStatus');
+    var msgEl = document.getElementById('proxyMsg');
+    if (!input || !saveBtn) return;
+
+    // 加载已保存的代理配置
+    var saved = localStorage.getItem('gis_proxy_url') || '';
+    input.value = saved;
+    if (statusEl) statusEl.textContent = saved ? '自定义' : '系统代理';
+    // 页面加载时同步到后端
+    fetch('/api/proxy-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proxy: saved })
+    }).catch(function() {});
+
+    saveBtn.addEventListener('click', function() {
+      var proxy = input.value.trim();
+      localStorage.setItem('gis_proxy_url', proxy);
+      if (statusEl) statusEl.textContent = proxy ? '自定义' : '系统代理';
+      // 同步到后端
+      fetch('/api/proxy-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ proxy: proxy })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (msgEl) {
+          msgEl.textContent = proxy ? ('已保存: ' + proxy) : '已清除，使用系统代理';
+          msgEl.style.color = 'var(--ui-success, #4caf50)';
+        }
+      }).catch(function() {
+        if (msgEl) { msgEl.textContent = '保存失败（后端未启动？）'; msgEl.style.color = '#f44336'; }
+      });
+    });
   }
 
   // ============================================================

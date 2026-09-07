@@ -2,7 +2,8 @@
 DataV 行政区划边界获取工具
 从阿里云 DataV（国内可访问）获取省/市/区边界，转 WGS-84
 """
-import json, os, math, requests
+import json, os, requests
+from backend.services.geo_coords import gcj02_to_wgs84
 
 # 缓存目录
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "cache", "aoi")
@@ -93,42 +94,11 @@ def _find_adcode(name):
     return 0
 
 
-# GCJ-02 → WGS-84
-def _transform_lat(lng, lat):
-    ret = -100.0 + 2.0*lng + 3.0*lat + 0.2*lat*lat + 0.1*lng*lat + 0.2*math.sqrt(abs(lng))
-    ret += (20.0*math.sin(6.0*lng*math.pi) + 20.0*math.sin(2.0*lng*math.pi)) * 2.0/3.0
-    ret += (20.0*math.sin(lat*math.pi) + 40.0*math.sin(lat/3.0*math.pi)) * 2.0/3.0
-    ret += (160.0*math.sin(lat/12.0*math.pi) + 320.0*math.sin(lat*math.pi/30.0)) * 2.0/3.0
-    return ret
-
-def _transform_lng(lng, lat):
-    ret = 300.0 + lng + 2.0*lat + 0.1*lng*lng + 0.1*lng*lat + 0.1*math.sqrt(abs(lng))
-    ret += (20.0*math.sin(6.0*lng*math.pi) + 20.0*math.sin(2.0*lng*math.pi)) * 2.0/3.0
-    ret += (20.0*math.sin(lng*math.pi) + 40.0*math.sin(lng/3.0*math.pi)) * 2.0/3.0
-    ret += (150.0*math.sin(lng/12.0*math.pi) + 320.0*math.sin(lng/30.0*math.pi)) * 2.0/3.0
-    return ret
-
-def _gcj02_to_wgs84(lng, lat):
-    if not (72.004 <= lng <= 137.8347 and 0.8293 <= lat <= 55.8271):
-        return lng, lat
-    a, ee = 6378245.0, 0.00669342162296594323
-    wl, wla = lng, lat
-    for _ in range(5):
-        dlat = _transform_lat(wl - 105.0, wla - 35.0)
-        dlng = _transform_lng(wl - 105.0, wla - 35.0)
-        radlat = wla / 180.0 * math.pi
-        magic = math.sin(radlat)
-        magic = 1 - ee * magic * magic
-        sqrtmagic = math.sqrt(magic)
-        dlat = (dlat * 180.0) / ((a * (1 - ee)) / (magic * sqrtmagic) * math.pi)
-        dlng = (dlng * 180.0) / (a / sqrtmagic * math.cos(radlat) * math.pi)
-        wl -= dlng; wla -= dlat
-    return round(wl, 6), round(wla, 6)
-
 def _convert(coords):
+    """递归将 GCJ-02 坐标转为 WGS-84"""
     if not coords: return coords
     if isinstance(coords[0], (int, float)):
-        return list(_gcj02_to_wgs84(coords[0], coords[1]))
+        return list(gcj02_to_wgs84(coords[0], coords[1]))
     return [_convert(c) for c in coords]
 
 
@@ -160,10 +130,13 @@ def fetch_boundary(name: str) -> dict:
 
     data = resp.json()
 
-    # DataV areas_v3 返回的已经是 WGS-84 坐标，无需转换
-    # （旧版 v1/v2 用 GCJ-02，v3 已改为 WGS-84）
+    # DataV areas_v3 返回的是 GCJ-02 坐标，需转换为 WGS-84
+    if data.get("features"):
+        for feat in data["features"]:
+            if feat.get("geometry", {}).get("coordinates"):
+                feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
 
-    # 写缓存
+    # 写缓存（已转 WGS-84）
     try:
         with open(cache_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False)

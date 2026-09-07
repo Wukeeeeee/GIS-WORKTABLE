@@ -21,23 +21,41 @@ import tempfile
 import threading
 import re
 import hashlib
-import random
 import ast
 import shutil
-from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
 
 from langchain.tools import tool
 
 # === P2-1: 简单内存缓存 ===
 _tile_cache = {}
 _geocode_cache = {}
+_custom_proxy = None  # 用户在设置页面配置的代理地址，如 http://127.0.0.1:7897
+
+
+def set_proxy_config(proxy_url: str = ""):
+    """设置用户自定义代理地址。空字符串表示清除自定义代理，回退到系统代理检测。"""
+    global _custom_proxy
+    _custom_proxy = proxy_url.strip() if proxy_url else None
+    return f"代理配置已更新: {_custom_proxy or '（使用系统代理自动检测）'}"
+
+
+def get_proxy_config() -> str:
+    """获取当前代理配置。"""
+    return _custom_proxy or ""
+
+
+def _get_effective_proxies() -> dict:
+    """获取实际生效的代理配置：优先用户自定义，其次系统代理。"""
+    if _custom_proxy:
+        return {"http": _custom_proxy, "https": _custom_proxy}
+    return urllib.request.getproxies()
+_geocode_cache = {}
 _cache_hits = {"tile": 0, "geocode": 0}
 
 # Task Manager 集成：持久化 Python 源代码 + Artifact 注册
 from backend.services.task_manager import (
     save_code, register_artifact, log_execution,
-    get_latest_code, update_gis_context, get_task,
+    get_latest_code,
 )
 
 
@@ -1471,8 +1489,9 @@ def measure_area(layer_name: str) -> str:
             return f"图层 {layer_name} 为空"
 
         # 计算几何中心，选择最佳 UTM 投影带
-        centroid = gdf.dissolve().centroid.iloc[0]
-        lon, lat = centroid.x, centroid.y
+        # 用 bounds 中心确定 UTM 带号（避免在 geographic CRS 下计算 centroid 的 warning）
+        _b = gdf.total_bounds
+        lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
 
         # UTM 带号：zone = floor((lon + 180) / 6) + 1
         utm_zone = int(np.floor((lon + 180) / 6)) + 1
@@ -2483,8 +2502,9 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
             warnings.simplefilter("ignore", UserWarning)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            centroid = gdf.dissolve().centroid.iloc[0]
-        lon, lat = centroid.x, centroid.y
+        # 用 bounds 中心确定 UTM 带号（避免在 geographic CRS 下计算 centroid 的 warning）
+        _b = gdf.total_bounds
+        lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
         utm_zone = int((lon + 180) / 6) + 1
         crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
         gdf_utm = gdf.to_crs(crs_utm)
@@ -2523,8 +2543,9 @@ def spatial_multi_ring_buffer(layer_name: str, distances: str, unit: str = "m", 
         if len(dist_list) > 20:
             return f"最多支持 20 个距离，当前 {len(dist_list)} 个"
 
-        centroid = gdf.dissolve().centroid.iloc[0]
-        lon, lat = centroid.x, centroid.y
+        # 用 bounds 中心确定 UTM 带号（避免 geographic CRS 下计算 centroid 的 warning）
+        _b = gdf.total_bounds
+        lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
         utm_zone = int((lon + 180) / 6) + 1
         crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
         gdf_utm = gdf.to_crs(crs_utm)
@@ -2592,8 +2613,9 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            centroid = gdf.dissolve().centroid.iloc[0]
-        lon, lat = centroid.x, centroid.y
+        # 用 bounds 中心确定 UTM 带号（避免 geographic CRS 下计算 centroid 的 warning）
+        _b = gdf.total_bounds
+        lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
         utm_zone = int((lon + 180) / 6) + 1
         crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
 
@@ -4964,7 +4986,7 @@ def topology_check(layer_name: str) -> str:
                                     "geometry": {"type": "Point", "coordinates": [rep.x, rep.y]},
                                     "properties": {"type": "重叠", "fid_pair": f"{i}-{j}"}
                                 })
-                        except:
+                        except Exception:
                             pass
             try:
                 all_valid = [g for _, g in polys]
@@ -4973,6 +4995,16 @@ def topology_check(layer_name: str) -> str:
                     envelope = Polygon(merged.exterior)
                     gaps = envelope.difference(merged)
                     if gaps is not None and not gaps.is_empty:
+                        # 面积计算：若为地理CRS，转换到EPSG:6933等面积投影
+                        _src_crs = gdf.crs
+                        _is_geographic = _src_crs is not None and _src_crs.is_geographic
+                        def _gap_area(geom):
+                            if _is_geographic:
+                                from shapely.ops import transform
+                                from pyproj import Transformer
+                                _t = Transformer.from_crs(_src_crs, "EPSG:6933", always_xy=True)
+                                return transform(_t.transform, geom).area
+                            return geom.area
                         if gaps.geom_type == "GeometryCollection":
                             for g in gaps.geoms:
                                 if not g.is_empty and g.geom_type in ("Polygon",) and g.area > 1e-10:
@@ -4980,16 +5012,16 @@ def topology_check(layer_name: str) -> str:
                                     issues.append({
                                         "type": "Feature",
                                         "geometry": {"type": "Point", "coordinates": [rep.x, rep.y]},
-                                        "properties": {"type": "缝隙", "area": round(g.area, 6)}
+                                        "properties": {"type": "缝隙", "area_m2": round(_gap_area(g), 2)}
                                     })
                         elif gaps.geom_type == "Polygon" and gaps.area > 1e-10:
                             rep = gaps.representative_point()
                             issues.append({
                                 "type": "Feature",
                                 "geometry": {"type": "Point", "coordinates": [rep.x, rep.y]},
-                                "properties": {"type": "缝隙", "area": round(gaps.area, 6)}
+                                "properties": {"type": "缝隙", "area_m2": round(_gap_area(gaps), 2)}
                             })
-            except:
+            except Exception:
                 pass
         if not issues:
             return f"图层 '{name}' 未发现拓扑错误"
@@ -5169,7 +5201,7 @@ def convert_coordinates(coords: str, source_crs: str = "wgs84",
                 lng, lat = float(xy[0].strip()), float(xy[1].strip())
                 x2, y2 = transformer.transform(lng, lat)
                 results.append(f"{x2:.6f},{y2:.6f}")
-            except:
+            except Exception:
                 continue
         if not results:
             return "坐标格式错误，请输入 lng,lat 或 lng1,lat1;lng2,lat2"
@@ -6558,9 +6590,9 @@ def _fetch_satellite_imagery(west, south, east, north, zoom=16, max_tiles=49, so
     BING_TILE = "https://t{s}.dynamic.tiles.ditu.live.com/comp/ch/{q}?mkt=zh-CN&ur=cn&it=A&n=z&og=804&cstl=vbd"
     AMAP_TILE = "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}"
 
-    # 显式构建支持代理的 opener（读取系统代理 + 环境变量）
-    _proxies = urllib.request.getproxies()
-    print(f"[GIS] 卫星瓦片代理设置: {_proxies}", flush=True)
+    # 显式构建支持代理的 opener（优先用户自定义代理，其次系统代理）
+    _proxies = _get_effective_proxies()
+    print(f"[GIS] 卫星瓦片代理设置: {_proxies}（自定义: {_custom_proxy or '未设置'}）", flush=True)
     _proxy_handler = urllib.request.ProxyHandler(_proxies)
     _opener = urllib.request.build_opener(_proxy_handler)
 
@@ -6994,6 +7026,8 @@ def inspect_satellite_image(
         _fname = f"inspect_{_uuid.uuid4().hex[:8]}.png"
         _fpath = _os.path.join("cache/charts", _fname)
         _combined.save(_fpath, "PNG")
+        _combined.close()
+        _overlay_img.close()
         _overlay_url = f"/cache/charts/{_fname}"
         _pending_images.append({"url": _overlay_url, "type": "png"})
     except Exception as _e:
@@ -7174,6 +7208,88 @@ def generate_static_map(
         return f"静态地图生成失败: {str(e)[:200]}"
 
 
+@tool
+def execute_workflow(workflow_json: str) -> str:
+    """执行一个 GIS 分析工作流（Workflow）。适用于多步骤、有依赖关系的复杂 GIS 分析任务。
+
+    【适用场景】
+    - 需要按顺序执行多个 GIS 工具（如：加载数据 → 裁剪 → 计算指数 → 统计）
+    - 步骤之间有数据依赖（后一步的输入来自前一步的输出）
+    - 需要清晰展示分析流程和每一步的执行状态
+
+    【参数】
+    workflow_json: JSON 字符串，包含 name、description、nodes 数组。
+    每个 node 包含：id、name、tool（工具名）、inputs（参数）、depends_on（依赖的节点id列表）。
+    inputs 中可以使用 ${node_id.output_key} 引用上游节点的输出。
+
+    【示例】
+    {
+      "name": "广州NDVI分析",
+      "description": "计算广州区域NDVI",
+      "nodes": [
+        {"id": "n1", "name": "加载边界", "tool": "get_admin_boundary", "inputs": {"name": "广州"}, "depends_on": []},
+        {"id": "n2", "name": "裁剪影像", "tool": "clip_raster", "inputs": {"boundary": "${n1.geojson}"}, "depends_on": ["n1"]},
+        {"id": "n3", "name": "计算NDVI", "tool": "calculate_ndvi", "inputs": {"raster": "${n2.raster_path}"}, "depends_on": ["n2"]}
+      ]
+    }
+
+    【返回】
+    执行结果摘要，包括每个节点的状态、耗时、错误信息。
+    节点输出如果是 GeoJSON，会自动注册为地图图层。
+    """
+    try:
+        import json
+        from backend.services.workflow import (
+            new_workflow, validate_workflow, WorkflowExecutor
+        )
+
+        wf_data = json.loads(workflow_json)
+
+        # 构建工具注册表（只包含可调用的工具函数）
+        tool_registry = {}
+        for t in tools:
+            try:
+                tool_registry[t.name] = t.func
+            except Exception:
+                pass
+
+        # 校验
+        errors = validate_workflow(wf_data, list(tool_registry.keys()))
+        if errors:
+            return "Workflow 校验失败：\n" + "\n".join(f"- {e}" for e in errors)
+
+        # 创建 Workflow 对象
+        wf = new_workflow(
+            name=wf_data.get("name", "未命名工作流"),
+            description=wf_data.get("description", ""),
+            nodes=wf_data.get("nodes", []),
+        )
+
+        # 执行
+        executor = WorkflowExecutor(
+            tool_registry=tool_registry,
+            register_layer_fn=_register_layer,
+            event_callback=None,  # SSE 事件由调用方处理
+        )
+        result = executor.execute(wf)
+
+        # 生成摘要
+        lines = [f"工作流「{result['name']}」执行完成，状态: {result['status']}"]
+        for node in result["nodes"]:
+            status_icon = {"success": "✓", "failed": "✗", "skipped": "⊘", "running": "⟳", "pending": "○"}.get(node["status"], "?")
+            dur = f" ({node['duration']}s)" if node.get("duration") else ""
+            lines.append(f"  {status_icon} {node['name']} [{node['tool']}] - {node['status']}{dur}")
+            if node.get("error"):
+                lines.append(f"    错误: {node['error'][:100]}")
+
+        return "\n".join(lines)
+
+    except json.JSONDecodeError as e:
+        return f"Workflow JSON 解析失败: {str(e)}"
+    except Exception as e:
+        return f"Workflow 执行失败: {str(e)[:200]}"
+
+
 tools = [
     search_web,
     fetch_webpage,
@@ -7274,4 +7390,5 @@ tools = [
     fetch_earthquake_data,
     inspect_satellite_image,
     generate_static_map,
+    execute_workflow,
 ]
