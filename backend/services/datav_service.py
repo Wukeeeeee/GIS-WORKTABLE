@@ -24,7 +24,7 @@ _ADCODES = {
 def _load_city_adcodes():
     """
     从所有省份的 DataV GeoJSON 中提取城市/区县 adcode，构建名称→adcode 映射。
-    结果缓存到本地文件，仅首次需要遍历所有省份（约 34 次请求）。
+    结果缓存到本地文件，仅首次需要遍历所有省份+地级市。
     """
     cache_path = os.path.join(_CACHE_DIR, "_city_adcodes.json")
     # 尝试读缓存
@@ -37,6 +37,7 @@ def _load_city_adcodes():
 
     # 从省份字典的 adcode，逐个拉取省份 GeoJSON 提取城市
     city_map = {}
+    city_adcodes = []  # 保存市级 adcode，用于后续提取区级
     for prov_name, prov_adcode in _ADCODES.items():
         try:
             url = f"https://geo.datav.aliyun.com/areas_v3/bound/{prov_adcode}_full.json"
@@ -54,6 +55,29 @@ def _load_city_adcodes():
                         for sfx in ['市', '区', '县', '自治州']:
                             if name.endswith(sfx):
                                 city_map[name[:-len(sfx)]] = adcode
+                        if level == 'city' or name.endswith('市'):
+                            city_adcodes.append((name, adcode))
+        except Exception:
+            continue
+
+    # 从每个地级市 GeoJSON 中提取区级 adcode
+    for city_name, city_adcode in city_adcodes:
+        try:
+            url = f"https://geo.datav.aliyun.com/areas_v3/bound/{city_adcode}_full.json"
+            resp = requests.get(url, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                for feat in data.get('features', []):
+                    p = feat.get('properties', {})
+                    name = p.get('name', '')
+                    adcode = p.get('adcode', 0)
+                    if name and adcode and name not in city_map:
+                        city_map[name] = adcode
+                        for sfx in ['区', '县', '市']:
+                            if name.endswith(sfx):
+                                bare = name[:-len(sfx)]
+                                if bare not in city_map:
+                                    city_map[bare] = adcode
         except Exception:
             continue
 
@@ -120,10 +144,44 @@ def fetch_boundary(name: str) -> dict:
     resp = requests.get(url, timeout=15)
 
     # 失败则用 adcode
+    target_code = None
     if resp.status_code != 200:
         code = _find_adcode(name)
         if code:
+            target_code = code
             resp = requests.get(f"https://geo.datav.aliyun.com/areas_v3/bound/{code}_full.json", timeout=15)
+
+    # 区级 adcode 直接请求会 404，需从市级 GeoJSON 中提取
+    if resp.status_code != 200 and target_code and isinstance(target_code, (int, str)):
+        code_str = str(target_code)
+        if len(code_str) == 6 and not code_str.endswith('00'):
+            # 推断市级 adcode（前四位 + 00）
+            city_code = code_str[:4] + '00'
+            city_resp = requests.get(f"https://geo.datav.aliyun.com/areas_v3/bound/{city_code}_full.json", timeout=15)
+            if city_resp.status_code == 200:
+                city_data = city_resp.json()
+                # 从市级 GeoJSON 中过滤出目标区级
+                target_features = []
+                for feat in city_data.get('features', []):
+                    props = feat.get('properties', {})
+                    feat_code = str(props.get('adcode', ''))
+                    feat_name = props.get('name', '')
+                    if feat_code == code_str or feat_name == name or feat_name == name.rstrip('区县市'):
+                        target_features.append(feat)
+                if target_features:
+                    data = {'type': 'FeatureCollection', 'features': target_features}
+                    # 转换坐标
+                    if data.get("features"):
+                        for feat in data["features"]:
+                            if feat.get("geometry", {}).get("coordinates"):
+                                feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
+                    # 写缓存
+                    try:
+                        with open(cache_path, 'w', encoding='utf-8') as f:
+                            json.dump(data, f, ensure_ascii=False)
+                    except Exception:
+                        pass
+                    return data
 
     if resp.status_code != 200:
         return None

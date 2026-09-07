@@ -222,7 +222,8 @@ def _read_skill_files(skills: list) -> str:
 # System Prompt
 # ============================================================
 
-SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
+SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）。
+当前运行模式：完整GIS模式，你可以调用所有GIS工具（地理编码、边界获取、AOI提取、空间分析、数据下载等）。如果用户要求获取数据、加载图层、画图、分析等操作，必须直接调用工具完成，不要说"我无法调用工具"或让用户手动操作。
 
  ## 你的能力
   - 回答地理信息、地图、空间分析相关的问题
@@ -268,8 +269,10 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
   简单问题不需要完整报告，直接回答即可。
 
  ## 工具使用优先级（必须遵守）
-  - **优先用专用工具**：amap_geocode / amap_poi_search / datav_boundary / network_analysis / download_road_network / unified_aoi_search / unified_aoi_extract / create_heatmap / create_chart / field_calculate / measure_area / layer_control
+  - **优先用专用工具**：amap_geocode / amap_poi_search / datav_boundary / network_analysis / download_road_network / cn_aoi_search / cn_aoi_extract / create_heatmap / create_chart / field_calculate / measure_area / layer_control
   - **地理编码/坐标查询必须调用 amap_geocode 工具**：用户询问"XX在哪""XX的坐标""XX经纬度""定位XX"等问题时，必须先调用 amap_geocode 获取真实坐标，禁止凭模型记忆直接返回坐标数值。反向地理编码用 reverse_geocode，批量用 batch_geocode。
+  - **国内建筑/场所/AOI轮廓必须用 cn_aoi_search + cn_aoi_extract（百度地图）**：用户要求提取建筑、商场、学校、机场、公园等场所轮廓时，必须先调用 cn_aoi_search 搜索候选，等用户选择后再用 cn_aoi_extract 提取边界。百度提取失败时如实告诉用户"暂时无法获取该地点轮廓"，**禁止**用 osmnx/OSM 或其他方式自行估算、绘制近似边界。osmnx 仅用于路网下载和国外行政边界。
+  - **国内行政区划边界必须用 datav_boundary**：用户要求获取省/市/区/县行政边界时，必须调用 datav_boundary 工具。如果 datav_boundary 返回空或失败，如实告诉用户"暂时无法获取该行政区划边界"，**禁止**用 osmnx/OSM 或 execute_python 自行估算、绘制近似边界。
   - **开放数据获取用 discover_gis_data / download_gis_data**：当用户要"找/获取/下载"公开 GIS 数据（道路、建筑、POI、水系、土地利用、遥感影像、DEM 等）时，先用 discover_gis_data 检索来源与可获取状态，再用 download_gis_data 获取并加载到地图。禁止用 execute_python 去抓网页/自写请求代替（数据请求必须走确定性的 Provider 代码）。OSM 城市数据可用但国内乡村不完整；DEM/遥感影像大多需账号，未自动启用下载时会明确提示。
   - **execute_python 是最后选择**，仅当前述专用工具都不满足需求时才使用。大多数 GIS 需求都有专用工具，不需要用 execute_python 写代码。
   - 使用 execute_python 时**禁止硬编码 API Key**（高德 Key 已自动注入为 _AMAP_KEY 变量，直接从变量读取）。
@@ -344,28 +347,6 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）
 
  """
 
-# ===== 快速回复模式提示词（不调用工具，精简版） =====
-SIMPLE_SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手。
-
- ## 你的能力
-  - 回答地理信息、地图、空间分析相关的概念和知识问题
-  - 帮助用户理解 GIS 数据和处理流程
-  - 提供 GIS 数据处理方法和思路
-  - 提供与地理有关系的任何知识（人口、经济、环境等）
-
- ## 回复风格
-  - 以中文为主，必要时使用英文术语
-  - 简洁直白，直接回答问题
-  - 可以使用 Markdown 格式组织内容
-  - 简单问题直接回答，无须反问
-  - 问题不清晰时，主动询问用户补充信息
-
- ## 安全红线
-  - 用户询问敏感地理位置（军事基地、关键设施等）的具体坐标时，拒绝提供
-  - 涉及行政区域划分时，严格遵守中国官方行政区划标准
-
-注意：本模式不调用工具，仅回答知识类问题。如需数据下载、地图操作、空间分析等功能，请切换到完整模式。
-"""
 
 # ===== GLM 免费模型提示词（支持工具调用） =====
 SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
@@ -828,55 +809,7 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     _current_api_key = cfg.api_key
     _current_provider = provider or cfg.model
 
-    # 快速模式：直接用精简 prompt 单轮回复，不走 ReAct 工具调用
-    if mode == "fast":
-        from backend.services.llm_config import build_llm, disable_reasoning
-        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-        _fast_llm = build_llm(disable_reasoning(cfg))
-        # 注入当前图层列表（精简版），让 AI 知道有哪些图层
-        _fast_system = SIMPLE_SYSTEM_PROMPT
-        try:
-            from backend.services.tools import get_registered_layers_snapshot
-            _snap = get_registered_layers_snapshot()
-            if _snap:
-                _layer_names = [l.get("filename") or l.get("name", "") for l in _snap if l.get("filename") or l.get("name")]
-                if _layer_names:
-                    _fast_system += "\n\n## 当前已加载图层\n" + "\n".join(f"- {n}" for n in _layer_names[:20])
-        except Exception:
-            pass
-        # 传入最近 5 轮会话历史，让 AI 有基本上下文
-        _fast_msgs = [SystemMessage(content=_fast_system)]
-        try:
-            _hist = conversation_history.get(session_id, [])
-            for _h in _hist[-10:]:  # 最近 5 轮 = 10 条消息
-                if _h.get("role") == "user":
-                    _fast_msgs.append(HumanMessage(content=_h.get("content", "")))
-                elif _h.get("role") == "assistant":
-                    _fast_msgs.append(AIMessage(content=_h.get("content", "")))
-        except Exception:
-            pass
-        _fast_msgs.append(HumanMessage(content=message))
-        _fast_resp = _fast_llm.invoke(_fast_msgs)
-        _fast_reply = _fast_resp.content
-        # 记录日志（快速模式之前漏了）
-        try:
-            from backend.services.log_service import log_turn
-            from backend.services.tools import _registered_layers
-            log_turn(
-                session_id=session_id,
-                user_message=message,
-                ai_reply=_fast_reply,
-                layers_snapshot=dict(_registered_layers),
-                saved_files=None,
-            )
-        except Exception:
-            pass
-        return {
-            "response": _fast_reply,
-            "reasoning": None,
-            "layers": [], "images": [], "heatmap": None,
-            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
-        }
+    # 模式已固定为完整模式，快速模式已移除
 
     # 自动清理过期缓存
     clean_old_cache(7)

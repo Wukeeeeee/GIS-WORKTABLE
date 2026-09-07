@@ -177,13 +177,6 @@
                   <option value="agnes">Agnes 2.0 Flash+</option>
                 </select>
               </div>
-              <!-- 模式切换按钮 -->
-              <div class="mode-switch-wrapper" id="modeSwitchBtn" title="切换回复模式">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none">
-                  <path d="M13 2L4.09 12.97a.5.5 0 0 0 .37.83H11l-1.5 7.8a.5.5 0 0 0 .85.36L19.91 11.03a.5.5 0 0 0-.37-.83H13l1.5-7.8a.5.5 0 0 0-.85-.36L13 2z"/>
-                </svg>
-                <span id="modeSwitchLabel">完整</span>
-              </div>
               <!-- 模型选择器（向上弹出） -->
               <div class="model-picker" id="modelPicker">
               <div class="model-picker-option" data-value="deepseek-routed">
@@ -631,9 +624,6 @@
 
                     <h3>回复模式切换</h3>
                     <ul>
-                      <li>模型选择框旁边有模式切换按钮（闪电图标），可切换<strong>完整模式</strong>和<strong>快速模式</strong></li>
-                      <li><strong>完整模式</strong>：走 ReAct Agent 流程，可调用工具、执行 GIS 分析，适合复杂任务</li>
-                      <li><strong>快速模式</strong>：直接单轮 LLM 回复，不调用工具，响应更快，适合简单问答</li>
                       <li>AI 思考时会在计时器下方显示当前模式标签</li>
                       <li>模式设置保存在浏览器本地，刷新后保留</li>
                     </ul>

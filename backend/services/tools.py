@@ -23,6 +23,7 @@ import re
 import hashlib
 import ast
 import shutil
+import urllib.request
 
 from langchain.tools import tool
 
@@ -810,7 +811,7 @@ def execute_python(code: str) -> str:
         - 批量地理编码 → 必须用 batch_geocode
        - POI 搜索/查天气 → 必须用 amap_poi_search
        - 行政边界获取 → 必须用 datav_boundary
-       - AOI 建筑轮廓提取 → 必须用 unified_aoi_search/extract
+       - AOI 建筑轮廓提取 → 必须用 cn_aoi_search/extract
        - 路网下载 → 必须用 download_road_network
        - 网络分析（路径/服务区/最近设施） → 必须用 network_analysis
        - 热力图生成 → 必须用 create_heatmap
@@ -1247,16 +1248,16 @@ address: 地址/地名（如"广州塔""广州南站"）；city: 城市名（可
 
 
 # ============================================================
-# 工具: unified_aoi_search / unified_aoi_extract（百度 AOI）
+# 工具: cn_aoi_search / cn_aoi_extract（百度 AOI）
 # ============================================================
 
 @tool
-def unified_aoi_search(query: str) -> str:
+def cn_aoi_search(query: str) -> str:
     """搜索地点轮廓，返回候选列表在聊天框显示。
     流程：用户说"提取轮廓"或"AOI"时先调本工具 → 在聊天框显示候选列表
     → **执行后立刻停止，不要继续提取**，等用户点击选择
     → 用户选择后会发来"已选择AOI候选: 名称 | ID: xxx | 来源: baidu"
-    → 收到后用 unified_aoi_extract 提取
+    → 收到后用 cn_aoi_extract 提取
     提取失败的话如实告诉用户，**严禁自己估算或画边界**"""
     try:
         from backend.services.baidu_aoi_service import search_suggestions
@@ -1276,7 +1277,7 @@ def unified_aoi_search(query: str) -> str:
 
 
 @tool
-def unified_aoi_extract(uid: str, name: str) -> str:
+def cn_aoi_extract(uid: str, name: str) -> str:
     """根据用户选择的候选提取建筑轮廓（百度数据源），转WGS84加载到地图。
     提取失败则如实告诉用户"暂时无法获取"。**严禁自己估算或画近似边界**"""
     try:
@@ -7299,8 +7300,8 @@ tools = [
     execute_python,
     amap_poi_search,
     amap_geocode,
-    unified_aoi_search,
-    unified_aoi_extract,
+    cn_aoi_search,
+    cn_aoi_extract,
     get_registered_layers,
     get_layer_detail,
     datav_boundary,

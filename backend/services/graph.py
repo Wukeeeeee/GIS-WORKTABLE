@@ -39,6 +39,8 @@ FC vs LangGraph 对比:
 
 import json
 import re
+import uuid
+import time
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, ToolMessage
@@ -289,7 +291,7 @@ def run_agent(
     _simple = True
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被'])
+        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方'])
         if _need_tools or len(_last) > 150:
             _simple = False
     if _simple:
@@ -299,11 +301,11 @@ def run_agent(
                     "pending_suggestions": None}
         try:
             # 用精简版 system prompt 替换，减少 token 开销
-            from backend.services.ai_service import SIMPLE_SYSTEM_PROMPT
+            _simple_prompt = "你是GIS WorkTable的AI助手，当前运行于完整GIS模式，可以调用所有GIS工具。对于简单的知识类问题，直接回答即可，不需要调用工具。以中文为主，简洁直白，不使用emoji。"
             _simple_msgs = []
             for _m in messages:
                 if isinstance(_m, SystemMessage):
-                    _simple_msgs.append(SystemMessage(content=SIMPLE_SYSTEM_PROMPT))
+                    _simple_msgs.append(SystemMessage(content=_simple_prompt))
                 else:
                     _simple_msgs.append(_m)
             _resp = llm.invoke(_simple_msgs)
@@ -314,7 +316,16 @@ def run_agent(
                 "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
             }
         except Exception as e:
-            return {"response": f"AI 回复失败: {str(e)[:200]}", "reasoning": None,
+            _err_str = str(e)
+            if "402" in _err_str or "Insufficient Balance" in _err_str:
+                _err_str = "API 余额不足（402），请充值或在设置中更换有余额的 API Key 后重试。"
+            elif "401" in _err_str or "invalid_api_key" in _err_str:
+                _err_str = "API Key 无效或已过期（401），请在设置中检查 API Key 配置。"
+            elif "429" in _err_str or "rate_limit" in _err_str:
+                _err_str = "API 请求频率超限（429），请稍后重试。"
+            elif "timeout" in _err_str.lower():
+                _err_str = "API 请求超时，请检查网络连接或稍后重试。"
+            return {"response": f"AI 回复失败: {_err_str[:200]}", "reasoning": None,
                 "layers": [], "images": [], "heatmap": None,
                 "clear_layers": False, "layer_ops": [], "pending_suggestions": None}
 
@@ -518,64 +529,20 @@ def run_agent_stream(
     set_current_task(_task_id)
     print(f"[GIS] 流式 Task ID: {_task_id} mode={mode}", flush=True)
 
-    # === Fast 模式：直接单轮 LLM，不走 ReAct 工具调用 ===
-    if mode == "fast":
-        from backend.services.ai_service import SIMPLE_SYSTEM_PROMPT
-        from backend.services.llm_config import disable_reasoning
-        _fast_llm = build_llm(disable_reasoning(cfg))
-        _fast_system = SIMPLE_SYSTEM_PROMPT
-        # 注入当前图层列表
-        try:
-            _snap = get_pending_state()
-            from backend.services.tools import get_registered_layers_snapshot
-            _layers = get_registered_layers_snapshot()
-            if _layers:
-                _names = [l.get("filename") or l.get("name", "") for l in _layers if l.get("filename") or l.get("name")]
-                if _names:
-                    _fast_system += "\n\n## 当前已加载图层\n" + "\n".join(f"- {n}" for n in _names[:20])
-        except Exception:
-            pass
-        _fast_msgs = []
-        for _m in messages:
-            if isinstance(_m, SystemMessage):
-                _fast_msgs.append(SystemMessage(content=_fast_system))
-            else:
-                _fast_msgs.append(_m)
-        try:
-            _fast_resp = _fast_llm.invoke(_fast_msgs)
-            _fast_text = (_fast_resp.content or "").strip()
-            if not _fast_text:
-                # 空响应重试一次
-                _fast_resp = _fast_llm.invoke(_fast_msgs)
-                _fast_text = (_fast_resp.content or "").strip()
-            yield "data: {\"type\":\"thinking\"}\n\n"
-            result = {
-                "response": _fast_text,
-                "reasoning": get_message_reasoning(_fast_resp),
-                "layers": [], "images": [], "heatmap": None,
-                "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
-                "mode": "fast",
-            }
-            yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
-            return
-        except Exception as _fe:
-            yield "data: " + json.dumps({"type": "error", "message": "Fast模式回复失败: " + str(_fe)[:200]}, ensure_ascii=False) + "\n\n"
-            return
-
     # 简单问题快速 bypass（A+ 优化：精简 prompt + 去掉易误判词）
     _simple = True
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被'])
+        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方'])
         if _need_tools or len(_last) > 150:
             _simple = False
     if _simple:
         # 用精简版 system prompt 替换，减少 token 开销
-        from backend.services.ai_service import SIMPLE_SYSTEM_PROMPT
+        _simple_prompt = "你是GIS WorkTable的AI助手，当前运行于完整GIS模式，可以调用所有GIS工具。对于简单的知识类问题，直接回答即可，不需要调用工具。以中文为主，简洁直白，不使用emoji。"
         _simple_msgs = []
         for _m in messages:
             if isinstance(_m, SystemMessage):
-                _simple_msgs.append(SystemMessage(content=SIMPLE_SYSTEM_PROMPT))
+                _simple_msgs.append(SystemMessage(content=_simple_prompt))
             else:
                 _simple_msgs.append(_m)
         _resp = llm.invoke(_simple_msgs)
@@ -664,7 +631,16 @@ def run_agent_stream(
                 event = json.dumps({"type": "error", "message": str(e)})
                 yield f"data: {event}\n\n"
         else:
-            event = json.dumps({"type": "error", "message": str(e)})
+            _err_str = str(e)
+            if "402" in _err_str or "Insufficient Balance" in _err_str:
+                _err_str = "API 余额不足（402），请充值或在设置中更换有余额的 API Key 后重试。"
+            elif "401" in _err_str or "invalid_api_key" in _err_str:
+                _err_str = "API Key 无效或已过期（401），请在设置中检查 API Key 配置。"
+            elif "429" in _err_str or "rate_limit" in _err_str:
+                _err_str = "API 请求频率超限（429），请稍后重试。"
+            elif "timeout" in _err_str.lower():
+                _err_str = "API 请求超时，请检查网络连接或稍后重试。"
+            event = json.dumps({"type": "error", "message": _err_str})
             yield f"data: {event}\n\n"
 
     # 收集最终结果

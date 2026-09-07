@@ -89,7 +89,7 @@ class ChatRequest(BaseModel):
     pending_layer: Optional[dict] = None  # 待分析的图层附件（前端输入框上方暂存）
     quoted: Optional[str] = None          # 用户点击"引用"的上一条 AI 回复（作为上下文注入）
     task_id: Optional[str] = None         # 任务 ID（跨轮保持）
-    mode: str = "full"                    # 回复模式：fast=快速聊天（不调工具），full=完整GIS（调工具）
+    mode: str = "full"                    # 回复模式（已固定为完整模式，保留参数用于兼容）
 
 class TestKeyRequest(BaseModel):
     llm_config: Optional[LLMConfig] = None  # 通用测速入参即 cfg

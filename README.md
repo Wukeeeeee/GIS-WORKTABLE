@@ -37,7 +37,7 @@ GIS-WORKTABLE 是一个面向 GIS 专业人员的 AI 智能工作平台。它将
 - 多轮上下文记忆：支持 Task Working Memory、会话历史、中间结果管理和长任务执行
 - 结果专业解读：对分析结果给出统计数据、空间分布特征和方法局限性说明
 - 两阶段数据源选择：下载数据前先让用户选数据源（带配置状态），搜索后再让用户选具体数据
-- Fast / Full 双模式：Fast 模式直接单轮 LLM 回复（不调工具、秒回），Full 模式走完整 ReAct Agent（工具调用、多轮推理），流式端点真正隔离两种模式
+- 完整 GIS Agent 模式：走 ReAct Agent 流程（工具调用、多轮推理、流式输出），简单问题自动 bypass 减少 token 开销（原 Fast/Full 双模式因上下文污染漏洞已移除，统一为完整模式）
 
 ### GIS 专业知识库
 - 11 个结构化知识模块：GIS 基础、坐标系与投影、矢量处理、栅格处理、空间分析、空间统计、遥感分析、DEM 地形分析、地图制图规范、常见 GIS 项目工作流
@@ -139,7 +139,7 @@ graph TB
 ```mermaid
 graph LR
     A[用户消息] --> B[任务理解与知识库匹配]
-    B --> C{Fast 模式?}
+    B --> C{简单问题?}
     C -->|是| D[单轮 LLM 直接回复]
     C -->|否| E[ReAct 循环]
     E --> F[思考: 选什么工具]
@@ -498,7 +498,7 @@ python -m pytest tests/ -v
 - 测试体系重构：从 456 项精简至 200 项，API 级集成测试占比提升至 30%（59 项），删除冗余单元测试
 - 修复图层操作前后端状态不同步：layer_control 的 remove/rename 操作现在同步更新后端注册图层，AI 回复的图层状态与前端图层面板一致
 - 卫星巡检增加高德卫星图作为第三备用源（国内直连，无需代理），Esri→Bing→高德三源自动回退
-- AI 回复底部增加模式标签（快速/完整），方便确认当前回复使用的模式
+- ~~AI 回复底部增加模式标签（快速/完整）~~（该功能随快速模式一同移除）
 - 降级到非流式 API 时正确传递 mode 参数，避免模式串配置
 
 **第三阶段优化（稳定性与坐标校正）**：
@@ -510,6 +510,9 @@ python -m pytest tests/ -v
 - 新增网络代理独立设置面板：支持 HTTP/HTTPS 代理配置和系统代理自动检测，卫星瓦片下载和外部 API 请求自动走代理
 - 修复 4 处 geographic CRS 下计算 centroid 的 warning（改用 total_bounds 中心确定 UTM 带号），测试 warnings 从 6 个降至 3 个（剩余均为第三方库）
 - 测试套件扩充至 235 项（新增坐标转换 15 项、Workflow 引擎 20 项）
+- 移除 Fast/Full 双模式：原快速模式因上下文污染漏洞（AI 在多轮对话中持续误认为自己是快速模式，拒绝调用工具）已删除，统一为完整 GIS Agent 模式；简单问题仍自动 bypass 减少 token 开销
+- 修复 DataV 区级行政边界获取失败：原 _load_city_adcodes 只提取市级 adcode，区级 adcode 直接请求 DataV 返回 404；改为从市级 GeoJSON 中提取区级 adcode 和边界，天河区/白云区等区级边界可直接获取
+- 国内 AOI 工具重命名：unified_aoi_search/extract → cn_aoi_search/extract，明确为百度地图国内 AOI 提取；System Prompt 强化国内行政区划边界必须用 datav_boundary，禁止用 osmnx 估算近似边界
 
 **注意**：以上部分功能仍在测试中，可能存在已知或未发现的 Bug。
 

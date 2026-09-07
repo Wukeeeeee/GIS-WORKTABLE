@@ -649,15 +649,6 @@ if (typeof marked !== 'undefined') {
     const loadingBubble = loadingMsg ? loadingMsg.querySelector('.message-bubble') : null;
     if (loadingBubble) loadingBubble.appendChild(timerWrapper);
 
-    // 添加模式标签（完整/快速），计时器下方
-    const currentMode = (window.GIS && window.GIS.chat && window.GIS.chat.getMode) ? window.GIS.chat.getMode() : 'full';
-    const modeLabel = document.createElement('div');
-    modeLabel.style.cssText = 'margin-top:6px;display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:500;' +
-      (currentMode === 'fast'
-        ? 'background:#eef4ff;color:#2f7bf6;border:1px solid #2f7bf6;'
-        : 'background:#f5f5f5;color:#616161;border:1px solid #e0e0e0;');
-    modeLabel.textContent = currentMode === 'fast' ? '快速模式' : '完整模式';
-    if (loadingBubble) loadingBubble.appendChild(modeLabel);
 
     const startTime = Date.now();
     // 路由模式：1.5 秒后从"路由中"切换到"执行中"
@@ -1527,18 +1518,6 @@ if (typeof marked !== 'undefined') {
         });
       });
       bubble.appendChild(copyBtn);
-
-      // 模式标签（和复制/引用按钮对齐）
-      const modeLabel = document.createElement('span');
-      modeLabel.className = 'mode-label-ai';
-      const _mode = (options && options.mode) ? options.mode : 'full';
-      modeLabel.textContent = _mode === 'fast' ? '快速' : '完整';
-      modeLabel.title = '本回复使用' + (_mode === 'fast' ? '快速模式（不调用工具）' : '完整模式（调用工具）');
-      modeLabel.style.cssText = 'display:inline-flex;align-items:center;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;margin-left:6px;vertical-align:middle;' +
-        (_mode === 'fast'
-          ? 'background:#e8f5e9;color:#2e7d32;border:1px solid #a5d6a7;'
-          : 'background:#e3f2fd;color:#1565c0;border:1px solid #90caf9;');
-      bubble.appendChild(modeLabel);
     }
 
     row.appendChild(bubble);
@@ -1675,56 +1654,9 @@ if (typeof marked !== 'undefined') {
     if (cmd) _applySlashCommand(cmd);
   }
 
-  // ===== 回复模式切换（快速聊天/完整GIS） =====
-  let _currentMode = localStorage.getItem('gis_reply_mode') || 'full';
-
-  function getMode() {
-    return _currentMode;
-  }
-
-  function setMode(mode) {
-    _currentMode = mode;
-    localStorage.setItem('gis_reply_mode', mode);
-    var btn = document.getElementById('modeSwitchBtn');
-    var label = document.getElementById('modeSwitchLabel');
-    if (btn && label) {
-      if (mode === 'fast') {
-        btn.classList.add('mode-fast');
-        label.textContent = '快速';
-        btn.title = '快速聊天模式：不调用工具，响应快，适合问概念和闲聊。点击切换到完整模式';
-      } else {
-        btn.classList.remove('mode-fast');
-        label.textContent = '完整';
-        btn.title = '完整GIS模式：调用工具，支持数据下载和空间分析。点击切换到快速模式';
-      }
-    }
-  }
-
-  function _initModeSwitch() {
-    var btn = document.getElementById('modeSwitchBtn');
-    if (!btn) {
-      // 按钮还没渲染，100ms 后重试
-      setTimeout(_initModeSwitch, 100);
-      return;
-    }
-    if (!btn._modeBound) {
-      btn.addEventListener('click', function() {
-        if (_currentMode === 'fast') {
-          setMode('full');
-        } else {
-          setMode('fast');
-        }
-      });
-      btn._modeBound = true;
-    }
-    setMode(_currentMode);
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', _initModeSwitch);
-  } else {
-    _initModeSwitch();
-  }
+  // 模式已固定为完整模式，不再支持切换
+  function getMode() { return 'full'; }
+  function setMode(mode) { /* 已禁用模式切换 */ }
 
   GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop, SLASH_COMMANDS, triggerSlash, getMode, setMode };
 })();
