@@ -1,14 +1,22 @@
-![GIS WorkTable](frontend/assets/logo-readme.svg)
+<p align="center">
+  <img src="frontend/assets/logo-readme.svg" alt="GIS WorkTable" width="320">
+</p>
 
+<p align="center">
+  <b>AI 驱动的智能 GIS 工作平台</b>
+</p>
 
-
-![](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square\&logo=python\&logoColor=white)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" />
+  <img src="https://img.shields.io/badge/Leaflet-199900?style=flat-square&logo=leaflet&logoColor=white" />
+  <img src="https://img.shields.io/badge/LangGraph-2B6CB0?style=flat-square" />
+  <img src="https://img.shields.io/badge/License-AGPL%20v3-1a1a2e?style=flat-square" />
+</p>
 
 > 项目持续开发中，部分功能仍在测试，可能存在已知或未发现的 Bug。使用前请阅读免责声明。
 
-
-
-***
+---
 
 ## 项目简介
 
@@ -199,15 +207,7 @@ graph TB
 
 ### 模块源码导读
 
-各核心模块配套的独立 README（代码结构说明 / 模块地图），点击可跳转阅读：
-
-
-
-| 模块   | 源码                                 | 导读文档                                                                |
-| ---- | ---------------------------------- | ------------------------------------------------------------------- |
-| 任务管理 | `backend/services/task_manager.py` | [task\_manager\_README.md](backend/services/task_manager_README.md) |
-
-> 导读文档随模块更新同步维护；新模块配 README 后在此追加一行。
+- [task_manager_README.md](backend/services/task_manager_README.md) — 任务管理（TaskManager）模块说明
 
 ### AI Agent 内部流程
 
@@ -243,23 +243,23 @@ graph LR
 ```
 用户在设置页面输入账号密码
 
-&#x20;   ↓
+    ↓
 
 前端 → 后端 API → Fernet 加密存储到本地文件
 
-&#x20;   ↓
+    ↓
 
-Agent 调用 login\_gscloud()（无参数）
+Agent 调用 login_gscloud()（无参数）
 
-&#x20;   ↓
+    ↓
 
 工具内部从加密存储读取凭据 → 执行登录
 
-&#x20;   ↓
+    ↓
 
 Agent 收到 {"success": true} 或 {"success": false, "reason": "..."}
 
-&#x20;   ↓
+    ↓
 
 密码全程不进入 LLM Prompt、Agent Context、工具返回值、日志
 ```
@@ -288,27 +288,27 @@ Agent 不可以知道：密码、Cookie、Session Token、Authorization Token。
 ```
 用户输入自然语言需求
 
-&#x20;   ↓
+    ↓
 
 AI 理解任务，匹配知识库模块
 
-&#x20;   ↓
+    ↓
 
 规划分析流程（数据准备 → 检查 → 方法选择 → 工具调用 → 验证 → 展示）
 
-&#x20;   ↓
+    ↓
 
 调用 GIS 工具执行（可多轮工具调用）
 
-&#x20;   ↓
+    ↓
 
 需要用户决策时弹出选项（数据源选择 / 数据选择 / 确认加载）
 
-&#x20;   ↓
+    ↓
 
 生成地图、图表、分析报告
 
-&#x20;   ↓
+    ↓
 
 AI 给出专业解读（统计数据、空间分布、方法局限性）
 ```
@@ -384,17 +384,17 @@ Gis-WorkTable/
 
 │   ├── services/
 
-│   │   ├── ai\_service.py        # AI 服务：System Prompt、知识库、会话管理
+│   │   ├── ai_service.py        # AI 服务：System Prompt、知识库、会话管理
 
 │   │   ├── graph.py             # LangGraph ReAct Agent 循环
 
 │   │   ├── tools.py             # 100 个 GIS 工具函数
 
-│   │   ├── task\_manager.py      # Task Working Memory
+│   │   ├── task_manager.py      # Task Working Memory
 
-│   │   ├── pending\_action.py    # 跨轮待确认动作与选项
+│   │   ├── pending_action.py    # 跨轮待确认动作与选项
 
-│   │   ├── data\_discovery.py    # 开放数据发现与下载
+│   │   ├── data_discovery.py    # 开放数据发现与下载
 
 │   │   └── ...
 
@@ -418,7 +418,7 @@ Gis-WorkTable/
 
 │       ├── spatial.js           # 空间分析面板
 
-│       ├── spatial\_stats.js     # 空间统计面板
+│       ├── spatial_stats.js     # 空间统计面板
 
 │       ├── connector.js         # 连接器快捷入口
 
@@ -428,27 +428,27 @@ Gis-WorkTable/
 
 ├── knowledge/                   # GIS 专业知识库（11 模块）
 
-│   ├── 00\_index.md
+│   ├── 00_index.md
 
-│   ├── 01\_gis\_basics.md
+│   ├── 01_gis_basics.md
 
-│   ├── 02\_coordinate\_systems.md
+│   ├── 02_coordinate_systems.md
 
-│   ├── 03\_vector\_processing.md
+│   ├── 03_vector_processing.md
 
-│   ├── 04\_raster\_processing.md
+│   ├── 04_raster_processing.md
 
-│   ├── 05\_spatial\_analysis.md
+│   ├── 05_spatial_analysis.md
 
-│   ├── 06\_spatial\_statistics.md
+│   ├── 06_spatial_statistics.md
 
-│   ├── 07\_remote\_sensing.md
+│   ├── 07_remote_sensing.md
 
-│   ├── 08\_dem\_terrain.md
+│   ├── 08_dem_terrain.md
 
-│   ├── 09\_cartography.md
+│   ├── 09_cartography.md
 
-│   └── 10\_workflows.md
+│   └── 10_workflows.md
 
 ├── docs/                        # 项目文档
 
