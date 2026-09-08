@@ -278,7 +278,8 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
   - 使用 execute_python 时**禁止硬编码 API Key**（高德 Key 已自动注入为 _AMAP_KEY 变量，直接从变量读取）。
   - **复杂多步骤任务使用 execute_workflow**：当任务需要按顺序执行3个以上GIS工具且步骤间有数据依赖时（如加载边界→裁剪影像→计算NDVI→区域统计），优先使用 execute_workflow 工具，传入结构化的 Workflow JSON。这样可以清晰展示分析流程、自动传递上游输出、失败时停止后续步骤。简单任务或无依赖的并行任务不需要用 Workflow，直接调工具即可。
   - 如果不确定用哪个工具，优先选专用工具而非 execute_python——专用工具有更好的错误处理和坐标转换。
-  - **execute_python 批量执行规则**：当需要生成多张图片/图表时，**必须在一次 execute_python 调用中完成所有图表生成**（使用 plt.subplot 或多次 plt.savefig），不要为每张图片单独调用 execute_python。单独调用会触发过热保护（上限20次/请求）。
+  - **execute_python 批量执行规范**：当需要生成多张图片/图表时，**必须在一次 execute_python 调用中完成所有图表生成**（使用 plt.subplot 或多次 plt.savefig），不要为每张图片单独调用 execute_python。单独调用会触发过热保护（上限20次/请求）。
+  - **图表/地图制图规范（强制执行）**：使用 matplotlib 生成任何图表（分类图、统计图、遥感解译图、NDVI图等）时，必须包含：①标题（说明图表内容和区域名称）②图例（plt.legend()，明确每种颜色/符号代表什么类别）③坐标轴标签或比例尺。遥感分类/土地利用图必须在图例中标注各类别名称（植被/建成区/水体/裸地/耕地等）与颜色的对应关系。**禁止生成无图例的分类图**。生成后在回复中用文字说明图例内容，方便用户理解。
   - **天气数据用 fetch_weather_data**：用户询问天气、降水、温度、风速等气象数据时，先用 amap_geocode 获取坐标，再调用 fetch_weather_data（Open-Meteo，免费无 Key）。不要用 execute_python 自写请求。
   - **地震数据用 fetch_earthquake_data**：用户询问地震分布、震中、近期地震时，调用 fetch_earthquake_data（USGS，免费无 Key），数据会自动加载到地图，可继续做热点/缓冲区分析。
 
@@ -379,7 +380,8 @@ SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
   - 优先使用专用工具（amap_geocode / amap_poi_search / datav_boundary / network_analysis 等），execute_python 是最后选择
   - 有专用工具的操作不得用 execute_python 代替
   - execute_python 中禁止硬编码 API Key
-  - **execute_python 批量执行规则**：当需要生成多张图片/图表时，**必须在一次 execute_python 调用中完成所有图表生成**（使用 plt.subplot 或多次 plt.savefig），不要为每张图片单独调用 execute_python。单独调用会触发过热保护（上限20次/请求）。
+  - **execute_python 批量执行规范**：当需要生成多张图片/图表时，**必须在一次 execute_python 调用中完成所有图表生成**（使用 plt.subplot 或多次 plt.savefig），不要为每张图片单独调用 execute_python。单独调用会触发过热保护（上限20次/请求）。
+  - **图表/地图制图规范（强制执行）**：使用 matplotlib 生成任何图表（分类图、统计图、遥感解译图、NDVI图等）时，必须包含：①标题（说明图表内容和区域名称）②图例（plt.legend()，明确每种颜色/符号代表什么类别）③坐标轴标签或比例尺。遥感分类/土地利用图必须在图例中标注各类别名称（植被/建成区/水体/裸地/耕地等）与颜色的对应关系。**禁止生成无图例的分类图**。生成后在回复中用文字说明图例内容，方便用户理解。
 
 每个工具的具体使用规则（参数、约束、最佳实践）见各工具的 description，不必事先记忆。
 
@@ -564,7 +566,7 @@ def _get_or_create_history(session_id: str, message: str) -> list:
     return history
 
 
-def _build_system_content(cfg, message: str, force_skills: list = None) -> tuple:
+def _build_system_content(cfg, message: str, session_id: str = "default", force_skills: list = None) -> tuple:
     """构建 system prompt，返回 (system_content, skill_text, model_display)
 
     cfg: LLMConfig
@@ -826,7 +828,7 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     # 获取或创建历史记录
     history = _get_or_create_history(session_id, message)
 
-    system_content, skill_text, model_display = _build_system_content(cfg, message, force_skills)
+    system_content, skill_text, model_display = _build_system_content(cfg, message, session_id, force_skills)
 
     # 构建消息列表（LangGraph 用 BaseMessage 格式，assistant + reasoning 一并带回）
     langgraph_messages = _build_langgraph_messages(system_content, history)
@@ -850,7 +852,8 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     print(f"[GIS] [{model_display}] LangGraph Agent 完成，耗时 {elapsed:.1f}s", flush=True)
 
     # 写回本轮 AI 回复到历史并落盘（与 SSE 流共用同一函数）
-    commit_assistant_reply(session_id, result.get("response", ""), result.get("reasoning"))
+    ai_reply = result.get("response", "")
+    commit_assistant_reply(session_id, ai_reply, result.get("reasoning"))
 
     # 定期清理过期历史文件
     if len(conversation_history) > 100:

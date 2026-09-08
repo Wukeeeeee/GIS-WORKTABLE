@@ -275,7 +275,7 @@ async def chat_stream(request: ChatRequest):
     # 构建 system prompt + 消息（复用 ai_service 的构建逻辑）
     force_skills = request.force_skills or []
     history = _get_or_create_history(session_id, request.message)
-    system_content, skill_text, _ = _build_system_content(cfg, request.message, force_skills)
+    system_content, skill_text, _ = _build_system_content(cfg, request.message, session_id, force_skills)
 
     # 如果前端附带了待分析图层，将 GeoJSON 注入到用户消息中（同时进入 agent 上下文和校验器）
     original_message = request.message
@@ -990,7 +990,7 @@ async def export_shp(request: ExportShpRequest):
         # 写入临时目录
         tmp_dir = tempfile.mkdtemp(prefix="shp_export_")
         shp_base = os.path.join(tmp_dir, request.name)
-        gdf.to_file(shp_base, driver="ESRI Shapefile", encoding="utf-8")
+        gdf.to_file(shp_base + ".shp", driver="ESRI Shapefile", encoding="utf-8")
 
         # 打包 zip
         zip_buf = BytesIO()
@@ -1166,6 +1166,11 @@ class _NoCacheStaticFiles(StaticFiles):
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
         return resp
+
+# ===== cache 静态文件（图表/导出文件，必须在 / 之前挂载）=====
+_cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache")
+if os.path.isdir(_cache_dir):
+    app.mount("/cache", StaticFiles(directory=_cache_dir), name="cache")
 
 _frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 app.mount("/", _NoCacheStaticFiles(directory=_frontend_dir, html=True), name="frontend")

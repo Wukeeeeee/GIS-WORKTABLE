@@ -22,8 +22,8 @@ window.GIS = window.GIS || {};
   const layers = {};
   const geoStore = {};
   let baseLayer = null;
-  let _currentBaseMap = 'esri';
-  let _satelliteSource = 'esri'; // 'esri' | 'bing' // 'satellite' | 'light'
+  let _currentBaseMap = 'bing';
+  let _satelliteSource = 'bing'; // 'esri' | 'bing' // 'satellite' | 'light'
 let drawnItems = null;        // Leaflet.Draw 绘制的图形集合
 let _featureMap = {};         // { "layerName:idx": LeafletLayer } — 要素索引→Leaflet 图层
 let _highlightedFeature = null; // 当前高亮的 Leaflet 图层
@@ -151,10 +151,10 @@ var _undoSkip = false;
     });
 
     // 卫星底图（Esri / Bing 中国区 / 白底）
-    _currentBaseMap = localStorage.getItem('gis_basemap') || 'esri';
+    _currentBaseMap = localStorage.getItem('gis_basemap') || 'bing';
     // 兼容旧版本存储值 'satellite'，统一迁移为 esri
     if (_currentBaseMap === 'satellite') { _currentBaseMap = 'esri'; }
-    _satelliteSource = localStorage.getItem('gis_sat_source') || 'esri';
+    _satelliteSource = localStorage.getItem('gis_sat_source') || 'bing';
     baseLayer = _createBaseLayer(_currentBaseMap);
     baseLayer.addTo(mapInstance);
     // 初始化底图开关勾选状态（白底=关闭，其余=开启）

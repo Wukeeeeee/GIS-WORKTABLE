@@ -186,6 +186,47 @@ graph TB
     AIService -->|会话历史| History[cache/history 磁盘持久化]
 ```
 
+### 能力分层架构
+
+GIS-WORKTABLE 的能力分为三层，由 AI Agent 统一调度：
+
+```mermaid
+graph TB
+    subgraph Core["GIS 核心能力"]
+        C1[空间分析]
+        C2[栅格分析]
+        C3[矢量编辑]
+        C4[地图制图]
+        C5[坐标处理]
+        C6[空间统计]
+    end
+
+    subgraph Data["GIS 数据能力"]
+        D1[地理编码]
+        D2[POI 搜索]
+        D3[数据下载]
+        D4[路网下载]
+        D5[天气/地震]
+    end
+
+    subgraph System["系统能力"]
+        S1[登录]
+        S2[日志]
+        S3[保存]
+        S4[Undo/Redo]
+        S5[工作流]
+    end
+
+    Core --> Agent[AI Agent]
+    Data --> Agent
+    System --> Agent
+    Agent -->|自动调用工具| Tools[100+ GIS 工具集]
+```
+
+- **GIS 核心能力**：空间分析（缓冲区/叠加/网络分析等）、栅格分析（遥感指数/DEM/栅格计算）、矢量编辑、地图制图、坐标处理、空间统计（Moran's I/热点/KDE）
+- **GIS 数据能力**：地理编码（高德/Open-Meteo）、POI 搜索、开放数据下载（OSM/Copernicus/USGS/地理空间数据云）、路网下载、天气/地震等专题数据
+- **系统能力**：登录认证、操作日志、工程保存/加载、Undo/Redo、DAG 工作流引擎
+
 ### 模块说明
 
 
@@ -751,7 +792,15 @@ python -m pytest tests/ -v
 
 ## 最近更新
 
+* **默认底图改为 Bing 卫星影像**（原默认 Esri World Imagery 国内需翻墙，新用户打开不再白屏；Esri 仍可在视图菜单手动切换，需配置代理）
 
+* **修复 matplotlib 中文乱码**：抽取独立公共模块 `matplotlib_font.py`，统一中文字体检测（微软雅黑/SimHei/Noto Sans CJK 等 16 种候选字体 + 多级 fallback），主进程和 run_code 沙箱统一调用，所有图表中文正常显示
+
+* **修复 Shapefile 导出空 ZIP**：geopandas 1.x `to_file()` 路径不带 `.shp` 扩展名时会创建子目录导致空 ZIP（22字节），已修复并增加导出真实性验证（ZIP存在/大小/包含.shp/.shx/.dbf/.prj，验证失败返回明确错误）
+
+* **导出真实性验证机制**：为 GeoJSON/GPKG/CSV/csv_xy/Shapefile 全部 5 种导出格式增加验证（文件存在/大小合理/可被对应库重新读取/Feature数量与源一致/关键数据不丢失），验证失败 Tool 返回 success=false，禁止 Agent 幻觉声称导出成功
+
+* **修复 Pylance 静态分析警告**：7 处 `from matplotlib import cm` 后直接使用 `matplotlib.colormaps` 改为 `import matplotlib`
 
 * 新增 GIS 专业知识库（11 个结构化模块，Agent 自动路由匹配）
 

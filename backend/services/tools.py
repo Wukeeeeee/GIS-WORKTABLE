@@ -61,6 +61,16 @@ from backend.services.task_manager import (
 
 
 # ============================================================
+# matplotlib 中文字体统一初始化（引用公共模块）
+# P2 优化：字体检测/fallback/rcParams 配置统一由
+# backend.services.matplotlib_font 模块管理，
+# tools.py / main.py / run_code 等模块统一调用，避免重复实现。
+# ============================================================
+from backend.services.matplotlib_font import setup_chinese_font
+setup_chinese_font()
+
+
+# ============================================================
 # 安全表达式求值（替代 eval/exec）
 # ============================================================
 
@@ -915,25 +925,8 @@ try:
 except Exception:
     pass
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as _fm
-for _fp in [
-    r'C:\Windows\Fonts\msyh.ttc', r'C:\Windows\Fonts\simhei.ttf',
-    r'C:\Windows\Fonts\NotoSansSC-VF.ttf', r'C:\Windows\Fonts\Deng.ttf',
-    r'C:\Windows\Fonts\simsun.ttc',
-]:
-    try:
-        _fm.fontManager.addfont(_fp)
-        _prop = _fm.FontProperties(fname=_fp)
-        plt.rcParams['font.sans-serif'] = [_prop.get_name()] + plt.rcParams.get('font.sans-serif', ['DejaVu Sans'])
-        plt.rcParams['font.family'] = 'sans-serif'
-        plt.rcParams['axes.unicode_minus'] = False
-        break
-    except Exception:
-        continue
-plt.style.use("ggplot")
+# matplotlib 中文字体配置（由公共模块动态生成，避免重复实现）
+{font_setup_code}
 
 # 创建 output/ 子目录，支持 plt.savefig('output/chart.png') 路径
 import os as _os
@@ -941,7 +934,11 @@ _os.makedirs('output', exist_ok=True)
 """
 
         _amap_injection = f'_AMAP_KEY = {_current_amap_key!r}\n\n'
-        _final_code = _amap_injection + _setup_blocks.rstrip() + '\n\n' + code
+        # P2: 动态注入公共模块生成的字体配置代码（替换占位符）
+        from backend.services.matplotlib_font import get_sandbox_setup_code
+        _font_setup_code = get_sandbox_setup_code()
+        _setup_blocks_filled = _setup_blocks.replace('{font_setup_code}', _font_setup_code)
+        _final_code = _amap_injection + _setup_blocks_filled.rstrip() + '\n\n' + code
 
         temp_path = os.path.join(exec_dir, '_user_code_.py')
         with open(temp_path, 'w', encoding='utf-8') as f:
@@ -1862,7 +1859,29 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
         path = os.path.join(_temp_output_dir, fname)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(geojson, f, ensure_ascii=False, indent=2)
-        return f"GeoJSON 已生成：可通过 /output/{fname} 下载\n如需要 Shapefile 格式，可再次调用 export_layer 并设 format='shp'"
+        # === 导出真实性验证 ===
+        _verr = []
+        _src_count = len(geojson.get("features", []))
+        if not os.path.exists(path):
+            _verr.append("文件未生成")
+        elif os.path.getsize(path) < 20:
+            _verr.append("文件过小")
+        else:
+            try:
+                with open(path, "r", encoding="utf-8") as _f:
+                    _gj = json.load(_f)
+                if _gj.get("type") != "FeatureCollection":
+                    _verr.append("非FeatureCollection")
+                _feat_count = len(_gj.get("features", []))
+                if _feat_count != _src_count:
+                    _verr.append(f"Feature数不符({_feat_count}!={_src_count})")
+                if _feat_count > 0 and not all(ft.get("geometry") for ft in _gj["features"]):
+                    _verr.append("存在无geometry的Feature")
+            except Exception as _ve:
+                _verr.append(f"无法重新读取:{_ve}")
+        if _verr:
+            return "GeoJSON导出验证失败: " + "; ".join(_verr)
+        return f"GeoJSON已生成：/output/{fname}（{_src_count}个Feature）\n如需要 Shapefile 格式，可再次调用 export_layer 并设 format='shp'"
 
     elif format == "shp":
         # 用 geopandas 转 Shapefile 并打包 zip
@@ -1894,7 +1913,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
 
             tmp_dir = tempfile.mkdtemp(prefix="shp_export_")
             shp_base = os.path.join(tmp_dir, safe_name)
-            gdf.to_file(shp_base, driver="ESRI Shapefile", encoding="utf-8")
+            gdf.to_file(shp_base + ".shp", driver="ESRI Shapefile", encoding="utf-8")
 
             init_temp_dir()
             zip_path = os.path.join(_temp_output_dir, fname)
@@ -1904,8 +1923,28 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
                     if os.path.isfile(fp):
                         zf.write(fp, fn)
             shutil.rmtree(tmp_dir, ignore_errors=True)
-
-            return f"Shapefile 已生成：可通过 /output/{fname} 下载（包含 .shp .shx .dbf .prj .cpg）"
+            # === 导出真实性验证 ===
+            _verr = []
+            if not os.path.exists(zip_path):
+                _verr.append("ZIP文件未生成")
+            elif os.path.getsize(zip_path) < 100:
+                _verr.append("ZIP文件过小")
+            else:
+                try:
+                    with zipfile.ZipFile(zip_path, "r") as _zf:
+                        _ns = _zf.namelist()
+                        if not _ns:
+                            _verr.append("ZIP内无文件")
+                        for _e in [".shp", ".shx", ".dbf"]:
+                            if not any(n.endswith(_e) for n in _ns):
+                                _verr.append("ZIP缺少" + _e)
+                        if gdf.crs and not any(n.endswith(".prj") for n in _ns):
+                            _verr.append("ZIP缺少.prj")
+                except Exception as _ve:
+                    _verr.append("ZIP无法打开")
+            if _verr:
+                return "SHP导出验证失败: " + "; ".join(_verr)
+            return f"Shapefile已生成：/output/{fname}（含.shp/.shx/.dbf/.prj/.cpg，{len(gdf)}个要素）"
         except Exception as e:
             return f"SHP 导出失败: {str(e)[:200]}"
 
@@ -1926,7 +1965,26 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             path = os.path.join(_temp_output_dir, fname)
             gdf.to_file(path, layer=safe_name, driver="GPKG", encoding="utf-8")
 
-            return f"GeoPackage 已生成：可通过 /output/{fname} 下载（单一文件，含空间索引）"
+            # === 导出真实性验证 ===
+            _verr = []
+            if not os.path.exists(path):
+                _verr.append("文件未生成")
+            elif os.path.getsize(path) < 100:
+                _verr.append("文件过小")
+            else:
+                try:
+                    _gdf2 = gpd.read_file(path, layer=safe_name)
+                    if len(_gdf2) != len(gdf):
+                        _verr.append(f"Feature数不符({len(_gdf2)}!={len(gdf)})")
+                    if _gdf2.crs != gdf.crs:
+                        _verr.append(f"CRS不符({_gdf2.crs}!={gdf.crs})")
+                    if not _gdf2.geom_type.equals(gdf.geom_type):
+                        _verr.append("geometry类型不一致")
+                except Exception as _ve:
+                    _verr.append(f"无法重新读取:{_ve}")
+            if _verr:
+                return "GPKG导出验证失败: " + "; ".join(_verr)
+            return f"GeoPackage已生成：/output/{fname}（{len(gdf)}个Feature，CRS={gdf.crs}）"
         except Exception as e:
             return f"GPKG 导出失败: {str(e)[:200]}"
 
@@ -1949,9 +2007,26 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             attr_df = gdf.drop(columns=["geometry"], errors="ignore")
             attr_df.to_csv(path, index=False, encoding="utf-8-sig")
 
-            return (f"CSV 属性表已生成：可通过 /output/{fname} 下载"
-                    f"（{len(attr_df.columns)} 列, {len(attr_df)} 行）"
-                    f"\n如需含坐标的 CSV，可用 format='csv_xy'")
+            # === 导出真实性验证 ===
+            _verr = []
+            if not os.path.exists(path):
+                _verr.append("文件未生成")
+            elif os.path.getsize(path) < 10:
+                _verr.append("文件过小")
+            else:
+                try:
+                    _df2 = pd.read_csv(path, encoding="utf-8-sig")
+                    if len(_df2) != len(attr_df):
+                        _verr.append(f"行数不符({len(_df2)}!={len(attr_df)})")
+                    if len(_df2.columns) != len(attr_df.columns):
+                        _verr.append(f"列数不符({len(_df2.columns)}!={len(attr_df.columns)})")
+                except Exception as _ve:
+                    _verr.append(f"无法重新读取:{_ve}")
+            if _verr:
+                return "CSV导出验证失败: " + "; ".join(_verr)
+            return (f"CSV属性表已生成：/output/{fname}"
+                    f"（{len(attr_df.columns)}列, {len(attr_df)}行）"
+                    f"\n如需含坐标的CSV，可用 format='csv_xy'")
         except Exception as e:
             return f"CSV 导出失败: {str(e)[:200]}"
 
@@ -1977,8 +2052,27 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             attr_df = gdf.drop(columns=["geometry"], errors="ignore")
             attr_df.to_csv(path, index=False, encoding="utf-8-sig")
 
-            return (f"CSV（含坐标）已生成：可通过 /output/{fname} 下载"
-                    f"（{len(attr_df.columns)} 列, {len(attr_df)} 行，含 longitude/latitude）")
+            # === 导出真实性验证 ===
+            _verr = []
+            if not os.path.exists(path):
+                _verr.append("文件未生成")
+            elif os.path.getsize(path) < 10:
+                _verr.append("文件过小")
+            else:
+                try:
+                    _df2 = pd.read_csv(path, encoding="utf-8-sig")
+                    if len(_df2) != len(attr_df):
+                        _verr.append(f"行数不符({len(_df2)}!={len(attr_df)})")
+                    if "longitude" not in _df2.columns:
+                        _verr.append("缺少longitude列")
+                    if "latitude" not in _df2.columns:
+                        _verr.append("缺少latitude列")
+                except Exception as _ve:
+                    _verr.append(f"无法重新读取:{_ve}")
+            if _verr:
+                return "CSV导出验证失败: " + "; ".join(_verr)
+            return (f"CSV（含坐标）已生成：/output/{fname}"
+                    f"（{len(attr_df.columns)}列, {len(attr_df)}行，含longitude/latitude）")
         except Exception as e:
             return f"CSV 导出失败: {str(e)[:200]}"
 
@@ -4080,7 +4174,7 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
         if analysis == "hillshade":
             rgb = np.stack([data.astype(np.uint8)]*3, axis=-1)
         else:
-            from matplotlib import cm
+            import matplotlib
             if cmap == "slope":
                 cmap_obj = matplotlib.colormaps['YlOrRd']
             else:
@@ -4166,7 +4260,7 @@ def ndvi_analysis(layer_name: str, red_band: int = 1, nir_band: int = 4) -> str:
         ndvi = (nir - red) / (nir + red + 1e-10)
         ndvi = np.clip(ndvi, -1, 1)
         # 红绿渐变：NDVI=-1→红色，0→黄色，1→绿色
-        from matplotlib import cm
+        import matplotlib
         cmap = matplotlib.colormaps['RdYlGn']
         valid = np.isfinite(ndvi)
         norm = (ndvi - (-1)) / (1 - (-1))  # -1~1 → 0~1
@@ -4259,7 +4353,7 @@ def raster_calculator(layer_name: str, expression: str) -> str:
         else:
             norm = (result - vmin) / (vmax - vmin + 1e-10)
             norm = np.clip(norm, 0, 1)
-            from matplotlib import cm
+            import matplotlib
             cmap = matplotlib.colormaps['viridis']
             rgba = cmap(norm)
             rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
@@ -4346,7 +4440,7 @@ def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
             return f"插值结果无变化（值={vmin:.2f}）"
         norm = (z - vmin) / (vmax - vmin + 1e-10)
         norm = np.clip(norm, 0, 1)
-        from matplotlib import cm
+        import matplotlib
         cmap = matplotlib.colormaps['viridis']
         rgba = cmap(norm)
         rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
@@ -4480,7 +4574,7 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
             dir_deg = np.full_like(dem, np.nan, dtype=np.float64)
             for k in range(8):
                 dir_deg[direction == k] = angle_map[k]
-            from matplotlib import cm
+            import matplotlib
             cmap = matplotlib.colormaps['hsv']
             norm_data = np.full_like(dir_deg, np.nan)
             valid_dir = dir_deg >= 0
@@ -4497,7 +4591,7 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
             vmin, vmax = 0, np.nanmax(log_fa)
             norm_data = log_fa / (vmax + 1e-10)
             norm_data = np.clip(norm_data, 0, 1)
-            from matplotlib import cm
+            import matplotlib
             cmap = matplotlib.colormaps['Blues']
             rgba = cmap(norm_data)
             rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
@@ -5295,7 +5389,7 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
                 if not np.any(valid):
                     return "裁剪结果为空"
                 vmin, vmax = np.nanmin(data[valid]), np.nanmax(data[valid])
-                from matplotlib import cm
+                import matplotlib
                 cmap_obj = matplotlib.colormaps['viridis']
                 norm_data = np.clip((data - vmin) / (vmax - vmin + 1e-10), 0, 1)
                 norm_data[~valid] = 0
