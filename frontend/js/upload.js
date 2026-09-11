@@ -9,7 +9,7 @@ window.GIS = window.GIS || {};
   'use strict';
 
   const GIS = window.GIS;
-  const ALLOWED_EXTENSIONS = ['.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip', '.csv', '.tif', '.tiff'];
+  const ALLOWED_EXTENSIONS = ['.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip', '.shp', '.csv', '.tif', '.tiff'];
 
   let fileInput = null;
 
@@ -84,6 +84,10 @@ window.GIS = window.GIS || {};
       }
       if (!ALLOWED_EXTENSIONS.includes(ext)) {
         return showUploadToast('error', '不支持 ' + ext + ' 格式');
+      }
+      // Shapefile 是多个文件的组合（.shp/.dbf/.shx/.prj），请打包为 ZIP 上传
+      if (ext === '.shp') {
+        return showUploadToast('error', 'Shapefile 需要配套文件（.shp/.dbf/.shx/.prj），请打包为 ZIP 后上传');
       }
       if (file.size > 300 * 1024 * 1024) {
         return showUploadToast('error', '文件超过 300MB 限制');

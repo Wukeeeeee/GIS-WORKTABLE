@@ -133,6 +133,35 @@ def pending_action_snapshot() -> dict:
     return out
 
 
+def build_choice_backfill(session_id: str, message: str) -> str | None:
+    """上一轮弹出过选项时的上下文回填。
+
+    场景：AI 调 ask_user_choice 弹出候选后，用户点击某一项，前端只会把该项的短标签
+    发回来（如「Esri 快速巡检」）。此时原任务描述（尤其是地名）已经不在当前消息里，
+    部分模型会据此编造任务对象（「用户说上海，却巡检了北京」）。
+
+    这里由确定性逻辑把挂起选项时保存的原始请求拼回用户消息，不依赖模型记忆。
+    调用方须在 clear_pending_action 之前调用。
+
+    返回回填后的消息；无需回填（无选项挂起 / 无上下文）时返回 None。
+    """
+    try:
+        action = get_pending_action(session_id or "default")
+    except Exception:
+        return None
+    if not action or action.get("action") != "choose_option":
+        return None
+    context = (action.get("context") or "").strip()
+    if not context:
+        return None
+    return (
+        "[用户在上一步的选项中选择了一个方案。请严格沿用原任务继续执行，"
+        "不得更改或编造任务对象（如地名）。]\n"
+        f"原任务：{context}\n"
+        f"本次选择：{message}"
+    )
+
+
 def describe_action(action: dict) -> dict | None:
     """给前端渲染「继续/取消」或「选项按钮」用的轻量描述（不含 geojson 本体）。"""
     if not isinstance(action, dict):

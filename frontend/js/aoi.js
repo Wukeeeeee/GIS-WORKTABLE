@@ -84,7 +84,6 @@ window.GIS = window.GIS || {};
   function selectAndSend(item) {
     var name = item.name;
     var poiId = item.id || item.uid || '';
-    var source = item.source || 'baidu';
 
     if (!poiId) return;
 
@@ -92,8 +91,8 @@ window.GIS = window.GIS || {};
     var msgEl = document.getElementById('aoi-select-msg');
     if (msgEl) msgEl.remove();
 
-    // 发送选择给 AI
-    var message = '已选择AOI候选: ' + name + ' | ID: ' + poiId + ' | 来源: ' + source;
+    // 发送选择给 AI（不再携带来源信息）
+    var message = '已选择AOI候选: ' + name + ' | ID: ' + poiId;
     GIS.chat.sendMessage(message).catch(function(err) {
       console.error('[GIS AOI] 发送失败:', err);
     });

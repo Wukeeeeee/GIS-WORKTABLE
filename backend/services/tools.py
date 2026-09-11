@@ -172,6 +172,7 @@ _temp_output_dir: str = ""          # 在 reset_state 时设置
 _workspace_dir: str = ""
 _registered_layers: dict = {}       # 已注册的图层信息
 _current_task_id: str = ""          # 当前任务 ID（由 graph.py 设置）
+_last_user_message: str = ""        # 本轮用户原始请求（由 graph.py 每轮设置，供选项类工具保存上下文）
 
 # 这些列表会被主模块读取，所以要导出
 # 线程锁，保证 get_pending_state 的"读取+清空"操作原子性
@@ -206,6 +207,14 @@ def set_current_task(task_id: str):
     """设置当前任务 ID（由 graph.py 在每轮请求开始时调用）"""
     global _current_task_id
     _current_task_id = task_id or ""
+
+
+def set_last_user_message(msg: str):
+    """记录本轮用户原始请求（由 graph.py 在每轮开始时调用）。
+    供 ask_user_choice 等两阶段交互工具保存上下文，下一轮用户点击选项后
+    可把原任务拼回消息，避免「用户选完选项、AI 丢失原任务地名」的幻觉。"""
+    global _last_user_message
+    _last_user_message = (msg or "")[:500]
 
 
 def get_current_task_id() -> str:
@@ -1253,7 +1262,7 @@ def cn_aoi_search(query: str) -> str:
     """搜索地点轮廓，返回候选列表在聊天框显示。
     流程：用户说"提取轮廓"或"AOI"时先调本工具 → 在聊天框显示候选列表
     → **执行后立刻停止，不要继续提取**，等用户点击选择
-    → 用户选择后会发来"已选择AOI候选: 名称 | ID: xxx | 来源: baidu"
+    → 用户选择后会发来"已选择AOI候选: 名称 | ID: xxx"
     → 收到后用 cn_aoi_extract 提取
     提取失败的话如实告诉用户，**严禁自己估算或画边界**"""
     try:
@@ -1828,6 +1837,41 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
         return f"已标记缩放到图层: {name}"
     else:
         return f"未知操作: {action}，可选：remove / toggle / set_color / set_style / rename / fit"
+
+
+# ============================================================
+# 工具: focus_map — 地图定位
+# ============================================================
+
+@tool
+def focus_map(layer_name: str = "", center: str = "", zoom: int = 13) -> str:
+    """将地图视野定位/飞到指定位置（用户说"定位一下""飞过去""看看在哪""跳转到"时调用）。
+    两种模式二选一：
+    1. layer_name: 定位到指定图层的范围（缩放至该图层），如 focus_map(layer_name="上海火车站")
+    2. center: 定位到指定经纬度，格式"经度,纬度"，如 focus_map(center="121.4593,31.2513", zoom=15)
+    不知道坐标时可先用 geocode 或 POI 搜索获取经纬度。"""
+    if layer_name:
+        if layer_name in _registered_layers:
+            _pending_layer_ops.append({"action": "fit", "name": layer_name})
+            return f"已定位到图层「{layer_name}」（缩放至其范围）"
+        for _key in list(_registered_layers.keys()):
+            if layer_name in _key or _key in layer_name:
+                _pending_layer_ops.append({"action": "fit", "name": _key})
+                return f"已定位到图层「{_key}」（缩放至其范围）"
+        _names = "、".join(_registered_layers.keys()) or "无"
+        return f"未找到图层「{layer_name}」，当前图层：{_names}。可改用 center 参数按坐标定位。"
+    if center:
+        try:
+            parts = center.replace("，", ",").split(",")
+            if len(parts) != 2:
+                return f"center 格式应为「经度,纬度」，收到：{center}"
+            lon, lat = float(parts[0].strip()), float(parts[1].strip())
+            _z = max(3, min(19, int(zoom)))
+            _pending_layer_ops.append({"action": "center", "center": [lon, lat], "zoom": _z})
+            return f"已定位到 ({lat:.4f}, {lon:.4f})，缩放级别 {_z}"
+        except ValueError:
+            return f"无法解析坐标：{center}，格式应为「经度,纬度」（如 121.4593,31.2513）"
+    return "请提供 layer_name（图层名）或 center（「经度,纬度」）进行定位"
 
 
 # ============================================================
@@ -6364,6 +6408,7 @@ ask_user_choice(
             "options": normalized,
             "choice_key": choice_key,
             "selected": None,
+            "context": _last_user_message[:300],
         }
         _pa.set_pending_action(_pa.get_active_session(), action)
         return f"已向用户弹出选项（{choice_key or '未标识'}），共 {len(normalized)} 个选项，等待用户选择。用户选择后会自动继续。"
@@ -6979,6 +7024,11 @@ def inspect_satellite_image(
 
     【参数】
     - place_name: 地名，如"武汉市洪山区"。提供时自动查找已注册的行政边界图层并裁剪。
+
+    【强制防幻觉规则】
+    - place_name 必须严格使用用户明确指定的地名（含上一轮原始请求中的地名）。
+    - 若用户没有明确地名，必须直接回复请用户提供地名，严禁猜测、默认或编造城市。
+    - 严禁出现「用户要求上海、却执行北京/广州」之类的地名错乱；不确定时先问。
     - bbox: 手动指定范围，格式"west,south,east,north"（WGS84 经纬度）。与 place_name 二选一。
     - inspection_type: 巡检类型。all=全部，或 water/vegetation/bare_ground/built_up 逗号分隔。
     - zoom: 瓦片缩放级别 10-18，默认 14。级别越高分辨率越高但瓦片越多。
@@ -7117,6 +7167,72 @@ def inspect_satellite_image(
             _overlay_arr[_mask, 3] = 110  # 半透明
         _overlay_img = _PILImage.fromarray(_overlay_arr, "RGBA")
         _combined = _PILImage.alpha_composite(image.convert("RGBA"), _overlay_img).convert("RGB")
+
+        # --- 图例 + 指北针（PIL 绘制，解决巡检图无图例/指北针问题）---
+        try:
+            from PIL import ImageDraw as _PIDraw, ImageFont as _PIFont
+            _draw = _PIDraw.Draw(_combined, "RGBA")
+            _w, _h = _combined.size
+
+            # 中文字体（微软雅黑优先，fallback 到默认字体）
+            _font_paths = [
+                r"C:\Windows\Fonts\msyh.ttc",
+                r"C:\Windows\Fonts\simhei.ttf",
+                r"C:\Windows\Fonts\simsun.ttc",
+                r"C:\Windows\Fonts\NotoSansSC-VF.ttf",
+            ]
+            _font = None
+            for _fp in _font_paths:
+                if _os.path.exists(_fp):
+                    try:
+                        _font = _PIFont.truetype(_fp, 16)
+                        break
+                    except Exception:
+                        continue
+            if _font is None:
+                _font = _PIFont.load_default()
+
+            # 图例（右下角）：各类别色块 + 中文名 + 占比
+            _legend_items = []
+            for _s in statistics:
+                if _s["category"] not in cats:
+                    continue
+                _ratio = _s.get("pixel_ratio", 0)
+                _legend_items.append((_s["category"], _ratio))
+            if _legend_items:
+                _swatch = 22
+                _row_h = 24
+                _pad = 10
+                _box_w = 230
+                _box_h = _pad * 2 + len(_legend_items) * _row_h
+                _bx0 = _w - _box_w - 14
+                _by0 = _h - _box_h - 14
+                _draw.rectangle([_bx0, _by0, _bx0 + _box_w, _by0 + _box_h],
+                                fill=(255, 255, 255, 200), outline=(0, 0, 0, 80), width=1)
+                _draw.text((_bx0 + _pad, _by0 + _pad - 4), "图例",
+                           fill=(0, 0, 0, 255), font=_font)
+                _y = _by0 + _pad + 14
+                for _cat, _ratio in _legend_items:
+                    _rgb = _cat_rgb.get(_cat, (128, 128, 128))
+                    _draw.rectangle([_bx0 + _pad, _y, _bx0 + _pad + _swatch, _y + 14],
+                                    fill=_rgb + (255,), outline=(0, 0, 0, 60))
+                    _label = f"{cat_names.get(_cat, _cat)}  {_ratio:.1%}"
+                    _draw.text((_bx0 + _pad + _swatch + 8, _y - 2), _label,
+                               fill=(20, 20, 20, 255), font=_font)
+                    _y += _row_h
+
+            # 指北针（右上角）：N + 向上箭头
+            _ax0, _ay0 = _w - 74, 14
+            _draw.rectangle([_ax0, _ay0, _ax0 + 60, _ay0 + 72],
+                            fill=(255, 255, 255, 200), outline=(0, 0, 0, 80), width=1)
+            _cx, _cy = _ax0 + 30, _ay0 + 44
+            _draw.polygon([(_cx, _cy - 24), (_cx - 10, _cy + 6), (_cx, _cy + 1), (_cx + 10, _cy + 6)],
+                          fill=(220, 40, 40, 255), outline=(0, 0, 0, 120))
+            _nfont = _PIFont.truetype(_font_paths[0], 14) if _os.path.exists(_font_paths[0]) else _PIFont.load_default()
+            _draw.text((_cx - 7, _ay0 + 2), "N", fill=(220, 40, 40, 255), font=_nfont)
+        except Exception as _e:
+            print(f"[GIS] 巡检图图例/指北针绘制失败(不影响主流程): {_e}", flush=True)
+
         _os.makedirs("cache/charts", exist_ok=True)
         _fname = f"inspect_{_uuid.uuid4().hex[:8]}.png"
         _fpath = _os.path.join("cache/charts", _fname)
@@ -7176,6 +7292,7 @@ def inspect_satellite_image(
     lines.extend([
         "",
         f"- 已分类像素占比：{total_classified/active_count:.1%}" if active_count > 0 else "- 已分类像素占比：N/A",
+        f"- 统计口径：各类占比 = 该类像素数 / 总分析像素数，各类独立计算；混合像元、阴影、未识别地物不计入任何类别，因此各类占比合计通常不足 100%",
         f"- 候选区域总面积：{total_area/1e6:.4f} km2",
         f"- 生成矢量要素：{len(all_features)} 个",
         f"- 结果图层：{layer_name}" if all_features else "- 结果图层：未生成（候选区域过少）",
@@ -7407,6 +7524,7 @@ tools = [
     get_session_logs,
     login_gscloud,
     layer_control,
+    focus_map,
     export_layer,
     create_chart,
     download_road_network,

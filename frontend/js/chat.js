@@ -1002,24 +1002,11 @@ if (typeof marked !== 'undefined') {
         } catch (e) { /* 按钮渲染失败不阻塞回复 */ }
       }
 
-      // 如果有 AI 生成的图表图片，追加到最后一条回复下方
-      if (result.images && result.images.length > 0) {
-        // 如果上一步有返回 msgEl 就用它，否则新建容器
-        const imgContainer = document.createElement('div');
-        imgContainer.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;margin-left:32px;';
-        // 通用下载函数（fetch + Blob，解决跨域下载问题）
-        function downloadFile(url, filename) {
-          fetch(url).then(function(res) { return res.blob(); }).then(function(blob) {
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(a.href);
-          }).catch(function(e) { console.warn('下载失败:', e); });
-        }
-
+        // 如果有 AI 生成的图表图片，追加到最后一条回复下方
+        // （下载工具函数 downloadFile 已提升到模块作用域，供图片按钮与文件路径按钮共用）
+        if (result.images && result.images.length > 0) {
+          // 如果上一步有返回 msgEl 就用它，否则新建容器
+          const imgContainer = document.createElement('div');
         result.images.forEach(function(item) {
           // 兼容新旧格式：item 可能是字符串（旧）或对象（新）
           const imgUrl = typeof item === 'string' ? item : (item.url || '');
@@ -1141,6 +1128,11 @@ if (typeof marked !== 'undefined') {
             case 'fit':
               if (window.GIS.map && window.GIS.map.fitLayer) {
                 window.GIS.map.fitLayer(op.name);
+              }
+              break;
+            case 'center':
+              if (window.GIS.map && window.GIS.map.setView && op.center) {
+                window.GIS.map.setView([op.center[1], op.center[0]], op.zoom || 13);
               }
               break;
             case 'symbology':
@@ -1385,6 +1377,71 @@ if (typeof marked !== 'undefined') {
     });
   }
 
+  /**
+   * 通用下载函数（fetch + Blob，解决跨域下载问题）。
+   * 定义在模块作用域：图片下载按钮与 AI 回复中的文件路径下载按钮共用。
+   */
+  function downloadFile(url, filename) {
+    fetch(url).then(function(res) { return res.blob(); }).then(function(blob) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(a.href);
+    }).catch(function(e) { console.warn('下载失败:', e); });
+  }
+
+  /**
+   * 在 AI 消息中识别输出文件路径（/output/xxx、cache/xxx 等），
+   * 自动追加「打开 / 下载」按钮，方便用户直接跳转定位文件。
+   */
+  function _attachOutputButtons(contentEl) {
+    if (!contentEl || contentEl._outputBtnsAttached) return;
+    contentEl._outputBtnsAttached = true;
+
+    var baseUrl = (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || 'http://localhost:8000';
+    // 匹配输出目录下的文件路径（含中文文件名）
+    var pathRe = /(?:\/?)(?:output|cache|uploads|downloads)\/[A-Za-z0-9_\-\u4e00-\u9fa5.\/()（）]+?\.(?:geojson|json|csv|shp|zip|png|jpe?g|html?|tiff?|kml|kmz|gpkg|gpx|dxf)/g;
+    var nodes = contentEl.querySelectorAll('p, li, div, code, pre, span');
+    var appended = false;
+
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      // 只处理叶子文本块，避免在父容器里重复扫描
+      if (node.querySelector('p, li, pre')) continue;
+      var text = node.textContent || '';
+      var m = text.match(pathRe);
+      if (!m) continue;
+      var filePath = m[0];
+      if (filePath.indexOf('/') !== 0) filePath = '/' + filePath;
+      var fileName = filePath.split('/').pop();
+      var fullUrl = baseUrl + filePath;
+
+      var btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:6px;';
+      var nameSpan = document.createElement('span');
+      nameSpan.style.cssText = 'font-size:12px;color:var(--ui-gray-400);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px;';
+      nameSpan.textContent = fileName;
+      var openBtn = document.createElement('button');
+      openBtn.textContent = '打开';
+      openBtn.style.cssText = 'padding:3px 10px;background:var(--accent,#6366f1);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;';
+      openBtn.addEventListener('click', function(url) { return function() { window.open(url, '_blank'); }; }(fullUrl));
+      var dlBtn = document.createElement('button');
+      dlBtn.textContent = '下载';
+      dlBtn.style.cssText = 'padding:3px 10px;background:var(--ui-gray-900);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;';
+      dlBtn.addEventListener('click', function(url, name) { return function() { downloadFile(url, name); }; }(fullUrl, fileName));
+      btnRow.appendChild(nameSpan);
+      btnRow.appendChild(openBtn);
+      btnRow.appendChild(dlBtn);
+      // 插到该文本节点所在容器之后
+      node.parentNode.insertBefore(btnRow, node.nextSibling);
+      appended = true;
+    }
+    return appended;
+  }
+
   function addMessage(text, type, options) {
     if (!messagesContainer) return null;
     type = type || 'ai';
@@ -1428,6 +1485,8 @@ if (typeof marked !== 'undefined') {
     } else {
       content.innerHTML = text;
     }
+    // AI 消息：自动为输出文件路径添加「打开 / 下载」跳转按钮
+    if (type === 'ai') _attachOutputButtons(content);
     bubble.appendChild(content);
 
     // 用户消息：在气泡底部显示 skill chip 标签

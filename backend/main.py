@@ -260,6 +260,11 @@ async def chat_stream(request: ChatRequest):
     # 附图层分析时不做短指令拦截（消息语义是被附加的图层）
     has_attachment = bool(request.pending_layer and request.pending_layer.get("geojson"))
 
+    # === choose_option 上下文回填：用户点击选项后只发短 label，把原任务拼回，
+    # === 避免「选完数据源，AI 忘记原任务地名（如上海）而幻觉成其他城市」
+    # === 必须在 clear_pending_action 之前取值 ===
+    _ctx_backfill = _pa.build_choice_backfill(session_id, request.message)
+
     # === 确定性短指令：pending task 的“继续/确认/执行/取消”直接处理，不走 LLM ===
     if not has_attachment:
         handled = _try_handle_confirm_command(session_id, request.message)
@@ -271,6 +276,9 @@ async def chat_stream(request: ChatRequest):
             )
         # 正常 Agent 流程：先清掉上一轮遗留 pending（本轮结束时由 auto-promote 重新挂起）
         _pa.clear_pending_action(session_id)
+
+    if _ctx_backfill:
+        request.message = _ctx_backfill
 
     # 构建 system prompt + 消息（复用 ai_service 的构建逻辑）
     force_skills = request.force_skills or []

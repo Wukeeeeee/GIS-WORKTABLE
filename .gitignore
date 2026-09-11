@@ -26,6 +26,10 @@ backend/chat_history.json
 .DS_Store
 Thumbs.db
 
+# Node（desktop/ 桌面客户端）
+node_modules/
+desktop/logs/
+
 # 日志
 logs/temp.jsonl
 logs/permanent.jsonl

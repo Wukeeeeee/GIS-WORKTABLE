@@ -1,0 +1,16 @@
+{
+  "name": "gis-worktable-desktop",
+  "version": "0.1.0",
+  "description": "GIS-WORKTABLE 本地客户端（Electron 外壳，内嵌启动 FastAPI 后端）",
+  "main": "main.js",
+  "author": "GIS-WORKTABLE Contributors",
+  "license": "AGPL-3.0",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "start:dev": "electron . --dev"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}

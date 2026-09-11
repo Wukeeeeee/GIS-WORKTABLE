@@ -54,6 +54,7 @@ from backend.services.llm_config import (
 )
 from backend.services.tools import tools, reset_state, get_pending_state, set_current_task
 from backend.services import pending_action
+from backend.services import result_guard
 import backend.services.tools as _tools_mod
 import backend.services.ai_service as _ai_svc
 from backend.services import task_manager
@@ -268,6 +269,7 @@ def run_agent(
     """
     # 重置共享状态（tools.py 中的全局变量）
     reset_state(amap_key)
+    _tools_mod.set_last_user_message(original_message or "")
     # === P1-1: Agent 运行状态 ===
     _run_id = uuid.uuid4().hex[:12]
     _run_status = "planning"
@@ -469,6 +471,13 @@ def run_agent(
     #     verdict = _run_verifier(build_llm(disable_reasoning(cfg)), original_message, final_text, pending)
     #     ...
 
+    # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
+    # Agent 常说"已生成 xxx.png"但文件并不存在。这里把明确不成立的说法挑出来，
+    # 直接追加到回复末尾，避免把未生成的结果当作成功交付给用户。
+    final_text, _guard = result_guard.apply_guard(final_text, pending)
+    if not _guard["ok"]:
+        print(f"[GIS] 结果真实性自检未通过: {_guard['issues'][:3]}", flush=True)
+
     # 一轮结束：新注册但未展示的图层 → 挂起为 pending（用户“继续/确认”即加载）
     _auto_promote_pending(
         session_id, _start_registered, [l.get("name") for l in pending.get("layers", [])]
@@ -483,6 +492,7 @@ def run_agent(
         "clear_layers": pending["clear_layers"],
         "layer_ops": pending["layer_ops"],
         "pending_suggestions": (pending["aoi_suggestions"] or {}).get("suggestions"),
+        "result_check": _guard,
         "task_id": _task_id,
     }
 
@@ -517,6 +527,7 @@ def run_agent_stream(
         {"type":"done","response":"...","reasoning":...,"layers":[...],...}
     """
     reset_state(amap_key)
+    _tools_mod.set_last_user_message(original_message or "")
     pending_action.set_active_session(session_id or "default")
     _start_registered = set(getattr(_tools_mod, "_registered_layers", {}).keys())
     # 重置取消标志（每次新请求开始）
@@ -705,6 +716,11 @@ def run_agent_stream(
     # 同 run_agent：节省一次 LLM 调用，降低延迟和成本。
     # yield "data: {\"type\":\"verifying\"}\n\n" 行已一并移除。
 
+    # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
+    final_text, _guard = result_guard.apply_guard(final_text, pending)
+    if not _guard["ok"]:
+        print(f"[GIS] 流式结果真实性自检未通过: {_guard['issues'][:3]}", flush=True)
+
     # 一轮结束：新注册但未展示的图层 → 挂起为 pending（用户“继续/确认”即加载）
     _auto_promote_pending(
         session_id, _start_registered, [l.get("name") for l in pending.get("layers", [])]
@@ -722,6 +738,7 @@ def run_agent_stream(
         # 存在待确认动作时前端渲染「继续/取消」按钮（免手打）
         "confirm_pending": pending_action.describe_action(
             pending_action.get_pending_action(session_id)),
+        "result_check": _guard,
         "task_id": _task_id,
         "mode": "full",
     }

@@ -820,10 +820,17 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     handled = _try_handle_confirm_command(session_id, message)
     if handled is not None:
         return handled
+    from backend.services import pending_action as _pa
+    # choose_option 上下文回填：用户点击选项后只发短 label，把原任务拼回（防地名幻觉）
+    # 必须在 clear_pending_action 之前取值
+    _ctx_backfill = _pa.build_choice_backfill(session_id, message)
+
     # 走正常 AI：先清掉上一轮遗留的 pending（若本轮有新的“就绪未展示”图层，
     # 会在 Agent 结束时由 auto-promote 重新挂起）
-    from backend.services import pending_action as _pa
     _pa.clear_pending_action(session_id)
+
+    if _ctx_backfill:
+        message = _ctx_backfill
 
     # 获取或创建历史记录
     history = _get_or_create_history(session_id, message)
