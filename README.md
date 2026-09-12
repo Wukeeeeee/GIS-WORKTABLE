@@ -419,7 +419,7 @@ AI 给出专业解读（统计数据、空间分布、方法局限性）
 
 
 
-* pytest（318 项：317 passed + 1 skipped，其中 19 项为 FastAPI TestClient 接口级集成测试）
+* pytest（320 项：319 passed + 1 skipped，其中 19 项为 FastAPI TestClient 接口级集成测试）
 
 
 
@@ -458,7 +458,7 @@ Gis-WorkTable/
 
 │   │   └── ...
 
-│   └── tests/                   # pytest 测试（318 项：317 passed + 1 skipped）
+│   └── tests/                   # pytest 测试（320 项：319 passed + 1 skipped）
 
 ├── desktop/
 
@@ -789,7 +789,7 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-当前收集 318 项：317 项通过，1 项因缺少 GDAL 环境被跳过；其中 19 项为 FastAPI TestClient 发起的接口级集成测试。
+当前收集 320 项：319 项通过，1 项因缺少 GDAL 环境被跳过；其中 19 项为 FastAPI TestClient 发起的接口级集成测试。
 覆盖范围：工具注册完整性守卫、结果真实性自检、焦点定位工具、知识库加载、空间分析工具、栅格工具、网络分析、空间统计、遥感指数、报告质量、多轮状态、任务管理、坐标转换、Workflow 引擎、开放数据发现、凭据安全、选项交互等。
 
 ### 新增 GIS 工具
@@ -907,6 +907,12 @@ python -m pytest tests/ -v
 * ~~AI 回复底部增加模式标签（快速 / 完整）~~（该功能随快速模式一同移除）
 
 * 降级到非流式 API 时正确传递 mode 参数，避免模式串配置
+
+**第十阶段（图层通道静态守卫）**：
+
+* **新增图层通道守卫测试**：把「工具必须通过 `_push_layer` / `_register_layer` 操作图层、不得手写 `_pending_layers` / `_registered_layers`」钉成静态约束（AST 扫描）。第九阶段的等高线 bug 属于这一类——症状出现在工具之外（前端不渲染 / 下一个工具读空），单个工具的单测抓不到，只能从源码结构上禁掉；守卫自带自检用例，确保它不是空的
+
+* 测试：新增守卫 2 项；全量 320 项（319 passed + 1 skipped）
 
 **第九阶段（等高线图层注册修复）**：
 
