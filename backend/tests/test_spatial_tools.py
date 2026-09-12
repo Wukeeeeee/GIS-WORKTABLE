@@ -682,6 +682,58 @@ class TestContour:
         r = extract_contours.invoke({"layer_name": "nonexistent"})
         assert "未找到" in r or "请先上传" in r
 
+    def _make_ramp_tif(self, name, rows=40, cols=40, scale=10):
+        """高程随行号(向南)递增的斜平面，用于验证像素→地理坐标的南北方向"""
+        import numpy as np
+        from rasterio.transform import from_bounds
+        import rasterio
+        dem = (np.arange(rows, dtype=np.float64).reshape(-1, 1) * np.ones((1, cols))) * scale
+        transform = from_bounds(116, 39, 117, 40, cols, rows)  # north=40 在 row 0
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        dest = os.path.join(upload_dir, f"{name}.tif")
+        with rasterio.open(dest, 'w', driver='GTiff', height=rows, width=cols, count=1,
+                           dtype='float64', crs=None, transform=transform) as dst:
+            dst.write(dem, 1)
+        return dest
+
+    def test_contour_registers_usable_layer(self):
+        """回归：等高线图层必须带 geojson 注册，否则前端不渲染、后续工具报"图层为空"。"""
+        self._make_dem_tif("c1")
+        r = extract_contours.invoke({"layer_name": "c1"})
+        assert "等高线" in r, r
+        info = T._registered_layers.get("c1_contour")
+        assert info is not None and info.get("geojson", {}).get("features"), "注册表缺少 geojson"
+        gdf, msg = T._layer_to_gdf("c1_contour")
+        assert gdf is not None and len(gdf) > 0, f"后续工具无法读取等高线图层: {msg}"
+        assert "geojson" in T._pending_layers[-1], "待推送图层缺 geojson（前端不会渲染）"
+
+    def test_contour_orientation_north_up(self):
+        """回归：高程随行号(向南)递增时，等高线纬度应随高程升高而降低（北在上）。"""
+        import numpy as np
+        self._make_ramp_tif("ramp")
+        r = extract_contours.invoke({"layer_name": "ramp"})
+        assert "等高线" in r, r
+        feats = T._registered_layers["ramp_contour"]["geojson"]["features"]
+        assert len(feats) >= 3
+        elev, lat = [], []
+        for f in feats:
+            coords = f["geometry"]["coordinates"]
+            elev.append(f["properties"]["elevation"])
+            lat.append(sum(c[1] for c in coords) / len(coords))
+        elev, lat = np.array(elev), np.array(lat)
+        assert lat.min() > 38.9 and lat.max() < 40.1
+        assert np.corrcoef(elev, lat)[0, 1] < 0, "南北方向映射反了（高程升高却纬度也升高）"
+
+    def test_contour_coords_within_bounds(self):
+        self._make_dem_tif("c2")
+        extract_contours.invoke({"layer_name": "c2"})
+        feats = T._registered_layers["c2_contour"]["geojson"]["features"]
+        assert feats
+        for f in feats:
+            for x, y in f["geometry"]["coordinates"]:
+                assert 115.9 < x < 117.1 and 38.9 < y < 40.1
+
 
 
 

@@ -5255,14 +5255,13 @@ def extract_contours(layer_name: str, interval: float = 0) -> str:
                     "geometry": {"type": "LineString", "coordinates": coords},
                     "properties": {"elevation": round(float(level), 1)}
                 })
-        fc = {"type": "FeatureCollection", "features": features}
         name = f"{layer_name}_contour"
-        _pending_layers.append({
-            "type": "FeatureCollection",
-            "features": fc["features"],
-            "name": name,
-        })
-        _registered_layers[name] = {"type": "FeatureCollection", "name": name}
+        fc = {"type": "FeatureCollection", "features": features}
+        # 必须走统一的推送/注册接口：_push_layer 生成 {"geojson":...} 供前端渲染，
+        # _register_layer 写入 geojson/feature_count/geometry_types/bbox 供后续工具读取。
+        # 原实现手写 {"type","name"} 既缺 geojson（前端不渲染），也导致 _layer_to_gdf 报"图层为空"。
+        _push_layer(name, fc)
+        _register_layer(name, fc)
         return f"已提取 {len(features)} 条等高线（等高距 {interval:.1f}m），生成图层 '{name}'"
     except ImportError as e:
         return f"等高线提取需要依赖库: {str(e)[:200]}，请安装: pip install scikit-image"
