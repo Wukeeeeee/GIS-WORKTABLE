@@ -2991,7 +2991,7 @@ def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> 
 
 
 # ============================================================
-# 工具: spatial_buffer — 缓冲区分析
+# 工具: spatial_intersect — 空间相交
 # ============================================================
 
 @tool
@@ -5727,33 +5727,60 @@ def spatial_moran(layer_name: str, field: str, weight_type: str = "distance",
         if zz == 0:
             return "字段方差为零（所有值相同），无法计算空间自相关"
         I = (n / W_sum) * (z @ W @ z) / zz
-        # 正态近似的期望与方差（随机化假设）
+        # 随机化假设下的期望与方差（Cliff & Ord）
         E_I = -1.0 / (n - 1)
         S0 = W_sum
         S1 = 0.5 * ((W + W.T) ** 2).sum()
         S2 = ((W.sum(axis=1) + W.sum(axis=0)) ** 2).sum()
         denom = (n - 1) * (n - 2) * (n - 3) * S0 * S0
-        if denom > 0 and n > 3:
-            b2 = (x ** 4).mean() / ((x ** 2).mean() ** 2)
-            k1 = (S1 * (n*n - 3*n + 3) - n*S2 + 3*S0*S0) / denom
+
+        # 峰度项 b2 必须用离差 z = x - mean(x)，不是原始 x。
+        # 方差主项还有一个 n 因子。这两处写错会让方差变成负数，
+        # 再被 max(var, 1e-12) 兜住 → z 值爆炸 → 任何数据都判成"显著"。
+        m2 = (z ** 2).mean()
+        var_I = None
+        if denom > 0 and n > 3 and m2 > 0:
+            b2 = (z ** 4).mean() / (m2 ** 2)
+            k1 = n * (S1 * (n*n - 3*n + 3) - n*S2 + 3*S0*S0) / denom
             k2 = (S1 * (n*n - n) - 2*n*S2 + 6*S0*S0) / denom
-            var_I = k1 - k2 * b2 - E_I * E_I
-        else:
-            var_I = (n*n * S1 - n*S2 + 3*S0*S0) / ((n*n - 1) * S0*S0) - E_I*E_I
-        var_I = max(var_I, 1e-12)
-        z_score = (I - E_I) / np.sqrt(var_I)
+            _v = k1 - k2 * b2 - E_I * E_I
+            if _v > 0:
+                var_I = _v
+
         from scipy.stats import norm
-        p_value = 2.0 * (1.0 - norm.cdf(abs(z_score)))
+        if var_I is not None:
+            z_score = (I - E_I) / np.sqrt(var_I)
+            p_value = 2.0 * (1.0 - norm.cdf(abs(z_score)))
+            method = "正态近似（随机化假设）"
+        else:
+            # 方差算不出来时不做"假装显著"的兜底：改用置换检验
+            # 固定种子保证同一份数据每次结论一致
+            _rng = np.random.default_rng(20240915)
+            _perm = []
+            for _ in range(199):
+                _xp = _rng.permutation(x)
+                _zp = _xp - _xp.mean()
+                _zz = _zp @ _zp
+                if _zz > 0:
+                    _perm.append((n / S0) * (_zp @ W @ _zp) / _zz)
+            _perm = np.array(_perm)
+            if _perm.size == 0 or _perm.std() == 0:
+                z_score = 0.0
+                p_value = 1.0
+            else:
+                z_score = (I - _perm.mean()) / _perm.std()
+                p_value = (1 + int((np.abs(_perm - _perm.mean()) >= abs(I - _perm.mean())).sum())) / (_perm.size + 1)
+            method = "置换检验（199 次，样本量过小或权重结构不满足正态近似）"
         if z_score > 1.96:
             pattern = "显著正空间自相关（属性值聚集分布）"
         elif z_score < -1.96:
             pattern = "显著负空间自相关（属性值离散/竞争分布）"
         else:
             pattern = "空间随机分布（无显著自相关）"
-        summary = f"全局 Moran's I = {I:.4f}，z = {z_score:.2f}，p = {p_value:.4f}。{pattern}"
+        summary = (f"全局 Moran's I = {I:.4f}，z = {z_score:.2f}，p = {p_value:.4f}。{pattern}"
+                   f"（显著性判定方式：{method}）")
         # 局部 LISA
         if local:
-            m2 = (z ** 2).mean()
             local_I = np.array([(z[i] / m2) * (W[i] @ z) for i in range(n)])
             lag_z = W @ z
             cluster = []
@@ -5865,63 +5892,107 @@ def spatial_hotspot(layer_name: str, field: str, threshold: float = 0.01, k: int
 # ============================================================
 
 @tool
-def spatial_kde(layer_name: str, bandwidth: float = 0.01, grid_size: int = 50) -> str:
+def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50) -> str:
     """核密度估计（KDE），将点事件转换为连续密度面。
 
 【适用场景】
 - 点数据的密度可视化：犯罪热点、设施分布、物种出现点、人口聚集等。
-- 输出为规则格网点图层，每个格点带 density 值，可用渐变颜色或热力图展示。
+- 输出为规则格网点图层，每个格点带密度值，可用分级设色或热力图展示。
 
-【方法选择】
-- bandwidth（带宽）是最关键参数：太小密度图破碎，太大过度平滑。
-  经验值：取点对平均最近邻距离的 1.5-2 倍（单位：度，0.01 度约 1km）。
-- grid_size 控制输出格网分辨率，默认 50x50=2500 个点，越大越精细但渲染越慢。
-- 使用高斯核（scipy.stats.gaussian_kde）。
+【参数】
+- layer_name：**必须是点图层**（Point / MultiPoint）。面/线图层请先用
+  spatial_centroid 取质心再分析，否则算出来的是顶点密度而不是要素密度。
+- bandwidth：高斯核带宽，**单位是度**（WGS84），0.01 度约 1km。
+  传 0 或省略时按 Scott 法则自动估算（推荐）。
+- grid_size：输出格网边长格数，默认 50x50=2500 个格点；越大越精细也越慢。
 
 【输出】
-- 新图层（格网点），含 density 字段（核密度值）。
+- 新图层（格网点），含两个字段：
+  - density：密度，单位「点/平方度」（原始值）
+  - density_km2：密度，单位「点/平方千米」（按图层中心纬度换算，便于解读）
 - 自动过滤密度低于最大值 1% 的格点，减少冗余。
 
 【常见坑】
-- 带宽单位是度（WGS84），高纬度地区东西方向会变形，可先 convert_crs 到投影坐标系。
+- 带宽太小密度图会碎成孤立点，太大会糊成一片。拿不准就用自动带宽。
+- 高纬度地区 1 度经度对应的实际距离会缩短，可先 convert_crs 到投影坐标系再分析。
 - 点太少（<10）时 KDE 不稳定，结果仅供参考。
-- 密度值是相对值，跨数据集比较时需统一带宽。"""
+- 密度是相对值，跨数据集比较必须统一带宽和网格。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
         import numpy as np
-        from scipy.stats import gaussian_kde
         import geopandas as gpd
         from shapely.geometry import Point
+
+        # 只接受点要素：对面/线直接取顶点会算成"顶点密度"，与用户意图不符
+        _types = set(gdf.geometry.geom_type.dropna().unique())
+        if not _types or not _types.issubset({"Point", "MultiPoint"}):
+            return (f"KDE 需要点图层，而「{name}」是 {'/'.join(sorted(_types)) or '未知'}。"
+                    f"请先对「{name}」执行 spatial_centroid 取质心，再对质心图层做核密度估计。")
+
         coords = gdf.geometry.get_coordinates().values
         n = len(coords)
         if n < 3:
             return f"点要素数（{n}）太少，KDE 至少需要 3 个点"
-        # scipy gaussian_kde 的 bw_method：传入标量作为 scott/silverman 的乘数
-        try:
-            kde = gaussian_kde(coords.T, bw_method=bandwidth)
-        except np.linalg.LinAlgError:
-            # 点重合导致奇异矩阵，加微小抖动
-            jitter = np.random.normal(0, 1e-8, coords.shape)
-            kde = gaussian_kde((coords + jitter).T, bw_method=bandwidth)
+
+        # --- 带宽：以「度」为单位的真实高斯核标准差 ---
+        # 注意：scipy 的 gaussian_kde(bw_method=标量) 里这个标量是 Scott 因子的倍数、
+        # 不是带宽本身，直接把 0.01 传进去得到的实际带宽只有约 0.0002 度（差 40 倍），
+        # 密度面会退化成几个孤立点。这里自己算核，带宽单位就是度，语义与文档一致。
+        std_x, std_y = coords[:, 0].std(), coords[:, 1].std()
+        if bandwidth and bandwidth > 0:
+            h = float(bandwidth)
+            bw_desc = f"{h:.5f} 度（手动指定）"
+        else:
+            h = float(np.mean([std_x, std_y]) * (n ** (-1.0 / 6.0)))  # Scott 法则（2D）
+            if h <= 0:
+                h = 0.01
+            bw_desc = f"{h:.5f} 度（Scott 法则自动估算）"
+
         xmin, ymin, xmax, ymax = gdf.total_bounds
-        pad_x = (xmax - xmin) * 0.1 if xmax > xmin else 0.01
-        pad_y = (ymax - ymin) * 0.1 if ymax > ymin else 0.01
+        pad_x = (xmax - xmin) * 0.1 if xmax > xmin else h
+        pad_y = (ymax - ymin) * 0.1 if ymax > ymin else h
         xi = np.linspace(xmin - pad_x, xmax + pad_x, grid_size)
         yi = np.linspace(ymin - pad_y, ymax + pad_y, grid_size)
-        X, Y = np.meshgrid(xi, yi)
-        positions = np.vstack([X.ravel(), Y.ravel()])
-        density = kde(positions)
-        # 构建格网点图层
-        points = [Point(xi[j], yi[i]) for i in range(grid_size) for j in range(grid_size)]
-        grid_gdf = gpd.GeoDataFrame({"density": np.round(density, 8), "geometry": points}, crs="EPSG:4326")
-        dmax = density.max()
-        if dmax > 0:
-            grid_gdf = grid_gdf[grid_gdf["density"] >= dmax * 0.01].reset_index(drop=True)
+        gx, gy = np.meshgrid(xi, yi)
+
+        # 密度 = Σ exp(-0.5·(d/h)²) / (n · 2π · h²)，各向同性，单位：点/平方度
+        norm = 1.0 / (n * 2.0 * np.pi * h * h)
+        density = np.zeros(gx.size, dtype=float)
+        for _start in range(0, gx.size, 20000):  # 分块计算，控制内存峰值
+            _sl = slice(_start, _start + 20000)
+            dx = (gx.ravel()[_sl, None] - coords[None, :, 0]) / h
+            dy = (gy.ravel()[_sl, None] - coords[None, :, 1]) / h
+            density[_sl] = np.exp(-0.5 * (dx * dx + dy * dy)).sum(axis=1) * norm
+
+        # 平方度 -> 平方千米（按图层中心纬度换算，让密度值能被读懂）
+        lat_mid = float(np.mean([ymin, ymax]))
+        km2_per_deg2 = 110.574 * 111.320 * max(np.cos(np.radians(lat_mid)), 1e-6)
+
+        dmax = float(density.max())
+        keep = density >= dmax * 0.01 if dmax > 0 else np.ones(density.size, dtype=bool)
+        pts = np.column_stack([gx.ravel()[keep], gy.ravel()[keep]])
+        grid_gdf = gpd.GeoDataFrame(
+            {
+                "density": np.round(density[keep], 8),
+                "density_km2": np.round(density[keep] / km2_per_deg2, 6),
+                "geometry": [Point(x, y) for x, y in pts],
+            },
+            crs="EPSG:4326",
+        )
         result_name = f"{name}_KDE"
         _gdf_to_layer(grid_gdf, result_name)
-        return f"核密度估计完成：{len(grid_gdf)} 个格网点（{grid_size}x{grid_size} 网格，过滤低密度后），密度范围 {density.min():.4f} ~ {density.max():.4f}，带宽={bandwidth}。已加载到地图"
+        _cell = (xi[-1] - xi[0]) / max(grid_size - 1, 1)
+        return (
+            f"核密度估计完成，结果图层「{result_name}」已加载到地图。\n"
+            f"- 输入点：{n} 个\n"
+            f"- 带宽：{bw_desc}（约 {h * 110.574:.2f} km）\n"
+            f"- 网格：{grid_size}x{grid_size}，格边长约 {_cell * 110.574:.3f} km\n"
+            f"- 保留格点：{len(grid_gdf)} 个（已过滤密度低于峰值 1% 的格点）\n"
+            f"- 密度范围：{density[keep].min():.6f} ~ {dmax:.6f} 点/平方度"
+            f"（约 {density[keep].min() / km2_per_deg2:.6f} ~ {dmax / km2_per_deg2:.6f} 点/km²）"
+        )
     except Exception as e:
         return f"KDE 分析失败: {str(e)[:300]}"
 
