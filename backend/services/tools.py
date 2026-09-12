@@ -225,6 +225,11 @@ def get_current_task_id() -> str:
 def reset_state(amap_key: str = "", task_id: str = ""):
     """每次请求开始时调用，清空所有共享状态"""
     global _current_amap_key, _clear_layers_flag, _search_call_count, _exec_call_count, _exec_log, _current_task_id
+    # 保证输出目录在本轮任何工具用到之前就已就绪。
+    # 此前只有 execute_python / _add_pending_item 等少数入口会初始化它，
+    # 如果一轮里最先执行的工具是 spatial_interpolate 这类直接写 _temp_output_dir 的，
+    # 目录还是空串 -> 产物落到 CWD/uploads，而 URL 指向 /output/...，前端拿到 404。
+    init_temp_dir()
     with _state_lock:
         _pending_layers.clear()
         _pending_images.clear()
@@ -4195,13 +4200,15 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
             label = "坡度(Slope)"
             cmap = "slope"
         elif analysis == "aspect":
-            data = np.degrees(np.arctan2(dzdy, -dzdx)) % 360
+            # 坡向 = 最陡下坡方向的方位角（自正北顺时针）。栅格北向上（row 增大→南），
+            # dzdy 已含负 cy，故正确形式为 atan2(-dzdx, -dzdy)，等价于 atan2(-∂z/∂东, ∂z/∂北)。
+            data = np.degrees(np.arctan2(-dzdx, -dzdy)) % 360
             data[~valid] = np.nan
             label = "坡向(Aspect)"
             cmap = "aspect"
         elif analysis == "hillshade":
             slope_rad = np.arctan(np.sqrt(dzdx**2 + dzdy**2))
-            aspect_rad = np.arctan2(dzdy, -dzdx)
+            aspect_rad = np.arctan2(-dzdx, -dzdy)
             zenith = np.radians(45)
             azimuth = np.radians(315)
             data = (
@@ -4459,9 +4466,12 @@ def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
         xmin, ymin, xmax, ymax = xs.min(), ys.min(), xs.max(), ys.max()
         pad_x = (xmax - xmin) * 0.05 or 0.01
         pad_y = (ymax - ymin) * 0.05 or 0.01
+        # y 方向必须递减生成：栅格与影像的约定是 row 0 = 北（y 最大）。
+        # 按 y 递增生成的话 row 0 是南，PNG 交给 Leaflet 叠加后整张图会南北翻转，
+        # 高值区显示在地图下方。
         grid_x, grid_y = np.meshgrid(
             np.linspace(xmin - pad_x, xmax + pad_x, resolution),
-            np.linspace(ymin - pad_y, ymax + pad_y, resolution)
+            np.linspace(ymax + pad_y, ymin - pad_y, resolution)
         )
         if method == "idw":
             # 反距离加权
