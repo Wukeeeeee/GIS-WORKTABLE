@@ -4528,6 +4528,40 @@ def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
 # 工具: hydrology_analysis — 水文分析
 # ============================================================
 
+def _fill_sinks(dem, max_iter: int = 500):
+    """填洼：迭代抬升局部洼地，使每个单元都有下坡去处（水文分析前置步骤）。
+
+    约定（与原实现的关键区别）：
+    - 只抬高、绝不降低任何栅格值——原地不低于邻域的单元保持不变；
+      原实现用 `filled[i,j] > min_nbr` 判定，会把高于邻域的单元降到最低邻域，
+      等价于反复做 3x3 最小值滤波（形态学腐蚀），会把 DEM 整体抹平到全局最低点。
+    - 边界与 nodata 不参与抬升：边界视为出水口，nodata 视为屏障。
+
+    返回 float64 数组（nodata 位置保持 NaN）。
+    """
+    import numpy as np
+    filled = dem.astype(np.float64).copy()
+    ny, nx = filled.shape
+    if ny < 3 or nx < 3:
+        return filled
+    EPS = 1e-6
+    for _ in range(max_iter):
+        prev = filled.copy()
+        inner = filled[1:-1, 1:-1]
+        neigh = np.stack([
+            filled[:-2, 1:-1], filled[2:, 1:-1], filled[1:-1, :-2], filled[1:-1, 2:],
+            filled[:-2, :-2], filled[:-2, 2:], filled[2:, :-2], filled[2:, 2:],
+        ])
+        neigh = np.where(np.isfinite(neigh), neigh, np.inf)
+        min_nbr = neigh.min(axis=0)
+        # 仅抬升"低于最低邻域"的洼地单元
+        raise_mask = np.isfinite(inner) & np.isfinite(min_nbr) & (inner < min_nbr)
+        filled[1:-1, 1:-1] = np.where(raise_mask, min_nbr + EPS, inner)
+        if np.allclose(filled, prev, atol=1e-9, equal_nan=True):
+            break
+    return filled
+
+
 @tool
 def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
                        threshold: int = 100) -> str:
@@ -4562,25 +4596,7 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
             if src.crs and src.crs.to_string() != 'EPSG:4326':
                 bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
         ny, nx = dem.shape
-        filled = dem.copy()
-        # 简单填洼：多次迭代填充
-        for _ in range(20):
-            prev = filled.copy()
-            for i in range(1, ny-1):
-                for j in range(1, nx-1):
-                    if np.isnan(filled[i, j]):
-                        continue
-                    neighbors = [
-                        filled[i-1, j], filled[i+1, j],
-                        filled[i, j-1], filled[i, j+1],
-                        filled[i-1, j-1], filled[i-1, j+1],
-                        filled[i+1, j-1], filled[i+1, j+1]
-                    ]
-                    min_nbr = np.nanmin(neighbors)
-                    if filled[i, j] > min_nbr + 1e-6 and min_nbr < filled[i, j]:
-                        filled[i, j] = min(min_nbr, filled[i, j])
-            if np.allclose(filled, prev, atol=1e-6):
-                break
+        filled = _fill_sinks(dem)
         # D8 流向编码（1=E,2=NE,4=N,8=NW,16=W,32=SW,64=S,128=SE）
         # 使用简化编码: 0=E,1=NE,2=N,3=NW,4=W,5=SW,6=S,7=SE
         dx = [1, 1, 0, -1, -1, -1, 0, 1]
