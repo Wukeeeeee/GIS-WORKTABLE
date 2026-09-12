@@ -419,7 +419,7 @@ AI 给出专业解读（统计数据、空间分布、方法局限性）
 
 
 
-* pytest（294 项：293 passed + 1 skipped，其中 19 项为 FastAPI TestClient 接口级集成测试）
+* pytest（308 项：307 passed + 1 skipped，其中 19 项为 FastAPI TestClient 接口级集成测试）
 
 
 
@@ -458,7 +458,7 @@ Gis-WorkTable/
 
 │   │   └── ...
 
-│   └── tests/                   # pytest 测试（305 项：304 passed + 1 skipped）
+│   └── tests/                   # pytest 测试（308 项：307 passed + 1 skipped）
 
 ├── desktop/
 
@@ -789,7 +789,7 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-当前收集 305 项：304 项通过，1 项因缺少 GDAL 环境被跳过；其中 19 项为 FastAPI TestClient 发起的接口级集成测试。
+当前收集 308 项：307 项通过，1 项因缺少 GDAL 环境被跳过；其中 19 项为 FastAPI TestClient 发起的接口级集成测试。
 覆盖范围：工具注册完整性守卫、结果真实性自检、焦点定位工具、知识库加载、空间分析工具、栅格工具、网络分析、空间统计、遥感指数、报告质量、多轮状态、任务管理、坐标转换、Workflow 引擎、开放数据发现、凭据安全、选项交互等。
 
 ### 新增 GIS 工具
@@ -907,6 +907,16 @@ python -m pytest tests/ -v
 * ~~AI 回复底部增加模式标签（快速 / 完整）~~（该功能随快速模式一同移除）
 
 * 降级到非流式 API 时正确传递 mode 参数，避免模式串配置
+
+**第七阶段（遥感指数结果正确性）**：
+
+* **修复遥感指数的波段参数被静默忽略**：`ndwi` / `ndbi` / `evi` / `ndmi` 的签名都带 `green_band` / `nir_band` / `red_band` / `blue_band` / `swir_band` 参数，文档也指导 Landsat 8、Sentinel-2 用户按传感器设置，但 `_calc_spectral_index` 内部用**写死的波段 1-5** 构建波段字典，传入的参数从未生效——对任何非 canonical 顺序（如 Landsat 8/9、Sentinel-2）都会算错指数却毫无提示。改为按参数构建 `band_map` 后读取对应波段；回归测试用「band2/4 中性、band3/5 才是绿/近红」的 Landsat-8 风格数据钉死
+
+* **修复 NDVI 默认红波段错误**：`ndvi_analysis` 默认 `red_band=1`，而 band 1 在 Landsat/Sentinel 均为蓝波段，文档自身列举的传感器也没有一个是 red=1——即用默认参数对标准影像计算会拿蓝波段当红波段，得到错误的 NDVI。默认改为 `red_band=3`（canonical BGRN），与其余指数口径一致
+
+* 补充指数数值回归：NDVI / EVI 用已知反射率像元验证公式取值（而不仅是「跑通」）
+
+* 测试：新增遥感指数 3 项；全量 308 项（307 passed + 1 skipped）
 
 **第六阶段（地形分析结果正确性）**：
 

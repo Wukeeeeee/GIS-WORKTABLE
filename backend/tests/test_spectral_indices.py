@@ -66,6 +66,45 @@ class TestSpectralIndices:
         assert "有效像元64" in r
 
 
+class TestSpectralIndexValues:
+    @staticmethod
+    def _mean(r):
+        import re
+        m = re.search(r"平均[^=]*=([-\d.]+)", r)
+        return float(m.group(1)) if m else None
+
+    def test_ndvi_formula_value(self, upload_dir):
+        """NDVI = (NIR-Red)/(NIR+Red)；canonical 波段下应得已知值"""
+        # band3=red=0.2, band4=nir=0.5 -> (0.5-0.2)/(0.5+0.2)=0.4286
+        _make_tif(os.path.join(upload_dir, "v.tif"), [0.1, 0.3, 0.2, 0.5, 0.05])
+        r = ndvi_analysis.invoke({"layer_name": "v"})
+        val = self._mean(r)
+        assert val is not None and abs(val - 0.4286) < 0.01, r
+
+    def test_evi_formula_value(self, upload_dir):
+        """EVI = 2.5*(NIR-Red)/(NIR+6*Red-7.5*Blue+1) 应得已知值"""
+        # NIR=0.5, Red=0.2, Blue=0.1 -> 2.5*0.3/(0.5+1.2-0.75+1)=0.3846
+        _make_tif(os.path.join(upload_dir, "e.tif"), [0.1, 0.3, 0.2, 0.5, 0.05])
+        r = evi_analysis.invoke({"layer_name": "e"})
+        val = self._mean(r)
+        assert val is not None and abs(val - 0.3846) < 0.01, r
+
+    def test_ndwi_uses_band_params(self, upload_dir):
+        """回归：波段参数必须真正生效（修复前被静默忽略）。
+
+        Landsat-8 风格顺序：band2/band4 取中性值(0.9)，真实水体在 band3(green=0.5)/band5(nir=0.1)。
+        显式 green_band=3, nir_band=5 应读 3/5 -> 0.667；默认 2/4 应读 0.9/0.9 -> 0.0。
+        两者必须不同，才能证明参数真的被用到了。"""
+        _make_tif(os.path.join(upload_dir, "ls8.tif"), [0.2, 0.9, 0.5, 0.9, 0.1])
+        r_param = ndwi_analysis.invoke({"layer_name": "ls8", "green_band": 3, "nir_band": 5})
+        val_param = self._mean(r_param)
+        assert val_param is not None and abs(val_param - 0.667) < 0.01, f"波段参数被忽略: {r_param}"
+        r_def = ndwi_analysis.invoke({"layer_name": "ls8"})
+        val_def = self._mean(r_def)
+        assert val_def is not None and abs(val_def - 0.0) < 0.01, f"默认应≈0.0, 实得 {r_def}"
+        assert abs(val_param - val_def) > 0.5, "波段参数未改变结果，疑似仍被忽略"
+
+
 
 
 

@@ -4263,14 +4263,14 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
 # ============================================================
 
 @tool
-def ndvi_analysis(layer_name: str, red_band: int = 1, nir_band: int = 4) -> str:
+def ndvi_analysis(layer_name: str, red_band: int = 3, nir_band: int = 4) -> str:
     """从多光谱 GeoTIFF 计算归一化植被指数 NDVI = (NIR-Red)/(NIR+Red)。
 
 【波段编号（从 1 开始）】
 - Landsat 5/7：red_band=3, nir_band=4
 - Landsat 8/9：red_band=4, nir_band=5
 - Sentinel-2：red_band=4, nir_band=8
-- 默认 red=1, nir=4，使用前必须确认传感器类型！
+- 默认 red=3, nir=4（canonical BGRN 顺序）；Sentinel-2 / Landsat 8/9 等需按传感器改设 red_band / nir_band
 
 【结果解读】
 - NDVI 范围 [-1, 1]，>0.3 有植被，>0.6 茂密植被，<0 通常是水体/云。
@@ -6014,7 +6014,7 @@ def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50) ->
 # ============================================================
 
 def _calc_spectral_index(layer_name: str, formula_name: str, calc_fn, cmap_name: str,
-                         label: str, value_range=(-1.0, 1.0)) -> str:
+                         label: str, value_range=(-1.0, 1.0), band_map: dict = None) -> str:
     """通用遥感指数计算：读取 GeoTIFF → 计算指数 → 生成彩色 PNG → 推送到地图。
     calc_fn(bands_dict) -> np.ndarray，bands_dict 的键是波段名（red/green/blue/nir/swir）。"""
     try:
@@ -6035,8 +6035,10 @@ def _calc_spectral_index(layer_name: str, formula_name: str, calc_fn, cmap_name:
         import numpy as np
         from PIL import Image
         with rasterio.open(tif_path) as src:
+            if band_map is None:
+                band_map = {"blue": 1, "green": 2, "red": 3, "nir": 4, "swir": 5}
             bands = {}
-            for bname, bidx in [("blue", 1), ("green", 2), ("red", 3), ("nir", 4), ("swir", 5)]:
+            for bname, bidx in band_map.items():
                 if src.count >= bidx:
                     arr = src.read(bidx).astype(np.float64)
                     if src.nodata is not None:
@@ -6102,7 +6104,8 @@ def ndwi_analysis(layer_name: str, green_band: int = 2, nir_band: int = 4) -> st
         if g is None or n is None:
             raise ValueError("需要 Green 和 NIR 波段")
         return (g - n) / (g + n + 1e-10)
-    return _calc_spectral_index(layer_name, "ndwi", calc, "Blues", "NDWI 归一化水体指数")
+    return _calc_spectral_index(layer_name, "ndwi", calc, "Blues", "NDWI 归一化水体指数",
+                                 band_map={"green": green_band, "nir": nir_band})
 
 
 @tool
@@ -6128,7 +6131,8 @@ def ndbi_analysis(layer_name: str, swir_band: int = 5, nir_band: int = 4) -> str
         if s is None or n is None:
             raise ValueError("需要 SWIR 和 NIR 波段")
         return (s - n) / (s + n + 1e-10)
-    return _calc_spectral_index(layer_name, "ndbi", calc, "OrRd", "NDBI 归一化建筑指数")
+    return _calc_spectral_index(layer_name, "ndbi", calc, "OrRd", "NDBI 归一化建筑指数",
+                                 band_map={"swir": swir_band, "nir": nir_band})
 
 
 @tool
@@ -6155,7 +6159,8 @@ def evi_analysis(layer_name: str, nir_band: int = 4, red_band: int = 3, blue_ban
         if n is None or r is None or b is None:
             raise ValueError("需要 NIR、Red、Blue 三个波段")
         return 2.5 * (n - r) / (n + 6 * r - 7.5 * b + 1.0 + 1e-10)
-    return _calc_spectral_index(layer_name, "evi", calc, "RdYlGn", "EVI 增强植被指数")
+    return _calc_spectral_index(layer_name, "evi", calc, "RdYlGn", "EVI 增强植被指数",
+                                 band_map={"nir": nir_band, "red": red_band, "blue": blue_band})
 
 
 @tool
@@ -6182,7 +6187,8 @@ def ndmi_analysis(layer_name: str, nir_band: int = 4, swir_band: int = 5) -> str
         if n is None or s is None:
             raise ValueError("需要 NIR 和 SWIR 波段")
         return (n - s) / (n + s + 1e-10)
-    return _calc_spectral_index(layer_name, "ndmi", calc, "YlGnBu", "NDMI 归一化水分指数")
+    return _calc_spectral_index(layer_name, "ndmi", calc, "YlGnBu", "NDMI 归一化水分指数",
+                                 band_map={"nir": nir_band, "swir": swir_band})
 
 
 
