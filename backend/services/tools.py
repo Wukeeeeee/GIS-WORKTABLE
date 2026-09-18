@@ -50,13 +50,21 @@ def _get_effective_proxies() -> dict:
     if _custom_proxy:
         return {"http": _custom_proxy, "https": _custom_proxy}
     return urllib.request.getproxies()
-_geocode_cache = {}
 _cache_hits = {"tile": 0, "geocode": 0}
 
 # Task Manager 集成：持久化 Python 源代码 + Artifact 注册
 from backend.services.task_manager import (
     save_code, register_artifact, log_execution,
     get_latest_code,
+)
+
+# DEM Provider（按需获取真实地表高程；不预下载全球 DEM）
+from backend.services.data_providers.errors import DataProviderError
+from backend.services.dem_providers import (
+    DEMError,
+    DEMTileDecodeError,
+    dem_provider_by_id,
+    list_dem_capabilities,
 )
 
 
@@ -7604,6 +7612,204 @@ def execute_workflow(workflow_json: str) -> str:
         return f"Workflow 执行失败: {str(e)[:200]}"
 
 
+# ============================================================
+# 工具: get_elevation_data — 按需获取真实地表高程 DEM
+# ============================================================
+
+@tool
+def get_elevation_data(
+    bbox,
+    resolution: float = 0,
+    provider: str = "aws_terrain",
+    output_format: str = "geotiff",
+) -> str:
+    """获取指定地理范围的真实地表高程 DEM 数据（按需下载 + 本地 tile 缓存）。
+
+【数据流】
+    bbox → tile 范围计算 → 检查本地 tile 缓存 → 缺失 tile 在线下载 →
+    拼接 → 裁剪到 bbox → 必要时重采样 → 写 GeoTIFF → 渲染地形预览 PNG → 返回 GIS 工具接力
+
+【数据源 Provider】
+- aws_terrain（默认）：AWS Terrain Tiles / Terrarium 格式（SRTM 派生）
+  · 全球覆盖（Web Mercator 极限 lat ≤ ±85.0511）
+  · 公开免 Key，无需账号
+  · z ∈ [0,14]，默认 z=12（赤道 ≈ 78 m/px）
+- 未来可加 USGS 3DEP / Open-Meteo Elevation / OpenTopography 等
+
+【输入】
+- bbox：边界框 [minLng, minLat, maxLng, maxLat] WGS84
+  支持 list / tuple（如 [112.93, 28.18, 112.97, 28.20]），
+  也接受逗号分隔字符串（"112.93,28.18,112.97,28.20"）。
+- resolution：目标分辨率（度/像素），0 = Provider 默认
+- provider：Provider id（默认 "aws_terrain"）
+- output_format：输出格式，"geotiff"（默认，落盘 GeoTIFF）/ "numpy"（仅内存 ndarray）
+
+【返回】（JSON 字符串，含）
+- ok：true/false
+- data：elevation_summary（shape/min/max/mean/std/nodata_pct）
+- crs / transform / bounds / width / height / resolution：空间参考
+- min_elevation / max_elevation：高程极值（米）
+- tile_count / tile_cache_hits / tile_cache_misses：下载统计
+- geotiff_path：落盘 GeoTIFF 绝对路径（dem_analysis / extract_contours / terrain_profile 用此文件）
+- preview_url / preview_name：地形预览 PNG（前端叠加到地图）
+- layer_name：后续 GIS 工具用此名复用本 DEM
+
+【常见坑】
+- bbox 经纬度反了（lng/lat 写反）→ 拿到地球另一侧的数据
+- 范围跨海（SRTM 海洋标记为无效）→ 部分 tile 返回 nodata
+- 范围在 lat > ±60（SRTM 覆盖边缘）→ 数据稀疏
+- z 选得太细（如 resolution=0.0001°）→ 单次下载几百 tile，慢且占空间
+
+【示例流程】
+    >>> get_elevation_data(bbox=[112.93, 28.18, 112.97, 28.20])
+    >>> dem_analysis(layer_name="dem_xxx", analysis="slope")
+    >>> extract_contours(layer_name="dem_xxx", interval=50)"""
+    try:
+        bb = _parse_dem_bbox(bbox)
+        prov = dem_provider_by_id(provider)
+        if prov is None:
+            caps = list_dem_capabilities()
+            return json.dumps({
+                "ok": False,
+                "error": f"未知 DEM Provider：{provider}",
+                "hint": "可用 Provider：" + ", ".join(c["name"] for c in caps),
+                "available_providers": [c["provider"] for c in caps],
+            }, ensure_ascii=False)
+
+        result = prov.fetch(bb, target_resolution_deg=float(resolution or 0))
+
+        # 落盘 GeoTIFF + 渲染预览 PNG（沿用 dem_analysis 的上传目录约定）
+        layer_name = f"dem_{int(time.time() * 1000) % 10**9:09d}"
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        geotiff_path = os.path.join(upload_dir, f"{layer_name}.tif")
+        png_path = os.path.join(upload_dir, f"{layer_name}.png")
+        if (output_format or "geotiff").lower().strip() == "geotiff":
+            _write_dem_geotiff(geotiff_path, result)
+        _write_dem_preview(png_path, result)
+
+        # 推 dem_result 给前端叠加（与 dem_analysis/ndvi_analysis/raster_calculator 同一通道）
+        bounds_list = [float(v) for v in result.bounds]
+        _pending_layer_ops.append({
+            "action": "dem_result",
+            "name": f"{layer_name}.png",
+            "url": f"/output/uploads/{layer_name}.png",
+            "bounds": bounds_list,
+            "label": (
+                f"DEM 真实高程（{result.min_elevation:.1f}–{result.max_elevation:.1f} m，"
+                f"{prov.name}）"
+            ),
+        })
+
+        out = result.to_dict()
+        out.update({
+            "ok": True,
+            "geotiff_path": geotiff_path,
+            "preview_url": f"/output/uploads/{layer_name}.png",
+            "preview_name": f"{layer_name}.png",
+            "layer_name": layer_name,
+        })
+        return json.dumps(out, ensure_ascii=False)
+
+    except DEMError as e:
+        return json.dumps({"ok": False, **e.to_dict()}, ensure_ascii=False)
+    except DataProviderError as e:
+        return json.dumps({"ok": False, **e.to_dict()}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({
+            "ok": False,
+            "error": f"DEM 获取失败：{type(e).__name__}: {str(e)[:200]}",
+        }, ensure_ascii=False)
+
+
+def _parse_dem_bbox(bbox):
+    """统一 list / tuple / str → [minLng, minLat, maxLng, maxLat]（list of float）。"""
+    if isinstance(bbox, (list, tuple)):
+        if len(bbox) != 4:
+            raise DataProviderError(f"bbox 必须 4 个数，收到 {bbox!r}")
+        try:
+            return [float(v) for v in bbox]
+        except (TypeError, ValueError) as e:
+            raise DataProviderError(f"bbox 含不可解析数值：{bbox!r}") from e
+    if isinstance(bbox, str):
+        s = bbox.strip()
+        if not s:
+            raise DataProviderError("bbox 字符串为空")
+        if s.startswith("["):
+            try:
+                return _parse_dem_bbox(json.loads(s))
+            except (ValueError, TypeError):
+                pass
+        for sep in (",", ";", " ", "\t"):
+            parts = [p.strip() for p in s.split(sep) if p.strip()]
+            if len(parts) == 4:
+                try:
+                    return [float(p) for p in parts]
+                except ValueError:
+                    continue
+        raise DataProviderError(
+            f"bbox 字符串解析失败：{bbox!r}",
+            hint="格式：'minLng,minLat,maxLng,maxLat'（如 '112.93,28.18,112.97,28.20'）"
+                 " 或 [minLng, minLat, maxLng, maxLat]",
+        )
+    raise DataProviderError(f"bbox 类型不支持：{type(bbox).__name__}")
+
+
+def _write_dem_geotiff(path: str, result) -> None:
+    """把 DEMResult.data 写成单波段 float32 GeoTIFF（EPSG:4326，nodata=-9999）。
+
+    下游工具（dem_analysis / extract_contours / terrain_profile）按 layer_name
+    在 uploads 目录找 .tif 文件；nodata=-9999 与 SRTM 等 DEM 的事实标准一致。
+    """
+    import numpy as np
+    import rasterio
+    from rasterio.transform import Affine
+
+    a, b, c, d, e, f = result.transform
+    transform = Affine(a, b, c, d, e, f)
+    arr = np.where(np.isfinite(result.data), result.data, -9999.0).astype(np.float32)
+
+    with rasterio.open(
+        path, "w", driver="GTiff",
+        height=result.height, width=result.width,
+        count=1, dtype="float32",
+        crs="EPSG:4326", transform=transform,
+        nodata=-9999.0,
+    ) as dst:
+        dst.write(arr, 1)
+        dst.update_tags(
+            provider=result.provider,
+            source_url=result.source_url,
+            min_elevation=f"{result.min_elevation:.3f}",
+            max_elevation=f"{result.max_elevation:.3f}",
+            resolution_deg=f"{result.resolution:.8f}",
+        )
+
+
+def _write_dem_preview(path: str, result) -> None:
+    """渲染 DEM 地形预览 PNG（matplotlib terrain colormap，nodata→黑底）。"""
+    import matplotlib
+    import numpy as np
+    from PIL import Image
+
+    cmap = matplotlib.colormaps['terrain']
+    arr = np.asarray(result.data, dtype=np.float64)
+    valid = np.isfinite(arr)
+    if not valid.any():
+        rgb = np.zeros((max(1, result.height), max(1, result.width), 3), dtype=np.uint8)
+    else:
+        vmin = float(np.min(arr[valid]))
+        vmax = float(np.max(arr[valid]))
+        if np.isclose(vmin, vmax):
+            vmax = vmin + 1.0
+        norm = np.clip((arr - vmin) / (vmax - vmin), 0.0, 1.0)
+        norm[~valid] = 0.0
+        rgba = cmap(norm)
+        rgb = (rgba[:, :, :3] * 255).astype(np.uint8)
+        rgb[~valid] = 0
+    Image.fromarray(rgb).save(path)
+
+
 tools = [
     search_web,
     fetch_webpage,
@@ -7706,4 +7912,5 @@ tools = [
     inspect_satellite_image,
     generate_static_map,
     execute_workflow,
+    get_elevation_data,
 ]

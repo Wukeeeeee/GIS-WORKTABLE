@@ -22,13 +22,13 @@ def _read_cache(path):
     try:
         if os.path.exists(path):
             with open(path, 'r', encoding='utf-8') as f: return json.load(f)
-    except: pass
+    except Exception: pass
     return None
 
 def _write_cache(path, data):
     try:
         with open(path, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False)
-    except: pass
+    except Exception: pass
 
 # ===== 坐标解析 =====
 def parse_geo_to_points(geo_str):
@@ -40,7 +40,7 @@ def parse_geo_to_points(geo_str):
     points = []
     for i in range(0, len(tokens)-1, 2):
         try: points.append((float(tokens[i]), float(tokens[i+1])))
-        except: pass
+        except Exception: pass
     return points
 
 def points_to_geojson(points, name):
@@ -60,7 +60,7 @@ def extract_suggestions_from_search(data):
             uid = item.get("uid","")
             addr = item.get("addr","") or item.get("address","") or ""
             if name: suggestions.append({"name":name,"address":addr,"uid":uid})
-    except: pass
+    except Exception: pass
     return suggestions
 
 def extract_geo_from_detail(data):
@@ -69,13 +69,13 @@ def extract_geo_from_detail(data):
         if isinstance(content, list): content = content[0] if content else {}
         geo = content.get("ext",{}).get("detail_info",{}).get("guoke_geo",{}).get("geo","")
         return geo if geo else None
-    except: return None
+    except Exception: return None
 
 # ===== 浏览器（无头模式，不显示窗口）=====
 def _launch_browser(p, headless=True):
     opts = dict(headless=headless, args=["--no-sandbox","--disable-setuid-sandbox","--disable-blink-features=AutomationControlled","--disable-dev-shm-usage","--disable-gpu","--disable-software-rasterizer","--headless=new"])
     try: return p.chromium.launch(channel="chrome", **opts)
-    except: return p.chromium.launch(**opts)
+    except Exception: return p.chromium.launch(**opts)
 
 def _create_context(browser):
     return browser.new_context(
@@ -115,7 +115,7 @@ def _do_search(query):
                         data = response.json()
                         extracted = extract_suggestions_from_search(data)
                         if extracted: search_data.extend(extracted)
-                    except: pass
+                    except Exception: pass
             page.on("response", on_resp)
 
             page.goto("https://map.baidu.com/", wait_until="domcontentloaded", timeout=15000)
@@ -134,11 +134,11 @@ def _do_search(query):
                     link = page.locator("a").filter(has_text=query[:2]).first
                     link.wait_for(state="visible", timeout=3000)
                     link.click(); page.wait_for_timeout(3000)
-                except: pass
+                except Exception: pass
 
             result_suggestions = search_data
             browser.close()
-    except: pass
+    except Exception: pass
 
     seen = set()
     unique = []
@@ -172,7 +172,7 @@ def extract_boundary(uid, place_name, headless=True):
                         data = response.json()
                         geo = extract_geo_from_detail(data)
                         if geo: geo_result[0] = geo
-                    except: pass
+                    except Exception: pass
             page.on("response", on_resp)
 
             page.goto("https://map.baidu.com/", wait_until="domcontentloaded", timeout=20000)
@@ -194,7 +194,7 @@ def extract_boundary(uid, place_name, headless=True):
                         if resp.ok:
                             geo = extract_geo_from_detail(resp.json())
                             if geo: geo_result[0] = geo; break
-                    except: page.wait_for_timeout(1000)
+                    except Exception: page.wait_for_timeout(1000)
 
             # fetch 兜底
             if not geo_result[0]:
@@ -204,7 +204,7 @@ def extract_boundary(uid, place_name, headless=True):
                         try:
                             geo = extract_geo_from_detail(json.loads(js))
                             if geo: geo_result[0] = geo; break
-                        except: pass
+                        except Exception: pass
                     page.wait_for_timeout(1500)
 
             # 点击结果触发
@@ -216,11 +216,11 @@ def extract_boundary(uid, place_name, headless=True):
                     for _ in range(15):
                         if geo_result[0]: break
                         page.wait_for_timeout(500)
-                except: pass
+                except Exception: pass
 
             result_geo = geo_result[0]
             browser.close()
-    except: pass
+    except Exception: pass
 
     if not result_geo: return None
 
@@ -231,4 +231,4 @@ def extract_boundary(uid, place_name, headless=True):
         geojson = points_to_geojson(wgs84, place_name)
         if geojson: _write_cache(cp, geojson)
         return geojson
-    except: return None
+    except Exception: return None

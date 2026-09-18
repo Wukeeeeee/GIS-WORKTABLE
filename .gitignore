@@ -81,3 +81,4 @@ prompt/
 
 # AI 实现参考代码（本地学习用，不提交）
 ai_implementation_reference/
+.workbuddy/
