@@ -174,6 +174,19 @@ var _undoSkip = false;
     mapInstance.on('mousemove', onMouseMove);
     mapInstance.on('zoomend', onZoomEnd);
 
+    // 下钻导航相机同步（2D）：进入/返回层级时飞行到对应范围（3D 侧已有同类监听）
+    if (window.GIS && window.GIS.state && typeof window.GIS.state.on === 'function') {
+      window.GIS.state.on('view-changed', function(p) {
+        if (!mapInstance || !p.bbox) return;
+        var b = p.bbox;
+        try {
+          mapInstance.fitBounds(
+            [[Math.max(b[1], -85), Math.max(b[0], -179)], [Math.min(b[3], 85), Math.min(b[2], 179)]],
+            { padding: [30, 30], maxZoom: 16 });
+        } catch (e) {}
+      });
+    }
+
     // 拖拽地图时自动隐藏十字准星（坐标不再对应）
     mapInstance.on('dragstart', function() {
       _hideCrosshair();
@@ -500,6 +513,10 @@ var _undoSkip = false;
         _featureMap[key] = leafletLayer;
 
         leafletLayer.on('click', function(e) {
+          // 选中回写共享状态（2D→3D 同步；_fid 由 gis_state 注入）
+          if (window.GIS && window.GIS.state) {
+            window.GIS.state.selectFeature(name, feature, '2d', idx);
+          }
           // 选择要素工具未激活时不弹 popup（只保留高亮供检查器定位用）
           if (!_featureInfoActive) return;
 
@@ -588,6 +605,35 @@ var _undoSkip = false;
       layer.setStyle({ color: color, fillColor: color });
     }
     if (geoStore[name]) geoStore[name].style = { color: color, fillColor: color };
+  }
+
+  /** 图层透明度（0-1）：以首次调用时的样式为基准做缩放，反复拖动不累积 */
+  function setLayerOpacity(name, opacity) {
+    var o = Math.max(0, Math.min(1, +opacity || 0));
+    if (_rasterLayers[name] && _rasterLayers[name].setOpacity) {
+      _rasterLayers[name].setOpacity(o);
+      return;
+    }
+    var layer = layers[name];
+    if (!layer && drawnItems) {
+      drawnItems.eachLayer(function(l) {
+        if (l._name === name) layer = l;
+      });
+    }
+    if (!layer || typeof layer.eachLayer !== 'function') return;
+    layer.eachLayer(function(sub) {
+      if (!sub || typeof sub.setStyle !== 'function') return;
+      if (!sub._baseOpacity) {
+        sub._baseOpacity = {
+          opacity: sub.options.opacity !== undefined ? sub.options.opacity : 1,
+          fillOpacity: sub.options.fillOpacity !== undefined ? sub.options.fillOpacity : 0.35,
+        };
+      }
+      var style = {};
+      if (sub._baseOpacity.opacity !== undefined) style.opacity = sub._baseOpacity.opacity * o;
+      if (sub._baseOpacity.fillOpacity !== undefined) style.fillOpacity = sub._baseOpacity.fillOpacity * o;
+      sub.setStyle(style);
+    });
   }
 
   /** 修改图层完整样式（颜色/透明度/线宽） */
@@ -1232,6 +1278,10 @@ var _undoSkip = false;
         _featureMap[key] = leafletLayer;
 
         leafletLayer.on('click', function(e) {
+          // 选中回写共享状态（2D→3D 同步）
+          if (window.GIS && window.GIS.state) {
+            window.GIS.state.selectFeature(name, feature, '2d', idx);
+          }
           if (!_featureInfoActive) return;
           clearHighlight();
           _highlightFeature(leafletLayer);
@@ -1711,6 +1761,7 @@ var _undoSkip = false;
     removeLayer: removeLayer,
     setLayerVisible: setLayerVisible,
     setLayerColor: setLayerColor,
+    setLayerOpacity: setLayerOpacity,
     setLayerStyle: setLayerStyle,
     getLayer: getLayer,
     toggleLayer: toggleLayer,

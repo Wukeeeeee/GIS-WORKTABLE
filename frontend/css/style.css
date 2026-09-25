@@ -4874,3 +4874,29 @@ html.theme-dark .group-name-text:hover { background: var(--surface-dim, #333); }
 .mode-switch-wrapper #modeSwitchLabel {
   font-weight: 500;
 }
+
+/* ===== 3D Globe 模式（renderer_cesium.js）===== */
+/* 3D 模式：控件栏压到 3D 画布之上（#map3d 为 z-index:400），隐藏 2D 专属按钮，
+   只留 3D/2D 切换（.m3d-keep）与 3D 专属按钮 */
+.map-zoom-controls.mode-3d {
+  z-index: 450;
+}
+.map-zoom-controls.mode-3d > :not(.m3d-keep) {
+  display: none;
+}
+/* 2D 模式：3D 专属按钮隐藏 */
+.map-zoom-controls:not(.mode-3d) > .m3d-3dbtn {
+  display: none;
+}
+/* 底图按钮激活态（与 map-toggle-layer.active 同语言） */
+.map-zoom-btn.active {
+  background: var(--surface-container-low);
+  color: var(--ui-gray-900);
+}
+/* 3D 模式：坐标显示由 Leaflet 驱动不更新，隐藏；空间分析按钮保留（面板 fixed、结果经共享状态进 3D） */
+body.gis-mode-3d .map-coords {
+  display: none;
+}
+.map-zoom-controls.mode-3d > [data-tool="spatial-analysis"] {
+  display: flex;
+}

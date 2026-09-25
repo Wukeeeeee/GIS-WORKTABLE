@@ -1126,13 +1126,50 @@ if (typeof marked !== 'undefined') {
               }
               break;
             case 'fit':
-              if (window.GIS.map && window.GIS.map.fitLayer) {
+              if (window.GIS.renderers && window.GIS.renderers.is3D && window.GIS.renderers.is3D()) {
+                // 3D：飞到图层 bbox（图层经共享状态查找）
+                var fitRec = null;
+                if (window.GIS.state) {
+                  window.GIS.state.getLayers().forEach(function(l) {
+                    if (l.name === op.name || l._rawName === op.name) fitRec = l;
+                  });
+                }
+                if (fitRec && fitRec.bbox && window.GIS.renderers.flyToBbox) {
+                  window.GIS.renderers.flyToBbox(fitRec.bbox, 1.5);
+                }
+              } else if (window.GIS.map && window.GIS.map.fitLayer) {
                 window.GIS.map.fitLayer(op.name);
               }
               break;
             case 'center':
-              if (window.GIS.map && window.GIS.map.setView && op.center) {
-                window.GIS.map.setView([op.center[1], op.center[0]], op.zoom || 13);
+              if (op.center) {
+                if (window.GIS.renderers && window.GIS.renderers.is3D && window.GIS.renderers.is3D()) {
+                  // 3D：按 zoom 粗略换算相机高度后飞行
+                  var v3d = window.GIS.renderers.getViewer && window.GIS.renderers.getViewer();
+                  if (v3d && window.Cesium) {
+                    var zoom3d = op.zoom || 13;
+                    var height = Math.max(500, Math.pow(2, 22 - zoom3d) * 60);
+                    v3d.camera.flyTo({
+                      destination: window.Cesium.Cartesian3.fromDegrees(op.center[0], op.center[1], height),
+                      duration: 1.5,
+                    });
+                  }
+                } else if (window.GIS.map && window.GIS.map.setView) {
+                  window.GIS.map.setView([op.center[1], op.center[0]], op.zoom || 13);
+                }
+              }
+              break;
+            case 'visualize':
+              if (window.GIS.state && typeof window.GIS.state.applyVisualization === 'function' && op.viz) {
+                var vizRec = null;
+                window.GIS.state.getLayers().forEach(function(l) {
+                  if (l.name === op.name || l._rawName === op.name) vizRec = l;
+                });
+                if (vizRec) {
+                  window.GIS.state.applyVisualization(vizRec.layer_id, op.viz);
+                } else if (window.GIS.chat && window.GIS.chat.addMessage) {
+                  window.GIS.chat.addMessage('未找到图层「' + (op.name || '') + '」，无法应用可视化', 'system');
+                }
               }
               break;
             case 'symbology':
@@ -1152,6 +1189,17 @@ if (typeof marked !== 'undefined') {
             case 'legend':
               if (window.GIS.layers) {
                 window.GIS.layers.addLegend(op.name);
+              }
+              break;
+            case 'drill':
+              // 行政区下钻/上钻：由共享状态机统一处理（面包屑/相机/图层显隐）
+              if (window.GIS.state) {
+                if (op.direction === 'up') {
+                  window.GIS.state.drillUpTo();
+                } else if (op.adcode) {
+                  // 图层已由 result.layers 通道加载，这里只同步导航栈与视野
+                  window.GIS.state.drillSyncFromAgent(op);
+                }
               }
               break;
             case 'north_arrow':
@@ -1240,15 +1288,26 @@ if (typeof marked !== 'undefined') {
             const layerName = layer.name || '图层' + (idx + 1);
             const uniqueName = layerName + '_' + Date.now() + '_' + idx;
             const geojson = layer.geojson || layer;
-            const geoType = geojson.type === 'FeatureCollection'
-              ? ((geojson.features && geojson.features[0] && geojson.features[0].geometry && geojson.features[0].geometry.type) || '未知')
-              : (geojson.geometry && geojson.geometry.type || '未知');
 
+            // 统一走共享状态入口（内部驱动 2D 渲染 + 图层面板 + 3D 同步）
+            if (window.GIS.state) {
+              window.GIS.state.addLayer({
+                layer_id: layerId,
+                name: uniqueName,
+                geojson: geojson,
+                style: layer.style || null,
+                source: 'ai',
+              });
+              return;
+            }
+            // 兼容：状态模块缺失时退回旧路径
             GIS.map.loadGeoJSON(geojson, uniqueName, layer.style || {});
             GIS.layers.addLayer({
               layer_id: layerId,
               filename: uniqueName,
-              geometry_type: geoType,
+              geometry_type: geojson.type === 'FeatureCollection'
+                ? ((geojson.features && geojson.features[0] && geojson.features[0].geometry && geojson.features[0].geometry.type) || '未知')
+                : (geojson.geometry && geojson.geometry.type || '未知'),
               crs: 'WGS-84',
               geojson: geojson,
               visible: true,

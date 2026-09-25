@@ -130,6 +130,30 @@ window.GIS = window.GIS || {};
 
   // 添加图层：加入列表 + 渲染
   function addLayer(layer, skipRegister) {
+    // —— 桥接：手动路径（上传/绘制/工程/网络等）的图层统一入共享状态 ——
+    // state 会回调本函数（带 _panelSync）走下面的正常入库，并跳过 2D 重复渲染；
+    // 这样显隐/透明度/3D 拉伸等手动控件对所有图层生效（2D/3D 同步）。
+    if (window.GIS.state && layer.geojson && !layer._panelSync &&
+        typeof window.GIS.state.getLayer === 'function') {
+      var bridgeMapName = layer._rawName || layer.filename || layer.layer_id || '未命名';
+      var bridged = window.GIS.state.addLayer({
+        layer_id: layer.layer_id,
+        name: bridgeMapName,
+        _mapName: bridgeMapName,   // 2D 已按此名渲染，地图操作沿用
+        geojson: layer.geojson,
+        style: { color: layer.color || '#1c1b1b' },
+        color: layer.color,
+        source: layer.source || 'upload',
+        visible: layer.visible !== false,
+        _panelSync: true,
+        _skip2DRender: true,
+      });
+      // 保持原注册行为（AI 后端需按原名可查）
+      if (!skipRegister && window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
+        window.GIS.api.registerLayer(bridgeMapName, layer.geojson);
+      }
+      return bridged;
+    }
     const colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
     const color = layer.color || colors[layerData.length % colors.length];
     // 重名自动加 (1) (2)
@@ -151,7 +175,13 @@ window.GIS = window.GIS || {};
   }
 
   // 删除图层：从列表移除 + 从地图清除
-  function removeLayer(layerId) {
+  function removeLayer(layerId, _fromState) {
+    // 在共享状态中的图层：走 state 统一删除（会回调本函数同步面板/地图/后端）
+    if (!_fromState && window.GIS.state && typeof window.GIS.state.getLayer === 'function' &&
+        window.GIS.state.getLayer(layerId)) {
+      window.GIS.state.removeLayer(layerId);
+      return;
+    }
     const target = layerData.find(l => l.layer_id === layerId);
     const mapName = target ? (target._rawName || target.layer_id) : null;
     layerData = layerData.filter(l => l.layer_id !== layerId);
@@ -178,15 +208,18 @@ window.GIS = window.GIS || {};
   // 切换图层显隐
   function toggleVisibility(layerId) {
     const layer = layerData.find(l => l.layer_id === layerId);
-    if (layer) {
-      layer.visible = !layer.visible;
-      renderList();
-      if (GIS.map && GIS.map.setLayerVisible) {
-        GIS.map.setLayerVisible(layer._rawName || layer.layer_id, layer.visible);
-        // 显示图层后 Leaflet 会把它放到最上层，重新同步叠放顺序
-        if (layer.visible) _syncLayerOrder();
-      }
+    if (!layer) return;
+    layer.visible = !layer.visible;
+    renderList();
+    // 在共享状态中的图层：写回 state，由 state 广播 3D（2D 渲染由 state 内部驱动）
+    if (window.GIS.state && typeof window.GIS.state.getLayer === 'function' &&
+        window.GIS.state.getLayer(layerId)) {
+      window.GIS.state.setVisible(layerId, layer.visible);
+    } else if (GIS.map && GIS.map.setLayerVisible) {
+      GIS.map.setLayerVisible(layer._rawName || layer.layer_id, layer.visible);
     }
+    // 显示图层后 Leaflet 会把它放到最上层，重新同步叠放顺序
+    if (layer.visible) _syncLayerOrder();
   }
 
   // 下载图层（显示格式选择弹窗）
@@ -802,6 +835,14 @@ window.GIS = window.GIS || {};
             '<div class="info-row"><span class="info-label">CRS</span><span class="info-val">' + crsBadge + ' ' + escapeHtml(crsStr) + '</span></div>' +
           '</div>' +
           '<div class="info-group">' +
+            '<div class="info-group-title">显示</div>' +
+            '<div class="info-row" style="align-items:center;gap:8px;">' +
+              '<span class="info-label" style="flex-shrink:0;">透明度</span>' +
+              '<input type="range" id="layerOpacity" min="0" max="100" step="5" value="' + Math.round(((layer.opacity !== undefined ? layer.opacity : 1)) * 100) + '" style="flex:1;" />' +
+              '<span class="info-val" id="layerOpacityVal">' + Math.round(((layer.opacity !== undefined ? layer.opacity : 1)) * 100) + '%</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="info-group">' +
             '<div class="info-group-title">范围</div>' +
             '<div class="info-row"><span class="info-label">左 (Xmin)</span><span class="info-val info-mono">' + bboxLeft + '</span></div>' +
             '<div class="info-row"><span class="info-label">右 (Xmax)</span><span class="info-val info-mono">' + bboxRight + '</span></div>' +
@@ -835,6 +876,40 @@ window.GIS = window.GIS || {};
     var sField = sConfig.field || symbFields[0] || '';
     var sClasses = sConfig.classes || 5;
     var sScheme = sConfig.colorScheme || 'scheme';
+
+    // ===== 3D 拉伸可视化（手动，不依赖 Agent）=====
+    var vizNumeric = attrKeys.filter(function(k) { return attrFields[k] === 'number'; });
+    var hasPoly = features.some(function(f) { return f.geometry && f.geometry.type.indexOf('Polygon') !== -1; });
+    var sViz = (_symbologyConfig[layerId] && _symbologyConfig[layerId].viz) || null;
+    var tabViz3d = '';
+    if (hasPoly) {
+      tabViz3d =
+        '<div style="border-top:1px solid var(--ui-gray-200);margin-top:10px;padding-top:10px;">' +
+          '<div class="inspector-section-title" style="margin-bottom:6px;">3D 拉伸可视化</div>';
+      if (vizNumeric.length) {
+        tabViz3d +=
+          '<div class="symb-row">' +
+            '<label class="symb-label">高度字段</label>' +
+            '<select class="symb-input symb-select" id="v3dField">' +
+              '<option value="">（无）</option>' +
+              vizNumeric.map(function(k) { return '<option value="' + escapeHtml(k) + '"' + (sViz && sViz.field === k ? ' selected' : '') + '>' + escapeHtml(k) + '</option>'; }).join('') +
+            '</select>' +
+          '</div>' +
+          '<div class="symb-row" id="v3dHeightRow" style="' + (sViz ? '' : 'display:none;') + '">' +
+            '<label class="symb-label">最大高度(m)</label>' +
+            '<input type="number" class="symb-input symb-input-narrow" id="v3dMax" value="' + (sViz ? sViz.maxHeight : 50000) + '" min="50" step="100" />' +
+          '</div>' +
+          '<div class="symb-actions" style="margin-top:8px;">' +
+            '<button class="symb-btn symb-btn-clear" id="v3dClearBtn">清除拉伸</button>' +
+            '<div class="symb-actions-right">' +
+              '<button class="symb-btn symb-btn-apply" id="v3dApplyBtn">应用到 3D</button>' +
+            '</div>' +
+          '</div>';
+      } else {
+        tabViz3d += '<span style="color:var(--ui-gray-300);font-size:var(--fs-12);">无数值字段可拉伸</span>';
+      }
+      tabViz3d += '</div>';
+    }
 
     var tabSymb =
       '<div class="inspector-tab-content" id="tabSymb" style="display:none;">' +
@@ -893,6 +968,7 @@ window.GIS = window.GIS || {};
               '</div>' +
             '</div>' +
           '</div>' +
+          tabViz3d +
         '</div>' +
       '</div>';
 
@@ -936,6 +1012,27 @@ window.GIS = window.GIS || {};
 
     // ===== 符号系统事件 =====
     _bindSymbEvents(layerId, features);
+
+    // ===== 手动 3D 拉伸事件 =====
+    _bindViz3dEvents(layerId);
+
+    // ===== 透明度滑块（2D 直接驱动，3D 经 state 广播）=====
+    var opSlider = document.getElementById('layerOpacity');
+    if (opSlider) {
+      opSlider.addEventListener('input', function() {
+        var o = parseInt(opSlider.value, 10) / 100;
+        var valEl = document.getElementById('layerOpacityVal');
+        if (valEl) valEl.textContent = opSlider.value + '%';
+        layer.opacity = o;
+        if (GIS.map && GIS.map.setLayerOpacity) {
+          GIS.map.setLayerOpacity(layer._rawName || layer.layer_id, o);
+        }
+        if (window.GIS.state && typeof window.GIS.state.setOpacity === 'function' &&
+            window.GIS.state.getLayer(layerId)) {
+          window.GIS.state.setOpacity(layerId, o);
+        }
+      });
+    }
 
     // 初始化列宽拖拽
     _enableColumnResize('attrDataTable');
@@ -1132,10 +1229,63 @@ window.GIS = window.GIS || {};
       var minSize = parseInt(sizeMinEl?.value, 10) || 3;
       var maxSize = parseInt(sizeMaxEl?.value, 10) || 20;
       _applySymbology(layerId, type, field, classes, scheme, minSize, maxSize);
+      // 符号化应用时同步 3D 拉伸（若已选高度字段）
+      _applyViz3dFromUI(layerId);
     });
 
     // 初始预览
     if (enableEl.checked) _updatePreview();
+  }
+
+  /** 绑定 3D 拉伸可视化控件（手动路径，无需 Agent） */
+  function _bindViz3dEvents(layerId) {
+    var fieldEl = document.getElementById('v3dField');
+    if (!fieldEl) return;
+    var heightRow = document.getElementById('v3dHeightRow');
+    var applyBtn = document.getElementById('v3dApplyBtn');
+    var clearBtn = document.getElementById('v3dClearBtn');
+
+    fieldEl.addEventListener('change', function() {
+      if (heightRow) heightRow.style.display = fieldEl.value ? '' : 'none';
+    });
+    applyBtn?.addEventListener('click', function() { _applyViz3dFromUI(layerId); });
+    clearBtn?.addEventListener('click', function() {
+      fieldEl.value = '';
+      if (heightRow) heightRow.style.display = 'none';
+      if (_symbologyConfig[layerId]) delete _symbologyConfig[layerId].viz;
+      if (window.GIS.state && window.GIS.state.getLayer(layerId)) {
+        window.GIS.state.applyVisualization(layerId, null);
+      }
+    });
+  }
+
+  /** 从检查器 UI 读取 3D 拉伸参数并经共享状态应用（2D/3D 都能收到） */
+  function _applyViz3dFromUI(layerId) {
+    var fieldEl = document.getElementById('v3dField');
+    if (!fieldEl) return;
+    var field = fieldEl.value;
+    var state = window.GIS.state;
+    if (!state || typeof state.applyVisualization !== 'function' || !state.getLayer(layerId)) {
+      if (field && window.GIS.chat && window.GIS.chat.addMessage) {
+        window.GIS.chat.addMessage('该图层不在共享状态中，无法应用 3D 拉伸', 'system');
+      }
+      return;
+    }
+    if (!field) {
+      state.applyVisualization(layerId, null);
+      if (_symbologyConfig[layerId]) delete _symbologyConfig[layerId].viz;
+      return;
+    }
+    var maxEl = document.getElementById('v3dMax');
+    var maxH = parseInt(maxEl && maxEl.value, 10) || 50000;
+    // 拉伸色带独立于 2D 符号化：选了顺序色带就用它，否则默认蓝色系
+    var schemeName = document.querySelector('.symb-swatch.selected')?.dataset?.scheme || 'blues';
+    if (schemeName === 'scheme') schemeName = 'blues';
+    var ramp = _getSchemeColors(schemeName, 9);
+    var viz = { type: 'extrusion', field: field, ramp: [ramp[0], ramp[ramp.length - 1]], maxHeight: maxH };
+    state.applyVisualization(layerId, viz);
+    if (!_symbologyConfig[layerId]) _symbologyConfig[layerId] = {};
+    _symbologyConfig[layerId].viz = viz;
   }
 
   /** 唯一值渲染 */
@@ -1227,6 +1377,7 @@ window.GIS = window.GIS || {};
     });
 
     _applyStyleToMap(layer, gj, styleMap);
+    _push3dFeatureColors(layer, features, styleMap);
     var defaultColor = scheme[keys.length % scheme.length] || '#1c1b1b';
 
     // 存储图例数据
@@ -1266,6 +1417,7 @@ window.GIS = window.GIS || {};
       var styleMap = {};
       features.forEach(function(f, idx) { styleMap[idx] = _styleForGeom(f, scheme[0]); });
       _applyStyleToMap(layer, gj, styleMap);
+      _push3dFeatureColors(layer, features, styleMap);
       return;
     }
 
@@ -1288,6 +1440,7 @@ window.GIS = window.GIS || {};
     });
 
     _applyStyleToMap(layer, gj, styleMap);
+    _push3dFeatureColors(layer, features, styleMap);
     layer.color = scheme[0];
 
     // 存储图例数据
@@ -1359,6 +1512,7 @@ window.GIS = window.GIS || {};
     });
 
     _applyStyleToMap(layer, gj, styleMap);
+    _push3dFeatureColors(layer, features, styleMap);
 
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       var info = '已应用分级符号: ' + field + '（' + classes + ' 级，大小 ' + minSize + '-' + maxSize + '）';
@@ -1398,6 +1552,7 @@ window.GIS = window.GIS || {};
     });
 
     _applyStyleToMap(layer, gj, styleMap);
+    _push3dFeatureColors(layer, features, styleMap);
 
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       window.GIS.chat.addMessage('已应用比例符号: ' + field + '（大小 ' + minR + '-' + maxR + 'px）', 'system');
@@ -1411,9 +1566,31 @@ window.GIS = window.GIS || {};
     GIS.map.applySymbology(name, gj, styleMap);
   }
 
+  /** 把符号化颜色结果按 _fid 推给共享状态（3D 渲染器按 fid 设色） */
+  function _push3dFeatureColors(layer, features, styleMap) {
+    if (!window.GIS.state || typeof window.GIS.state.setFeatureColors !== 'function') return;
+    var colorByFid = {};
+    var has = false;
+    features.forEach(function(f, idx) {
+      var st = styleMap[idx];
+      if (!st || !st.color) return;
+      var fid = f.properties && f.properties._fid;
+      if (fid === undefined || fid === null) return;
+      colorByFid[fid] = st.color;
+      has = true;
+    });
+    if (has) window.GIS.state.setFeatureColors(layer.layer_id, colorByFid);
+  }
+
   /** 清除符号化，恢复默认样式 */
   function _clearSymbology(layerId) {
     delete _symbologyConfig[layerId];
+    // 同时清除 3D 拉伸与符号化颜色（同属该图层的可视化配置）
+    if (window.GIS.state && typeof window.GIS.state.getLayer === 'function' &&
+        window.GIS.state.getLayer(layerId)) {
+      window.GIS.state.applyVisualization(layerId, null);
+      window.GIS.state.setFeatureColors(layerId, null);
+    }
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (!layer) return;
     var name = layer._rawName || layer.layer_id;

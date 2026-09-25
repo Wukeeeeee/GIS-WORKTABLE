@@ -590,8 +590,24 @@ async def test_key_endpoint(request: TestKeyRequest):
     return {"success": success, "message": message}
 
 @app.get('/api/boundary')
-async def get_boundary_api(place: str = "长沙市"):
-    """从阿里云 DataV 获取行政边界（国内可访问），返回 GeoJSON"""
+async def get_boundary_api(place: str = "长沙市", adcode: str = ""):
+    """从阿里云 DataV 获取行政边界（国内可访问），返回 GeoJSON。
+
+    两种模式：
+    - place=名称：取该行政区自身边界（兼容旧调用，错误以 {"error":...} 返回）
+    - adcode=6位码：取该行政区的下一级全集边界（下钻用），WGS-84 已转换
+    """
+    if adcode:
+        from backend.services.datav_service import fetch_boundary_by_adcode
+        if not (adcode.isdigit() and len(adcode) == 6):
+            raise HTTPException(status_code=400, detail="adcode 必须是 6 位数字")
+        # 阻塞 IO 放线程池，避免卡事件循环
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(
+            None, functools.partial(fetch_boundary_by_adcode, adcode))
+        if data is None:
+            raise HTTPException(status_code=404, detail=f"未找到 adcode={adcode} 的边界数据")
+        return {"geojson": data, "name": f"adcode {adcode} 下级边界", "adcode": adcode}
     try:
         from backend.services.datav_service import fetch_boundary
         data = fetch_boundary(place)

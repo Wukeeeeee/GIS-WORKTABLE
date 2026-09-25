@@ -336,16 +336,34 @@ def _extract_coords(geom: dict, coords: list):
             _extract_coords(f.get("geometry", {}), coords)
 
 
+def _make_fid(props: dict, idx: int) -> str:
+    """稳定要素 ID：adcode > name > id > index 兜底。与前端 gis_state.js 规则一致。"""
+    if props.get("adcode") not in (None, ""):
+        return f"p:{props['adcode']}"
+    if props.get("name"):
+        return f"n:{props['name']}"
+    if props.get("id") not in (None, ""):
+        return f"id:{props['id']}"
+    return f"i:{idx}"
+
+
 def _register_layer(name: str, geojson: dict):
-    """注册图层供 AI 后续查询"""
+    """注册图层供 AI 后续查询。注册时为每个要素注入稳定 _fid（幂等），
+    供前端 2D/3D 选中同步与下钻状态机使用。"""
     try:
         fc = _normalize_geojson(geojson)
         features = fc.get("features", [])
         types = set()
-        for f in features:
+        for i, f in enumerate(features):
             geom = f.get("geometry", {}) or {}
             if geom.get("type"):
                 types.add(geom["type"])
+            props = f.get("properties")
+            if not isinstance(props, dict):
+                props = {}
+                f["properties"] = props
+            if props.get("_fid") is None:
+                props["_fid"] = _make_fid(props, i)
         bbox = _compute_bbox(geojson)
         with _state_lock:
             _registered_layers[name] = {
@@ -1422,6 +1440,121 @@ def datav_boundary(name: str) -> str:
         return f"成功获取 {name} 的边界数据{feat_info}，坐标系已转 WGS-84，已加载到地图"
     except Exception as e:
         return f"获取失败：{str(e)[:200]}"
+
+
+# ============================================================
+# 工具: drill_down / drill_up — 行政区下钻导航
+# ============================================================
+
+_LEVEL_NAMES = {"country": "国家", "province": "省级", "city": "地级市",
+                "county": "区县", "street": "街道"}
+
+
+@tool
+def drill_down(region: str = "", adcode: str = "") -> str:
+    """行政区下钻：加载指定行政区（省/市/区县，名称或 6 位 adcode）的下一级边界并推送到地图。
+    例如用户说「下钻到湖南」→ drill_down(region="湖南省")；「看长沙的区县」→ drill_down(region="长沙市")。
+    需要素含 adcode 属性；数据来自 DataV（自动 GCJ-02→WGS-84），覆盖国家/省/市/区县四级。"""
+    try:
+        from backend.services.datav_service import fetch_boundary, fetch_boundary_by_adcode, _find_adcode
+        code = adcode.strip() if adcode else ""
+        if not code:
+            if not region.strip():
+                return "失败：请提供 region（行政区名称）或 adcode（6 位数字）"
+            code = region.strip() if region.strip().isdigit() else str(_find_adcode(region.strip()))
+        if not code.isdigit() or len(code) != 6:
+            return f"失败：未能解析出 6 位 adcode（输入：{region or adcode}）"
+        data = fetch_boundary_by_adcode(code)
+        if data is None and region.strip():
+            data = fetch_boundary(region.strip())
+        if data is None:
+            return f"失败：DataV 未找到 adcode={code} 的下级边界"
+        feats = data.get("features", [])
+        if not feats:
+            return f"失败：adcode={code} 无下级行政区（可能已是区县级）"
+        p0 = feats[0].get("properties", {})
+        level = p0.get("level", "district")
+        parent = p0.get("parent")
+        if isinstance(parent, dict):
+            parent = parent.get("name") or parent.get("adcode") or ""
+        child_name = parent or region.strip() or code
+        layer_name = f"{child_name}_{_LEVEL_NAMES.get(level, level)}"
+        _push_layer(layer_name, data, {"color": "#e74c3c", "fillColor": "#e74c3c", "fillOpacity": 0.25})
+        _register_layer(layer_name, data)
+        # 通知前端下钻状态机（面包屑/相机/图层显隐由前端统一处理）
+        _pending_layer_ops.append({
+            "action": "drill",
+            "direction": "down",
+            "adcode": code,
+            "name": child_name,
+            "level": level,
+            "layer_name": layer_name,
+        })
+        names = [f.get("properties", {}).get("name", "?") for f in feats[:15]]
+        preview = "、".join(n for n in names if n)
+        more = f" 等 {len(feats)} 个" if len(feats) > 15 else ""
+        return (f"已下钻到「{child_name}」的{_LEVEL_NAMES.get(level, level)}层级，"
+                f"加载 {len(feats)} 个行政区：{preview}{more}。已加载到地图并推入下钻导航。")
+    except Exception as e:
+        return f"下钻失败：{str(e)[:200]}"
+
+
+@tool
+def drill_up() -> str:
+    """行政区上钻（返回上一级）：撤销最近一次下钻，恢复父级行政区视图。对应前端面包屑「返回」。"""
+    _pending_layer_ops.append({"action": "drill", "direction": "up"})
+    return "已返回上一级行政区划。"
+
+
+# ============================================================
+# 工具: visualize_3d — 3D 地球数据驱动可视化
+# ============================================================
+
+@tool
+def visualize_3d(layer_name: str, field: str, max_height: float = 50000, viz_type: str = "extrusion") -> str:
+    """3D 可视化：在 3D 地球上把图层数据做数据驱动展示。viz_type="extrusion"（默认）按数值字段把
+    面要素拉伸成柱体（如人口/GDP 立柱对比），max_height 为最大高度（米，默认 50000）。
+    例：「在3D上把湖南省各市人口拉成柱子」→ visualize_3d(layer_name="湖南省_省级", field="人口", max_height=200000)。
+    仅面图层支持拉伸；字段需为数值型。前端收到 spec 后按值归一化着色并拉伸。"""
+    info = _registered_layers.get(layer_name)
+    if not info:
+        return f"图层 {layer_name} 未找到"
+    viz_type = (viz_type or "extrusion").strip().lower()
+    if viz_type != "extrusion":
+        return f"失败：暂不支持的可视化类型「{viz_type}」（目前仅 extrusion 拉伸）"
+    try:
+        max_height = float(max_height)
+    except (TypeError, ValueError):
+        return f"失败：max_height 需为数值（输入：{max_height}）"
+    if not (10 <= max_height <= 2000000):
+        return f"失败：max_height 超出合理范围 10~2000000 米（输入：{max_height}）"
+
+    features = (info.get("geojson") or {}).get("features", [])
+    if not features:
+        return f"图层 {layer_name} 无要素"
+    has_poly = any(
+        (f.get("geometry") or {}).get("type", "").find("Polygon") != -1
+        for f in features
+    )
+    if not has_poly:
+        return f"失败：extrusion 拉伸仅支持面（Polygon）图层，「{layer_name}」不含面要素"
+    numeric = 0
+    for f in features[:200]:
+        try:
+            float((f.get("properties") or {}).get(field))
+            numeric += 1
+        except (TypeError, ValueError):
+            continue
+    if numeric == 0:
+        sample = [k for k in list((features[0].get("properties") or {}).keys()) if k != "_fid"][:10]
+        return f"失败：字段「{field}」无数值数据。可用字段参考：{sample}"
+    _pending_layer_ops.append({
+        "action": "visualize",
+        "name": layer_name,
+        "viz": {"type": "extrusion", "field": field, "maxHeight": max_height},
+    })
+    return (f"已按「{field}」对图层「{layer_name}」应用 3D 拉伸（最大高度 {int(max_height)} 米），"
+            f"切换到 3D 视图即可查看柱状对比。")
 
 
 # ============================================================
@@ -7824,6 +7957,9 @@ tools = [
     get_registered_layers,
     get_layer_detail,
     datav_boundary,
+    drill_down,
+    drill_up,
+    visualize_3d,
     create_heatmap,
     field_calculate,
     measure_area,

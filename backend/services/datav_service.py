@@ -126,6 +126,45 @@ def _convert(coords):
     return [_convert(c) for c in coords]
 
 
+def fetch_boundary_by_adcode(adcode: int | str) -> dict | None:
+    """按 adcode 直接获取该行政区的「下一级全集」边界（下钻用）。
+
+    返回 GeoJSON FeatureCollection（已转 WGS-84），每个 feature 的 properties
+    含 adcode / name / level。例如 adcode=430000 返回湖南 14 个地级市。
+    失败返回 None。缓存复用 fetch_boundary 的目录（键为 adcode 数字串）。
+    """
+    adcode = str(adcode).strip()
+    if not adcode.isdigit() or len(adcode) != 6:
+        return None
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(_CACHE_DIR, f"datav_adcode_{adcode}.json")
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    try:
+        resp = requests.get(
+            f"https://geo.datav.aliyun.com/areas_v3/bound/{adcode}_full.json", timeout=15)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data.get("features"):
+            return None
+        for feat in data["features"]:
+            if feat.get("geometry", {}).get("coordinates"):
+                feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
+        try:
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
+        return data
+    except Exception:
+        return None
+
+
 def fetch_boundary(name: str) -> dict:
     """
     从 DataV 获取行政区划边界，返回 GeoJSON（已转 WGS-84）
