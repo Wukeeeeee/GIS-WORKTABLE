@@ -474,7 +474,7 @@ def run_agent(
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
     # Agent 常说"已生成 xxx.png"但文件并不存在。这里把明确不成立的说法挑出来，
     # 直接追加到回复末尾，避免把未生成的结果当作成功交付给用户。
-    final_text, _guard = result_guard.apply_guard(final_text, pending)
+    final_text, _guard = result_guard.apply_guard(final_text, pending, task_id=_task_id)
     if not _guard["ok"]:
         print(f"[GIS] 结果真实性自检未通过: {_guard['issues'][:3]}", flush=True)
 
@@ -717,7 +717,7 @@ def run_agent_stream(
     # yield "data: {\"type\":\"verifying\"}\n\n" 行已一并移除。
 
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
-    final_text, _guard = result_guard.apply_guard(final_text, pending)
+    final_text, _guard = result_guard.apply_guard(final_text, pending, task_id=_task_id)
     if not _guard["ok"]:
         print(f"[GIS] 流式结果真实性自检未通过: {_guard['issues'][:3]}", flush=True)
 
