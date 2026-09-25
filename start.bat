@@ -42,20 +42,30 @@ echo  [2/4] Checking port %PORT%...
 REM ---- Check port ----
 netstat -ano | findstr ":%PORT% " | findstr "LISTENING" >nul 2>nul
 if not errorlevel 1 (
-  echo        Port %PORT% is already in use.
-  echo        Service may be running already.
-  echo.
-  echo  [3/4] Opening browser...
-  start "" "http://127.0.0.1:%PORT%"
-  echo.
-  echo  ============================================
-  echo   Ready! Open http://127.0.0.1:%PORT% in your browser.
-  echo   Close this window will NOT stop the backend.
-  echo   To stop backend: press Ctrl+C in backend window.
-  echo  ============================================
-  echo.
-  pause
-  exit /b 0
+  echo        Port %PORT% is currently in use.
+  curl -s "http://127.0.0.1:%PORT%/" 2>nul | findstr /i "GIS" >nul
+  if not errorlevel 1 (
+    echo        GIS-WORKTABLE is already running.
+    echo.
+    echo  [3/4] Opening browser...
+    start "" "http://127.0.0.1:%PORT%"
+    echo.
+    echo  ============================================
+    echo   Ready: Open http://127.0.0.1:%PORT% in your browser.
+    echo   Close this window will NOT stop the backend.
+    echo   To stop backend: press Ctrl+C or run stop.bat.
+    echo  ============================================
+    echo.
+    pause
+    exit /b 0
+  ) else (
+    echo.
+    echo  [WARNING] Port %PORT% is occupied by another process.
+    echo  Please run stop.bat to release port %PORT%, then try start.bat again.
+    echo.
+    pause
+    exit /b 1
+  )
 )
 echo        Port %PORT% is available.
 
@@ -72,7 +82,7 @@ set /a "RETRIES=0"
 :wait_loop
 timeout /t 1 /nobreak >nul
 set /a "RETRIES+=1"
-curl -s -o nul -w "%%{http_code}" "http://127.0.0.1:%PORT%/api/health" 2>nul | findstr "200" >nul
+curl -s "http://127.0.0.1:%PORT%/api/health" 2>nul | findstr jigsaw >nul
 if not errorlevel 1 goto server_ready
 if %RETRIES% LSS 15 goto wait_loop
 
