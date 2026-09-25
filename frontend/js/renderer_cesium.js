@@ -383,10 +383,11 @@ window.GIS = window.GIS || {};
     if (!document.getElementById('drillBreadcrumb')) {
       const crumb = document.createElement('div');
       crumb.id = 'drillBreadcrumb';
-      crumb.style.cssText = 'position:absolute;top:8px;left:50%;transform:translateX(-50%);' +
-        'z-index:500;display:none;align-items:center;gap:4px;padding:4px 10px;' +
+      crumb.title = '行政区下钻导航：显示当前所在的层级，点击任意层级可跳回；下钻结束后可点击 ✕ 收起';
+      crumb.style.cssText = 'position:absolute;top:46px;left:50%;transform:translateX(-50%);' +
+        'z-index:500;display:none;align-items:center;gap:6px;padding:4px 10px;' +
         'background:rgba(15,18,25,0.82);border:1px solid rgba(255,255,255,0.12);' +
-        'border-radius:8px;font-size:12px;color:#e8e8e8;backdrop-filter:blur(6px);';
+        'border-radius:0;font-size:12px;color:#e8e8e8;backdrop-filter:blur(6px);';
       const mapEl = document.getElementById('map');
       if (mapEl && mapEl.parentNode) mapEl.parentNode.insertBefore(crumb, mapEl);
     }
@@ -397,7 +398,7 @@ window.GIS = window.GIS || {};
       panel.style.cssText = 'position:absolute;top:52px;right:68px;z-index:500;display:none;' +
         'width:260px;max-height:55%;overflow:auto;padding:10px 12px;' +
         'background:rgba(15,18,25,0.88);border:1px solid rgba(255,255,255,0.12);' +
-        'border-radius:10px;color:#e8e8e8;font-size:12px;backdrop-filter:blur(6px);';
+        'border-radius:0;color:#e8e8e8;font-size:12px;backdrop-filter:blur(6px);';
       const mapEl = document.getElementById('map');
       if (mapEl && mapEl.parentNode) mapEl.parentNode.insertBefore(panel, mapEl);
     }
@@ -421,12 +422,21 @@ window.GIS = window.GIS || {};
       return;
     }
     crumb.style.display = 'flex';
-    let html = '<span style="cursor:pointer;opacity:0.9;" data-depth="-1">🌐 全国</span>';
+    let html = '<span style="opacity:0.55;font-size:11px;">下钻层级</span>' +
+      '<span style="opacity:0.3;">|</span>' +
+      '<span style="cursor:pointer;opacity:0.9;" data-depth="-1">🌐 全国</span>';
     stack.forEach(function(s, i) {
       html += '<span style="opacity:0.4;">›</span>' +
         '<span style="cursor:pointer;" data-depth="' + i + '">' + escapeHtml(s.name) + '</span>';
     });
+    html += '<span id="crumbClose" title="收起导航条（不影响当前图层）" ' +
+      'style="cursor:pointer;opacity:0.5;margin-left:4px;font-size:12px;">✕</span>';
     crumb.innerHTML = html;
+    const closeBtn = document.getElementById('crumbClose');
+    if (closeBtn) closeBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      crumb.style.display = 'none';
+    });
     crumb.querySelectorAll('[data-depth]').forEach(function(el) {
       el.addEventListener('click', function() {
         const depth = parseInt(el.dataset.depth, 10);
@@ -455,7 +465,7 @@ window.GIS = window.GIS || {};
     }
     if (sel.adcode !== null && sel.adcode !== undefined) {
       html += '<button id="fpDrillBtn" style="margin-top:8px;width:100%;padding:5px 0;' +
-        'background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;">' +
+        'background:#2563eb;color:#fff;border:none;border-radius:0;cursor:pointer;font-size:12px;">' +
         '下钻到下一级政区</button>';
     }
     panel.innerHTML = html;
@@ -668,6 +678,11 @@ window.GIS = window.GIS || {};
   async function toggle3D() {
     ensureUI();
     if (mode === '2d') {
+      // 卷帘对比仅 2D 支持：切 3D 前自动关闭，避免残留分割线与死 pane
+      if (window.GIS && GIS.map && typeof GIS.map.stopSwipe === 'function' &&
+          typeof GIS.map.isSwipeActive === 'function' && GIS.map.isSwipeActive()) {
+        GIS.map.stopSwipe();
+      }
       await ensureCesium();
       if (!viewer) createViewer();
       const mapEl = document.getElementById('map');

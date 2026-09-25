@@ -180,9 +180,11 @@ var _undoSkip = false;
         if (!mapInstance || !p.bbox) return;
         var b = p.bbox;
         try {
+          // 下钻/回退自动飞行：maxZoom 11 封顶——区县级边界再 fit 也不会怼到
+          // 街道级深缩放（卫星图深色农田看起来像"地图变黑"）
           mapInstance.fitBounds(
             [[Math.max(b[1], -85), Math.max(b[0], -179)], [Math.min(b[3], 85), Math.min(b[2], 179)]],
-            { padding: [30, 30], maxZoom: 16 });
+            { padding: [30, 30], maxZoom: 11 });
         } catch (e) {}
       });
     }
@@ -556,6 +558,8 @@ var _undoSkip = false;
   }
 
   function removeLayer(name) {
+    // 卷帘参与者被删除时自动结束卷帘，避免残留死 pane / 空分割线
+    if (_swipe && _isSwipeLayer(name)) stopSwipeSilent();
     if (_rasterLayers[name]) {
       mapInstance.removeLayer(_rasterLayers[name]);
       delete _rasterLayers[name];
@@ -584,6 +588,8 @@ var _undoSkip = false;
     } else {
       if (mapInstance.hasLayer(layers[name])) mapInstance.removeLayer(layers[name]);
     }
+    // 卷帘期间重新挂载的 renderer 容器不带裁剪，重放一次
+    if (_swipe) _applySwipeClip(_swipe.ratio);
   }
 
   /** 获取 Leaflet 图层对象 */
@@ -698,6 +704,7 @@ var _undoSkip = false;
     if (!layers[name]) return;
     if (mapInstance.hasLayer(layers[name])) mapInstance.removeLayer(layers[name]);
     else mapInstance.addLayer(layers[name]);
+    if (_swipe) _applySwipeClip(_swipe.ratio);
   }
 
   function flyTo(center, zoom) {
@@ -1190,36 +1197,39 @@ var _undoSkip = false;
       case 'manual':
         _openManual();
         break;
-      // 新功能菜单项 — 转接到斜杠命令
+      case 'toggle-3d':
+        if (GIS.renderers && GIS.renderers.toggle3D) GIS.renderers.toggle3D();
+        break;
+      // 栅格/工具菜单项 — 直连面板（不经 AI）
       case 'tool-coord-convert':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('coord-convert');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('coord');
         break;
       case 'tool-topology':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('topology');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('topology');
         break;
       case 'tool-slope':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('slope');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('slope');
         break;
       case 'tool-aspect':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('aspect');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('aspect');
         break;
       case 'tool-hillshade':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('hillshade');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('hillshade');
         break;
       case 'tool-contour':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('contour');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('contour');
         break;
       case 'tool-ndvi':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('ndvi');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('ndvi');
         break;
       case 'tool-rastercalc':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('rastercalc');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('rastercalc');
         break;
       case 'tool-interpolate':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('interpolate');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('interpolate');
         break;
       case 'tool-hydrology':
-        if (GIS.chat && GIS.chat.triggerSlash) GIS.chat.triggerSlash('hydrology');
+        if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('hydrology');
         break;
     }
   }
@@ -1360,7 +1370,7 @@ var _undoSkip = false;
       options: { position: 'topright' },
       onAdd: function() {
         var div = L.DomUtil.create('div', 'north-arrow-container');
-        div.innerHTML = '<div style="background:rgba(255,255,255,0.9);border:1px solid #ccc;border-radius:4px;padding:6px;text-align:center;cursor:default;box-shadow:0 1px 5px rgba(0,0,0,0.2)">' +
+        div.innerHTML = '<div style="background:rgba(255,255,255,0.9);border:1px solid #ccc;border-radius:0;padding:6px;text-align:center;cursor:default;box-shadow:0 1px 5px rgba(0,0,0,0.2)">' +
           '<div style="font-size:18px;line-height:1;color:#c0392b">&#x2191;</div>' +
           '<div style="font-size:10px;color:#666;margin-top:2px">N</div>' +
           '</div>';
@@ -1753,6 +1763,199 @@ var _undoSkip = false;
     _initKeyboardShortcuts();
   };
 
+  // ============================================================
+  // 卷帘对比（Swipe）
+  // 两个图层分别挂到独立 pane（zIndex 高于 overlayPane），用 clip-path
+  // 按 5%~95% 比例裁剪，中间是可拖动分割线。关闭时图层放回 overlayPane。
+  // ============================================================
+  var _swipe = null;   // {leftLayer, rightLayer, orientation, divider, ratio}
+
+  function _resolveSwipeLayer(name) {
+    if (!name) return null;
+    if (layers[name]) return layers[name];
+    var keys = Object.keys(layers);
+    // 候选 = 前缀/包含匹配；取最长 key（最具体）——否则「缓冲区」名会被
+    // 同源的「原图层」抢先命中，左右判为同一图层
+    var candidates = keys.filter(function(k) {
+      return k.indexOf(name) === 0 || name.indexOf(k) === 0 ||
+             k.indexOf(name) >= 0 || name.indexOf(k) >= 0;
+    });
+    if (!candidates.length) return null;
+    candidates.sort(function(a, b) { return b.length - a.length; });
+    return layers[candidates[0]];
+  }
+
+  /** 判断某图层名（map.js 内 layers 键）是否是当前卷帘的参与者 */
+  function _isSwipeLayer(name) {
+    if (!_swipe || !name) return false;
+    var l = layers[name];
+    return l && (l === _swipe.leftLayer || l === _swipe.rightLayer);
+  }
+
+  /** 把图层挂到指定 pane（Leaflet 需 remove → 改 pane 选项 → 重新 add）。
+   *  L.geoJSON 等矢量组不继承组级 pane，需逐子图层设置 —— Leaflet 检测到
+   *  layer.options.pane 非默认时会自动在该 pane 创建专属 renderer，
+   *  这样 clip-path 才能按 pane 裁剪。 */
+  function _repaneLayer(layer, paneName) {
+    if (!layer || !mapInstance) return;
+    var onMap = mapInstance.hasLayer(layer);
+    if (onMap) mapInstance.removeLayer(layer);
+    var apply = function(l) {
+      if (l && l.options) {
+        l.options.pane = paneName;
+        delete l.options.renderer;   // 让 Leaflet 按 pane 重建 renderer
+      }
+    };
+    apply(layer);
+    if (typeof layer.eachLayer === 'function') {
+      layer.eachLayer(apply);
+    }
+    if (onMap) layer.addTo(mapInstance);
+  }
+
+  /** 把裁剪应用到 pane 及其渲染子容器。
+   *  注意：Leaflet pane 本身是 0 尺寸定位容器，clip-path 作用其上会把内容
+   *  全部裁掉 —— 必须裁剪有实际尺寸的子元素（canvas/svg/renderer 容器）。 */
+  function _applySwipeClipTo(pane, clip) {
+    if (!pane) return;
+    Array.prototype.forEach.call(pane.children, function(ch) {
+      ch.style.clipPath = clip;
+    });
+  }
+
+  function _applySwipeClip(ratio) {
+    if (!_swipe || !mapInstance) return;
+    _swipe.ratio = Math.max(0.05, Math.min(0.95, ratio));
+    var lp = mapInstance.getPane('swipeLeftPane');
+    var rp = mapInstance.getPane('swipeRightPane');
+    if (!lp || !rp) return;
+    var r = _swipe.ratio;
+    if (_swipe.orientation === 'vertical') {
+      _applySwipeClipTo(lp, 'inset(0 ' + ((1 - r) * 100) + '% 0 0)');
+      _applySwipeClipTo(rp, 'inset(0 0 0 ' + (r * 100) + '%)');
+      _swipe.divider.style.left = (r * 100) + '%';
+      _swipe.divider.style.top = '0';
+    } else {
+      _applySwipeClipTo(lp, 'inset(0 0 ' + ((1 - r) * 100) + '% 0)');
+      _applySwipeClipTo(rp, 'inset(' + (r * 100) + '% 0 0 0)');
+      _swipe.divider.style.top = (r * 100) + '%';
+      _swipe.divider.style.left = '0';
+    }
+  }
+
+  function startSwipe(leftName, rightName, orientation) {
+    if (!mapInstance) return false;
+    var leftLayer = _resolveSwipeLayer(leftName);
+    var rightLayer = _resolveSwipeLayer(rightName);
+    if (!leftLayer || !rightLayer || leftLayer === rightLayer) {
+      if (window.GIS && GIS.chat && GIS.chat.addMessage) {
+        GIS.chat.addMessage('卷帘对比需要两个已加载的不同图层，当前找不到：' +
+          (!leftLayer ? leftName : rightName), 'system');
+      }
+      return false;
+    }
+    stopSwipeSilent();
+    orientation = orientation === 'horizontal' ? 'horizontal' : 'vertical';
+
+    mapInstance.createPane('swipeLeftPane');
+    mapInstance.createPane('swipeRightPane');
+    mapInstance.getPane('swipeLeftPane').style.zIndex = '620';
+    mapInstance.getPane('swipeRightPane').style.zIndex = '610';
+    _repaneLayer(leftLayer, 'swipeLeftPane');
+    _repaneLayer(rightLayer, 'swipeRightPane');
+
+    var divider = document.createElement('div');
+    divider.className = 'swipe-divider swipe-' + orientation;
+    divider.innerHTML =
+      '<div class="swipe-handle">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 3 12 9 6"/><polyline points="15 6 21 12 15 18"/></svg>' +
+      '</div>' +
+      '<button class="swipe-close" title="关闭卷帘对比">✕</button>';
+    mapInstance.getContainer().appendChild(divider);
+
+    _swipe = { leftLayer: leftLayer, rightLayer: rightLayer, orientation: orientation, divider: divider, ratio: 0.5 };
+
+    // 拖动分割线（pointer + mouse 双监听并阻止冒泡，防止地图拖拽同时触发）
+    var dragging = false;
+    function _ratioFromEvent(e) {
+      var rect = mapInstance.getContainer().getBoundingClientRect();
+      if (_swipe.orientation === 'vertical') {
+        return (e.clientX - rect.left) / Math.max(1, rect.width);
+      }
+      return (e.clientY - rect.top) / Math.max(1, rect.height);
+    }
+    function _onMove(e) {
+      if (!dragging || !_swipe) return;
+      _applySwipeClip(_ratioFromEvent(e));
+      e.preventDefault();
+    }
+    function _onUp() { dragging = false; }
+    function _down(e) {
+      if (e.target && e.target.classList && e.target.classList.contains('swipe-close')) return;
+      dragging = true;
+      e.stopPropagation();
+      e.preventDefault();
+      document.addEventListener('pointermove', _onMove);
+      document.addEventListener('mousemove', _onMove);
+    }
+    divider.addEventListener('pointerdown', _down);
+    divider.addEventListener('mousedown', _down);
+    document.addEventListener('pointerup', _onUp);
+    document.addEventListener('mouseup', _onUp);
+    divider.querySelector('.swipe-close').addEventListener('click', function(e) {
+      e.stopPropagation();
+      stopSwipe();
+    });
+
+    _applySwipeClip(0.5);
+    if (window.GIS && GIS.chat && GIS.chat.addMessage) {
+      GIS.chat.addMessage('卷帘对比已开启：拖动分割线对比「' + leftName + '」与「' + rightName + '」，点分割线上 ✕ 关闭', 'system');
+    }
+    return true;
+  }
+
+  /** 清除图层 renderer 容器上的残留裁剪（恢复完整显示） */
+  function _clearLayerClip(layer) {
+    if (!layer || !mapInstance) return;
+    var clear = function(l) {
+      try {
+        var r = mapInstance.getRenderer(l);
+        if (r && r._container) r._container.style.clipPath = '';
+      } catch (e) {}
+    };
+    clear(layer);
+    if (typeof layer.eachLayer === 'function') layer.eachLayer(clear);
+  }
+
+  /** 静默清理（切新卷帘时用，不发消息） */
+  function stopSwipeSilent() {
+    if (!_swipe || !mapInstance) return;
+    _clearLayerClip(_swipe.leftLayer);
+    _clearLayerClip(_swipe.rightLayer);
+    _repaneLayer(_swipe.leftLayer, 'overlayPane');
+    _repaneLayer(_swipe.rightLayer, 'overlayPane');
+    ['swipeLeftPane', 'swipeRightPane'].forEach(function(pn) {
+      var p = mapInstance.getPane(pn);
+      if (p && p.parentNode) p.parentNode.removeChild(p);
+      // Leaflet 内部缓存必须一并清理：否则下次开卷帘会复用已脱离 DOM 的
+      // 旧 renderer（canvas/svg），图层渲染到不可见容器上
+      if (mapInstance._panes) delete mapInstance._panes[pn];
+      if (mapInstance._paneRenderers) delete mapInstance._paneRenderers[pn];
+    });
+    if (_swipe.divider && _swipe.divider.parentNode) {
+      _swipe.divider.parentNode.removeChild(_swipe.divider);
+    }
+    _swipe = null;
+  }
+
+  function stopSwipe() {
+    if (!_swipe) return;
+    stopSwipeSilent();
+    if (window.GIS && GIS.chat && GIS.chat.addMessage) {
+      GIS.chat.addMessage('卷帘对比已关闭', 'system');
+    }
+  }
+
   GIS.map = {
     init: init,
     loadGeoJSON: loadGeoJSON,
@@ -1777,6 +1980,9 @@ var _undoSkip = false;
     hideNorthArrow: hideNorthArrow,
     addImageOverlay: addImageOverlay,
     removeRasterLayer: removeRasterLayer,
+    startSwipe: startSwipe,
+    stopSwipe: stopSwipe,
+    isSwipeActive: function() { return !!_swipe; },
     enterEditMode: enterEditMode,
     exitEditMode: exitEditMode,
     exportMap: exportMap,

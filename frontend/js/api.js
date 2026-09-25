@@ -294,6 +294,39 @@ window.GIS.api = (() => {
     }
   }
 
+  // ===== 工具直连执行（手动面板通道，不经 AI）=====
+  /** 直接调用后端 @tool 注册工具。返回 {ok, tool, response, layers, layer_ops, images, heatmap} */
+  async function invokeTool(name, args = {}, signal) {
+    const res = await fetch(`${BASE_URL}/api/tools/invoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, arguments: args }),
+      signal,
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    return res.json();
+  }
+
+  /** 直连工具执行前同步：确保前端图层在后端注册表可解析。
+   *  绘制/状态内建的图层只在前端存在，后端工具按注册名查图层；
+   *  大图层（>2 万要素）跳过同步，避免整包传输。 */
+  async function syncLayer(name) {
+    try {
+      const l = GIS.layers && GIS.layers.getLayerByName ? GIS.layers.getLayerByName(name) : null;
+      if (!l || !l.geojson) return;
+      const fc = l.geojson;
+      const n = fc.type === 'FeatureCollection' ? (fc.features || []).length : 1;
+      if (n > 20000) return;
+      await registerLayer(l.filename || name, fc);
+    } catch (e) {
+      console.warn('[GIS API] 图层同步失败', name, e);
+    }
+  }
+
   // ===== 文件上传 =====
   /** @param {File} file @param {AbortSignal} [signal] */
   async function upload(file, signal) {
@@ -571,8 +604,9 @@ window.GIS.api = (() => {
     addProvider, upsertProvider, removeProvider, duplicateProvider,
     currentProvider, resolveProvider,
     getModelStatus, setModelStatus, clearModelStatus,
-    inspectLayer, unregisterLayer, registerLayer,
+    inspectLayer, unregisterLayer, registerLayer, syncLayer,
     exportShp,
+    invokeTool,
     BASE_URL, PROVIDERS_STORAGE_KEY,
     DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };

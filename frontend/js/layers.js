@@ -110,6 +110,7 @@ window.GIS = window.GIS || {};
       '<td class="col-actions"><div class="layer-actions">' +
       '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + '" title="检查图层"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>' +
       '<button class="layer-action-btn" data-action="analyze" data-id="' + (layer.layer_id || '') + '" title="发送给AI分析"><svg><use href="assets/icons.svg#icon-ai-send"/></svg></button>' +
+      '<button class="layer-action-btn" data-action="swipe" data-id="' + (layer.layer_id || '') + '" title="卷帘对比（先点一个图层，再点另一个）"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="8" y1="10" x2="5" y2="12"/><line x1="8" y1="14" x2="5" y2="12"/><line x1="16" y1="10" x2="19" y2="12"/><line x1="16" y1="14" x2="19" y2="12"/></svg></button>' +
       '<button class="layer-action-btn" data-action="download" data-id="' + (layer.layer_id || '') + '" title="下载"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>' +
       '<button class="layer-action-btn btn-danger" data-action="delete" data-id="' + (layer.layer_id || '') + '" title="删除"><svg><use href="assets/icons.svg#icon-delete"/></svg></button>' +
       '</div></td></tr>';
@@ -539,7 +540,56 @@ window.GIS = window.GIS || {};
       if (action === 'download') downloadLayer(id);
       if (action === 'analyze') analyzeLayer(id);
       if (action === 'inspect') showLayerInspector(id);
+      if (action === 'swipe') handleSwipeAction(id, btn);
     });
+
+    // ============================================================
+    // 卷帘对比（手动入口）：点第一个图层的「卷帘」按钮选中为 A（按钮高亮），
+    // 再点另一个图层的「卷帘」按钮即开启 A|B 对比；再点 A 或点 ✕ 可关闭。
+    // ============================================================
+    var _swipeSelId = null;
+
+    function handleSwipeAction(id, btn) {
+      // 3D 模式不支持
+      if (GIS.renderers && GIS.renderers.is3D && GIS.renderers.is3D()) {
+        alert('卷帘对比目前仅支持 2D 模式，请先切换回 2D 地图');
+        return;
+      }
+      if (!GIS.map || typeof GIS.map.startSwipe !== 'function') return;
+      // 已开启卷帘：再次点任意「卷帘」按钮 → 关闭
+      if (_swipeSelId === null && document.querySelector('.swipe-divider')) {
+        GIS.map.stopSwipe();
+        _clearSwipeSelection();
+        return;
+      }
+      if (_swipeSelId === null) {
+        _swipeSelId = id;
+        btn.classList.add('swipe-armed');
+        btn.title = '已选中为卷帘 A 图层，再点另一图层的卷帘按钮开始对比';
+        return;
+      }
+      if (_swipeSelId === id) {
+        _clearSwipeSelection();
+        return;
+      }
+      var a = layerData.find(function(l) { return l.layer_id === _swipeSelId; });
+      var b = layerData.find(function(l) { return l.layer_id === id; });
+      _clearSwipeSelection();
+      if (!a || !b) return;
+      var an = a._rawName || a.filename;
+      var bn = b._rawName || b.filename;
+      if (GIS.map.startSwipe(an, bn, 'vertical')) {
+        renderList();
+      }
+    }
+
+    function _clearSwipeSelection() {
+      _swipeSelId = null;
+      tbody.querySelectorAll('.layer-action-btn.swipe-armed').forEach(function(b) {
+        b.classList.remove('swipe-armed');
+        b.title = '卷帘对比（先点一个图层，再点另一个）';
+      });
+    }
 
     // 双击图层名重命名
     tbody.addEventListener('dblclick', function(e) {

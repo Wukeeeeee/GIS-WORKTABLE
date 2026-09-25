@@ -95,10 +95,10 @@
           </button>
         </div>
         <div class="chat-history-list custom-scrollbar" id="projectHistoryList">
-          <div class="history-empty">
+          <div class="toolhist-empty">
             <svg width="48" height="48" opacity="0.3"><use href="assets/icons.svg#icon-history"/></svg>
-            <div class="history-empty-text">暂无历史会话</div>
-            <div class="history-empty-hint">开始新对话后自动保存</div>
+            <div class="toolhist-empty-text">暂无历史会话</div>
+            <div class="toolhist-empty-hint">开始新对话后自动保存</div>
           </div>
         </div>
       </div>
@@ -247,6 +247,29 @@
               </button>
             </div>
             <div class="connector-list" id="connectorList"></div>
+            <div class="connector-online" id="connectorOnline">
+              <div class="connector-online-title">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                </svg>
+                添加在线数据（云原生格式）
+              </div>
+              <div class="connector-online-row">
+                <select id="onlineType" class="connector-online-select">
+                  <option value="auto">自动识别（按扩展名）</option>
+                  <option value="cog">COG / 在线 GeoTIFF</option>
+                  <option value="pmtiles">PMTiles</option>
+                  <option value="geoparquet">GeoParquet</option>
+                  <option value="flatgeobuf">FlatGeobuf</option>
+                </select>
+              </div>
+              <div class="connector-online-row">
+                <input type="text" id="onlineUrl" class="connector-online-input" placeholder="粘贴数据 URL（http/https）或本地路径" />
+                <button class="connector-online-btn" id="onlineLoadBtn">加载</button>
+              </div>
+              <div class="connector-online-hint">支持 COG(.tif)、PMTiles(.pmtiles)、GeoParquet(.parquet)、FlatGeobuf(.fgb)，流式加载不整体下载</div>
+            </div>
             <div class="connector-panel-footer">
               <span>配置在「设置 → 连接器」中管理，AI 分析时自动读取已配置的凭据</span>
             </div>
@@ -335,6 +358,10 @@
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg>
                   <span>卫星底图</span>
                   <svg class="toggle-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                </button>
+                <button class="map-menu-item" data-action="toggle-3d">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l10 6-10 6L2 8z"/><path d="M2 14l10 6 10-6"/></svg>
+                  <span>3D 地球 / 2D 地图</span>
                 </button>
                 <button class="map-menu-item" data-action="cycle-satellite-source">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
@@ -537,14 +564,34 @@
                     </ul>
                     <h3>上传文件</h3>
                     <ul>
-                      <li>支持格式：<strong>GeoJSON、SHP（zip 包）、GPKG、KML/KMZ、GPX、DXF、CSV</strong></li>
-                      <li>可通过图层面板的「上传」按钮或输入框旁的附件按钮上传</li>
+                      <li>支持格式：<strong>GeoJSON、SHP（zip 包）、GPKG、KML/KMZ、GPX、DXF、CSV、COG/GeoTIFF、PMTiles、GeoParquet、FlatGeobuf</strong></li>
+                      <li>可通过图层面板的「上传」按钮或输入框旁的附件按钮上传，也可直接拖拽文件进地图</li>
                       <li>上传后自动注册为图层，AI 可直接识别和使用</li>
+                    </ul>
+                    <h3>添加在线数据（云原生格式）</h3>
+                    <ul>
+                      <li>在聊天中直接给 AI 一个 URL：<strong>「加载这个 COG: https://…tif」「加载 PMTiles: https://…pmtiles」</strong></li>
+                      <li>或在 <strong>设置 → 地理服务 → 添加在线数据</strong> 面板粘贴 URL（支持 COG / PMTiles / GeoParquet / FlatGeobuf）</li>
+                      <li>全部走流式加载，不整体下载：COG 降采样预览、PMTiles 按需读瓦片、矢量格式支持 BBOX 空间过滤</li>
+                      <li>在线 GeoTIFF 说「查一下这个 tif 的信息」可先看 CRS/波段/统计再决定是否加载</li>
                     </ul>
                     <h3>图层操作</h3>
                     <ul>
                       <li>在聊天中告诉 AI 操作图层：<strong>「删除图层 xxx」「隐藏 xxx」「把 xxx 改成红色」「缩放到 xxx」</strong></li>
                       <li>AI 调用 <code>layer_control</code> 工具执行：移除、显隐切换、改色、重命名、缩放至</li>
+                    </ul>
+                    <h3>卷帘对比</h3>
+                    <ul>
+                      <li>在聊天中说<strong>「卷帘对比图层 A 和图层 B」</strong>，地图上出现可拖动分割线，左右（或上下）各显示一个图层</li>
+                      <li>手动入口：图层面板中先点图层 A 行的 <strong>卷帘按钮</strong>（分割图标），再点图层 B 行的卷帘按钮</li>
+                      <li>说<strong>「关闭卷帘」</strong>或点分割线上的 ✕ 退出对比；支持横向/纵向两种分割方向</li>
+                      <li>卷帘对比仅在 2D 模式下可用，切换 3D 时自动关闭</li>
+                    </ul>
+                    <h3>处理历史</h3>
+                    <ul>
+                      <li>点击右侧快捷栏的 <strong>时钟图标</strong> 打开处理历史面板，按时间倒序查看每次工具执行（工具名、参数、产物图层、成败）</li>
+                      <li>每条记录支持<strong>「重跑」</strong>（用原始参数重新执行，产物作为新图层上图，不覆盖原图层）和<strong>「复制参数」</strong>为 JSON</li>
+                      <li>在聊天中说<strong>「重跑第 N 条历史」</strong>可达到同样效果</li>
                     </ul>
                     <h3>导出图层</h3>
                     <ul>
@@ -610,8 +657,8 @@
                     <h3>发送消息</h3>
                     <ul>
                       <li>在左侧聊天面板输入问题，按 Enter 或点击发送按钮</li>
-                      <li>支持斜杠命令（输入 <code>/</code> 弹出命令面板，点击或回车选择）</li>
-                      <li>AI 可生成地图数据、分析地理信息、搜索网络等</li>
+                      <li>支持斜杠命令（输入 <code>/</code> 弹出命令面板）：<strong>大部分命令现在直连后端工具执行</strong>（缓冲区/叠置/栅格分析/坐标转换等，无需 AI Key），仅图表生成、AOI 检索等少数命令仍由 AI 处理</li>
+                      <li>AI 负责长任务调度：如「先搜索长沙的咖啡店，再做 500 米缓冲区」这类多步骤串联</li>
                       <li>右键地图可「发送此位置给 AI」，自动携带坐标</li>
                     </ul>
 
@@ -791,6 +838,12 @@
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
             </button>
             <div class="map-ctrl-divider"></div>
+            <button class="map-zoom-btn" id="toggleHistoryPanel" title="处理历史（工具执行记录与重跑）">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+              </svg>
+            </button>
             <button class="map-zoom-btn map-toggle-layer" id="toggleLayerPanel" title="切换图层面板">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
@@ -842,6 +895,22 @@
                 </thead>
                 <tbody id="layerTbody"></tbody>
               </table>
+            </div>
+          </div>
+
+          <!-- === 浮动处理历史面板（右上角，与图层面板并排） === -->
+          <div class="toolhist-panel" id="historyPanel">
+            <div class="toolhist-header">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;">
+                <circle cx="12" cy="12" r="10"/>
+                <polyline points="12 6 12 12 16 14"/>
+              </svg>
+              <span>处理历史</span>
+              <span class="toolhist-title-spacer"></span>
+              <button class="toolhist-clear" id="toolHistClearBtn" title="清空历史记录">清空</button>
+            </div>
+            <div class="toolhist-body custom-scrollbar" id="historyBody">
+              <div class="toolhist-empty">暂无记录：执行任意工具后在此查看</div>
             </div>
           </div>
 
@@ -905,7 +974,7 @@
     type="file"
     id="fileInput"
     class="hidden-input"
-    accept=".geojson,.json,.gpkg,.kml,.kmz,.gpx,.dxf,.zip,.csv"
+    accept=".geojson,.json,.gpkg,.kml,.kmz,.gpx,.dxf,.zip,.csv,.tif,.tiff,.pmtiles,.parquet,.geoparquet,.fgb"
     multiple
   />
 
@@ -1010,6 +1079,17 @@
         <!-- === 地理服务 === -->
         <div class="modal-panel" id="panelGeoApi">
           <h3>地理服务</h3>
+
+          <!-- 添加在线数据（云原生格式）快捷入口 -->
+          <div class="model-config-card">
+            <div class="model-config-header">
+              <span class="model-config-name">添加在线数据（云原生格式）</span>
+            </div>
+            <div style="font-size:12px;color:var(--ui-gray-500);margin-bottom:8px;">
+              支持 COG / 在线 GeoTIFF、PMTiles、GeoParquet、FlatGeobuf，粘贴 URL 流式加载上图
+            </div>
+            <button class="connector-setup" id="openOnlineDataBtn" style="padding:6px 16px;">添加在线数据</button>
+          </div>
 
           <!-- 高德地图 Web API（POI + 高程通用） -->
           <div class="model-config-card">
@@ -1434,6 +1514,8 @@
   <script src="js/debug.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/connector.js"></script>
+  <script src="js/history.js"></script>
+  <script src="js/raster_tools.js"></script>
   <script src="js/app.js"></script>
   <script src="js/time.js"></script>
 

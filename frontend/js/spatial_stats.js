@@ -14,6 +14,10 @@ window.GIS = window.GIS || {};
 
   var PANEL_HTML =
     '<div class="spatial-panel" id="spatialStatsPanel">' +
+      '<div class="spatial-loader" id="ssLoader" style="display:none">' +
+        '<div class="spatial-spinner"></div>' +
+        '<span>计算中...</span>' +
+      '</div>' +
       '<div class="spatial-toolbar" id="spatialStatsToolbar">' +
         '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>' +
         '<span class="spatial-toolbar-title">空间统计</span>' +
@@ -77,14 +81,7 @@ window.GIS = window.GIS || {};
             '<label>距离阈值（米）</label>' +
             '<input type="number" id="ssHotspotDist" class="spatial-input" value="1000" min="1" step="100">' +
           '</div>' +
-          '<div class="spatial-field">' +
-            '<label>显著性水平</label>' +
-            '<select id="ssHotspotSig">' +
-              '<option value="0.05">0.05（95%）</option>' +
-              '<option value="0.01">0.01（99%）</option>' +
-              '<option value="0.001">0.001（99.9%）</option>' +
-            '</select>' +
-          '</div>' +
+
           '<button class="spatial-run-btn" data-op="hotspot">运行热点分析（Gi*）</button>' +
         '</div>' +
 
@@ -95,15 +92,15 @@ window.GIS = window.GIS || {};
             '<select id="ssKdeLayer"><option value="">-- 请选择图层 --</option></select>' +
           '</div>' +
           '<div class="spatial-field">' +
-            '<label>带宽（米，留空自动估算）</label>' +
+            '<label>带宽（米，自动换算为度；留空自动估算）</label>' +
             '<input type="number" id="ssKdeBandwidth" class="spatial-input" placeholder="自动" min="1" step="100">' +
           '</div>' +
           '<div class="spatial-field">' +
             '<label>网格分辨率</label>' +
             '<select id="ssKdeGrid">' +
-              '<option value="50">50m（精细）</option>' +
-              '<option value="100" selected>100m（标准）</option>' +
-              '<option value="200">200m（粗略）</option>' +
+              '<option value="80">精细（80×80，较慢）</option>' +
+              '<option value="50" selected>标准（50×50）</option>' +
+              '<option value="30">粗略（30×30，快）</option>' +
             '</select>' +
           '</div>' +
           '<button class="spatial-run-btn" data-op="kde">运行核密度估计</button>' +
@@ -238,54 +235,68 @@ window.GIS = window.GIS || {};
     update();
   }
 
-  // 组装自然语言发给 AI
+  /** 直连执行：调后端工具 → 结果上图 + 面板展示文本（不经 AI） */
+  var METERS_PER_DEGREE = 111320;
+
+  function _invoke(tool, args) {
+    var loader = document.getElementById('ssLoader');
+    if (loader) loader.style.display = '';
+    var syncP = (GIS.api && GIS.api.syncLayer && args.layer_name)
+      ? GIS.api.syncLayer(args.layer_name) : Promise.resolve();
+    var p = syncP.then(function() {
+      if (!(GIS.api && GIS.api.invokeTool)) throw new Error('GIS.api.invokeTool 不可用');
+      return GIS.api.invokeTool(tool, args);
+    });
+    p.then(function(result) {
+      if (loader) loader.style.display = 'none';
+      if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
+      // 统计解读直接展示到聊天区（系统消息），图层已上图
+      if (GIS.chat && GIS.chat.addMessage && result.response) {
+        GIS.chat.addMessage('【' + tool + '】' + result.response, 'system');
+      }
+    }).catch(function(err) {
+      if (loader) loader.style.display = 'none';
+      alert('执行失败: ' + err.message);
+    });
+  }
+
   function _runOperation(op) {
-    var msg = '';
     if (op === 'moran') {
       var layer = document.getElementById('ssMoranLayer').value;
       if (!layer) { alert('请选择图层'); return; }
       var field = document.getElementById('ssMoranField').value;
       var weight = document.getElementById('ssMoranWeight').value;
       var local = document.getElementById('ssMoranLocal').checked;
+      var args = { layer_name: layer, field: field || '', weight_type: weight, local: local };
       if (weight === 'distance') {
-        var dist = document.getElementById('ssMoranDist').value;
-        msg = '对图层「' + layer + '」做 Moran\'s I 全局空间自相关分析' +
-              (field ? '，字段「' + field + '」' : '') +
-              '，使用距离权重（阈值 ' + dist + ' 米）' +
-              (local ? '，同时计算局部 LISA 并生成 HH/HL/LH/LL 聚类图层' : '') +
-              '，结果加载到地图并给出统计解读';
+        var dist = parseFloat(document.getElementById('ssMoranDist').value) || 1000;
+        args.threshold = +(dist / METERS_PER_DEGREE).toFixed(6);  // 米 → 度
       } else {
-        var k = document.getElementById('ssMoranK').value;
-        msg = '对图层「' + layer + '」做 Moran\'s I 全局空间自相关分析' +
-              (field ? '，字段「' + field + '」' : '') +
-              '，使用 K近邻权重（K=' + k + '）' +
-              (local ? '，同时计算局部 LISA 并生成 HH/HL/LH/LL 聚类图层' : '') +
-              '，结果加载到地图并给出统计解读';
+        args.k = parseInt(document.getElementById('ssMoranK').value, 10) || 5;
       }
-    } else if (op === 'hotspot') {
+      deactivate();
+      return _invoke('spatial_moran', args);
+    }
+    if (op === 'hotspot') {
       var layer2 = document.getElementById('ssHotspotLayer').value;
       if (!layer2) { alert('请选择图层'); return; }
       var field2 = document.getElementById('ssHotspotField').value;
-      var dist2 = document.getElementById('ssHotspotDist').value;
-      var sig = document.getElementById('ssHotspotSig').value;
-      msg = '对图层「' + layer2 + '」做 Getis-Ord Gi* 热点分析' +
-            (field2 ? '，字段「' + field2 + '」' : '') +
-            '，距离阈值 ' + dist2 + ' 米，显著性水平 ' + sig +
-            '，生成热点（红色）/冷点（蓝色）图层并给出统计解读';
-    } else if (op === 'kde') {
+      var dist2 = parseFloat(document.getElementById('ssHotspotDist').value) || 1000;
+      deactivate();
+      return _invoke('spatial_hotspot', {
+        layer_name: layer2, field: field2 || '',
+        threshold: +(dist2 / METERS_PER_DEGREE).toFixed(6),  // 米 → 度
+      });
+    }
+    if (op === 'kde') {
       var layer3 = document.getElementById('ssKdeLayer').value;
       if (!layer3) { alert('请选择图层'); return; }
-      var bw = document.getElementById('ssKdeBandwidth').value;
-      var grid = document.getElementById('ssKdeGrid').value;
-      msg = '对图层「' + layer3 + '」做核密度估计（KDE）' +
-            (bw ? '，带宽 ' + bw + ' 米' : '，带宽自动估算') +
-            '，网格分辨率 ' + grid + ' 米，生成密度格网图层并加载到地图';
-    }
-    if (msg) {
+      var bw = parseFloat(document.getElementById('ssKdeBandwidth').value);
+      var grid = parseInt(document.getElementById('ssKdeGrid').value, 10) || 50;
+      var args3 = { layer_name: layer3, grid_size: grid };
+      if (bw) args3.bandwidth = +(bw / METERS_PER_DEGREE).toFixed(6);  // 米 → 度
       deactivate();
-      if (GIS.chat && GIS.chat.send) {
-        GIS.chat.send(msg);
-      }
+      return _invoke('spatial_kde', args3);
     }
   }
 

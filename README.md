@@ -19,7 +19,7 @@
 
 ## 项目简介
 
-GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需求，AI Agent 自动规划流程、调用 105 个专业 GIS 工具执行，结果在 2D 地图 / 3D 地球上呈现。所有功能同时提供手动操作入口，不依赖 AI 也能完成完整工作流。
+GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需求，AI Agent 自动规划流程、调用 120 个专业 GIS 工具执行，结果在 2D 地图 / 3D 地球上呈现。所有功能同时提供手动操作入口，不依赖 AI 也能完成完整工作流。
 
 ***
 
@@ -28,7 +28,7 @@ GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需
 ### AI Agent 智能助手
 
 - 自然语言解析 GIS 需求，自动规划任务、选择方法、调用工具，多轮上下文记忆
-- 105 个专业 GIS 工具：矢量分析、栅格处理、空间统计、网络分析、数据获取、编辑、制图
+- 120 个专业 GIS 工具：矢量分析、栅格处理、空间统计、网络分析、数据获取、编辑、制图、卷帘对比、云原生格式（COG/PMTiles/GeoParquet/FlatGeobuf）流式加载
 - 知识库自动路由：11 个结构化 GIS 知识模块辅助方法选择与参数决策
 - 下载数据前两阶段选项确认（先选数据源，再选具体数据），选项回传后自动回填原始任务上下文
 - **结果真实性自检**：每轮结束后确定性核对磁盘与内存产物（文件是否存在、图层是否有数据），未通过的问题直接附在回复末尾，减少"声称成功"的假交付
@@ -45,13 +45,16 @@ GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需
 
 ### 手动 GIS 操作（不依赖 AI）
 
+- **工具直连通道**：`/api/tools/invoke` 直接调用注册工具（不经 LLM），空间分析/栅格/统计/数据获取全部有实体面板，44 个斜杠命令直连、无 API Key 也能完成完整工作流；AI 只负责长任务调度与开放性问答
+- **卷帘对比（Swipe）**：两个图层左右/上下分割对比，分割线可拖动，图层面板两键开启、AI 指令（`create_swipe`）亦可驱动
+- **处理历史与重跑**：每次工具执行（含手动直连）自动记录工具名/参数/产物/成败并持久化，右侧历史面板按时间倒序展示，支持一键重跑（产物作为新图层上图，不覆盖原图层）与复制参数 JSON
 - 绘制：点/线/面/矩形/圆/标记，顶点编辑、捕捉
 - 测量：距离、面积
 - 图层管理：分组、拖拽排序、显隐、透明度滑块、重命名、导出 GeoJSON/Shapefile
 - 符号化面板：唯一值/分级色彩/分级符号/比例符号 + 色带 + 类别预览 + 图例
 - 属性表：编辑、筛选、空值填充、CSV 导出、要素定位
-- 空间分析面板：缓冲区、叠加（相交/联合/差集/裁剪）、质心、简化、融合
-- 空间统计面板、网络分析面板、坐标转换、底图切换（Bing/Esri/白底）
+- 空间分析面板：缓冲区（含多环）、叠置（相交/联合/差集/裁剪）、质心/简化/融合/聚类/泰森多边形/分解多部件/几何互转、空间选择/属性选择/近邻/采样、字段统计/面积量测/空间连接/分区统计、行政区边界/POI/地震/天气/路网一键获取
+- 空间统计面板、网络分析面板、栅格与工具面板（坡度/坡向/山体阴影/等高线/NDVI/栅格计算器/插值/水文/拓扑/坐标转换）、底图切换（Bing/Esri/白底）
 
 ### 空间分析与统计
 
@@ -69,6 +72,7 @@ GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需
 
 ### 数据获取与连接器
 
+- **云原生格式流式加载**：COG（/vsicurl 降采样预览）、PMTiles（HTTP Range 按需读瓦片，MVT 解码上图）、GeoParquet / FlatGeobuf（pyogrio + BBOX 空间过滤/行数上限）；粘贴 URL、拖拽文件、AI 指令三入口
 - 高德地图：POI 搜索、地理编码/逆地理编码/批量地理编码
 - DataV 行政区划边界、OSM 开放数据发现与下载、USGS 地震、Open-Meteo 天气
 - 连接器管理：11 个数据平台账号配置（Copernicus、USGS、地理空间数据云等）
@@ -82,6 +86,12 @@ GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需
 - DAG 工作流引擎：Agent 可生成结构化工作流并执行
 - 网络代理设置：支持系统代理自动检测，海外数据源国内可直连
 
+### MCP Server 与质量守卫
+
+- **MCP Server**（`python -m backend.services.mcp_server`）：stdio 传输，把全部 @tool 工具以 tools_list / tool_call / list_layers / get_task_status 四个 MCP 工具开放给 Claude Code、Cursor 等外部客户端；注册表自动反射、图层产物落盘会话目录、路径白名单 confinement（`GEOWORKTABLE_MCP_ROOTS`），配置示例见 [docs/mcp_server.md](docs/mcp_server.md)
+- **地理质量自检（Geo QA）**：图层出通道时自动体检——CRS 未转换/经纬颠倒、空结果、无效几何、退化多边形变成显式警告而非静默错误
+- **E2E 测试**：伪造数据经 HTTP 走完整直连链（缓冲→裁剪→统计→分区统计→卷帘→历史重跑），浏览器级 UI 链路可重放
+
 ***
 
 ## 技术架构
@@ -93,7 +103,7 @@ graph TB
     API -->|调用| AIService[ai_service.py]
     AIService -->|构建 System Prompt| Graph[LangGraph ReAct Agent]
     AIService -->|加载| KB[knowledge/ 知识库 11模块]
-    Graph -->|调用工具| Tools[tools.py 105个 GIS 工具]
+    Graph -->|调用工具| Tools[tools.py 120个 GIS 工具]
     Tools -->|空间计算| GeoStack[geopandas / shapely / rasterio / pyproj]
     Tools -->|统计分析| StatsStack[numpy / scipy / scikit-learn]
     Tools -->|网络分析| NetworkStack[osmnx / networkx]
@@ -116,13 +126,18 @@ graph TB
 | API 层 | `backend/main.py` | FastAPI 路由、静态文件、文件上传、工程管理接口 |
 | AI 服务 | `backend/services/ai_service.py` | System Prompt 构建、知识库路由、会话管理、流式响应 |
 | Agent 引擎 | `backend/services/graph.py` | LangGraph ReAct 循环、工具调用、简单文本短路 |
-| GIS 工具 | `backend/services/tools.py` | 105 个 @tool 函数，覆盖全部 GIS 能力 |
+| GIS 工具 | `backend/services/tools.py` | 120 个 @tool 函数，覆盖全部 GIS 能力 |
 | 知识库 | `knowledge/` | 11 个结构化 GIS 知识模块 |
 | 任务管理 | `backend/services/task_manager.py` | Task Working Memory、产物与执行日志 |
 | 待确认动作 | `backend/services/pending_action.py` | 跨轮 pending 状态、选项确认、上下文回填 |
 | 结果真实性自检 | `backend/services/result_guard.py` | 确定性核对磁盘/内存产物，拦截假交付 |
 | 坐标转换 | `backend/services/geo_coords.py` | WGS84 ↔ GCJ-02 ↔ Web Mercator，DataV 边界校正 |
 | 凭据存储 | `backend/services/credential_store.py` | Fernet 加密存储、Credential Injection 模式 |
+| 工具直连 | `POST /api/tools/invoke` | 手动面板通道：不经 LLM 直接执行 @tool，产物走同一图层通道并自动进历史 |
+| 处理历史 | `backend/services/history_service.py` | 工具执行记录（名称/参数/产物/成败）持久化，支持按编号重跑 |
+| 云原生加载 | `backend/services/cloud_native.py` | COG / PMTiles / GeoParquet / FlatGeobuf 流式读取助手 |
+| 地理质量自检 | `backend/services/geo_qa.py` | 图层出口体检：CRS/坐标范围/几何有效性/空结果警告 |
+| MCP Server | `backend/services/mcp_server.py` | stdio MCP，工具开放给外部 AI 客户端，路径 confinement |
 | 桌面客户端 | `desktop/` | Electron 外壳：自动拉起/复用后端并加载前端 |
 
 ### 模块源码导读
@@ -139,7 +154,7 @@ graph TB
 
 **AI 模型**：兼容 OpenAI 接口的任意模型（DeepSeek、GLM、Qwen 等），用户在设置中自行配置 API Key 和 Base URL
 
-**工程化**：pytest 406 项（405 passed + 1 skipped），含工具注册完整性守卫、图层通道静态守卫（AST 扫描）与 FastAPI TestClient 接口级集成测试
+**工程化**：pytest 492 项（487 passed + 5 skipped），含工具注册完整性守卫、图层通道静态守卫（AST 扫描）与 FastAPI TestClient 接口级集成测试；另有云原生格式公开 URL 集成测试（无网络环境自动跳过）
 
 ***
 
@@ -153,7 +168,7 @@ Gis-WorkTable/
 │   └── services/
 │       ├── ai_service.py        # AI 服务：System Prompt、知识库、会话管理
 │       ├── graph.py             # LangGraph ReAct Agent 循环
-│       ├── tools.py             # 105 个 GIS 工具函数
+│       ├── tools.py             # 120 个 GIS 工具函数
 │       ├── task_manager.py      # Task Working Memory
 │       ├── pending_action.py    # 跨轮待确认动作与选项
 │       ├── result_guard.py      # 结果真实性自检（确定性）
@@ -235,7 +250,7 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-当前收集 406 项：405 项通过，1 项因缺少 GDAL 环境被跳过。覆盖范围：工具注册完整性守卫、图层通道静态守卫、结果真实性自检、下钻与 3D 可视化、知识库加载、空间分析、栅格工具、网络分析、空间统计、遥感指数、任务管理、坐标转换、Workflow 引擎、凭据安全等。
+当前收集 492 项：487 项通过，5 项远程集成测试在无网络环境自动跳过。覆盖范围：工具注册完整性守卫、图层通道静态守卫、结果真实性自检、下钻与 3D 可视化、知识库加载、空间分析、栅格工具、网络分析、空间统计、遥感指数、任务管理、坐标转换、Workflow 引擎、凭据安全等。
 
 ### 新增 GIS 工具
 

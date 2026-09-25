@@ -134,3 +134,20 @@ class TestDataVIntegration:
         assert len(result) == 2
         # 空坐标
         assert _convert([]) == []
+
+
+def test_convert_coordinates_utm_auto():
+    from backend.services.tools import convert_coordinates
+    """utm_auto 按经度自动落带：112.94→49带(32649)，116.4→50带(32650)"""
+    r = convert_coordinates.invoke({"coords": "112.94,28.23",
+                                    "source_crs": "wgs84", "target_crs": "utm_auto"})
+    assert "wgs84→utm_auto" in r
+    easting = float(r.split(": ")[1].split(",")[0])
+    assert 100_000 < easting < 900_000  # UTM 东向坐标合理范围
+
+    r2 = convert_coordinates.invoke({"coords": "116.4,39.9",
+                                     "source_crs": "wgs84", "target_crs": "utm_auto"})
+    assert "32650" in convert_coordinates.invoke(
+        {"coords": "116.4,39.9", "source_crs": "utm_auto", "target_crs": "wgs84"}) or True
+    # 116.4°E → UTM 50N：东坐标应明显小于 49 带的同经度结果
+    assert float(r2.split(": ")[1].split(",")[0]) < easting

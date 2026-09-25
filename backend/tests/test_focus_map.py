@@ -102,6 +102,7 @@ def test_focus_map_without_args_asks_for_input():
 
 
 def test_focus_map_is_registered_in_tool_list():
-    """工具必须出现在 tools 列表里，否则 LLM 永远看不到它"""
+    """工具必须出现在 tools 列表里，否则 LLM 永远看不到它
+    （tools 列表出口统一包了执行历史包装层，按 name 匹配而非对象同一性）"""
     from backend.services.tools import tools
-    assert focus_map in tools
+    assert any(getattr(t, "name", "") == "focus_map" for t in tools)

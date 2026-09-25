@@ -91,7 +91,25 @@ window.GIS = window.GIS || {};
     var msgEl = document.getElementById('aoi-select-msg');
     if (msgEl) msgEl.remove();
 
-    // 发送选择给 AI（不再携带来源信息）
+    // 直连提取（不经 AI）：cn_aoi_extract 是确定性工具
+    if (GIS.api && GIS.api.invokeTool) {
+      GIS.chat.addMessage('正在提取「' + name + '」的建筑轮廓…', 'system');
+      GIS.api.invokeTool('cn_aoi_extract', { uid: poiId, name: name })
+        .then(function (result) {
+          if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
+          if (GIS.chat && GIS.chat.addMessage && result.response) {
+            GIS.chat.addMessage(result.response, 'system');
+          }
+        })
+        .catch(function (err) {
+          console.error('[GIS AOI] 直连提取失败:', err);
+          if (GIS.chat && GIS.chat.addMessage) {
+            GIS.chat.addMessage('AOI 提取失败: ' + err.message, 'system');
+          }
+        });
+      return;
+    }
+    // 兜底：旧路径走 AI
     var message = '已选择AOI候选: ' + name + ' | ID: ' + poiId;
     GIS.chat.sendMessage(message).catch(function(err) {
       console.error('[GIS AOI] 发送失败:', err);

@@ -471,7 +471,8 @@ class TestGetElevationDataTool:
 
     def test_tool_registered(self):
         from backend.services.tools import tools
-        assert get_elevation_data in tools
+        # tools 列表出口统一包了执行历史包装层，按 name 匹配而非对象同一性
+        assert any(getattr(t, "name", "") == "get_elevation_data" for t in tools)
 
     def test_bbox_parser_list(self):
         bb = _parse_dem_bbox([112.93, 28.18, 112.97, 28.20])

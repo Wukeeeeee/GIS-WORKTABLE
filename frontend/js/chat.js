@@ -76,52 +76,53 @@ if (typeof marked !== 'undefined') {
 
   const SLASH_COMMANDS = [
     { name: 'help', label: '操作手册', desc: '打开系统操作手册', prompt: '' },
-    { name: 'buffer', label: '缓冲区分析', desc: '为图层创建指定距离的缓冲区', prompt: '为图层 {图层名} 创建 {距离} 米的缓冲区，结果加载到地图上' },
-    { name: 'intersection', label: '空间相交', desc: '两个图层的相交分析', prompt: '对 {图层A} 和 {图层B} 做空间相交分析，结果加载到地图上' },
-    { name: 'union', label: '空间合并', desc: '合并两个图层的几何', prompt: '合并 {图层A} 和 {图层B}，结果加载到地图上' },
-    { name: 'difference', label: '空间差异', desc: '一个图层减去另一个图层', prompt: '用 {图层A} 减去 {图层B}，结果加载到地图上' },
-    { name: 'centroid', label: '提取质心', desc: '提取图层的中心点', prompt: '提取 {图层名} 的质心/中心点，结果加载到地图上' },
-    { name: 'simplify', label: '简化几何', desc: '简化图层几何，减少顶点数', prompt: '简化 {图层名} 的几何，简化容差设为 {容差}，结果加载到地图上' },
-    { name: 'clip', label: '图层裁剪', desc: '用一个图层裁剪另一个图层', prompt: '用 {裁剪图层} 裁剪 {被裁剪图层}，结果加载到地图上' },
-    { name: 'dissolve', label: '属性融合', desc: '按属性字段融合图层几何', prompt: '按字段 {字段名} 融合图层 {图层名}，结果加载到地图上' },
-    { name: 'join', label: '空间连接', desc: '按空间关系连接两个图层的属性', prompt: '将 {连接图层} 的属性按空间关系连接到 {目标图层} 上，结果加载到地图' },
-    { name: 'merge', label: '图层合并', desc: '行级合并多个图层为一个', prompt: '合并图层 {图层A, 图层B}，结果加载到地图' },
-    { name: 'split', label: '图层拆分', desc: '按属性字段拆分图层', prompt: '按字段 {字段名} 拆分图层 {图层名}' },
-    { name: 'geocode', label: '反向地理编码', desc: '坐标转地址 / 地址批量转坐标', prompt: '将坐标 ({经度},{纬度}) 转为地址' },
-    { name: 'select', label: '空间选择', desc: '按空间关系选择图层要素', prompt: '选择 {目标图层} 中与 {源图层} 相交的所有要素，结果加载到地图' },
-    { name: 'sample', label: '随机采样', desc: '从图层随机采样要素', prompt: '从 {图层名} 随机采样 {数量} 个要素，结果加载到地图' },
-    { name: 'near', label: '邻近查找', desc: '查找距离目标图层一定范围内的要素', prompt: '查找 {目标图层} 中距离 {源图层} {距离} 米以内的要素，结果加载到地图' },
-    { name: 'cluster', label: '空间聚类', desc: 'DBSCAN 点聚类分析', prompt: '对 {图层名} 做空间聚类，eps={半径} min_samples={最少点数}，结果加载到地图' },
-    { name: 'voronoi', label: '泰森多边形', desc: '根据点图层生成 Voronoi 图', prompt: '为 {图层名} 生成泰森多边形，结果加载到地图' },
-    { name: 'stats', label: '字段统计', desc: '统计图层数值字段', prompt: '统计 {图层名} 的 {字段名} 字段，给出 min/max/mean/sum/std' },
-    { name: 'area', label: '计算面积', desc: '计算图层各要素的面积', prompt: '计算 {图层名} 每个要素的面积，结果用表格显示' },
-    { name: 'length', label: '计算长度', desc: '计算线图层的长度', prompt: '计算 {图层名} 每个要素的长度，结果用表格显示' },
-    { name: 'make_valid', label: '修复几何', desc: '修复无效的几何图形', prompt: '修复 {图层名} 中无效的几何图形，将修复后的结果加载到地图上' },
+    { name: 'buffer', label: '缓冲区分析', desc: '为图层创建指定距离的缓冲区', prompt: '为图层 {图层名} 创建 {距离} 米的缓冲区，结果加载到地图上', direct: function () { GIS.spatial.openTab('buffer') },},
+    { name: 'intersection', label: '空间相交', desc: '两个图层的相交分析', prompt: '对 {图层A} 和 {图层B} 做空间相交分析，结果加载到地图上', direct: function () { GIS.spatial.openTab('overlay') },},
+    { name: 'union', label: '空间合并', desc: '合并两个图层的几何', prompt: '合并 {图层A} 和 {图层B}，结果加载到地图上', direct: function () { GIS.spatial.openTab('overlay') },},
+    { name: 'difference', label: '空间差异', desc: '一个图层减去另一个图层', prompt: '用 {图层A} 减去 {图层B}，结果加载到地图上', direct: function () { GIS.spatial.openTab('overlay') },},
+    { name: 'centroid', label: '提取质心', desc: '提取图层的中心点', prompt: '提取 {图层名} 的质心/中心点，结果加载到地图上', direct: function () { GIS.spatial.openTab('geom') },},
+    { name: 'simplify', label: '简化几何', desc: '简化图层几何，减少顶点数', prompt: '简化 {图层名} 的几何，简化容差设为 {容差}，结果加载到地图上', direct: function () { GIS.spatial.openTab('geom') },},
+    { name: 'clip', label: '图层裁剪', desc: '用一个图层裁剪另一个图层', prompt: '用 {裁剪图层} 裁剪 {被裁剪图层}，结果加载到地图上', direct: function () { GIS.spatial.openTab('clip') },},
+    { name: 'dissolve', label: '属性融合', desc: '按属性字段融合图层几何', prompt: '按字段 {字段名} 融合图层 {图层名}，结果加载到地图上', direct: function () { GIS.spatial.openTab('geom') },},
+    { name: 'join', label: '空间连接', desc: '按空间关系连接两个图层的属性', prompt: '将 {连接图层} 的属性按空间关系连接到 {目标图层} 上，结果加载到地图', direct: function () { GIS.spatial.openTab('stats') },},
+    { name: 'merge', label: '图层合并', desc: '行级合并多个图层为一个', prompt: '合并图层 {图层A, 图层B}，结果加载到地图', direct: function () { GIS.spatial.openTab('geom') },},
+    { name: 'split', label: '图层拆分', desc: '按属性字段拆分图层', prompt: '按字段 {字段名} 拆分图层 {图层名}', direct: function () { if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('split'); } },
+    { name: 'geocode', label: '反向地理编码', desc: '坐标转地址 / 地址批量转坐标', prompt: '将坐标 ({经度},{纬度}) 转为地址', direct: function () { if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('geocode'); } },
+    { name: 'select', label: '空间选择', desc: '按空间关系选择图层要素', prompt: '选择 {目标图层} 中与 {源图层} 相交的所有要素，结果加载到地图', direct: function () { GIS.spatial.openTab('select') },},
+    { name: 'sample', label: '随机采样', desc: '从图层随机采样要素', prompt: '从 {图层名} 随机采样 {数量} 个要素，结果加载到地图', direct: function () { GIS.spatial.openTab('select') },},
+    { name: 'near', label: '邻近查找', desc: '查找距离目标图层一定范围内的要素', prompt: '查找 {目标图层} 中距离 {源图层} {距离} 米以内的要素，结果加载到地图', direct: function () { GIS.spatial.openTab('select') },},
+    { name: 'cluster', label: '空间聚类', desc: 'DBSCAN 点聚类分析', prompt: '对 {图层名} 做空间聚类，eps={半径} min_samples={最少点数}，结果加载到地图', direct: function () { GIS.spatial.openTab('geom') },},
+    { name: 'voronoi', label: '泰森多边形', desc: '根据点图层生成 Voronoi 图', prompt: '为 {图层名} 生成泰森多边形，结果加载到地图', direct: function () { GIS.spatial.openTab('geom') },},
+    { name: 'stats', label: '字段统计', desc: '统计图层数值字段', prompt: '统计 {图层名} 的 {字段名} 字段，给出 min/max/mean/sum/std', direct: function () { GIS.spatial.openTab('stats') },},
+    { name: 'area', label: '计算面积', desc: '计算图层各要素的面积', prompt: '计算 {图层名} 每个要素的面积，结果用表格显示', direct: function () { GIS.spatial.openTab('stats') },},
+    { name: 'length', label: '计算长度', desc: '计算线图层的长度', prompt: '计算 {图层名} 每个要素的长度，结果用表格显示', direct: function () { GIS.spatial.openTab('geom') },},
+    { name: 'make_valid', label: '修复几何', desc: '修复无效的几何图形', prompt: '修复 {图层名} 中无效的几何图形，将修复后的结果加载到地图上', direct: function () { GIS.spatial.openTab('geom') },},
     { name: 'aoi', label: 'AOI 边界', desc: '提取地点建筑轮廓', prompt: '搜索 {地点名称} 的 AOI 建筑轮廓并提取' },
-    { name: 'boundary', label: '行政边界', desc: '获取行政区划边界', prompt: '获取 {省/市/区} 的行政边界并加载到地图' },
-    { name: 'heatmap', label: '热力图', desc: '从点数据生成热力图', prompt: '为 {图层名} 生成热力图' },
+    { name: 'boundary', label: '行政边界', desc: '获取行政区划边界', prompt: '获取 {省/市/区} 的行政边界并加载到地图', direct: function () { GIS.spatial.openTab('data') },},
+    { name: 'heatmap', label: '热力图', desc: '从点数据生成热力图', prompt: '为 {图层名} 生成热力图', direct: function () { if (GIS.rasterTools && GIS.rasterTools.openWith) GIS.rasterTools.openWith('heatmap'); } },
     { name: 'plot', label: '统计图表', desc: '生成数据统计图表', prompt: '对 {图层名} 的 {字段} 生成统计图表' },
-    { name: 'export', label: '导出SHP', desc: '导出图层为Shapefile或GeoJSON', prompt: '将 {图层名} 导出为 {格式} 文件' },
+    { name: 'export', label: '导出SHP', desc: '导出图层为Shapefile或GeoJSON', prompt: '将 {图层名} 导出为 {格式} 文件', direct: function () { var b = document.getElementById('toggleLayerPanel'); if (b) b.click(); } },
     { name: 'chart', label: '图表分析', desc: '图层属性统计图表（柱状/饼图/散点）', prompt: '对 {图层名} 的 {字段} 生成 {图表类型} 图' },
-    { name: 'amap', label: '高德', desc: '搜索POI/查天气/地址转坐标', prompt: '搜索 {关键词} 的 POI 数据，每页25条最多200条，结果加载到地图' },
-    { name: 'network', label: '网络分析', desc: '最短路径/服务区/最近设施', prompt: '从 {起点} 到 {终点} 的最短路径，用广州路网分析' },
-    { name: 'slope', label: '坡度分析', desc: '对 DEM 做坡度分析', prompt: '对 {图层名} 做坡度分析，结果叠加到地图上' },
-    { name: 'aspect', label: '坡向分析', desc: '对 DEM 做坡向分析', prompt: '对 {图层名} 做坡向分析，结果叠加到地图上' },
-    { name: 'hillshade', label: '山体阴影', desc: '生成 DEM 山体阴影', prompt: '生成 {图层名} 的山体阴影，结果叠加到地图上' },
-    { name: 'contour', label: '等高线', desc: '从 DEM 提取等高线', prompt: '从 {图层名} 提取等高线，等高距 {间隔} 米，结果加载到地图' },
-    { name: 'ndvi', label: 'NDVI 计算', desc: '计算植被指数 NDVI', prompt: '计算 {图层名} 的 NDVI，结果叠加到地图' },
-    { name: 'rastercalc', label: '栅格计算器', desc: '波段数学运算', prompt: '用表达式 {表达式} 对 {图层名} 做栅格计算，结果叠加到地图' },
-    { name: 'interpolate', label: '空间插值', desc: 'IDW / RBF 插值分析', prompt: '对 {图层名} 的 {字段} 做 {方法} 插值，结果叠加到地图' },
-    { name: 'hydrology', label: '水文分析', desc: '流向/流量/河网提取', prompt: '对 {图层名} 做水文分析，提取河网，结果加载到地图' },
-    { name: 'topology', label: '拓扑检查', desc: '检查重叠/缝隙/无效几何', prompt: '对 {图层名} 做拓扑检查，标记所有拓扑错误' },
-    { name: 'coord-convert', label: '坐标转换', desc: '经纬度与投影坐标互转', prompt: '将坐标 {经度},{纬度} 转为 Web Mercator' },
-    { name: 'edit-vertices', label: '折点编辑', desc: '编辑图层的折点', prompt: '编辑 {图层名} 的折点' },
+    { name: 'amap', label: '高德', desc: '搜索POI/查天气/地址转坐标', prompt: '搜索 {关键词} 的 POI 数据，每页25条最多200条，结果加载到地图', direct: function () { GIS.spatial.openTab('data') },},
+    { name: 'network', label: '网络分析', desc: '最短路径/服务区/最近设施', prompt: '从 {起点} 到 {终点} 的最短路径，用广州路网分析', direct: function () { if (GIS.network && GIS.network.toggle) GIS.network.toggle(); } },
+    { name: 'slope', label: '坡度分析', desc: '对 DEM 做坡度分析', prompt: '对 {图层名} 做坡度分析，结果叠加到地图上', direct: function () { GIS.rasterTools.openWith('slope') },},
+    { name: 'aspect', label: '坡向分析', desc: '对 DEM 做坡向分析', prompt: '对 {图层名} 做坡向分析，结果叠加到地图上', direct: function () { GIS.rasterTools.openWith('aspect') },},
+    { name: 'hillshade', label: '山体阴影', desc: '生成 DEM 山体阴影', prompt: '生成 {图层名} 的山体阴影，结果叠加到地图上', direct: function () { GIS.rasterTools.openWith('hillshade') },},
+    { name: 'contour', label: '等高线', desc: '从 DEM 提取等高线', prompt: '从 {图层名} 提取等高线，等高距 {间隔} 米，结果加载到地图', direct: function () { GIS.rasterTools.openWith('contour') },},
+    { name: 'ndvi', label: 'NDVI 计算', desc: '计算植被指数 NDVI', prompt: '计算 {图层名} 的 NDVI，结果叠加到地图', direct: function () { GIS.rasterTools.openWith('ndvi') },},
+    { name: 'rastercalc', label: '栅格计算器', desc: '波段数学运算', prompt: '用表达式 {表达式} 对 {图层名} 做栅格计算，结果叠加到地图', direct: function () { GIS.rasterTools.openWith('rastercalc') },},
+    { name: 'interpolate', label: '空间插值', desc: 'IDW / RBF 插值分析', prompt: '对 {图层名} 的 {字段} 做 {方法} 插值，结果叠加到地图', direct: function () { GIS.rasterTools.openWith('interpolate') },},
+    { name: 'hydrology', label: '水文分析', desc: '流向/流量/河网提取', prompt: '对 {图层名} 做水文分析，提取河网，结果加载到地图', direct: function () { GIS.rasterTools.openWith('hydrology') },},
+    { name: 'topology', label: '拓扑检查', desc: '检查重叠/缝隙/无效几何', prompt: '对 {图层名} 做拓扑检查，标记所有拓扑错误', direct: function () { GIS.rasterTools.openWith('topology') },},
+    { name: 'coord-convert', label: '坐标转换', desc: '经纬度与投影坐标互转', prompt: '将坐标 {经度},{纬度} 转为 Web Mercator', direct: function () { GIS.rasterTools.openWith('coord') },},
+    { name: 'edit-vertices', label: '折点编辑', desc: '编辑图层的折点', prompt: '编辑 {图层名} 的折点', direct: function () { var b = document.getElementById('toggleLayerPanel'); if (b) b.click(); } },
     { name: 'snapping', label: '捕捉开关', desc: '启用/关闭绘制捕捉', prompt: '启用绘制捕捉' },
-    { name: 'legend', label: '添加图例', desc: '为分级/唯一值图层添加图例', prompt: '给 {图层名} 添加图例' },
-    { name: 'north-arrow', label: '指北针', desc: '添加/移除指北针', prompt: '添加指北针' },
-    { name: 'labels', label: '要素标注', desc: '给图层添加文字标注', prompt: '给 {图层名} 添加标注，显示 {字段} 内容' },
-    { name: 'export-map', label: '导出地图', desc: '导出当前地图为 PNG', prompt: '导出当前地图为 PNG' },
-    { name: 'export-pdf', label: '导出 PDF', desc: '导出当前地图为 PDF', prompt: '导出当前地图为 PDF' },
+    { name: 'legend', label: '添加图例', desc: '为分级/唯一值图层添加图例', prompt: '给 {图层名} 添加图例', direct: function () { var b = document.getElementById('toggleLayerPanel'); if (b) b.click(); } },
+        { name: '3d', label: '3D 地球', desc: '2D 地图 / 3D 地球切换', prompt: '', direct: function () { if (window.GIS.renderers && GIS.renderers.toggle3D) GIS.renderers.toggle3D(); } },
+{ name: 'north-arrow', label: '指北针', desc: '添加/移除指北针', prompt: '添加指北针', direct: function () { if (GIS.map && GIS.map.showNorthArrow) GIS.map.showNorthArrow(); },},
+    { name: 'labels', label: '要素标注', desc: '给图层添加文字标注', prompt: '给 {图层名} 添加标注，显示 {字段} 内容', direct: function () { var b = document.getElementById('toggleLayerPanel'); if (b) b.click(); } },
+    { name: 'export-map', label: '导出地图', desc: '导出当前地图为 PNG', prompt: '导出当前地图为 PNG', direct: function () { if (GIS.map && GIS.map.exportMap) GIS.map.exportMap('png'); } },
+    { name: 'export-pdf', label: '导出 PDF', desc: '导出当前地图为 PDF', prompt: '导出当前地图为 PDF', direct: function () { if (GIS.map && GIS.map.exportPdf) GIS.map.exportPdf('地图导出'); } },
   ];
 
   let _slashFiltered = [];      // 当前过滤后的列表
@@ -339,6 +340,11 @@ if (typeof marked !== 'undefined') {
       if (window.GIS && window.GIS.map && window.GIS.map._openManual) {
         window.GIS.map._openManual();
       }
+      return;
+    }
+    // 确定性命令 → 直连面板/工具（不经 AI）；无 direct 路由的才做 AI chip
+    if (typeof cmd.direct === 'function') {
+      try { cmd.direct(); } catch (e) { console.error('[slash] direct 执行失败', e); }
       return;
     }
     _addChip(cmd);
@@ -1256,6 +1262,21 @@ if (typeof marked !== 'undefined') {
                 }
               }
               break;
+            case 'swipe':
+              // 卷帘对比：2D 用独立 pane + clip-path 分割；3D 模式下提示切回 2D
+              if (window.GIS.renderers && window.GIS.renderers.is3D && window.GIS.renderers.is3D()) {
+                if (window.GIS.chat) {
+                  window.GIS.chat.addMessage('卷帘对比目前仅支持 2D 模式，请先切换回 2D 地图', 'system');
+                }
+              } else if (window.GIS.map && typeof window.GIS.map.startSwipe === 'function') {
+                window.GIS.map.startSwipe(op.left, op.right, op.orientation);
+              }
+              break;
+            case 'swipe_close':
+              if (window.GIS.map && typeof window.GIS.map.stopSwipe === 'function') {
+                window.GIS.map.stopSwipe();
+              }
+              break;
           }
         });
       }
@@ -1354,6 +1375,14 @@ if (typeof marked !== 'undefined') {
             source: 'ai',
           });
         })(0);
+      }
+
+      // 处理历史面板：打开状态下随每轮结果自动刷新（新工具执行记录到达）
+      if (window.GIS.history && typeof window.GIS.history.refresh === 'function') {
+        var _hp = document.getElementById('historyPanel');
+        if (_hp && _hp.classList.contains('open')) {
+          setTimeout(function() { window.GIS.history.refresh(); }, 1200);
+        }
       }
 
       // 热力图数据
@@ -1776,5 +1805,119 @@ if (typeof marked !== 'undefined') {
   function getMode() { return 'full'; }
   function setMode(mode) { /* 已禁用模式切换 */ }
 
-  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop, SLASH_COMMANDS, triggerSlash, getMode, setMode };
+  /** 直连工具结果上图（手动面板通道）：与聊天返回同构，走共享状态与既有 op 逻辑 */
+  function applyToolResult(result) {
+    if (!result) return;
+    if (result.clear_layers && GIS.layers) {
+      (GIS.layers.getLayers() || []).forEach(function (l) {
+        if (l.layer_id) GIS.layers.removeLayer(l.layer_id);
+      });
+    }
+    (result.layers || []).forEach(function (layer, idx) {
+      if (!window.GIS.state) return;
+      const layerName = layer.name || ('图层' + (idx + 1));
+      window.GIS.state.addLayer({
+        layer_id: 'manual_' + Date.now() + '_' + idx,
+        name: layerName + '_' + Date.now() + '_' + idx,
+        geojson: layer.geojson || layer,
+        style: layer.style || null,
+        source: 'manual',
+      });
+    });
+    (result.layer_ops || []).forEach(function (op) {
+      if (!GIS.map) return;
+      switch (op.action) {
+        case 'swipe':
+          if (GIS.map.startSwipe) GIS.map.startSwipe(op.left, op.right, op.orientation);
+          break;
+        case 'swipe_close':
+          if (GIS.map.stopSwipe) GIS.map.stopSwipe();
+          break;
+        case 'fit':
+          if (GIS.map.fitLayer) GIS.map.fitLayer(op.name);
+          break;
+        case 'center':
+          if (GIS.map.setView && op.center) GIS.map.setView([op.center[1], op.center[0]], op.zoom || 13);
+          break;
+        case 'set_color':
+          if (GIS.map.setLayerColor) GIS.map.setLayerColor(op.name, op.color);
+          break;
+        case 'set_style':
+          if (GIS.map.setLayerStyle) GIS.map.setLayerStyle(op.name, op.style || {});
+          break;
+        case 'toggle':
+          if (GIS.layers && GIS.layers.toggleVisibility) {
+            const t = (GIS.layers.getLayers() || []).find(l => l._rawName === op.name || l.filename === op.name);
+            if (t) GIS.layers.toggleVisibility(t.layer_id);
+          }
+          break;
+        case 'remove':
+          if (GIS.layers) {
+            const t2 = (GIS.layers.getLayers() || []).find(l => l._rawName === op.name || l.filename === op.name);
+            if (t2) GIS.layers.removeLayer(t2.layer_id);
+          }
+          break;
+        case 'north_arrow':
+          if (GIS.map.showNorthArrow) GIS.map.showNorthArrow();
+          break;
+        case 'labels':
+          if (GIS.layers && GIS.layers.addLabels) GIS.layers.addLabels(op.name, op.field);
+          break;
+        case 'legend':
+          if (GIS.layers && GIS.layers.addLegend) GIS.layers.addLegend(op.name);
+          break;
+        case 'symbology':
+          if (GIS.layers) {
+            if (op.symbology_type === 'graduated') GIS.layers.applyGraduatedColors(op.name, op.field, op.classes, op.scheme);
+            else if (op.symbology_type === 'unique') GIS.layers.applyUniqueValues(op.name, op.field, op.scheme);
+          }
+          break;
+        case 'dem_result':
+          if (op.url && op.bounds) GIS.map.addImageOverlay(op.url, op.bounds, op.name);
+          break;
+        case 'time_animation':
+          if (GIS.map.startTimeAnimation) GIS.map.startTimeAnimation(op.name, op.time_field, op.time_values, op.interval_ms);
+          break;
+        case 'drill':
+          // 行政区下钻/上钻：同步导航栈（面包屑/视野/父级图层显隐）
+          if (window.GIS.state) {
+            if (op.direction === 'up') window.GIS.state.drillUpTo();
+            else if (op.adcode) window.GIS.state.drillSyncFromAgent(op);
+          }
+          break;
+        case 'visualize':
+          if (window.GIS.state && typeof window.GIS.state.applyVisualization === 'function' && op.viz) {
+            const vizRec = (window.GIS.state.getLayers() || []).find(
+              l => l.name === op.name || l._rawName === op.name);
+            if (vizRec) window.GIS.state.applyVisualization(vizRec.layer_id, op.viz);
+          }
+          break;
+      }
+    });
+    (result.images || []).forEach(function (item) {
+      const url = typeof item === 'string' ? item : (item.url || '');
+      if (!url) return;
+      const fullUrl = url.startsWith('http') ? url : (window.GIS.api ? window.GIS.api.BASE_URL + url : url);
+      if (window.GIS.chat && window.GIS.chat.addMessage) {
+        window.GIS.chat.addMessage('产物文件：' + fullUrl, 'system');
+      }
+    });
+    if (result.heatmap && result.heatmap.points && result.heatmap.points.length > 0 && GIS.map && GIS.map.loadHeatmap) {
+      GIS.map.loadHeatmap(result.heatmap.points, result.heatmap.name || '热力图', result.heatmap.options || {});
+    }
+    // 地理质量自检警告：显式展示，不静默吞掉可疑数据
+    (result.qa_warnings || []).forEach(function (w) {
+      if (window.GIS.chat && window.GIS.chat.addMessage) {
+        window.GIS.chat.addMessage('⚠ 质量提示[' + (w.layer || '') + ']: ' + w.warning, 'system');
+      }
+    });
+    if (window.GIS.history && typeof window.GIS.history.refresh === 'function') {
+      const hp = document.getElementById('historyPanel');
+      if (hp && hp.classList.contains('open')) {
+        setTimeout(function () { window.GIS.history.refresh(); }, 1000);
+      }
+    }
+  }
+
+  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop, SLASH_COMMANDS, triggerSlash, getMode, setMode, applyToolResult };
 })();

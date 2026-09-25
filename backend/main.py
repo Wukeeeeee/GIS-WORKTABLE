@@ -439,6 +439,13 @@ async def save_proxy_config(req: dict):
 async def health():
     return {"status": "ok"}
 
+@app.get("/api/layers/names")
+async def list_layer_names():
+    """注册图层名列表（轻量，供手动面板下拉框精确匹配后端工具）"""
+    from backend.services.tools import _registered_layers
+    return {"names": list(_registered_layers.keys())}
+
+
 @app.get("/api/layers")
 async def list_layers():
     from backend.services.tools import _registered_layers
@@ -791,7 +798,40 @@ async def upload(file: UploadFile = File(...)):
         except Exception as e:
             return {"error": f"CSV 读取失败: {str(e)[:200]}"}
 
-    return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .tif .tiff .zip(含shp)"}
+    # ===== 云原生格式：PMTiles / GeoParquet / FlatGeobuf =====
+    if ext in ('.pmtiles', '.parquet', '.geoparquet', '.fgb'):
+        from backend.services import cloud_native as cn
+        name = os.path.splitext(filename)[0]
+        try:
+            if ext == '.pmtiles':
+                try:
+                    geojson, info = cn.pmtiles_vector_to_geojson(saved_path)
+                    _register_layer(name, geojson)
+                    return {"geojson": geojson, "name": name, "pmtiles_info": info}
+                except cn.CloudNativeError:
+                    # 栅格 PMTiles：中心瓦片作为影像叠加
+                    tile_bytes, bounds, fmt, info = cn.pmtiles_raster_tile_bounds(saved_path)
+                    upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
+                    os.makedirs(upload_dir, exist_ok=True)
+                    tile_name = f"pmtiles_{name}.{fmt}"
+                    with open(os.path.join(upload_dir, tile_name), "wb") as f:
+                        f.write(tile_bytes)
+                    return {
+                        "raster_info": {
+                            "filename": tile_name,
+                            "url": f"/output/uploads/{tile_name}",
+                            "bounds": [float(v) for v in bounds],
+                        },
+                        "message": f"已加载栅格 PMTiles: {name}",
+                    }
+            fmt = "GeoParquet" if ext in ('.parquet', '.geoparquet') else "FlatGeobuf"
+            geojson, meta = cn.cloud_vector_to_geojson(saved_path, fmt)
+            _register_layer(name, geojson)
+            return {"geojson": geojson, "name": name, "meta": meta}
+        except cn.CloudNativeError as e:
+            return {"error": str(e)}
+
+    return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .tif .tiff .zip(含shp) .pmtiles .parquet .fgb"}
 
 	# ===== 工程保存/加载 =====
 class ProjectSaveRequest(BaseModel):
@@ -1116,6 +1156,190 @@ async def api_data_download(request: DataDownloadRequest):
     if asset.get("geojson") is not None:
         _register_layer(asset["layer_name"], asset["geojson"])
     return asset
+
+
+# ===== 处理历史（前端「历史」面板） =====
+
+@app.get("/api/history")
+async def api_history(limit: int = 50):
+    """工具执行历史（倒序），供右侧历史面板展示"""
+    from backend.services.history_service import list_entries
+    return {"history": list_entries(limit)}
+
+
+@app.delete("/api/history")
+async def api_history_clear():
+    from backend.services.history_service import clear
+    clear()
+    return {"status": "ok", "message": "历史已清空"}
+
+
+class HistoryRerunRequest(BaseModel):
+    index: int
+
+
+@app.post("/api/history/rerun")
+async def api_history_rerun(request: HistoryRerunRequest):
+    """按编号重跑历史工具（前端历史面板「重跑」按钮）。
+    返回结构与聊天侧一致：layers/layer_ops 由前端照常上图。"""
+    from backend.services.tools import tools as _tool_list, get_pending_state, reset_state
+    reg = {t.name: t for t in _tool_list}
+    rerun_tool = reg.get("rerun_history")
+    if rerun_tool is None:
+        raise HTTPException(status_code=500, detail="rerun_history 工具未注册")
+    reset_state()
+    resp = rerun_tool.invoke({"index": request.index})
+    pending = get_pending_state()
+    return {
+        "response": resp,
+        "layers": pending.get("layers", []),
+        "layer_ops": pending.get("layer_ops", []),
+        "images": pending.get("images", []),
+        "clear_layers": pending.get("clear_layers", False),
+    }
+
+
+# ===== 在线云原生数据加载（连接器面板「粘贴 URL」入口） =====
+
+class OnlineLoadRequest(BaseModel):
+    source: str                          # http(s) URL 或本地路径
+    type: str = "auto"                   # cog | pmtiles | geoparquet | flatgeobuf | auto
+    layer_name: str = ""
+    bbox: str = ""                       # minx,miny,maxx,maxy（矢量类可选）
+
+
+@app.post('/api/online/load')
+async def api_online_load(request: OnlineLoadRequest):
+    """按 URL/路径加载云原生数据（COG/PMTiles/GeoParquet/FlatGeobuf）→ 注册为图层。"""
+    from backend.services import cloud_native as cn
+    src = (request.source or "").strip()
+    if not src:
+        return {"error": "请提供数据 URL 或路径"}
+    ltype = (request.type or "auto").strip().lower()
+    if ltype == "auto":
+        ext = os.path.splitext(src)[1].lower()
+        ltype = {'.tif': 'cog', '.tiff': 'cog', '.pmtiles': 'pmtiles',
+                 '.parquet': 'geoparquet', '.geoparquet': 'geoparquet',
+                 '.fgb': 'flatgeobuf'}.get(ext, "")
+        if not ltype:
+            return {"error": f"无法从扩展名识别数据类型（{ext or '无'}），请显式指定 type"}
+    loop = asyncio.get_event_loop()
+
+    def _load():
+        if ltype == "cog":
+            return {"type": "cog", "result": cn.read_cog(src), "name": request.layer_name}
+        if ltype == "pmtiles":
+            try:
+                geojson, info = cn.pmtiles_vector_to_geojson(src)
+                return {"type": "pmtiles_vector", "geojson": geojson, "info": info}
+            except cn.CloudNativeError:
+                tile_bytes, bounds, fmt, info = cn.pmtiles_raster_tile_bounds(src)
+                return {"type": "pmtiles_raster", "tile_bytes": tile_bytes,
+                        "bounds": bounds, "fmt": fmt, "info": info}
+        fmt = "GeoParquet" if ltype == "geoparquet" else "FlatGeobuf"
+        bbox = cn.parse_bbox(request.bbox) if request.bbox else None
+        geojson, meta = cn.cloud_vector_to_geojson(src, fmt, bbox=bbox)
+        return {"type": ltype, "geojson": geojson, "meta": meta}
+
+    try:
+        result = await loop.run_in_executor(None, _load)
+    except cn.CloudNativeError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"加载失败: {str(e)[:300]}"}
+
+    name = request.layer_name.strip()
+    if result["type"] == "cog":
+        import re as _re
+        import time as _time
+        r = result["result"]
+        name = name or "COG影像"
+        safe = _re.sub(r'[\\/:*?"<>|]', "_", name)
+        png_name = f"cog_{safe}_{int(_time.time())}.png"
+        upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        with open(os.path.join(upload_dir, png_name), "wb") as f:
+            f.write(r["png_bytes"])
+        return {
+            "raster_info": {
+                "filename": png_name,
+                "url": f"/output/uploads/{png_name}",
+                "bounds": [float(v) for v in r["bounds"]],
+            },
+            "message": f"已加载 COG 影像: {name}",
+            "name": name,
+            "meta": r["meta"],
+        }
+    if result["type"] == "pmtiles_raster":
+        import re as _re
+        import time as _time
+        name = name or "PMTiles栅格"
+        safe = _re.sub(r'[\\/:*?"<>|]', "_", name)
+        tile_name = f"pmtiles_{safe}_{int(_time.time())}.{result['fmt']}"
+        upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        with open(os.path.join(upload_dir, tile_name), "wb") as f:
+            f.write(result["tile_bytes"])
+        return {
+            "raster_info": {
+                "filename": tile_name,
+                "url": f"/output/uploads/{tile_name}",
+                "bounds": [float(v) for v in result["bounds"]],
+            },
+            "message": f"已加载栅格 PMTiles: {name}",
+            "name": name,
+            "meta": result["info"],
+        }
+    # 矢量类
+    geojson = result["geojson"]
+    if not name:
+        name = os.path.splitext(os.path.basename(src))[0] or "云原生图层"
+    _register_layer(name, geojson)
+    return {"geojson": geojson, "name": name, "meta": result.get("meta") or result.get("info")}
+
+
+# ===== 工具直连执行（手动面板通道：不经 LLM，直接调用注册工具） =====
+
+class ToolInvokeRequest(BaseModel):
+    name: str                            # tools.py 注册的工具名
+    arguments: dict = {}                 # 工具参数
+
+
+@app.post('/api/tools/invoke')
+async def api_tools_invoke(request: ToolInvokeRequest):
+    """直连执行一个 @tool 注册工具（前端手动面板用，不走 AI）。
+
+    与聊天侧同链路：图层产物经 _push_layer 通道返回，执行自动进处理历史（可重跑）。
+    """
+    from backend.services.tools import tools as _tool_list, get_pending_state, reset_state
+    reg = {t.name: t for t in _tool_list}
+    tool = reg.get(request.name)
+    if tool is None:
+        raise HTTPException(status_code=404, detail=f"工具不存在: {request.name}")
+    args = request.arguments or {}
+    if not isinstance(args, dict):
+        raise HTTPException(status_code=400, detail="arguments 应为对象")
+    reset_state()
+    loop = asyncio.get_event_loop()
+    try:
+        response = await loop.run_in_executor(
+            None, functools.partial(tool.invoke, args))
+        ok = True
+    except Exception as e:
+        response = f"工具执行失败: {str(e)[:400]}"
+        ok = False
+    pending = get_pending_state()
+    return {
+        "ok": ok,
+        "tool": request.name,
+        "response": response,
+        "layers": pending.get("layers", []),
+        "layer_ops": pending.get("layer_ops", []),
+        "images": pending.get("images", []),
+        "heatmap": pending.get("heatmap"),
+        "clear_layers": pending.get("clear_layers", False),
+        "qa_warnings": pending.get("qa_warnings", []),
+    }
 
 
 # ===== Task Manager API =====

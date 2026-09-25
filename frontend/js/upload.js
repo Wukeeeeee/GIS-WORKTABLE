@@ -9,7 +9,7 @@ window.GIS = window.GIS || {};
   'use strict';
 
   const GIS = window.GIS;
-  const ALLOWED_EXTENSIONS = ['.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip', '.shp', '.csv', '.tif', '.tiff'];
+  const ALLOWED_EXTENSIONS = ['.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip', '.shp', '.csv', '.tif', '.tiff', '.pmtiles', '.parquet', '.geoparquet', '.fgb'];
 
   let fileInput = null;
 

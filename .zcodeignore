@@ -1,0 +1,113 @@
+# API Key
+apikey.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 环境变量
+.env
+.env.local
+
+# 对话历史缓存（自动生成）
+backend/chat_history.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node（desktop/ 桌面客户端）
+node_modules/
+desktop/logs/
+
+# 日志
+logs/temp.jsonl
+logs/permanent.jsonl
+
+# 缓存（AOI 搜索/提取缓存、对话历史、OSM 边界等）
+cache/
+
+# AI 生成文件
+output/
+*.geojson
+
+# 测试输出临时文件
+uploads/
+
+# 测试数据与报告
+_test/
+test/data/
+test/reports/
+
+# 开发阶段跟踪（本地，不提交）
+CURRENT
+
+# opencode AI 配置（本地，不提交）
+.opencode/
+
+# 本地开发追踪
+memory.md
+WORKFLOW.md
+CLAUDE.md
+.claude/
+
+# 学习笔记（本地，不提交）
+study/
+
+# 临时脚本
+scripts/
+
+# 本地测试数据（不上传）
+test_data/
+
+# 临时环境与脚本
+.tmpenv/
+
+# AI 代码解析学习笔记（本地，不提交）
+code_notes/
+
+# Prompt 模板（本地，不提交）
+prompt/
+
+# AI 实现参考代码（本地学习用，不提交）
+ai_implementation_reference/
+.workbuddy/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

@@ -303,6 +303,14 @@ window.GIS = window.GIS || {};
     var tries = 0;
     (function attempt() {
       var rec = layerByName(op.layer_name || '');
+      if (!rec) {
+        // 兼容前端唯一名后缀（图层名_时间戳_序号）：按前缀匹配后端图层名
+        var want = op.layer_name || '';
+        for (var i = 0; i < layers.length; i++) {
+          if ((layers[i].name || '').indexOf(want) === 0 ||
+              (layers[i]._rawName || '').indexOf(want) === 0) { rec = layers[i]; break; }
+        }
+      }
       if (!rec && tries++ < 10) { setTimeout(attempt, 300); return; }
       if (!rec) return;
       var hiddenLayerId = null;

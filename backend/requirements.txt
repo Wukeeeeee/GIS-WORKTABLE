@@ -32,3 +32,10 @@ scipy>=1.11.0
 scikit-learn>=1.3.0
 scikit-image>=0.22.0
 Pillow>=10.0.0
+
+# ---- 云原生格式流式加载（阶段二：COG / PMTiles / GeoParquet / FlatGeobuf）----
+pmtiles>=3.0.0
+mapbox-vector-tile>=2.0.0
+
+# ---- MCP Server（阶段三：对外开放 GIS 工具给外部 AI 客户端）----
+mcp>=1.0.0

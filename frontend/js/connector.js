@@ -41,6 +41,26 @@
     var closeBtn = document.getElementById('connectorClose');
     if (closeBtn) closeBtn.addEventListener('click', hide);
 
+    // 在线云原生数据加载（粘贴 URL）
+    var loadBtn = document.getElementById('onlineLoadBtn');
+    if (loadBtn) loadBtn.addEventListener('click', loadOnline);
+    var urlInput = document.getElementById('onlineUrl');
+    if (urlInput) {
+      urlInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') loadOnline();
+      });
+    }
+    // 设置页「地理服务」里的快捷入口 → 打开浮层面板
+    var openOnlineBtn = document.getElementById('openOnlineDataBtn');
+    if (openOnlineBtn) {
+      openOnlineBtn.addEventListener('click', function () {
+        hide();   // 先收起设置面板浮层下的面板
+        var modal = document.getElementById('settingsModal');
+        if (modal) modal.style.display = 'none';
+        show();
+      });
+    }
+
     // 点击面板外部关闭
     document.addEventListener('click', function (e) {
       if (!_panel) return;
@@ -186,6 +206,84 @@
         btn.textContent = '网络错误';
         setTimeout(function () { btn.textContent = '测试'; }, 2000);
       });
+  }
+
+  // ===== 在线云原生数据加载（COG / PMTiles / GeoParquet / FlatGeobuf） =====
+  function loadOnline() {
+    var typeEl = document.getElementById('onlineType');
+    var urlEl = document.getElementById('onlineUrl');
+    var btn = document.getElementById('onlineLoadBtn');
+    if (!urlEl || !btn) return;
+    var source = (urlEl.value || '').trim();
+    if (!source) {
+      alert('请先粘贴数据 URL 或本地路径');
+      return;
+    }
+    var type = typeEl ? typeEl.value : 'auto';
+    btn.disabled = true;
+    var oldText = btn.textContent;
+    btn.textContent = '加载中...';
+    fetch((window.GIS && GIS.api && GIS.api.BASE_URL ? GIS.api.BASE_URL : '') + '/api/online/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: source, type: type }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (result) {
+        btn.disabled = false;
+        btn.textContent = oldText;
+        if (result.error) {
+          alert('加载失败: ' + result.error);
+          return;
+        }
+        applyOnlineResult(result);
+        urlEl.value = '';
+        hide();
+      })
+      .catch(function (err) {
+        btn.disabled = false;
+        btn.textContent = oldText;
+        alert('加载失败: ' + err.message);
+      });
+  }
+
+  function applyOnlineResult(result) {
+    var name = result.name || result.message || '在线数据';
+    if (result.raster_info) {
+      var info = result.raster_info;
+      var layerId = 'raster_' + Date.now();
+      if (window.GIS.map && GIS.map.addImageOverlay) {
+        GIS.map.addImageOverlay(info.url, info.bounds, name, layerId);
+      }
+      if (window.GIS.layers && GIS.layers.addLayer) {
+        GIS.layers.addLayer({
+          layer_id: layerId,
+          filename: name,
+          geometry_type: 'Raster',
+          crs: 'WGS-84',
+          source: 'upload',
+          raster: info,
+        }, true);
+      }
+    } else if (result.geojson && window.GIS.map) {
+      var gj = result.geojson;
+      var gtype = gj.type === 'FeatureCollection' && gj.features && gj.features.length
+        ? gj.features[0].geometry.type : (gj.geometry ? gj.geometry.type : '未知');
+      if (typeof GIS.map.loadGeoJSON === 'function') GIS.map.loadGeoJSON(gj, result.name || name);
+      if (window.GIS.layers && GIS.layers.addLayer) {
+        GIS.layers.addLayer({
+          layer_id: (result.name || name) + '_' + Date.now(),
+          filename: result.name || name,
+          geometry_type: gtype,
+          crs: 'WGS-84',
+          geojson: gj,
+          source: 'upload',
+        }, true);
+      }
+    }
+    if (window.GIS.chat && GIS.chat.addMessage) {
+      GIS.chat.addMessage('[在线数据] ' + (result.message || name), 'system', { hidden: true });
+    }
   }
 
   // 打开设置面板并切换到「连接器（地理服务）」页签

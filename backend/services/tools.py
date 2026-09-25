@@ -167,6 +167,7 @@ def _validate_ast(node):
 # ============================================================
 
 _pending_layers: list = []          # 待推送到前端的 GeoJSON 图层
+_pending_qa_warnings: list = []     # 地理质量自检警告（geo_qa，随图层通道收集）
 _pending_images: list = []          # 待推送到前端的图片/HTML
 _pending_aoi_suggestions: dict = {} # AOI 候选列表
 _pending_heatmap: dict = {"latest": None}
@@ -193,6 +194,7 @@ def get_pending_state():
         result = {
             "layers": list(_pending_layers),
             "images": list(_pending_images),
+            "qa_warnings": list(_pending_qa_warnings),
             "aoi_suggestions": _pending_aoi_suggestions.get("latest"),
             "heatmap": _pending_heatmap.get("latest"),
             "clear_layers": _clear_layers_flag,
@@ -206,6 +208,7 @@ def get_pending_state():
         _pending_layers.clear()
         _pending_images.clear()
         _pending_layer_ops.clear()
+        _pending_qa_warnings.clear()
         _clear_layers_flag = False
         _pending_heatmap["latest"] = None
         return result
@@ -240,6 +243,7 @@ def reset_state(amap_key: str = "", task_id: str = ""):
     init_temp_dir()
     with _state_lock:
         _pending_layers.clear()
+        _pending_qa_warnings.clear()
         _pending_images.clear()
         _pending_aoi_suggestions.clear()
         _pending_heatmap["latest"] = None
@@ -265,15 +269,26 @@ def init_temp_dir():
 
 
 def _push_layer(name: str, geojson: dict, style: dict = None):
-    """将图层加入待发送列表"""
+    """将图层加入待发送列表（出口做地理质量自检，警告不阻塞出图）"""
     try:
         layer = {"geojson": geojson, "name": name}
         if style:
             layer["style"] = style
         with _state_lock:
             _pending_layers.append(layer)
+            for w in _geo_qa(geojson):
+                _pending_qa_warnings.append({"layer": name, "warning": w})
     except Exception:
         pass
+
+
+def _geo_qa(geojson) -> list:
+    """地理质量自检（延迟导入避免循环依赖；失败静默）"""
+    try:
+        from backend.services.geo_qa import qa_check
+        return qa_check(geojson)
+    except Exception:
+        return []
 
 
 def _unregister_layer(name: str):
@@ -1477,7 +1492,13 @@ def drill_down(region: str = "", adcode: str = "") -> str:
         parent = p0.get("parent")
         if isinstance(parent, dict):
             parent = parent.get("name") or parent.get("adcode") or ""
-        child_name = parent or region.strip() or code
+        region_arg = region.strip() if (region.strip() and not region.strip().isdigit()) else ""
+        if parent and not str(parent).isdigit():
+            child_name = parent          # DataV 返回了父级名
+        elif region_arg:
+            child_name = region_arg      # 用户输入的区域名（如"武汉市"）
+        else:
+            child_name = code            # 只有 adcode 时兜底
         layer_name = f"{child_name}_{_LEVEL_NAMES.get(level, level)}"
         _push_layer(layer_name, data, {"color": "#e74c3c", "fillColor": "#e74c3c", "fillOpacity": 0.25})
         _register_layer(layer_name, data)
@@ -5489,16 +5510,40 @@ def convert_coordinates(coords: str, source_crs: str = "wgs84",
     返回转换后的坐标对。"""
     try:
         import pyproj
-        p1 = {"wgs84": "EPSG:4326", "mercator": "EPSG:3857",
-              "web_mercator": "EPSG:3857", "gcj02": "EPSG:4326"}.get(source_crs.lower(), source_crs)
-        p2 = {"wgs84": "EPSG:4326", "mercator": "EPSG:3857",
-              "web_mercator": "EPSG:3857", "gcj02": "EPSG:4326"}.get(target_crs.lower(), target_crs)
+
+        def _resolve_crs(name: str, first_lng=None) -> str:
+            """CRS 别名 → EPSG；utm_auto 按第一个点经度落带"""
+            n = str(name).lower().strip()
+            m = {"wgs84": "EPSG:4326", "mercator": "EPSG:3857",
+                 "web_mercator": "EPSG:3857", "gcj02": "EPSG:4326"}
+            if n in m:
+                return m[n]
+            if n in ("utm_auto", "utm"):
+                if first_lng is None:
+                    raise ValueError("utm_auto 需要至少一个坐标来推算投影带")
+                zone = int((first_lng + 180) / 6) + 1
+                return f"EPSG:{32600 + zone}"   # 北半球 UTM
+            return name
+
+        parts_raw = coords.replace("，", ",").replace("；", ";").split(";")
+        first_lng = None
+        for part in parts_raw:
+            xy = part.strip().split(",")
+            if len(xy) == 2:
+                try:
+                    v0, v1 = float(xy[0]), float(xy[1])
+                    if -180 <= v0 <= 180 and -90 <= v1 <= 90:
+                        first_lng = v0
+                        break
+                except ValueError:
+                    continue
+        p1 = _resolve_crs(source_crs, first_lng)
+        p2 = _resolve_crs(target_crs, first_lng)
         if p1 == p2:
             return f"源和目标CRS相同: {source_crs} = {target_crs}, 无需转换"
         transformer = pyproj.Transformer.from_crs(p1, p2, always_xy=True)
-        parts = coords.replace("，", ",").replace("；", ";").split(";")
         results = []
-        for part in parts:
+        for part in parts_raw:
             xy = part.strip().split(",")
             if len(xy) != 2:
                 continue
@@ -7919,6 +7964,566 @@ def _write_dem_geotiff(path: str, result) -> None:
         )
 
 
+def _resolve_layer_name(name: str) -> str:
+    """按注册表解析图层名：精确命中优先，子串模糊匹配兜底；未找到返回空串"""
+    if name in _registered_layers:
+        return name
+    for _key in _registered_layers:
+        if name in _key or _key in name:
+            return _key
+    return ""
+
+
+# ============================================================
+# 工具: 云原生格式流式加载（COG / PMTiles / GeoParquet / FlatGeobuf）
+# 实现细节在 cloud_native.py，此处只做 @tool 包装与上图通道
+# ============================================================
+
+@tool
+def load_cog(url: str, layer_name: str = "", max_size: int = 2048) -> str:
+    """流式加载云优化 GeoTIFF（COG）/在线 GeoTIFF 并叠加到地图。
+    走 rasterio /vsicurl/ 流式读取 + 降采样生成 PNG 预览叠加，不整体下载。
+    url: http(s) 遥感影像地址；layer_name: 图层名（默认取文件名）；max_size: 预览最长边像素（默认 2048）。
+    用户给了一个在线 .tif/.tiff 链接要求"加载/叠加到地图"时调用。"""
+    from backend.services import cloud_native as cn
+    from PIL import Image as _PILImage
+    init_temp_dir()
+    try:
+        result = cn.read_cog(url, max_size=max_size)
+    except cn.CloudNativeError as e:
+        return f"加载失败: {e}"
+    name = (layer_name or os.path.splitext(os.path.basename(str(url)))[0]).strip() or "COG影像"
+    upload_dir = os.path.join(_temp_output_dir, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    safe = re.sub(r'[\\/:*?"<>|]', "_", name)
+    png_name = f"cog_{safe}_{int(time.time())}.png"
+    png_path = os.path.join(upload_dir, png_name)
+    with open(png_path, "wb") as f:
+        f.write(result["png_bytes"])
+    bounds = result["bounds"]
+    meta = result["meta"]
+    # 影像叠加（dem_result 通道：前端 addImageOverlay）
+    _pending_layer_ops.append({
+        "action": "dem_result", "name": png_name,
+        "url": f"/output/uploads/{png_name}",
+        "bounds": [float(v) for v in bounds],
+        "label": f"COG 影像: {name}",
+    })
+    # 注册范围框图层（供 AI 查询/缩放/卷帘，透明填充红框）
+    minx, miny, maxx, maxy = bounds
+    footprint = {"type": "FeatureCollection", "features": [{
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [[
+            [minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]]},
+        "properties": {"name": name, "source": "cog", "url": str(url)[:500]},
+    }]}
+    _push_layer(name, footprint, {"color": "#e74c3c", "fillColor": "#e74c3c", "fillOpacity": 0.02, "weight": 1.5, "dashArray": "6 4"})
+    _register_layer(name, footprint)
+    return (
+        f"已加载 COG 影像「{name}」并叠加到地图: {meta['width']}x{meta['height']} 像素, "
+        f"{meta['count']} 波段, CRS {meta['crs']}, 范围 {meta['bounds_wgs84']}, "
+        f"预览降采样至 {meta['resampled'][0]}x{meta['resampled'][1]}。"
+        f"已注册同名范围框图层可供查询"
+    )
+
+
+@tool
+def get_cog_info(url: str) -> str:
+    """查询在线 COG/GeoTIFF 元信息：CRS、范围、尺寸、波段、数据类型、统计值（min/max/mean，采样）。
+    只读元数据与降采样统计，不整体下载。用户问"这个 tif 是什么/什么坐标系/波段信息"时调用。"""
+    from backend.services import cloud_native as cn
+    try:
+        info = cn.cog_info(url)
+    except cn.CloudNativeError as e:
+        return f"查询失败: {e}"
+    lines = [
+        f"== COG 元信息: {url[:120]} ==",
+        f"CRS: {info['crs']}  范围(WGS84): {info['bounds_wgs84']}",
+        f"尺寸: {info['width']} x {info['height']}  波段数: {info['count']}  类型: {', '.join(info['dtypes'])}",
+        f"nodata: {info['nodata']}  瓦片化: {info['is_tiled']}  压缩: {info['compression']}",
+    ]
+    for s in info["stats_sampled"]:
+        lines.append(f"  波段{s['band']}: min={s['min']} max={s['max']} mean={s['mean']}")
+    return "\n".join(lines)
+
+
+@tool
+def load_pmtiles(source: str, layer_name: str = "", max_features: int = 5000) -> str:
+    """流式加载 PMTiles（本地路径或 http(s) URL）并上图。
+    矢量 PMTiles：解析 MVT 瓦片转为 GeoJSON 图层；栅格 PMTiles：取中心瓦片叠加。
+    source: 本地 .pmtiles 路径或 URL；layer_name: 图层名；max_features: 最多解码要素数（默认 5000）。
+    用户给了一个 .pmtiles 地址要求"加载到地图"时调用。"""
+    from backend.services import cloud_native as cn
+    init_temp_dir()
+    src = str(source).strip()
+    name = (layer_name or os.path.splitext(os.path.basename(src))[0]).strip() or "PMTiles图层"
+    try:
+        reader, header = cn._pmtiles_open(src)
+        _tt = header.get("tile_type", 0)
+        tile_type = int(_tt.value) if hasattr(_tt, "value") else int(_tt)
+        if tile_type == 1:  # MVT 矢量
+            geojson, info = cn.pmtiles_vector_to_geojson(src, max_features=max_features)
+            _push_layer(name, geojson, {"color": "#2b6cb0", "weight": 1.5})
+            _register_layer(name, geojson)
+            return (
+                f"已加载矢量 PMTiles「{name}」: {info['feature_count']} 个要素"
+                f"（z={info['zoom_sampled']} 采样 {info['tiles_sampled']} 块瓦片），"
+                f"图层: {', '.join(info['layers'])}，范围 {info['bounds_wgs84']}"
+            )
+        # 栅格 PMTiles：中心瓦片叠加
+        tile_bytes, bounds, fmt, info = cn.pmtiles_raster_tile_bounds(src)
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        safe = re.sub(r'[\\/:*?"<>|]', "_", name)
+        tile_name = f"pmtiles_{safe}_{int(time.time())}.{fmt}"
+        with open(os.path.join(upload_dir, tile_name), "wb") as f:
+            f.write(tile_bytes)
+        _pending_layer_ops.append({
+            "action": "dem_result", "name": tile_name,
+            "url": f"/output/uploads/{tile_name}",
+            "bounds": [float(v) for v in bounds],
+            "label": f"PMTiles 栅格瓦片: {name} (z={info['center'][2]})",
+        })
+        return (
+            f"已加载栅格 PMTiles「{name}」中心瓦片并叠加（z={info['center'][2]}，"
+            f"范围 {info['bounds_wgs84']}，max_zoom={info['max_zoom']}）。"
+            "提示：栅格 PMTiles 全量浏览需前端瓦片渲染，此处先以采样瓦片预览"
+        )
+    except cn.CloudNativeError as e:
+        return f"加载失败: {e}"
+
+
+def _load_cloud_vector_tool(source: str, fmt: str, layer_name: str, bbox: str, limit: int) -> str:
+    """load_geoparquet / load_flatgeobuf 共用实现"""
+    from backend.services import cloud_native as cn
+    try:
+        bbox_tuple = cn.parse_bbox(bbox)
+    except cn.CloudNativeError as e:
+        return f"参数错误: {e}"
+    # cloud_vector_to_geojson 内部会先读 metadata 并做超限拒绝，
+    # 这里不再单独预读，避免下载回退场景重复拉取同一文件
+    try:
+        geojson, meta2 = cn.cloud_vector_to_geojson(source, fmt, bbox=bbox_tuple, limit=limit)
+    except cn.CloudNativeError as e:
+        return str(e)
+    name = (layer_name or os.path.splitext(os.path.basename(str(source)))[0]).strip() or fmt
+    _push_layer(name, geojson, {"color": "#388e3c", "weight": 1.5})
+    _register_layer(name, geojson)
+    crs_note = f"，几何已从 {meta2['crs']} 重投影到 WGS84" if meta2.get("geometry_reprojected") else ""
+    extra = f"，bbox 过滤 {meta2['bbox_filtered']}" if meta2.get("bbox_filtered") else ""
+    return (
+        f"已加载 {fmt}「{name}」: 全库 {meta2['features']} 要素，本次载入 {meta2['loaded_features']} 个"
+        f"{extra}，CRS {meta2['crs']}{crs_note}，"
+        f"字段: {', '.join(meta2['fields'][:10]) or '无'}"
+    )
+
+
+@tool
+def load_geoparquet(source: str, layer_name: str = "", bbox: str = "", limit: int = 0) -> str:
+    """流式加载 GeoParquet（本地路径或 http(s) URL）并上图。
+    大文件先读 metadata 提示要素数；超过上限时需用 bbox="minx,miny,maxx,maxy" 空间过滤或减小 limit。
+    用户给了 .parquet/.geoparquet 地址要求"加载到地图"时调用。"""
+    return _load_cloud_vector_tool(source, "GeoParquet", layer_name, bbox, int(limit))
+
+
+@tool
+def load_flatgeobuf(source: str, layer_name: str = "", bbox: str = "", limit: int = 0) -> str:
+    """流式加载 FlatGeobuf（本地路径或 http(s) URL）并上图。
+    大文件先读 metadata 提示要素数；超过上限时需用 bbox="minx,miny,maxx,maxy" 空间过滤或减小 limit。
+    用户给了 .fgb 地址要求"加载到地图"时调用。"""
+    return _load_cloud_vector_tool(source, "FlatGeobuf", layer_name, bbox, int(limit))
+
+
+# ============================================================
+# 工具: 分区统计 / 长度字段 / 多部件分解 / 几何互转 / 栅格重采样 / 栅格重投影
+# （对标 GeoLibre 工具分类补齐：Raster zonal stats、Vector cleaning/conversion、Projection）
+# ============================================================
+
+@tool
+def zonal_statistics(raster_layer: str, zone_layer: str, stat: str = "mean") -> str:
+    """分区统计（Zonal Statistics）：用面图层对栅格分区，统计每个面内栅格值，
+    结果作为新图层上图（分区面属性增加 zonal_mean/zonal_sum/zonal_min/zonal_max/count）。
+    raster_layer: 栅格图层名（上传的GeoTIFF）；zone_layer: 矢量面图层；stat: 主统计量（mean/sum/min/max）。"""
+    try:
+        import numpy as np
+        import rasterio
+        from rasterio.mask import mask as rio_mask
+        from rasterio.warp import transform_geom
+        from shapely.geometry import mapping
+
+        upload_dir = os.path.join(_temp_output_dir, "uploads")
+        tif_path = _find_uploaded_tif(raster_layer)
+        if tif_path is None:
+            return f"未找到栅格文件「{raster_layer}」，请先上传 GeoTIFF"
+
+        zones, zone_name = _layer_to_gdf(zone_layer)
+        if zones is None:
+            return zone_name
+        with rasterio.open(tif_path) as src:
+            if zones.crs is None or zones.crs.to_epsg() != 4326:
+                zones = zones.to_crs(4326)
+            feats = []
+            for idx, row in zones.iterrows():
+                geom4326 = row.geometry
+                try:
+                    geom_src = transform_geom("EPSG:4326", src.crs, mapping(geom4326))
+                except Exception:
+                    geom_src = mapping(geom4326)
+                try:
+                    out_img, _ = rio_mask(src, [geom_src], crop=True, filled=False)
+                    arr = out_img[0]
+                    nodata = src.nodata
+                    mask = np.isfinite(arr) if arr.dtype.kind == 'f' else np.ones_like(arr, dtype=bool)
+                    if nodata is not None:
+                        mask &= ~np.isclose(arr, nodata)
+                    vals = arr[mask].astype("float64")
+                except Exception:
+                    vals = np.array([])
+                props = dict(row.drop(labels="geometry").items()) if hasattr(row, "drop") else {}
+                props = {k: (v.item() if hasattr(v, "item") else v) for k, v in props.items()}
+                if vals.size:
+                    props["zonal_mean"] = round(float(vals.mean()), 4)
+                    props["zonal_sum"] = round(float(vals.sum()), 4)
+                    props["zonal_min"] = round(float(vals.min()), 4)
+                    props["zonal_max"] = round(float(vals.max()), 4)
+                    props["zonal_count"] = int(vals.size)
+                else:
+                    props["zonal_mean"] = None
+                    props["zonal_sum"] = None
+                    props["zonal_min"] = None
+                    props["zonal_max"] = None
+                    props["zonal_count"] = 0
+                props["name"] = props.get("name") or f"{zone_name}_区{idx + 1}"
+                feats.append({"type": "Feature", "geometry": mapping(geom4326), "properties": props})
+        out_fc = {"type": "FeatureCollection", "features": feats}
+        out_name = f"{zone_name}_分区统计"
+        _push_layer(out_name, out_fc, {"color": "#7b1fa2", "weight": 2, "fillOpacity": 0.15})
+        _register_layer(out_name, out_fc)
+        ok_count = sum(1 for f in feats if f["properties"]["zonal_count"] > 0)
+        key = {"mean": "zonal_mean", "sum": "zonal_sum", "min": "zonal_min", "max": "zonal_max"}.get(
+            str(stat).lower(), "zonal_mean")
+        preview = [f["properties"].get(key) for f in feats[:5]]
+        return (f"分区统计完成（{stat}）：{ok_count}/{len(feats)} 个分区落在栅格范围内，"
+                f"结果图层「{out_name}」已上图（含 zonal_mean/sum/min/max/count 字段）。"
+                f"{key} 前5值: {preview}")
+    except Exception as e:
+        return f"分区统计失败: {str(e)[:300]}"
+
+
+@tool
+def add_length_field(layer_name: str, field_name: str = "length_km") -> str:
+    """为线/面图层添加长度字段：每个要素的几何长度（千米，UTM 精确投影计算），
+    结果作为新图层上图。面积量测用 measure_area，本工具补逐要素长度统计。"""
+    gdf, name = _layer_to_gdf(layer_name)
+    if gdf is None:
+        return name
+    try:
+        utm = gdf.estimate_utm_crs()
+        if utm is None:
+            return "无法估算 UTM 投影带（图层范围异常）"
+        projected = gdf.to_crs(utm)
+        lengths_km = projected.geometry.length / 1000.0
+        out = gdf.copy()
+        out[field_name] = [round(float(v), 4) for v in lengths_km]
+        out_name = f"{name}_带长度"
+        _gdf_to_layer(out, out_name)
+        return (f"已添加字段「{field_name}」（单位 km，UTM {utm.to_string()} 计算）："
+                f"总长 {lengths_km.sum():.2f} km，最长 {lengths_km.max():.2f} km，"
+                f"结果图层「{out_name}」已上图")
+    except Exception as e:
+        return f"添加长度字段失败: {str(e)[:300]}"
+
+
+@tool
+def spatial_explode(layer_name: str) -> str:
+    """分解多部件要素（Multi* → 单部件）：每个组成部分变成独立要素，
+    属性保留，结果作为新图层上图。拓扑清洗/逐要素符号化前常用。"""
+    gdf, name = _layer_to_gdf(layer_name)
+    if gdf is None:
+        return name
+    try:
+        out = gdf.explode(index_parts=False).reset_index(drop=True)
+        out_name = f"{name}_分解"
+        _gdf_to_layer(out, out_name)
+        return f"已分解多部件要素：{len(gdf)} → {len(out)} 个要素，结果图层「{out_name}」已上图"
+    except Exception as e:
+        return f"分解失败: {str(e)[:300]}"
+
+
+@tool
+def geometry_convert(layer_name: str, target_type: str = "lines") -> str:
+    """几何类型互转/提取，结果作为新图层上图。target_type 可选：
+    lines（面→边界线）、polygons（线→面，要求构成闭合环）、
+    convex_hull（凸包）、bounding_box（最小外接矩形）。"""
+    gdf, name = _layer_to_gdf(layer_name)
+    if gdf is None:
+        return name
+    t = str(target_type).strip().lower()
+    try:
+        import geopandas as gpd
+        from shapely.geometry import box as shp_box
+        if t == "lines":
+            out = gdf.copy()
+            out["geometry"] = gdf.geometry.boundary
+        elif t == "polygons":
+            from shapely.ops import polygonize, unary_union
+            polys = list(polygonize(unary_union(gdf.geometry.values)))
+            if not polys:
+                return "线要素无法多边形化（未构成闭合环），请检查几何"
+            out = gpd.GeoDataFrame(geometry=polys, crs=gdf.crs)
+        elif t == "convex_hull":
+            hull = gdf.geometry.unary_union.convex_hull
+            out = gpd.GeoDataFrame(geometry=[hull], crs=gdf.crs)
+        elif t == "bounding_box":
+            minx, miny, maxx, maxy = gdf.total_bounds
+            out = gpd.GeoDataFrame(geometry=[shp_box(minx, miny, maxx, maxy)], crs=gdf.crs)
+        else:
+            return f"未知 target_type: {target_type}，可选 lines/polygons/convex_hull/bounding_box"
+        out_name = f"{name}_{t}"
+        _gdf_to_layer(out, out_name)
+        return f"几何转换完成（{t}）：{len(out)} 个要素，结果图层「{out_name}」已上图"
+    except Exception as e:
+        return f"几何转换失败: {str(e)[:300]}"
+
+
+def _find_uploaded_tif(layer_name: str):
+    """按图层名在 uploads 目录定位 GeoTIFF 文件"""
+    upload_dir = os.path.join(_temp_output_dir, "uploads")
+    if os.path.isdir(upload_dir):
+        for f in os.listdir(upload_dir):
+            if f.lower().endswith(('.tif', '.tiff')):
+                base = os.path.splitext(f)[0]
+                if base == layer_name or layer_name in base:
+                    return os.path.join(upload_dir, f)
+    return None
+
+
+def _raster_preview_op(src, data, out_name: str, label: str) -> str:
+    """栅格结果出预览 PNG + dem_result 叠加通道"""
+    import numpy as np
+    from PIL import Image
+    from rasterio.warp import transform_bounds
+    band = data[0].astype("float64")
+    valid = np.isfinite(band)
+    if getattr(src, "nodata", None) is not None:
+        valid &= ~np.isclose(band, src.nodata)
+    if valid.any():
+        lo, hi = np.percentile(band[valid], 2), np.percentile(band[valid], 98)
+        if hi <= lo:
+            hi = lo + 1.0
+        norm = np.clip((band - lo) / (hi - lo), 0, 1)
+    else:
+        norm = np.zeros_like(band)
+    norm[~valid] = 0
+    rgb = (np.dstack([norm] * 3) * 255).astype("uint8")
+    img = Image.fromarray(rgb)
+    upload_dir = os.path.join(_temp_output_dir, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    png_name = f"{out_name}.png"
+    img.save(os.path.join(upload_dir, png_name))
+    if src.crs and src.crs.to_string() != "EPSG:4326":
+        bounds = list(transform_bounds(src.crs, "EPSG:4326", *src.bounds))
+    else:
+        bounds = [src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top]
+    _pending_layer_ops.append({
+        "action": "dem_result", "name": png_name,
+        "url": f"/output/uploads/{png_name}",
+        "bounds": [float(v) for v in bounds],
+        "label": label,
+    })
+    return "预览已叠加到地图"
+
+
+@tool
+def raster_resample(layer_name: str, scale_factor: float = 2.0, method: str = "bilinear") -> str:
+    """栅格重采样：按倍数缩放栅格分辨率（scale_factor>1 缩小/更粗，<1 放大/更细），
+    method 可选 nearest / bilinear / cubic。结果 GeoTIFF 落盘并出预览叠加图层。"""
+    try:
+        import rasterio
+        from rasterio.enums import Resampling
+
+        tif_path = _find_uploaded_tif(layer_name)
+        if tif_path is None:
+            return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
+        resampling = {"nearest": Resampling.nearest, "bilinear": Resampling.bilinear,
+                      "cubic": Resampling.cubic}.get(str(method).lower(), Resampling.bilinear)
+        out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_重采样"
+        out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+        with rasterio.open(tif_path) as src:
+            scale = max(0.05, min(32.0, float(scale_factor)))
+            new_w = max(1, int(src.width / scale))
+            new_h = max(1, int(src.height / scale))
+            data = src.read(out_shape=(src.count, new_h, new_w), resampling=resampling)
+            profile = src.profile.copy()
+            profile.update(width=new_w, height=new_h,
+                           transform=src.transform * src.transform.scale(
+                               src.width / new_w, src.height / new_h))
+            with rasterio.open(out_path, "w", **profile) as dst:
+                dst.write(data)
+            note = _raster_preview_op(src, data, out_name, f"栅格重采样 x{scale} ({method})")
+        return (f"重采样完成：{scale}x → {new_w}x{new_h} 像元，method={method}，"
+                f"结果已保存 {out_name}.tif；{note}")
+    except Exception as e:
+        return f"重采样失败: {str(e)[:300]}"
+
+
+@tool
+def raster_reproject(layer_name: str, target_crs: str = "EPSG:4326") -> str:
+    """栅格重投影：把 GeoTIFF 转到目标坐标系（默认 EPSG:4326，供地图叠加），
+    结果 GeoTIFF 落盘并出预览叠加图层。矢量重投影用 convert_crs。"""
+    try:
+        import numpy as np
+        import rasterio
+        from rasterio.enums import Resampling
+        from rasterio.warp import calculate_default_transform, reproject as rio_reproject
+
+        tif_path = _find_uploaded_tif(layer_name)
+        if tif_path is None:
+            return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
+        out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_重投影"
+        out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+        with rasterio.open(tif_path) as src:
+            transform, width, height = calculate_default_transform(
+                src.crs, target_crs, src.width, src.height, *src.bounds)
+            profile = src.profile.copy()
+            profile.update(crs=target_crs, transform=transform, width=width, height=height)
+            bands = []
+            for i in range(1, src.count + 1):
+                dst_arr = np.zeros((height, width), dtype=src.dtypes[i - 1])
+                rio_reproject(
+                    source=rasterio.band(src, i),
+                    destination=dst_arr,
+                    src_transform=src.transform, src_crs=src.crs,
+                    dst_transform=transform, dst_crs=target_crs,
+                    resampling=Resampling.bilinear)
+                bands.append(dst_arr)
+            stacked = np.stack(bands)
+            with rasterio.open(out_path, "w", **profile) as dst:
+                dst.write(stacked)
+            with rasterio.open(out_path) as resrc:
+                preview = resrc.read()
+                note = _raster_preview_op(resrc, preview, out_name, f"栅格重投影 → {target_crs}")
+        return (f"重投影完成：{src.crs} → {target_crs}，{width}x{height} 像元，"
+                f"结果已保存 {out_name}.tif；{note}")
+    except Exception as e:
+        return f"重投影失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: create_swipe / close_swipe — 卷帘对比
+# ============================================================
+
+@tool
+def create_swipe(left_layer: str, right_layer: str, orientation: str = "vertical") -> str:
+    """开启卷帘对比（Swipe）：将两个已有图层置为分割对比模式，前端出现可拖动分割线。
+    left_layer 显示在分割线一侧，right_layer 显示在另一侧。
+    orientation: vertical（竖直分割线，左=left_layer 右=right_layer，默认）或 horizontal（水平分割线，上=left_layer 下=right_layer）。
+    用户说"卷帘对比/左右对比/滑动对比两个图层"时调用。"""
+    lname = _resolve_layer_name(left_layer)
+    rname = _resolve_layer_name(right_layer)
+    if not lname:
+        _names = "、".join(list(_registered_layers.keys())[:8]) or "无"
+        return f"未找到图层「{left_layer}」，当前图层：{_names}"
+    if not rname:
+        _names = "、".join(list(_registered_layers.keys())[:8]) or "无"
+        return f"未找到图层「{right_layer}」，当前图层：{_names}"
+    if lname == rname:
+        return "卷帘对比需要两个不同的图层"
+    _o = str(orientation).strip().lower()
+    orient = "horizontal" if (_o.startswith("h") or "横" in _o or "上下" in _o or "水平" in _o) else "vertical"
+    _pending_layer_ops.append({
+        "action": "swipe", "left": lname, "right": rname, "orientation": orient,
+    })
+    side = "上下" if orient == "horizontal" else "左右"
+    return f"已开启卷帘对比（{side}分割）：{lname} | {rname}。拖动地图上的分割线查看，说\"关闭卷帘\"退出。"
+
+
+@tool
+def close_swipe() -> str:
+    """关闭卷帘对比模式，恢复所有图层完整显示。用户说"关闭卷帘/退出对比/恢复正常显示"时调用。"""
+    _pending_layer_ops.append({"action": "swipe_close"})
+    return "已关闭卷帘对比，恢复所有图层完整显示"
+
+
+# ============================================================
+# 工具: list_history / rerun_history — 处理历史与重跑
+# ============================================================
+
+@tool
+def list_history(limit: int = 20) -> str:
+    """查看处理历史：最近执行过的工具记录（工具名、参数、时间、产物图层、成败），按时间倒序。
+    每条带历史编号 index，用户说"重跑第 N 条"时把该编号传给 rerun_history。"""
+    from backend.services.history_service import list_entries
+    entries = list_entries(limit)
+    if not entries:
+        return "暂无处理历史。执行任意工具后即可在此查看。"
+    lines = [f"== 处理历史（最近 {len(entries)} 条，倒序） =="]
+    for e in entries:
+        status = "成功" if e.get("ok") else f"失败({e.get('error', '')[:50]})"
+        layers = ", ".join(e.get("layer_ids", [])) or "无图层产物"
+        args_brief = json.dumps(e.get("args", {}), ensure_ascii=False)
+        if len(args_brief) > 120:
+            args_brief = args_brief[:120] + "..."
+        rerun_tag = f" [重跑自 #{e['rerun_of']}]" if e.get("rerun_of") else ""
+        lines.append(
+            f"#{e['index']} [{e['time']}] {e['tool']}{rerun_tag} → {status}（{e.get('duration_ms', 0)}ms）\n"
+            f"   参数: {args_brief}\n"
+            f"   产物图层: {layers}"
+        )
+    return "\n".join(lines)
+
+
+@tool
+def rerun_history(index: int) -> str:
+    """按历史编号重跑一次工具：用原始参数重新调用，产物作为新图层上图，不覆盖原图层。
+    编号通过 list_history 查看。用户说"重跑/再来一次/重复上一步"时调用。"""
+    from backend.services import history_service as _hs
+    entry = _hs.get_entry(int(index))
+    if not entry:
+        return f"未找到编号 {index} 的历史记录，请先用 list_history 查看可用编号"
+    tool_name = entry.get("tool", "")
+    if tool_name in ("list_history", "rerun_history"):
+        return "历史类工具本身不支持重跑"
+    tool_obj = _TOOL_REGISTRY.get(tool_name)
+    if tool_obj is None:
+        return f"工具「{tool_name}」已不存在（可能已更名），无法重跑"
+    # 防覆盖：重跑前快照注册表（浅引用，_register_layer 整体替换条目时即可识别），
+    # 重跑后被同名覆盖的旧图层以「_原」后缀重新注册保留
+    snapshot = dict(_registered_layers)
+    _t0 = time.time()
+    try:
+        out = tool_obj.invoke(entry.get("args") or {})
+        ok, err = True, ""
+    except Exception as e:
+        out = f"重跑失败: {str(e)[:200]}"
+        ok, err = False, str(e)
+    new_layers = [n for n in _registered_layers if n not in snapshot]
+    restored = []
+    for name, old in snapshot.items():
+        if name in _registered_layers and _registered_layers[name] is not old:
+            suffix_name = f"{name}_原"
+            seq = 1
+            while suffix_name in _registered_layers:
+                seq += 1
+                suffix_name = f"{name}_原{seq}"
+            _register_layer(suffix_name, old.get("geojson", {}))
+            restored.append(suffix_name)
+    _hs.record(
+        tool_name, entry.get("args") or {}, ok, new_layers,
+        task_id=get_current_task_id(), error=err,
+        duration_ms=int((time.time() - _t0) * 1000), rerun_of=int(index),
+    )
+    status = "成功" if ok else "失败"
+    parts = [f"已重跑 #{index} {tool_name} → {status}"]
+    if new_layers:
+        parts.append(f"新图层: {'、'.join(new_layers)}（作为新图层上图）")
+    if restored:
+        parts.append(f"原图层已保留: {'、'.join(restored)}")
+    if not ok:
+        parts.append(str(out)[:200])
+    return "；".join(parts)
+
+
 def _write_dem_preview(path: str, result) -> None:
     """渲染 DEM 地形预览 PNG（matplotlib terrain colormap，nodata→黑底）。"""
     import matplotlib
@@ -8049,4 +8654,59 @@ tools = [
     generate_static_map,
     execute_workflow,
     get_elevation_data,
+    create_swipe,
+    close_swipe,
+    list_history,
+    rerun_history,
+    load_cog,
+    get_cog_info,
+    load_pmtiles,
+    load_geoparquet,
+    load_flatgeobuf,
+    zonal_statistics,
+    add_length_field,
+    spatial_explode,
+    geometry_convert,
+    raster_resample,
+    raster_reproject,
 ]
+
+# ============================================================
+# 工具执行历史：在 tools 列表出口统一包装记录（工具本体零侵入）
+# Agent 链路经由此列表调用工具 → 每次执行自动记录到 history_service
+# _TOOL_REGISTRY 保留未包装原件，rerun_history 用它按原始参数重跑
+# ============================================================
+from backend.services import history_service as _history_svc
+from langchain_core.tools import StructuredTool as _StructuredTool
+
+_TOOL_REGISTRY = {t.name: t for t in tools}
+
+
+def _recorded(t):
+    """包装一个工具：执行后把 名称/参数/成败/产物图层 写入处理历史"""
+    def _run_and_record(**kwargs):
+        _t0 = time.time()
+        _before = set(_registered_layers.keys())
+        try:
+            out = t.invoke(kwargs)
+            _ok, _err = True, ""
+        except Exception as e:
+            out = f"工具执行失败: {str(e)[:300]}"
+            _ok, _err = False, str(e)
+        _new = [n for n in _registered_layers if n not in _before]
+        _history_svc.record(
+            t.name, kwargs, _ok, _new,
+            task_id=get_current_task_id(), error=_err,
+            duration_ms=int((time.time() - _t0) * 1000),
+        )
+        return out
+
+    return _StructuredTool.from_function(
+        func=_run_and_record,
+        name=t.name,
+        description=t.description,
+        args_schema=t.args_schema,
+    )
+
+
+tools = [_recorded(t) for t in tools]

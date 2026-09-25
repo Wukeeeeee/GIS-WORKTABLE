@@ -762,7 +762,7 @@ html, body {
   top: 30px;
   left: 0;
   width: 100%;
-  height: calc(100% - 30px);
+  height: calc(100% - 56px);
   z-index: 1;
 }
 
@@ -1208,20 +1208,29 @@ html, body {
 }
 
 /* Coordinate Display */
+/* 坐标状态条：停靠在地图区底部（与顶部菜单栏同语言，直角），占布局高度，
+   不悬浮 → 不会挡地图内容也不会被拖拽面板挡住 */
 .map-coords {
   position: absolute;
-  bottom: 16px;
-  left: 320px;
-  background: rgba(255,255,255,0.9);
-  border: 1px solid var(--ui-gray-300) /* -> --on-surface-variant */;
-  border-radius: 4px;
-  padding: 4px 10px;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  background: var(--surface-container-lowest, #fff);
+  border-top: 1px solid var(--outline-variant, var(--ui-gray-300));
+  border-radius: 0;
   font-family: var(--font-mono);
   font-size: var(--fs-12);
   color: var(--ui-gray-900) /* -> --on-surface */;
-  z-index: 1000;
+  z-index: 500;
   line-height: 1.6;
   pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 /* ========== 浮动图层面板（地图右上角，紧贴缩放控件左侧） ========== */
@@ -4113,7 +4122,7 @@ html.theme-dark .symb-actions { border-color: var(--ui-gray-700); }
   height: 480px; max-height: 80vh;
   background: var(--surface-container-lowest);
   border: 1px solid var(--outline-variant);
-  border-radius: 6px;
+  border-radius: 0;
   box-shadow: 0 8px 32px rgba(0,0,0,0.18);
   overflow: hidden;
 }
@@ -4355,11 +4364,11 @@ html.theme-dark .network-tab.active { color: var(--primary-fixed-dim); }
 #spatialPanelContainer.dragging { transition: none !important; pointer-events: none; user-select: none; }
 .spatial-panel {
   display: flex; flex-direction: column;
-  width: 320px; max-width: 90vw;
-  max-height: 70vh;
+  width: 380px; max-width: 90vw;
+  max-height: 74vh;
   background: var(--surface-container-lowest);
   border: 1px solid var(--outline-variant);
-  border-radius: 6px;
+  border-radius: 0;
   box-shadow: 0 8px 32px rgba(0,0,0,0.18);
   overflow: hidden;
 }
@@ -4389,13 +4398,16 @@ html.theme-dark .network-tab.active { color: var(--primary-fixed-dim); }
   display: flex; border-bottom: 1px solid var(--outline-variant);
   background: var(--surface-container-low);
   flex-shrink: 0;
+  overflow-x: auto; scrollbar-width: none;   /* 窄面板/移动端：横向滚动而不是逐字换行 */
 }
+.spatial-tabs::-webkit-scrollbar { display: none; }
 .spatial-tab {
   display: flex; align-items: center; gap: 6px;
-  padding: 8px 14px; font-size: var(--fs-12); font-weight: 500;
+  padding: 8px 12px; font-size: var(--fs-12); font-weight: 500;
   color: var(--on-surface-variant); background: none;
   border: none; cursor: pointer; position: relative;
-  transition: color 0.15s; font-family: inherit; flex: 1;
+  transition: color 0.15s; font-family: inherit;
+  flex: 0 0 auto; white-space: nowrap;
   justify-content: center;
 }
 .spatial-tab:hover { color: var(--on-surface); background: var(--surface-container); }
@@ -4418,9 +4430,10 @@ html.theme-dark .network-tab.active { color: var(--primary-fixed-dim); }
   font-size: var(--fs-12); color: var(--on-surface-variant); font-weight: 500;
 }
 .spatial-field select, .spatial-input {
-  padding: 6px 10px; border: 1px solid var(--outline-variant);
-  border-radius: 4px; background: var(--surface); font-size: var(--fs-12);
+  padding: 8px 10px; border: 1px solid var(--outline-variant);
+  border-radius: 4px; background: var(--surface); font-size: var(--fs-13);
   color: var(--on-surface); width: 100%; box-sizing: border-box;
+  min-height: 34px;
   transition: border-color var(--transition-fast);
 }
 .spatial-field select:focus, .spatial-input:focus {
@@ -4899,4 +4912,297 @@ body.gis-mode-3d .map-coords {
 }
 .map-zoom-controls.mode-3d > [data-tool="spatial-analysis"] {
   display: flex;
+}
+
+/* ============================================================
+   卷帘对比（Swipe）
+   ============================================================ */
+.swipe-divider {
+  position: absolute;
+  z-index: 1200;
+  background: var(--ui-gray-900);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.65), 0 0 10px rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.swipe-divider.swipe-vertical {
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  margin-left: -2px;
+  cursor: col-resize;
+  flex-direction: column;
+}
+.swipe-divider.swipe-horizontal {
+  left: 0;
+  right: 0;
+  height: 4px;
+  margin-top: -2px;
+  cursor: row-resize;
+  flex-direction: row;
+}
+.swipe-divider .swipe-handle {
+  width: 30px;
+  height: 30px;
+  border-radius: 0;
+  background: var(--ui-gray-900);
+  color: var(--ui-white, #fff);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.swipe-divider .swipe-close {
+  position: absolute;
+  right: -12px;
+  bottom: 34px;
+  width: 24px;
+  height: 24px;
+  border-radius: 0;
+  border: 1px solid var(--ui-gray-300);
+  background: var(--ui-white, #fff);
+  color: var(--ui-gray-700, #555);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+.swipe-divider.swipe-horizontal .swipe-close {
+  right: 12px;
+  bottom: auto;
+  top: -34px;
+}
+.swipe-divider .swipe-close:hover {
+  background: var(--ui-gray-100, #f2f2f2);
+}
+/* 图层面板「卷帘」按钮 armed 态（已选为 A 图层） */
+.layer-action-btn.swipe-armed {
+  background: var(--ui-gray-900);
+  color: var(--ui-white, #fff);
+  border-radius: 3px;
+}
+
+/* ============================================================
+   处理历史面板（右侧浮层，与图层面板同语言）
+   ============================================================ */
+.toolhist-panel {
+  position: absolute;
+  top: 56px;
+  right: 64px;
+  width: 340px;
+  max-height: 70%;
+  background: var(--ui-white, #fff);
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 0;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+  z-index: 900;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+.toolhist-panel.open {
+  display: flex;
+}
+.toolhist-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ui-gray-200);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ui-gray-900);
+}
+.toolhist-header .toolhist-title-spacer {
+  flex: 1;
+}
+.toolhist-clear {
+  border: none;
+  background: none;
+  color: var(--ui-gray-500);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.toolhist-clear:hover {
+  background: var(--ui-gray-100, #f2f2f2);
+  color: var(--ui-gray-900);
+}
+.toolhist-body {
+  overflow-y: auto;
+  padding: 6px 8px 10px;
+}
+.toolhist-empty {
+  padding: 26px 10px;
+  text-align: center;
+  color: var(--ui-gray-400);
+  font-size: 12px;
+}
+.toolhist-item {
+  border: 1px solid var(--ui-gray-200);
+  border-radius: 0;
+  padding: 8px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ui-gray-900);
+}
+.toolhist-item.is-error {
+  border-color: #f3c2c2;
+  background: #fdf6f6;
+}
+.toolhist-item-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.toolhist-tool-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolhist-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: #e6f4ea;
+  color: #2e7d32;
+}
+.toolhist-badge.fail {
+  background: #fdecea;
+  color: #d32f2f;
+}
+.toolhist-badge.rerun {
+  background: #ece9fb;
+  color: #6d4fd4;
+}
+.toolhist-time {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--ui-gray-400);
+  font-size: 11px;
+}
+.toolhist-args {
+  margin-top: 5px;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--ui-gray-600);
+  word-break: break-all;
+  max-height: 52px;
+  overflow: hidden;
+}
+.toolhist-layers {
+  margin-top: 4px;
+  color: var(--ui-gray-500);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolhist-item-actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+}
+.toolhist-rerun-btn,
+.toolhist-copy-btn {
+  border: 1px solid var(--ui-gray-300);
+  background: var(--ui-white, #fff);
+  color: var(--ui-gray-700, #444);
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.toolhist-rerun-btn:hover {
+  background: var(--ui-gray-900);
+  color: var(--ui-white, #fff);
+  border-color: var(--ui-gray-900);
+}
+.toolhist-copy-btn:hover {
+  background: var(--ui-gray-100, #f2f2f2);
+}
+
+/* ============================================================
+   连接器面板 — 在线云原生数据加载区
+   ============================================================ */
+.connector-online {
+  border-top: 1px solid var(--ui-gray-200);
+  padding: 10px 12px;
+  background: var(--surface-container-low, #fafafa);
+}
+.connector-online-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ui-gray-900);
+  margin-bottom: 8px;
+}
+.connector-online-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.connector-online-select {
+  flex: 1;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--ui-gray-300);
+  border-radius: 4px;
+  background: var(--ui-white, #fff);
+  color: var(--ui-gray-900);
+}
+.connector-online-input {
+  flex: 1;
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--ui-gray-300);
+  border-radius: 4px;
+  background: var(--ui-white, #fff);
+  color: var(--ui-gray-900);
+  min-width: 0;
+}
+.connector-online-input:focus,
+.connector-online-select:focus {
+  outline: none;
+  border-color: var(--ui-gray-900);
+}
+.connector-online-btn {
+  font-size: 12px;
+  padding: 4px 14px;
+  border: none;
+  border-radius: 4px;
+  background: var(--ui-gray-900);
+  color: var(--ui-white, #fff);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.connector-online-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.connector-online-hint {
+  font-size: 10px;
+  color: var(--ui-gray-400);
+  line-height: 1.5;
+}
+
+/* 空间面板小按钮（数据获取行内） */
+.spatial-run-btn-small {
+  padding: 4px 12px;
+  font-size: 12px;
+  width: auto;
+}
+
+/* Leaflet 容器底色跟主题走：瓦片未加载/视野外区域不再是突兀的深灰 */
+.leaflet-container {
+  background: var(--surface-container, #f0f0f0);
 }

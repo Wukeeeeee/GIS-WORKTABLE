@@ -86,4 +86,5 @@ class TestVisualize3d:
 
     def test_tool_registered(self):
         from backend.services.tools import tools
-        assert visualize_3d in tools
+        # tools 列表出口统一包了执行历史包装层，按 name 匹配而非对象同一性
+        assert any(getattr(t, "name", "") == "visualize_3d" for t in tools)
