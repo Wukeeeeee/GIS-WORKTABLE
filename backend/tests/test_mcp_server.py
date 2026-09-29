@@ -47,7 +47,7 @@ def test_mcp_tools_exposed(session):
             result = await s.list_tools()
             return [t.name for t in result.tools]
     names = __import__("asyncio").run(run())
-    for n in ("tools_list", "tool_call", "list_layers", "get_task_status"):
+    for n in ("tools_list", "tool_call", "list_layers", "get_task_status", "inspect_url", "fetch_url_data", "search_wikidata", "search_osm"):
         assert n in names
 
 
@@ -164,3 +164,63 @@ def test_list_layers_and_task_status(session):
     layers, tasks = asyncio.run(run())
     assert any(l["name"] == "MCP上海" for l in layers["layers"])
     assert "tasks" in tasks or "count" in tasks
+
+
+def test_mcp_inspect_and_fetch_url(session, tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import patch, MagicMock
+
+    url = "https://example.com/test_poi.geojson"
+    mock_data = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": {"type": "Point", "coordinates": [121.47, 31.23]}, "properties": {"name": "人民广场"}},
+        ],
+    }
+    monkeypatch.setattr("backend.services.url_gis_service._get_output_dir", lambda: str(tmp_path))
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.headers = {"Content-Type": "application/json"}
+    mock_resp.json = MagicMock(return_value=mock_data)
+    mock_resp.content = json.dumps(mock_data).encode("utf-8")
+    mock_resp.text = json.dumps(mock_data)
+
+    with patch("backend.services.url_gis_service._http_get", return_value=mock_resp):
+        async def run():
+            async with create_connected_server_and_client_session(ms.mcp) as s:
+                r1 = await s.call_tool("inspect_url", {"url": url})
+                r2 = await s.call_tool("fetch_url_data", {"url": url, "output_format": "geojson"})
+                return json.loads(_text(r1)), json.loads(_text(r2))
+
+        inspect_res, fetch_res = asyncio.run(run())
+        assert inspect_res["ok"] is True
+        assert inspect_res["service_type"] == "GeoJSON"
+        assert inspect_res["feature_count"] == 1
+
+        assert fetch_res["ok"] is True
+        assert fetch_res["feature_count"] == 1
+        assert os.path.exists(fetch_res["file_path"])
+
+
+def test_mcp_wikidata_and_osm(session):
+    import asyncio
+    from unittest.mock import patch
+
+    with patch("backend.services.global_geo_service.search_wikidata_entities", return_value=[{"name": "台北", "qid": "Q1867"}]), \
+         patch("backend.services.global_geo_service.search_osm_nominatim", return_value=[{"name": "Taipei", "coordinates": [121.5, 25.0]}]):
+
+        async def run():
+            async with create_connected_server_and_client_session(ms.mcp) as s:
+                r1 = await s.call_tool("search_wikidata", {"query": "台北"})
+                r2 = await s.call_tool("search_osm", {"query": "Taipei"})
+                return json.loads(_text(r1)), json.loads(_text(r2))
+
+        w_res, osm_res = asyncio.run(run())
+        assert w_res["ok"] is True
+        assert len(w_res["entities"]) == 1
+
+        assert osm_res["ok"] is True
+        assert len(osm_res["results"]) == 1
+

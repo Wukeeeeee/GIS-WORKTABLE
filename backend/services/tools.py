@@ -1316,7 +1316,7 @@ def cn_aoi_search(query: str) -> str:
         suggestions = search_suggestions(query)
         if not suggestions:
             return "搜索失败：未找到候选地点"
-        tagged = [{"name": s["name"], "address": s.get("address", ""), "id": s["uid"], "source": "baidu"} for s in suggestions]
+        tagged = [{"name": s["name"], "address": s.get("address", ""), "id": s["uid"], "source": "online"} for s in suggestions]
         _pending_aoi_suggestions["latest"] = {"suggestions": tagged, "sent": False}
         lines = [f"共 {len(tagged)} 个候选地点："]
         for i, s in enumerate(tagged[:15], 1):
@@ -1330,7 +1330,7 @@ def cn_aoi_search(query: str) -> str:
 
 @tool
 def cn_aoi_extract(uid: str, name: str) -> str:
-    """根据用户选择的候选提取建筑轮廓（百度数据源），转WGS84加载到地图。
+    """根据用户选择的候选提取建筑轮廓边界，转WGS84加载到地图。
     提取失败则如实告诉用户"暂时无法获取"。**严禁自己估算或画近似边界**"""
     try:
         from backend.services.baidu_aoi_service import extract_boundary
@@ -5817,6 +5817,119 @@ def _human_size(n: int) -> str:
 
 
 @tool
+def search_gis_services(query: str = "", country: str = "",
+                        protocol: str = "", category: str = "",
+                        limit: int = 10) -> str:
+    """搜索全球 2198+ 真实可用的 GIS 空间服务和数据源（WMS、WFS、WMTS、XYZ、ArcGIS REST、STAC 等）。
+参数说明：
+- query: 关键词（匹配服务名、描述、机构、备注，如 'DEM', '高程', 'satellite', '土地利用', '气象', '交通'）。
+- country: 国家或地区筛选（如 '中国', '美国', '全球', '德国', '日本'）。
+- protocol: 协议类型（如 'WMS', 'WFS', 'WMTS', 'XYZ', 'REST', 'STAC'）。
+- category: 类别（如 '高程/地形', '交通', '气象', '人口', '开放政府数据', '土地利用', '水利/海洋'）。
+- limit: 最大返回结果条数（默认 10，上限 30）。
+用法：当用户寻找外部在线地图服务、OGC 服务端点或公开空间图层时调用本工具检索。"""
+    from backend.services import geosource_service as _gs
+    res = _gs.search_services(
+        keyword=query or None,
+        country=country or None,
+        protocol=protocol or None,
+        category=category or None,
+        limit=min(max(1, limit), 30),
+    )
+    results = res.get("results", [])
+    if not results:
+        return f"未找到匹配的 GIS 服务（query='{query}', country='{country}', protocol='{protocol}'）。可尝试更通用的关键词或减少过滤条件重试。"
+
+    lines = [f"找到 {len(results)} 个匹配的全球 GIS 空间服务：\n"]
+    for i, s in enumerate(results, 1):
+        sid = s.get("service_id", "")
+        name = s.get("service_name", "")
+        proto = s.get("protocol", "未知")
+        cntry = s.get("country", "")
+        cat = s.get("category", "")
+        free = "免费" if s.get("is_free") == "是" else "可能收费/受限"
+        no_key = "免Key" if s.get("need_no_key") == "是" else "需Key"
+        url = s.get("service_url", "")
+        desc = (s.get("data_description") or "")[:80]
+        lines.append(f"{i}. [{sid}] {name}")
+        lines.append(f"   - 协议: {proto} | 地区: {cntry} | 分类: {cat} | {free} | {no_key}")
+        if url:
+            lines.append(f"   - 服务端点: {url}")
+        if desc:
+            lines.append(f"   - 说明: {desc}")
+    lines.append("\n可使用 get_gis_service_detail(service_id='...') 查看具体图层清单与详细元数据。")
+    return "\n".join(lines)
+
+
+@tool
+def get_gis_service_detail(service_id: str = "") -> str:
+    """获取指定 GIS 空间服务的完整元数据与包含的子图层列表。
+参数说明：
+- service_id: 服务唯一标识符（如 'WMS-0001', 'DS-0001', 'AM-0001' 等）。
+用法：在 search_gis_services 找到感兴趣的服务后，调用本工具查看该服务详细的图层名清单、投影坐标系(CRS)、访问限制与在线端点 URL。"""
+    sid = (service_id or "").strip()
+    if not sid:
+        return "请提供要查询的 service_id（如 'WMS-0001'）。"
+    from backend.services import geosource_service as _gs
+    detail = _gs.get_service_detail(sid)
+    if "error" in detail:
+        return f"查询失败: {detail['error']}"
+
+    name = detail.get("service_name", "")
+    proto = detail.get("protocol", "")
+    url = detail.get("service_url", "")
+    off_url = detail.get("official_url", "")
+    docs = detail.get("docs_url", "")
+    desc = detail.get("data_description", "")
+    crs = detail.get("crs", "")
+    cov = detail.get("spatial_coverage", "")
+    fmt = detail.get("format", "")
+    layers = detail.get("layers", [])
+
+    lines = [
+        f"【GIS 服务详情】{name} (ID: {sid})",
+        f"- 协议: {proto} | 格式: {fmt or '默认'} | 投影坐标系: {crs or '未指定'}",
+        f"- 服务端点: {url or '无'}",
+    ]
+    if off_url:
+        lines.append(f"- 官方网站: {off_url}")
+    if docs:
+        lines.append(f"- 接口文档: {docs}")
+    if cov:
+        lines.append(f"- 空间覆盖范围: {cov}")
+    if desc:
+        lines.append(f"- 数据描述: {desc}")
+    if layers:
+        lines.append(f"- 包含子图层（共 {len(layers)} 个）：")
+        for lyr in layers[:15]:
+            lines.append(f"    • [{lyr.get('layer_idx', '')}] {lyr.get('layer_name', '')}")
+        if len(layers) > 15:
+            lines.append(f"    ... 等共 {len(layers)} 个图层")
+    else:
+        lines.append("- 子图层: 暂无单独子图层记录，直接调用服务端点即可。")
+    return "\n".join(lines)
+
+
+@tool
+def get_gis_services_stats() -> str:
+    """获取本地内嵌的全球 GIS 服务知识库概况统计（总服务数、图层数、主要类别、协议与国家分布）。
+用法：当用户询问知识库涵盖哪些服务、支持哪些国家/协议/分类时调用。"""
+    from backend.services import geosource_service as _gs
+    stats = _gs.list_categories_and_stats()
+    top_cat = ", ".join(f"{c['category']}({c['count']})" for c in stats.get("top_categories", [])[:6])
+    top_proto = ", ".join(f"{p['protocol']}({p['count']})" for p in stats.get("top_protocols", [])[:6])
+    top_country = ", ".join(f"{k['country']}({k['count']})" for k in stats.get("top_countries", [])[:6])
+    return (
+        f"【全球 GIS 空间服务库统计（GeoSource 内嵌）】\n"
+        f"- 空间服务总数: {stats.get('total_services', 0)} 个\n"
+        f"- 包含图层总数: {stats.get('total_layers', 0)} 个\n"
+        f"- 主流类别: {top_cat}\n"
+        f"- 支持协议: {top_proto}\n"
+        f"- 覆盖国家/地区: {top_country}"
+    )
+
+
+@tool
 def hold_layer_for_confirm(name: str = "", geojson: str = "",
                            source: str = "", file_path: str = "",
                            summary: str = "") -> str:
@@ -8548,6 +8661,213 @@ def _write_dem_preview(path: str, result) -> None:
     Image.fromarray(rgb).save(path)
 
 
+# ============================================================
+# 工具: URL 空间数据智能探测、按需提取与分析 (URL-Driven GIS Data Tools)
+# ============================================================
+
+@tool
+def inspect_gis_url(url: str) -> str:
+    """智能探测指定 URL 的 GIS 服务或空间数据类型，提取图层列表、CRS 坐标系、字段元数据、要素量级与范围。
+    支持 ArcGIS REST (MapServer/FeatureServer)、OGC (WFS/WMS/WMTS)、GeoJSON、GeoParquet、FlatGeobuf、PMTiles、COG、Shapefile ZIP、CSV。
+    只读取并返回结构化元数据报告，不强制自动上图。用户提供在线 GIS 服务/数据链接或问"这个链接是什么数据"时调用。"""
+    from backend.services import url_gis_service as ugs
+    try:
+        info = ugs.inspect_gis_url(url)
+    except ugs.UrlGisError as e:
+        return f"探测失败: {e}"
+    except Exception as e:
+        return f"探测异常: {str(e)[:300]}"
+
+    stype = info.get("service_type", "未知")
+    lines = [
+        f"== GIS 资源探测报告: {info.get('url', url)[:120]} ==",
+        f"服务/数据类型: {stype}",
+    ]
+    if info.get("service_name"):
+        lines.append(f"服务名称: {info['service_name']}")
+    if info.get("crs"):
+        lines.append(f"坐标系 (CRS): {info['crs']}")
+    if info.get("bbox"):
+        lines.append(f"空间范围 (BBox): {info['bbox']}")
+    if info.get("feature_count") is not None:
+        lines.append(f"要素总量: {info['feature_count']}")
+    if info.get("layer_count") is not None:
+        lines.append(f"包含图层数: {info['layer_count']}")
+    if info.get("layers"):
+        lines.append("子图层列表:")
+        for l in info["layers"][:10]:
+            lname = l.get("name") or l.get("title") or l.get("identifier") or str(l)
+            lid = f" (ID: {l['id']})" if "id" in l else ""
+            lines.append(f"  - {lname}{lid}")
+        if len(info["layers"]) > 10:
+            lines.append(f"  ... 剩余 {len(info['layers']) - 10} 个图层")
+    if info.get("fields"):
+        f_names = [f["name"] if isinstance(f, dict) else str(f) for f in info["fields"][:15]]
+        lines.append(f"字段列表 ({info.get('field_count', len(f_names))} 个): {', '.join(f_names)}")
+    if info.get("sample_records"):
+        lines.append(f"数据样本 (前 {len(info['sample_records'])} 条): {json.dumps(info['sample_records'][:2], ensure_ascii=False)}")
+    if info.get("description"):
+        lines.append(f"描述: {info['description'][:200]}")
+
+    return "\n".join(lines)
+
+
+@tool
+def fetch_gis_data_url(
+    url: str,
+    layer_id: str = "",
+    bbox: str = "",
+    where: str = "1=1",
+    limit: int = 1000,
+    output_format: str = "geojson",
+    output_filename: str = "",
+    auto_render: bool = False,
+) -> str:
+    """从 GIS URL 提取矢量数据、标准化坐标系为 WGS84 并落盘保存到本地会话目录。
+    支持 ArcGIS REST (MapServer/FeatureServer)、OGC WFS、GeoJSON URL、GeoParquet、FlatGeobuf、Shapefile ZIP、CSV 坐标表。
+    url: 数据/服务地址；layer_id: 针对多图层服务的子图层 ID 或名称；bbox: 空间范围过滤 'minx,miny,maxx,maxy'；
+    where: 属性过滤条件（如 'POP > 10000'）；limit: 最大抓取要素数（默认 1000）；
+    output_format: 保存格式（geojson/gpkg/csv）；output_filename: 指定文件名；auto_render: 是否同时渲染到地图（默认 False）。
+    用户提供数据 URL 要求"下载/查询数据/提取要素"时调用。"""
+    from backend.services import url_gis_service as ugs
+    try:
+        res = ugs.fetch_gis_data_url(
+            url=url,
+            layer_id=layer_id,
+            bbox=bbox,
+            where=where,
+            limit=limit,
+            output_format=output_format,
+            output_filename=output_filename,
+        )
+    except ugs.UrlGisError as e:
+        return f"数据抓取失败: {e}"
+    except Exception as e:
+        return f"数据抓取异常: {str(e)[:300]}"
+
+    if res.get("feature_count", 0) == 0:
+        return f"未抓取到有效要素: {res.get('message', '返回要素为 0')}"
+
+    file_path = res["file_path"]
+    count = res["feature_count"]
+    fields = res.get("fields", [])
+    crs = res.get("crs", "EPSG:4326")
+    orig_crs = res.get("original_crs", "")
+    crs_str = f"{crs} (原始 {orig_crs})" if orig_crs and orig_crs != crs else crs
+
+    # 若指定 auto_render=True，则上图
+    render_msg = ""
+    if auto_render and res.get("file_format") == "geojson":
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                gj_content = json.load(f)
+            layer_name = res.get("file_name", "URL_Data").replace(".geojson", "")
+            _push_layer(layer_name, gj_content, {"color": "#1976d2", "weight": 1.5})
+            _register_layer(layer_name, gj_content)
+            render_msg = f"，已同步渲染到地图图层「{layer_name}」"
+        except Exception as e:
+            render_msg = f"（自动上图跳过: {e}）"
+
+    return (
+        f"数据提取成功！\n"
+        f"- 来源类型: {res.get('service_type')}\n"
+        f"- 要素数量: {count} 个\n"
+        f"- 坐标系: {crs_str}\n"
+        f"- 空间范围 (BBox): {res.get('bbox')}\n"
+        f"- 包含字段 ({len(fields)} 个): {', '.join(fields[:10])}\n"
+        f"- 本地保存路径: {file_path} ({round(res.get('file_size_bytes', 0) / 1024, 1)} KB){render_msg}\n"
+        f"- 样例属性: {json.dumps(res.get('sample_records', [])[:2], ensure_ascii=False)}"
+    )
+
+
+# ============================================================
+# 工具: 全球开放地理实体与 OSM 矢量抓取 (Global Geospatial Tools)
+# ============================================================
+
+@tool
+def search_global_entities(query: str, lang: str = "zh") -> str:
+    """全球开放地理实体与维基百科知识图谱检索（免 Key、全球覆盖）。
+    检索全球任意国家、山川河流、地标名胜、岛屿、行政区划，提取 Wikidata 经纬度坐标、实体定义与维基百科简介。
+    用户查询全球地理实体或问"XX 在哪里/XX 的百科信息"时调用。"""
+    from backend.services import global_geo_service as ggs
+    try:
+        results = ggs.search_wikidata_entities(query, lang=lang, limit=5)
+        if not results:
+            return f"未能找到与「{query}」相关的全球地理实体"
+        if "error" in results[0]:
+            return f"检索失败: {results[0]['error']}"
+
+        lines = [f"== 全球地理实体与百科知识: {query} =="]
+        for idx, item in enumerate(results, 1):
+            coords_str = f"{item['coordinates'][0]}, {item['coordinates'][1]}" if item.get("coordinates") else "无明确点位"
+            lines.append(f"{idx}. {item['name']} ({item['qid']})")
+            if item.get("description"):
+                lines.append(f"   简介: {item['description']}")
+            lines.append(f"   坐标: {coords_str}")
+            if item.get("wikipedia_summary"):
+                lines.append(f"   百科摘要: {item['wikipedia_summary'][:150]}...")
+            if item.get("wikipedia_url"):
+                lines.append(f"   条目链接: {item['wikipedia_url']}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"查询异常: {str(e)[:250]}"
+
+
+@tool
+def fetch_osm_boundary_or_features(query: str, feature_type: str = "boundary", bbox: str = "", limit: int = 200, auto_render: bool = True) -> str:
+    """全球开放街道地图（OSM）行政区划多边形边界与矢量要素极速抽取（免 Key）。
+    query: 地名（如 'Taiwan', 'Tokyo', 'Paris'）；feature_type: boundary（行政边界）/ roads（道路网）/ buildings（建筑物）/ water（水系）；
+    bbox: 可选空间范围；limit: 要素上限；auto_render: 是否自动上图（默认 True）。
+    用户需要拉取全球任意区域边界或 OSM 矢量时调用。"""
+    from backend.services import global_geo_service as ggs
+    try:
+        init_temp_dir()
+        ft = str(feature_type).lower().strip()
+        layer_name = f"OSM_{query}_{ft}"
+
+        if ft in ("boundary", "border", "行政区", "边界"):
+            items = ggs.search_osm_nominatim(query, fetch_polygon=True, limit=1)
+            if not items or "error" in items[0]:
+                return f"未找到「{query}」的 OSM 边界多边形"
+            item = items[0]
+            gj = item.get("geojson")
+            if not gj:
+                return f"「{query}」仅查到点位坐标 {item.get('coordinates')}，无面要素边界"
+
+            fc = {"type": "FeatureCollection", "features": [{
+                "type": "Feature",
+                "geometry": gj,
+                "properties": {"name": item.get("name"), "display_name": item.get("display_name"), "source": "OpenStreetMap"}
+            }]}
+            if auto_render:
+                _push_layer(layer_name, fc, {"color": "#0284c7", "fillColor": "#0284c7", "fillOpacity": 0.1, "weight": 2})
+                _register_layer(layer_name, fc)
+            return f"成功获取「{item.get('name')}」OSM 行政区划边界！已生成图层「{layer_name}」，范围 BBox: {item.get('bbox')}"
+
+        # Overpass 区域矢量提取
+        if not bbox:
+            # 先用 Nominatim 取该区域 bbox
+            items = ggs.search_osm_nominatim(query, fetch_polygon=False, limit=1)
+            if items and items[0].get("bbox"):
+                b = items[0]["bbox"]
+                bbox = f"{b[0]},{b[1]},{b[2]},{b[3]}"
+            else:
+                return f"需要提供 bbox 范围才能提取「{query}」的 {ft} 要素"
+
+        res = ggs.query_osm_overpass(query_type=ft, bbox=bbox, limit=limit)
+        fc = res.get("geojson", {})
+        count = res.get("feature_count", 0)
+        if count == 0:
+            return f"在 {query} 范围内未检索到 {ft} 矢量要素"
+
+        if auto_render:
+            _push_layer(layer_name, fc, {"color": "#16a34a", "weight": 1.5})
+            _register_layer(layer_name, fc)
+        return f"成功提取 OSM {ft} 矢量要素共 {count} 个，已生成图层「{layer_name}」"
+    except Exception as e:
+        return f"OSM 抓取异常: {str(e)[:300]}"
+
+
 tools = [
     search_web,
     fetch_webpage,
@@ -8669,6 +8989,13 @@ tools = [
     geometry_convert,
     raster_resample,
     raster_reproject,
+    search_gis_services,
+    get_gis_service_detail,
+    get_gis_services_stats,
+    inspect_gis_url,
+    fetch_gis_data_url,
+    search_global_entities,
+    fetch_osm_boundary_or_features,
 ]
 
 # ============================================================

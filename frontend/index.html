@@ -247,6 +247,20 @@
               </button>
             </div>
             <div class="connector-list" id="connectorList"></div>
+            <div class="connector-online" id="connectorGeoSource" style="border-bottom:1px solid var(--ui-border);padding-bottom:10px;margin-bottom:10px;">
+              <div class="connector-online-title" style="color:var(--ui-accent, #3b82f6);font-weight:600;">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="2" y1="12" x2="22" y2="12"></line>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                </svg>
+                GeoSource 全球空间数据源 (内嵌)
+              </div>
+              <div style="font-size:11px;color:var(--ui-gray-500);margin-bottom:6px;">
+                内置 2,198+ 全球 GIS 服务，支持 WMS / XYZ / REST 检索与一键上图
+              </div>
+              <button class="connector-online-btn" id="connectorOpenGeoSourceBtn" style="width:100%;text-align:center;background:var(--ui-accent, #3b82f6);color:#fff;">检索并一键上图</button>
+            </div>
             <div class="connector-online" id="connectorOnline">
               <div class="connector-online-title">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
@@ -939,14 +953,19 @@
     </defs>
   </svg>
   <div id="mapContextMenu" class="map-context-menu" style="display:none;">
+    <div class="context-menu-item" data-action="what-is-here">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--primary,#2563eb)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      <span>这里是哪里？(秒级识别)</span>
+      <span class="ctx-badge" style="background:#e0f2fe;color:#0284c7;font-size:10px;padding:1px 5px;border-radius:3px;font-weight:600;">极速</span>
+    </div>
     <div class="context-menu-item" data-action="send-location-routed">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="url(#ctx-ai-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
-      <span>发送此位置给AI</span>
+      <span>问 AI 深度分析此地</span>
       <span class="ctx-badge ctx-badge-ai">AI</span>
     </div>
     <div class="context-menu-item" data-action="copy-coords">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-      <span>复制坐标</span>
+      <span>复制经纬度坐标</span>
     </div>
   </div>
 
@@ -1079,6 +1098,24 @@
         <!-- === 地理服务 === -->
         <div class="modal-panel" id="panelGeoApi">
           <h3>地理服务</h3>
+
+          <!-- GeoSource 全球 GIS 空间数据源目录（内嵌） -->
+          <div class="model-config-card" style="border: 1px solid var(--outline-variant); background: var(--surface-container-low);">
+            <div class="model-config-header">
+              <span class="model-config-name" style="font-weight:600;display:inline-flex;align-items:center;gap:6px;">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                </svg>
+                GeoSource 全球空间服务检索 (内嵌)
+              </span>
+              <span class="model-config-badge configured" id="geosourceServiceBadge">2,198 服务</span>
+            </div>
+            <div style="font-size:12px;color:var(--on-surface-variant);margin-bottom:8px;line-height:1.5;">
+              基于本地 SQLite 索引，涵盖全球高程/地形、遥感卫星、气象水文、土地利用等 2,198+ 真实空间服务与 1,561+ 图层（WMS/XYZ/REST/GeoJSON），支持一键加载上图
+            </div>
+            <button class="modal-btn modal-btn-save" id="openGeoSourceModalBtn" style="padding:6px 16px;">打开数据检索中心</button>
+          </div>
 
           <!-- 添加在线数据（云原生格式）快捷入口 -->
           <div class="model-config-card">
@@ -1514,11 +1551,148 @@
   <script src="js/debug.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/connector.js"></script>
+  <script src="js/geosource.js"></script>
   <script src="js/history.js"></script>
   <script src="js/raster_tools.js"></script>
   <script src="js/app.js"></script>
   <script src="js/time.js"></script>
 
+  <!-- ===== GeoSource 全球空间数据源弹窗（统一 SVG UI 设计） ===== -->
+  <div class="modal-overlay" id="geosourceModal" style="display:none;">
+    <div class="geosource-modal-content">
+      <div class="geosource-modal-header">
+        <div class="geosource-title-area">
+          <span class="geosource-title">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+            GeoSource 全球空间数据源检索中心
+          </span>
+          <span class="geosource-badge" id="geosourceModalStatsBadge">2,198 服务 · 1,561 图层</span>
+        </div>
+        <button class="modal-close-top" id="geosourceCloseBtn" title="关闭" style="position:static;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+
+      <div class="geosource-modal-body">
+        <div class="geosource-filter-bar">
+          <!-- 搜索输入行 -->
+          <div class="geosource-search-row">
+            <div class="geosource-search-input-wrap">
+              <span class="geosource-search-icon">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+              </span>
+              <input type="text" id="geosourceKeyword" class="geosource-search-input" placeholder="输入搜索关键词（如：DEM、影像、气象、土地利用、道路、Sentinel、Landsat）..." />
+              <button class="geosource-search-clear" id="geosourceSearchClear" title="清除输入">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <button class="geosource-search-btn" id="geosourceSearchBtn">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+              </svg>
+              检索
+            </button>
+          </div>
+
+          <!-- 快捷分类芯片 -->
+          <div class="geosource-chips-row" id="geosourceQuickChips">
+            <span class="geosource-chip-label">快捷分类:</span>
+            <span class="geosource-chip active" data-cat="">全部</span>
+            <span class="geosource-chip" data-cat="遥感">遥感影像</span>
+            <span class="geosource-chip" data-cat="高程">高程地形</span>
+            <span class="geosource-chip" data-cat="气象">气象气候</span>
+            <span class="geosource-chip" data-cat="土地利用">土地利用</span>
+            <span class="geosource-chip" data-cat="交通">交通路网</span>
+            <span class="geosource-chip" data-cat="水利">水利海洋</span>
+            <span class="geosource-chip" data-cat="人口">人口社会</span>
+            <span class="geosource-chip" data-cat="开放政府数据">开放数据</span>
+          </div>
+
+          <!-- 多维筛选下拉与开关 -->
+          <div class="geosource-options-row">
+            <div class="geosource-filter-item">
+              <span>协议:</span>
+              <select id="geosourceProtocol" class="geosource-select">
+                <option value="">全部协议</option>
+                <option value="WMS">OGC WMS</option>
+                <option value="XYZ">XYZ 瓦片</option>
+                <option value="ArcGIS REST">ArcGIS REST</option>
+                <option value="WMTS">OGC WMTS</option>
+                <option value="WFS">OGC WFS</option>
+                <option value="STAC">STAC</option>
+              </select>
+            </div>
+
+            <div class="geosource-filter-item">
+              <span>国家/地区:</span>
+              <select id="geosourceCountry" class="geosource-select">
+                <option value="">全部国家</option>
+                <option value="全球">全球 (Global)</option>
+                <option value="中国">中国</option>
+                <option value="美国">美国</option>
+                <option value="德国">德国</option>
+                <option value="日本">日本</option>
+                <option value="英国">英国</option>
+                <option value="加拿大">加拿大</option>
+                <option value="澳大利亚">澳大利亚</option>
+                <option value="法国">法国</option>
+              </select>
+            </div>
+
+            <div class="geosource-filter-item">
+              <span>细分类别:</span>
+              <select id="geosourceCategory" class="geosource-select">
+                <option value="">全部分类</option>
+                <option value="高程">高程 / 地形</option>
+                <option value="遥感">遥感 / 卫星影像</option>
+                <option value="气象">气象 / 气候</option>
+                <option value="水利">水利 / 水文 / 海洋</option>
+                <option value="土地利用">土地利用 / 地表覆盖</option>
+                <option value="交通">交通 / 道路网</option>
+                <option value="人口">人口 / 经济社会</option>
+                <option value="开放政府数据">开放政府数据</option>
+              </select>
+            </div>
+
+            <label class="geosource-checkbox-label">
+              <input type="checkbox" id="geosourceNoKeyOnly" />
+              <span>免 API Key</span>
+            </label>
+
+            <label class="geosource-checkbox-label">
+              <input type="checkbox" id="geosourceFreeOnly" />
+              <span>免费服务</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="geosource-status-line">
+          <span id="geosourceResultCount">准备就绪</span>
+          <span style="font-size:11px;color:var(--on-surface-variant,#444748);opacity:0.8;">支持 WMS / XYZ / 矢量与 ArcGIS REST 服务一键上图</span>
+        </div>
+
+        <div class="geosource-results-list" id="geosourceResultsList"></div>
+      </div>
+
+      <!-- 分页底栏 -->
+      <div class="geosource-pagination-bar">
+        <div class="geosource-page-info">
+          共 <strong id="geosourceTotalCount">0</strong> 条记录，当前第 <strong id="geosourceCurrentPage">1</strong> / <strong id="geosourceTotalPages">1</strong> 页
+        </div>
+        <div class="geosource-page-controls" id="geosourcePageControls">
+          <!-- 动态渲染分页按钮 -->
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- ===== 内联启动脚本（缩放控件绑定 + 清会话） ===== -->
   <script>

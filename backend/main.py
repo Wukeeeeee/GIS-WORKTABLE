@@ -1,4 +1,8 @@
 import os
+# 启用 Windows 控制台 ANSI 颜色转义序列支持，防止乱码 [32m 显示
+if os.name == 'nt':
+    os.system('')
+
 # ===== PROJ 数据目录修复 =====
 # 部分机器安装了 PostGIS 等软件，会在系统环境变量 PROJ_LIB / PROJ_DATA 写入不兼容的
 # proj.db 路径（版本过旧），导致 rasterio 的 EPSG 解析失败（CRSError: DATABASE.LAYOUT.VERSION.MINOR）。
@@ -6,7 +10,7 @@ import os
 os.environ.pop("PROJ_LIB", None)
 os.environ.pop("PROJ_DATA", None)
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Response, Query
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -1156,6 +1160,186 @@ async def api_data_download(request: DataDownloadRequest):
     if asset.get("geojson") is not None:
         _register_layer(asset["layer_name"], asset["geojson"])
     return asset
+
+
+# ===== GeoSource 全球 GIS 空间服务库（内嵌版接口） =====
+
+class GeoSourceSearchRequest(BaseModel):
+    keyword: Optional[str] = ""
+    country: Optional[str] = ""
+    protocol: Optional[str] = ""
+    category: Optional[str] = ""
+    is_free: Optional[bool] = None
+    need_no_key: Optional[bool] = None
+    page: int = 1
+    page_size: int = 20
+    limit: Optional[int] = None
+
+class GeoSourceSQLRequest(BaseModel):
+    query: str
+
+
+@app.get('/api/geosource/stats')
+async def api_geosource_stats():
+    """获取 GeoSource 数据源库全貌统计信息（服务数、图层数、顶部分类/协议/国家）。"""
+    from backend.services import geosource_service
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, geosource_service.list_categories_and_stats)
+
+
+@app.post('/api/geosource/search')
+async def api_geosource_search(request: GeoSourceSearchRequest):
+    """搜索全球 GIS 空间服务（支持分页与全量检索）。"""
+    from backend.services import geosource_service
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: geosource_service.search_services(
+            keyword=request.keyword or None,
+            country=request.country or None,
+            protocol=request.protocol or None,
+            category=request.category or None,
+            is_free=request.is_free,
+            need_no_key=request.need_no_key,
+            page=request.page,
+            page_size=request.page_size,
+            limit=request.limit,
+        ),
+    )
+
+
+@app.get('/api/geosource/service/{service_id}')
+async def api_geosource_detail(service_id: str):
+    """获取指定服务详情及包含的子图层列表。"""
+    from backend.services import geosource_service
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, lambda: geosource_service.get_service_detail(service_id))
+    if "error" in res:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res
+
+
+@app.get('/api/geosource/proxy')
+@app.post('/api/geosource/proxy')
+async def api_geosource_proxy(url: str = Query(..., description="远程目标 URL")):
+    """代理获取远程 GIS 服务端点、GeoJSON 或元数据，避免浏览器端跨域（CORS）与网络限制。"""
+    from backend.services.tools import _get_effective_proxies
+    import urllib.request
+    import urllib.error
+
+    url_str = (url or "").strip()
+    if not url_str.startswith(('http://', 'https://')):
+        raise HTTPException(status_code=400, detail="非法 URL 地址")
+
+    loop = asyncio.get_event_loop()
+
+    def _fetch():
+        proxy_dict = _get_effective_proxies()
+        handler = urllib.request.ProxyHandler(proxy_dict) if proxy_dict else urllib.request.ProxyHandler({})
+        opener = urllib.request.build_opener(handler)
+        req = urllib.request.Request(
+            url_str,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 GIS-WorkTable",
+                "Accept": "application/json, text/plain, */*"
+            }
+        )
+        try:
+            with opener.open(req, timeout=12) as resp:
+                content = resp.read()
+                raw_type = resp.headers.get("Content-Type", "application/json")
+                return content, raw_type.split(";")[0]
+        except urllib.error.HTTPError as e:
+            raise HTTPException(status_code=e.code, detail=f"远程服务错误: {e.reason}")
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"代理请求失败: {str(e)}")
+
+    content, media_type = await loop.run_in_executor(None, _fetch)
+    return Response(content=content, media_type=media_type)
+
+
+@app.post('/api/geosource/query-sql')
+async def api_geosource_query_sql(request: GeoSourceSQLRequest):
+    """执行安全只读 SQL 查询。"""
+    from backend.services import geosource_service
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: geosource_service.query_sql(request.query))
+
+
+@app.get("/api/geo/reverse-geocode")
+async def api_reverse_geocode(lng: float = Query(...), lat: float = Query(...)):
+    """秒级逆地理编码：将 (lng, lat) 经纬度快速反解为行政区划地址与地理特征"""
+    from backend.services.tools import _current_amap_key
+    from backend.services.cloud_native import get_effective_proxies
+    import requests
+
+    result = {
+        "ok": True,
+        "lng": lng,
+        "lat": lat,
+        "formatted_address": f"经度 {lng:.5f}°, 纬度 {lat:.5f}°",
+        "country": "",
+        "province": "",
+        "city": "",
+        "district": "",
+        "poi_name": "",
+    }
+
+    # 1. 优先尝试高德（国内高精度）
+    if _current_amap_key:
+        try:
+            from backend.services.geo_coords import wgs84_to_gcj02
+            gcj_lng, gcj_lat = wgs84_to_gcj02(lng, lat)
+            resp = requests.get(
+                "https://restapi.amap.com/v3/geocode/regeo",
+                params={"key": _current_amap_key, "location": f"{gcj_lng},{gcj_lat}", "output": "JSON", "radius": 200, "extensions": "all"},
+                timeout=4,
+            )
+            data = resp.json()
+            if data.get("status") == "1":
+                regeo = data.get("regeocode", {})
+                addr = regeo.get("formatted_address", "")
+                comp = regeo.get("addressComponent", {})
+                if addr:
+                    result["formatted_address"] = addr
+                    result["country"] = comp.get("country", "中国")
+                    result["province"] = comp.get("province", "")
+                    result["city"] = comp.get("city", "") or comp.get("province", "")
+                    result["district"] = comp.get("district", "")
+                    pois = regeo.get("pois", [])
+                    if pois:
+                        result["poi_name"] = pois[0].get("name", "")
+                    return result
+        except Exception:
+            pass
+
+    # 2. 免费回退：OSM Nominatim（全球通用）
+    try:
+        proxies = get_effective_proxies()
+        headers = {"User-Agent": "GIS-WorkTable/2.0 ReverseGeocoder"}
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"lat": lat, "lon": lng, "format": "json", "zoom": 14, "addressdetails": 1},
+            headers=headers,
+            proxies=proxies,
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            display_name = data.get("display_name", "")
+            addr = data.get("address", {})
+            if display_name:
+                result["formatted_address"] = display_name
+                result["country"] = addr.get("country", "")
+                result["province"] = addr.get("state", "") or addr.get("province", "")
+                result["city"] = addr.get("city", "") or addr.get("county", "")
+                result["district"] = addr.get("suburb", "") or addr.get("district", "") or addr.get("town", "")
+                result["poi_name"] = addr.get("amenity", "") or addr.get("building", "") or addr.get("road", "")
+                return result
+    except Exception:
+        pass
+
+    return result
 
 
 # ===== 处理历史（前端「历史」面板） =====

@@ -316,6 +316,13 @@ def test_integration_flatgeobuf_remote():
     if not _network_ok(FGB_URL):
         pytest.skip("无网络环境，跳过远程 FlatGeobuf 集成测试")
     reset_state()
-    r = _registry()["load_flatgeobuf"].invoke(
-        {"source": FGB_URL, "layer_name": "远程FGB", "limit": 100})
-    assert "已加载" in r, r
+    try:
+        r = _registry()["load_flatgeobuf"].invoke(
+            {"source": FGB_URL, "layer_name": "远程FGB", "limit": 100})
+        if "timed out" in r.lower() or "timeout" in r.lower():
+            pytest.skip(f"远程 FlatGeobuf 网络超时: {r}")
+        assert "已加载" in r, r
+    except Exception as e:
+        if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+            pytest.skip(f"远程 FlatGeobuf 网络超时: {e}")
+        raise

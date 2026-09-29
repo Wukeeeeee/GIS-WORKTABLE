@@ -1,4 +1,4 @@
-﻿/**
+/**
  * GIS AI WorkTable — API 接口层
  * 函数签名已预留，实现由你完成
  *
@@ -589,6 +589,31 @@ window.GIS.api = (() => {
     }
   }
 
+  // ===== GeoSource 全球空间数据源 =====
+  async function geosourceStats() {
+    return request('/api/geosource/stats');
+  }
+
+  async function geosourceSearch(params = {}) {
+    return request('/api/geosource/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+  }
+
+  async function geosourceDetail(serviceId) {
+    return request(`/api/geosource/service/${encodeURIComponent(serviceId)}`);
+  }
+
+  async function geosourceQuerySql(query) {
+    return request('/api/geosource/query-sql', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+  }
+
   return {
     request, upload, chat, clearMemory, healthCheck,
     getBoundary,
@@ -607,6 +632,7 @@ window.GIS.api = (() => {
     inspectLayer, unregisterLayer, registerLayer, syncLayer,
     exportShp,
     invokeTool,
+    geosourceStats, geosourceSearch, geosourceDetail, geosourceQuerySql,
     BASE_URL, PROVIDERS_STORAGE_KEY,
     DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };

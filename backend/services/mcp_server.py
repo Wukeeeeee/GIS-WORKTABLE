@@ -245,6 +245,68 @@ def get_task_status(task_id: str = "") -> str:
     return json.dumps({"count": len(tasks), "tasks": tasks}, ensure_ascii=False, default=str)
 
 
+@mcp.tool()
+def inspect_url(url: str) -> str:
+    """智能探测指定 URL 的 GIS 服务或空间数据类型，提取图层、坐标系、字段元数据、要素量级与范围。
+    支持 ArcGIS REST (MapServer/FeatureServer)、OGC (WFS/WMS/WMTS)、GeoJSON、GeoParquet、FlatGeobuf、PMTiles、COG、Shapefile ZIP、CSV。"""
+    from backend.services import url_gis_service as ugs
+    try:
+        info = ugs.inspect_gis_url(url)
+        return json.dumps(info, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def fetch_url_data(
+    url: str,
+    layer_id: str = "",
+    bbox: str = "",
+    where: str = "1=1",
+    limit: int = 1000,
+    output_format: str = "geojson",
+) -> str:
+    """从 GIS URL 提取空间矢量数据、标准化坐标系为 WGS84 并保存到本地会话目录。
+    支持 ArcGIS REST (MapServer/FeatureServer)、OGC WFS、GeoJSON URL、GeoParquet、FlatGeobuf、Shapefile ZIP、CSV 坐标表。
+    返回物理文件路径与结构化元数据报告（字段列表、要素预览样本、BBox等）。"""
+    from backend.services import url_gis_service as ugs
+    try:
+        res = ugs.fetch_gis_data_url(
+            url=url,
+            layer_id=layer_id,
+            bbox=bbox,
+            where=where,
+            limit=limit,
+            output_format=output_format,
+        )
+        return json.dumps(res, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def search_wikidata(query: str, lang: str = "zh") -> str:
+    """全球开放地理实体与维基百科知识图谱检索（免 Key、全球覆盖）。
+    检索全球任意国家、山川河流、地标名胜、岛屿、行政区划，提取 Wikidata 经纬度坐标、实体定义与维基百科简介。"""
+    from backend.services import global_geo_service as ggs
+    try:
+        res = ggs.search_wikidata_entities(query, lang=lang)
+        return json.dumps({"ok": True, "query": query, "entities": res}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
+@mcp.tool()
+def search_osm(query: str, fetch_polygon: bool = True) -> str:
+    """通过 OpenStreetMap Nominatim 检索全球地名，返回精准坐标、BBox 范围与完整行政区划边界多边形 (GeoJSON)。"""
+    from backend.services import global_geo_service as ggs
+    try:
+        res = ggs.search_osm_nominatim(query, fetch_polygon=fetch_polygon)
+        return json.dumps({"ok": True, "query": query, "results": res}, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+
+
 # ============================================================
 # 入口
 # ============================================================

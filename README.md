@@ -72,6 +72,7 @@ GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需
 
 ### 数据获取与连接器
 
+- **GeoSource 全球空间服务与图层目录（内嵌）**：内置 2,198+ 个全球真实 GIS 服务与 1,561+ 个空间图层（基于 SQLite 本地索引），覆盖 OGC WMS、WFS、WMTS、XYZ、ArcGIS REST、STAC 等；支持多维筛选（关键词/国家/协议/免Key/免费）、Agent 自然语言检索推荐与地图一键上图直连加载（斜杠命令 `/geosource` 直达）
 - **云原生格式流式加载**：COG（/vsicurl 降采样预览）、PMTiles（HTTP Range 按需读瓦片，MVT 解码上图）、GeoParquet / FlatGeobuf（pyogrio + BBOX 空间过滤/行数上限）；粘贴 URL、拖拽文件、AI 指令三入口
 - 高德地图：POI 搜索、地理编码/逆地理编码/批量地理编码
 - DataV 行政区划边界、OSM 开放数据发现与下载、USGS 地震、Open-Meteo 天气

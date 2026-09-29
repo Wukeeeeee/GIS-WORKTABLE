@@ -407,21 +407,25 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 8px 12px;
   cursor: pointer;
   transition: background var(--transition-fast);
   border-left: 3px solid transparent;
+  min-width: 0;
 }
 .slash-item:hover,
 .slash-item.is-selected {
   background: var(--surface-container-low);
-  border-left-color: var(--ui-gray-900) /* -> --on-surface */;
+  border-left-color: var(--primary-container);
 }
 .slash-item-left {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
 }
 .slash-item-icon {
   display: inline-flex;
@@ -430,7 +434,7 @@ html, body {
   width: 20px;
   height: 20px;
   flex-shrink: 0;
-  color: var(--ui-gray-500) /* -> --on-surface-variant */;
+  color: var(--on-surface-variant);
 }
 .slash-item-icon svg {
   width: 14px;
@@ -440,26 +444,32 @@ html, body {
 .slash-item-name {
   font-size: var(--fs-12);
   font-weight: 600;
-  color: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--on-surface);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .slash-item-hint {
   font-family: var(--font-mono);
   font-size: var(--fs-10);
-  color: var(--ui-gray-300) /* -> --on-surface-variant */;
+  color: var(--outline);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .slash-item-label {
   font-size: var(--fs-11);
-  color: var(--ui-gray-900) /* -> --on-surface */;
+  color: var(--on-surface);
   white-space: nowrap;
 }
 .slash-item-desc {
   font-size: var(--fs-11);
-  color: var(--ui-gray-400) /* -> --on-surface */;
+  color: var(--on-surface-variant);
   text-align: right;
-  margin-left: 12px;
-  flex-shrink: 0;
+  margin-left: auto;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 /* ========== Chat Input ========== */
@@ -4368,7 +4378,7 @@ html.theme-dark .network-tab.active { color: var(--primary-fixed-dim); }
   max-height: 74vh;
   background: var(--surface-container-lowest);
   border: 1px solid var(--outline-variant);
-  border-radius: 0;
+  border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.18);
   overflow: hidden;
 }
@@ -4382,6 +4392,7 @@ html.theme-dark .network-tab.active { color: var(--primary-fixed-dim); }
 .spatial-toolbar:active { cursor: grabbing; }
 .spatial-toolbar svg { flex-shrink: 0; color: var(--on-surface-variant); }
 .spatial-toolbar-title {
+  font-family: var(--font-headline);
   font-size: var(--fs-14); font-weight: 600;
   color: var(--on-surface); flex: 1;
 }
@@ -4424,46 +4435,64 @@ html.theme-dark .network-tab.active { color: var(--primary-fixed-dim); }
 .spatial-tab-content.active { display: block; }
 /* 字段 */
 .spatial-field {
-  padding: 5px 0; display: flex; flex-direction: column; gap: 4px;
+  padding: 5px 0; display: flex; flex-direction: column; gap: 5px;
 }
 .spatial-field label {
   font-size: var(--fs-12); color: var(--on-surface-variant); font-weight: 500;
 }
 .spatial-field select, .spatial-input {
-  padding: 8px 10px; border: 1px solid var(--outline-variant);
-  border-radius: 4px; background: var(--surface); font-size: var(--fs-13);
+  padding: 7px 10px; border: 1px solid var(--outline-variant);
+  border-radius: 6px; background: var(--surface); font-size: var(--fs-13);
   color: var(--on-surface); width: 100%; box-sizing: border-box;
   min-height: 34px;
-  transition: border-color var(--transition-fast);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 .spatial-field select:focus, .spatial-input:focus {
   border-color: var(--primary); outline: none;
   box-shadow: 0 0 0 1px var(--primary);
 }
-.spatial-select-short {
-  padding: 6px 10px; border: 1px solid var(--outline-variant);
-  border-radius: 4px; background: var(--surface); font-size: var(--fs-12);
-  color: var(--on-surface); width: auto; box-sizing: border-box;
+.spatial-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
 }
-.spatial-row { display: flex; gap: 6px; align-items: center; }
-.spatial-row .spatial-input { flex: 1; }
+.spatial-row .spatial-input {
+  flex: 1 1 0%;
+  min-width: 0;
+  width: auto;
+}
+.spatial-field .spatial-row select,
+.spatial-field select.spatial-select-short,
+.spatial-select-short {
+  flex: 0 0 88px;
+  width: 88px !important;
+  min-width: 88px;
+  box-sizing: border-box;
+}
 /* 复选框 */
 .spatial-checkbox-label {
   display: flex; align-items: center; gap: 6px;
   font-size: var(--fs-12); color: var(--on-surface); cursor: pointer;
+  user-select: none;
 }
-.spatial-checkbox-label input[type="checkbox"] { margin: 0; }
+.spatial-checkbox-label input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
 /* 运行按钮 */
 .spatial-run-btn {
   display: flex; align-items: center; justify-content: center;
-  padding: 9px 0; margin: 8px 0 4px;
-  border: none; border-radius: 4px;
-  background: var(--primary); color: var(--on-primary);
-  font-size: var(--fs-13); font-weight: 600; cursor: pointer;
+  padding: 9px 0; margin: 10px 0 4px;
+  border: 1px solid var(--primary-container); border-radius: 6px;
+  background: var(--primary-container); color: var(--on-primary);
+  font-size: var(--fs-13); font-weight: 500; cursor: pointer;
   transition: opacity var(--transition-fast);
   font-family: inherit; width: 100%;
 }
-.spatial-run-btn:hover { opacity: 0.85; }
+.spatial-run-btn:hover { opacity: 0.88; }
+.spatial-run-btn:active { opacity: 0.75; }
 /* 结果区 */
 .spatial-result {
   border-top: 1px solid var(--outline-variant);
@@ -5206,3 +5235,596 @@ body.gis-mode-3d .map-coords {
 .leaflet-container {
   background: var(--surface-container, #f0f0f0);
 }
+
+/* ============================================================ */
+/* GeoSource 全球空间数据源检索中心（统一 Material-3 UI 设计）   */
+/* ============================================================ */
+.geosource-modal-content {
+  width: 960px;
+  max-width: 95vw;
+  height: 88vh;
+  max-height: 900px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface, #fdf8f8);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  animation: modal-slide-in 0.15s ease;
+}
+
+.geosource-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: var(--surface-container, #f1edec);
+  border-bottom: 1px solid var(--outline-variant, #c4c7c7);
+}
+
+.geosource-title-area {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.geosource-title {
+  font-family: var(--font-headline);
+  font-size: var(--fs-15, 15px);
+  font-weight: 600;
+  color: var(--on-surface, #1c1b1b);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.geosource-title svg {
+  color: var(--on-surface, #1c1b1b);
+  opacity: 0.85;
+}
+
+.geosource-badge {
+  font-family: var(--font-mono);
+  font-size: var(--fs-11, 11px);
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: var(--surface-container-high, #ebe7e6);
+  color: var(--on-surface-variant, #444748);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+}
+
+.geosource-modal-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px 10px;
+  overflow: hidden;
+  gap: 12px;
+  background: var(--surface, #fdf8f8);
+}
+
+/* 过滤与检索区域 */
+.geosource-filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--surface-container-lowest, #ffffff);
+  padding: 12px 14px;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 8px;
+}
+
+.geosource-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.geosource-search-input-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.geosource-search-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--outline, #747878);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+}
+
+.geosource-search-input {
+  width: 100%;
+  padding: 8px 32px 8px 34px;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 6px;
+  font-family: var(--font-body);
+  font-size: var(--fs-13, 13px);
+  outline: none;
+  background: var(--surface-container-lowest, #ffffff);
+  color: var(--on-surface, #1c1b1b);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.geosource-search-input:focus {
+  border-color: var(--primary, #000000);
+  box-shadow: 0 0 0 1px var(--primary, #000000);
+}
+
+.geosource-search-input::placeholder {
+  color: var(--outline, #747878);
+  font-size: var(--fs-12, 12px);
+}
+
+.geosource-search-clear {
+  position: absolute;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--outline, #747878);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.geosource-search-clear:hover {
+  color: var(--on-surface, #1c1b1b);
+  background: var(--surface-container-high, #ebe7e6);
+}
+
+.geosource-search-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  background: var(--primary-container, #1c1b1b);
+  color: var(--on-primary, #ffffff);
+  border: 1px solid var(--primary-container, #1c1b1b);
+  border-radius: 6px;
+  font-family: var(--font-body);
+  font-size: var(--fs-13, 13px);
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+}
+
+.geosource-search-btn:hover {
+  opacity: 0.88;
+}
+
+.geosource-search-btn:active {
+  opacity: 0.75;
+}
+
+/* 快捷分类芯片栏 */
+.geosource-chips-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.geosource-chip-label {
+  font-size: var(--fs-11, 11px);
+  color: var(--on-surface-variant, #444748);
+  margin-right: 2px;
+}
+
+.geosource-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 14px;
+  font-size: var(--fs-11, 11px);
+  color: var(--on-surface-variant, #444748);
+  background: var(--surface-container-low, #f7f3f2);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--transition-fast);
+}
+
+.geosource-chip:hover {
+  background: var(--surface-container-highest, #ebe7e6);
+  color: var(--on-surface, #1c1b1b);
+}
+
+.geosource-chip.active {
+  background: var(--primary-container, #1c1b1b);
+  color: var(--on-primary, #ffffff);
+  border-color: var(--primary-container, #1c1b1b);
+  font-weight: 500;
+}
+
+/* 多维过滤下拉与开关栏 */
+.geosource-options-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: var(--fs-12, 12px);
+  padding-top: 4px;
+  border-top: 1px dashed var(--outline-variant, #c4c7c7);
+}
+
+.geosource-filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--on-surface-variant, #444748);
+}
+
+.geosource-select {
+  padding: 4px 10px;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 4px;
+  font-family: var(--font-body);
+  font-size: var(--fs-12, 12px);
+  background: var(--surface-container-lowest, #ffffff);
+  color: var(--on-surface, #1c1b1b);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+}
+
+.geosource-select:focus {
+  border-color: var(--primary, #000000);
+}
+
+.geosource-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--on-surface-variant, #444748);
+  font-size: var(--fs-12, 12px);
+}
+
+.geosource-checkbox-label input[type="checkbox"] {
+  accent-color: var(--primary, #000000);
+  cursor: pointer;
+}
+
+/* 状态概览行 */
+.geosource-status-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--fs-12, 12px);
+  color: var(--on-surface-variant, #444748);
+  padding: 0 4px;
+}
+
+.geosource-status-line strong {
+  color: var(--on-surface, #1c1b1b);
+  font-family: var(--font-mono);
+}
+
+/* 结果列表容器 */
+.geosource-results-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+/* 结果服务卡片 */
+.geosource-card {
+  padding: 12px 14px;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 8px;
+  background: var(--surface-container-lowest, #ffffff);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.geosource-card:hover {
+  border-color: var(--outline, #747878);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.geosource-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.geosource-proto-tag {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10, 10px);
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.badge-wms  { background: var(--surface-container-high, #ebe7e6); color: var(--on-surface, #1c1b1b); border: 1px solid var(--outline-variant, #c4c7c7); }
+.badge-xyz  { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+.badge-rest { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+.badge-stac { background: #f3e8ff; color: #6b21a8; border: 1px solid #e9d5ff; }
+.badge-def  { background: var(--surface-container-high, #ebe7e6); color: var(--on-surface-variant, #444748); border: 1px solid var(--outline-variant, #c4c7c7); }
+
+.geosource-card-title {
+  font-family: var(--font-headline);
+  font-size: var(--fs-13, 13px);
+  font-weight: 600;
+  color: var(--on-surface, #1c1b1b);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.geosource-card-id {
+  font-size: var(--fs-11, 11px);
+  color: var(--outline, #747878);
+  font-family: var(--font-mono);
+}
+
+.geosource-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.geosource-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-11, 11px);
+  padding: 1px 7px;
+  background: var(--surface-container-low, #f7f3f2);
+  color: var(--on-surface-variant, #444748);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 4px;
+}
+
+.geosource-tag svg {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.geosource-tag.tag-success {
+  background: #e8f5e9;
+  color: #2e7d32;
+  border-color: #c8e6c9;
+}
+
+.geosource-tag.tag-info {
+  background: #e3f2fd;
+  color: #1565c0;
+  border-color: #bbdefb;
+}
+
+.geosource-card-desc {
+  font-size: var(--fs-12, 12px);
+  color: var(--on-surface-variant, #444748);
+  line-height: 1.45;
+  margin-bottom: 8px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.geosource-card-url-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.geosource-url-input {
+  flex: 1;
+  font-size: var(--fs-11, 11px);
+  font-family: var(--font-mono);
+  padding: 5px 8px;
+  background: var(--surface-container-low, #f7f3f2);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 4px;
+  color: var(--on-surface, #1c1b1b);
+}
+
+.geosource-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: var(--fs-11, 11px);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  background: var(--surface-container-lowest, #ffffff);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--on-surface, #1c1b1b);
+  transition: all var(--transition-fast);
+}
+
+.geosource-copy-btn:hover {
+  background: var(--surface-container-high, #ebe7e6);
+}
+
+.geosource-copy-btn.copied {
+  color: #2e7d32;
+  border-color: #a5d6a7;
+  background: #e8f5e9;
+}
+
+.geosource-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.geosource-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  font-size: var(--fs-12, 12px);
+  font-weight: 500;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  background: var(--surface-container-lowest, #ffffff);
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--on-surface, #1c1b1b);
+  text-decoration: none;
+  transition: all var(--transition-fast);
+}
+
+.geosource-action-btn:hover {
+  background: var(--surface-container-high, #ebe7e6);
+}
+
+.geosource-action-btn.btn-primary {
+  background: var(--primary-container, #1c1b1b);
+  color: var(--on-primary, #ffffff);
+  border-color: var(--primary-container, #1c1b1b);
+}
+
+.geosource-action-btn.btn-primary:hover {
+  opacity: 0.88;
+}
+
+.geosource-action-btn.btn-primary:active {
+  opacity: 0.75;
+}
+
+/* 详情抽屉 */
+.geosource-detail-box {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--surface-container-low, #f7f3f2);
+  border-radius: 6px;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+}
+
+.geosource-sublayer-list {
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.geosource-sublayer-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: var(--surface-container-lowest, #ffffff);
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 4px;
+  font-size: var(--fs-11, 11px);
+}
+
+.geosource-sublayer-name {
+  color: var(--on-surface, #1c1b1b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.geosource-sublayer-load-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: var(--fs-10, 10px);
+  font-weight: 500;
+  background: var(--primary-container, #1c1b1b);
+  color: var(--on-primary, #ffffff);
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+
+.geosource-sublayer-load-btn:hover {
+  opacity: 0.85;
+}
+
+/* 分页控制底部栏 */
+.geosource-pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--surface-container, #f1edec);
+  border-top: 1px solid var(--outline-variant, #c4c7c7);
+  font-size: var(--fs-12, 12px);
+  color: var(--on-surface-variant, #444748);
+}
+
+.geosource-page-info strong {
+  color: var(--on-surface, #1c1b1b);
+  font-family: var(--font-mono);
+}
+
+.geosource-page-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.geosource-page-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  background: var(--surface-container-lowest, #ffffff);
+  color: var(--on-surface, #1c1b1b);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-11, 11px);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.geosource-page-btn:hover:not(:disabled) {
+  background: var(--surface-container-high, #ebe7e6);
+}
+
+.geosource-page-btn.active {
+  background: var(--primary-container, #1c1b1b);
+  color: var(--on-primary, #ffffff);
+  border-color: var(--primary-container, #1c1b1b);
+  font-weight: 600;
+}
+
+.geosource-page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.geosource-page-size-select {
+  margin-left: 8px;
+  padding: 3px 6px;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 4px;
+  font-family: var(--font-body);
+  font-size: var(--fs-11, 11px);
+  background: var(--surface-container-lowest, #ffffff);
+  color: var(--on-surface, #1c1b1b);
+  outline: none;
+  cursor: pointer;
+}
+

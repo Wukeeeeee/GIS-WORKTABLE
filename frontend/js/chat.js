@@ -42,6 +42,7 @@ if (typeof marked !== 'undefined') {
   };
   // 每个命令的 SVG icon（14x14，currentColor）
   const SLASH_ICONS = {
+    geosource: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="1.5" y1="7" x2="12.5" y2="7" stroke="currentColor" stroke-width="1.2"/><ellipse cx="7" cy="7" rx="3" ry="5.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
     buffer: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
     intersection: '<svg viewBox="0 0 14 14"><circle cx="5.2" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8.8" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
     union: '<svg viewBox="0 0 14 14"><path d="M4 3v5a3 3 0 006 0V3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4 3h6" stroke="currentColor" stroke-width="1.3"/></svg>',
@@ -76,6 +77,7 @@ if (typeof marked !== 'undefined') {
 
   const SLASH_COMMANDS = [
     { name: 'help', label: '操作手册', desc: '打开系统操作手册', prompt: '' },
+    { name: 'geosource', label: '全球数据源', desc: '全球 2198+ 空间服务与图层检索', prompt: '帮我检索全球 GIS 空间服务：', direct: function () { if (window.GIS.geosource) GIS.geosource.show(); } },
     { name: 'buffer', label: '缓冲区分析', desc: '为图层创建指定距离的缓冲区', prompt: '为图层 {图层名} 创建 {距离} 米的缓冲区，结果加载到地图上', direct: function () { GIS.spatial.openTab('buffer') },},
     { name: 'intersection', label: '空间相交', desc: '两个图层的相交分析', prompt: '对 {图层A} 和 {图层B} 做空间相交分析，结果加载到地图上', direct: function () { GIS.spatial.openTab('overlay') },},
     { name: 'union', label: '空间合并', desc: '合并两个图层的几何', prompt: '合并 {图层A} 和 {图层B}，结果加载到地图上', direct: function () { GIS.spatial.openTab('overlay') },},
@@ -1535,16 +1537,30 @@ if (typeof marked !== 'undefined') {
     type = type || 'ai';
     options = options || {};
 
-    // 系统消息：居中灰色小字条
+    // 系统消息：支持 Markdown 渲染与优雅提示卡片
     if (type === 'system') {
       const row = document.createElement('div');
       const isHidden = options && options.hidden;
+      row.className = 'message message-system';
       row.style.cssText = isHidden
         ? 'display:none;'
-        : 'display:flex;justify-content:center;max-width:100%;';
+        : 'display:flex;justify-content:center;width:100%;padding:4px 0;box-sizing:border-box;';
       const bubble = document.createElement('div');
-      bubble.style.cssText = 'font-size:12px;color:var(--ui-gray-400);text-align:center;';
-      bubble.innerHTML = text;
+
+      const isLongOrRich = text.length > 40 || text.indexOf('\n') >= 0 || text.indexOf('**') >= 0 || text.indexOf('`') >= 0 || text.indexOf('<') >= 0;
+      if (isLongOrRich) {
+        bubble.className = 'system-card';
+        bubble.style.cssText = 'max-width:96%;width:100%;font-size:12px;color:var(--on-surface-variant);background:var(--surface-container-low);border:1px solid var(--outline-variant);border-radius:6px;padding:8px 12px;line-height:1.5;word-break:break-all;text-align:left;';
+        if (typeof marked !== 'undefined' && text.indexOf('<') === -1) {
+          bubble.innerHTML = marked.parse(text, { breaks: true, gfm: true, renderer: _linkRenderer });
+        } else {
+          bubble.innerHTML = text;
+        }
+      } else {
+        bubble.className = 'system-pill';
+        bubble.style.cssText = 'font-size:11px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:2px 10px;text-align:center;line-height:1.4;';
+        bubble.innerHTML = text;
+      }
       row.appendChild(bubble);
       messagesContainer.appendChild(row);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;

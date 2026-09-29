@@ -954,56 +954,91 @@ var _undoSkip = false;
       return;
     }
 
-    // AI 相关功能 — 如果被卡死但无 loading 气泡则自动复位
-    if (window._aiRunning) {
-      // 强制恢复：超过 90 秒无 loading 气泡 → 复位；无 loading 气泡 → 复位
-      if (!document.getElementById('ai-loading-msg')) {
-        window._aiRunning = false;
-        // 也移除 is-disabled 类，确保右键菜单可用
-        document.querySelectorAll('.context-menu-item').forEach(function(el) {
-          if (el.getAttribute('data-action') !== 'copy-coords') el.classList.remove('is-disabled');
+    // 秒级识别：这里是哪里？
+    if (action === 'what-is-here') {
+      if (window.GIS && window.GIS.chat && window.GIS.chat.addMessage) {
+        window.GIS.chat.addMessage('正在反解位置 (' + lng + ', ' + lat + ')...', 'system');
+      }
+      fetch('/api/geo/reverse-geocode?lng=' + lng + '&lat=' + lat)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var addr = data.formatted_address || (lat + ', ' + lng);
+          var title = data.poi_name || data.district || data.city || data.province || '识别位置';
+
+          // 地图弹出气泡
+          if (mapInstance && typeof L !== 'undefined') {
+            var popupContent = '<div style="font-family:sans-serif;font-size:13px;line-height:1.5;min-width:180px;">' +
+              '<div style="font-weight:700;color:#0f172a;margin-bottom:4px;display:flex;align-items:center;gap:4px;">📍 ' + title + '</div>' +
+              '<div style="color:#475569;font-size:12px;margin-bottom:6px;">' + addr + '</div>' +
+              '<div style="color:#64748b;font-size:11px;font-family:monospace;margin-bottom:8px;">坐标: ' + lng + ', ' + lat + '</div>' +
+              '<div style="display:flex;gap:6px;">' +
+                '<button id="ctxAskAiBtn" style="background:#2563eb;color:#fff;border:none;border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;font-weight:600;">✨ 问 AI 深度分析</button>' +
+              '</div>' +
+            '</div>';
+
+            var popup = L.popup()
+              .setLatLng([parseFloat(lat), parseFloat(lng)])
+              .setContent(popupContent)
+              .openOn(mapInstance);
+
+            setTimeout(function() {
+              var btn = document.getElementById('ctxAskAiBtn');
+              if (btn) {
+                btn.onclick = function() {
+                  mapInstance.closePopup();
+                  _triggerAiLocationAnalysis(lat, lng, addr);
+                };
+              }
+            }, 50);
+          }
+
+          if (window.GIS && window.GIS.chat && window.GIS.chat.addMessage) {
+            window.GIS.chat.addMessage('📍 **位置识别结果**：' + addr + ' `[' + lng + ', ' + lat + ']`', 'system');
+          }
+        })
+        .catch(function(err) {
+          if (window.GIS && window.GIS.chat && window.GIS.chat.addMessage) {
+            window.GIS.chat.addMessage('位置反解失败: ' + (err.message || err), 'system');
+          }
         });
-      } else {
-        return; // AI 正在运行且有加载提示，不打断
-      }
+      return;
+    if (action === 'send-location' || action === 'send-location-routed') {
+      _triggerAiLocationAnalysis(lat, lng, '');
+      return;
+    }
+  }
+
+  function _triggerAiLocationAnalysis(lat, lng, addr) {
+    if (!window.GIS || !window.GIS.chat || !window.GIS.chat.send) return;
+
+    var displayMsg = '分析位置：' + (addr || (lng + ', ' + lat));
+    var addrContext = addr ? ('（所属位置/地址：' + addr + '）') : '';
+    var msg = '空间坐标：经度 ' + lng + '，纬度 ' + lat + addrContext + '。\n' +
+      '请结合该位置的空间地理环境，进行专业 GIS 综合分析：\n' +
+      '1. 地貌与地形特征（海拔、坡度特征、主要山川河流走势）\n' +
+      '2. 区域气候与生态水文特征\n' +
+      '3. 所在行政区划与空间规划/用地特征\n' +
+      '4. 请使用精简规范的 Markdown 表格与要点呈现分析结论。';
+
+    var selEl = document.getElementById('modelSelector');
+    var curProvider = selEl ? selEl.value : 'glm-routed';
+
+    var _api = window.GIS.api;
+    var _prov = _api && _api.resolveProvider ? _api.resolveProvider(curProvider) : null;
+    var _key = _prov ? (_prov.api_key || '') : '';
+    if (!_key) {
+      var _names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
+      if (window.GIS.chat.addMessage) window.GIS.chat.addMessage(((_prov && _prov.name) || _names[curProvider] || curProvider) + ' 未配置 API Key，请点击齿轮按钮配置', 'system');
+      return;
     }
 
-    var msg = '', displayMsg = '';
-    switch (action) {
-      case 'send-location':
-      case 'send-location-routed':
-        displayMsg = lat + ', ' + lng + ' - 查询地理信息';
-        msg = '纬度' + lat + '，经度' + lng + '。\n这是新的坐标，和之前的问题无关。\n请完成以下任务：\n1. 先 search_web 搜索这个位置属于哪个省/市/区/县\n2. 查询附近的地理特征（山脉、河流、湖泊、地形等）\n3. 查询该区域的气候类型、典型海拔、植被等地理信息\n4. 最后用 execute_python 在地图该位置加一个点标记，只加一个点，不要生成多个点位\n5. 回复时用表格形式（markdown 表格），格式如下：\n\n| 项目 | 内容 |\n|------|------|\n| 经度 | 具体数值 |\n| 纬度 | 具体数值 |\n| 所属省份 | XX省 |\n| 所属城市 | XX市 |\n| 所属区县 | XX区/县 |\n| 附近河流 | XXX |\n| 附近山脉 | XXX |\n| 地形特征 | XXX |\n| 气候类型 | XXX |\n| 典型海拔 | XXX米 |\n| 备注 | 其他补充信息 |\n\n尽量多提供该位置的地理相关信息，回复要详细。不要用aoi相关工具，不要提取边界轮廓。';
-        break;
-    }
-    if (msg && window.GIS && window.GIS.chat && window.GIS.chat.send) {
-      var selEl = document.getElementById('modelSelector');
-      var curProvider = selEl ? selEl.value : 'glm-routed';
-
-      // 检查 API Key（从 Provider 列表解析，支持任意 OpenAI 兼容 Provider）
-      var _api = window.GIS.api;
-      var _prov = _api && _api.resolveProvider ? _api.resolveProvider(curProvider) : null;
-      var _key = _prov ? (_prov.api_key || '') : '';
-      if (!_key) {
-        var _names = { 'deepseek-routed': 'DeepSeek V4 Flash+', 'glm-routed': 'GLM-4.7-Flash+', 'agnes': 'Agnes 2.0 Flash+' };
-        if (window.GIS.chat.addMessage) window.GIS.chat.addMessage(((_prov && _prov.name) || _names[curProvider] || curProvider) + ' 未配置 API Key，请点击齿轮按钮配置', 'system');
-        return;
-      }
-
-      var valEl = document.getElementById('modelSelectValue');
-      if (valEl && _prov && _prov.name) valEl.textContent = _prov.name;
-      try {
-        var _sendResult = window.GIS.chat.send(msg, { displayText: displayMsg || undefined, provider: curProvider });
-        if (_sendResult && typeof _sendResult.catch === 'function') {
-          _sendResult.catch(function(_err) {
-            if (window.GIS.chat && window.GIS.chat.addMessage)
-              window.GIS.chat.addMessage('DEM 发送失败: ' + (_err.message || _err), 'system');
-          });
-        }
-      } catch(_e) {
-        if (window.GIS.chat && window.GIS.chat.addMessage)
-          window.GIS.chat.addMessage('DEM 触发异常: ' + (_e.message || _e), 'system');
-      }
+    var valEl = document.getElementById('modelSelectValue');
+    if (valEl && _prov && _prov.name) valEl.textContent = _prov.name;
+    try {
+      window.GIS.chat.send(msg, { displayText: displayMsg || undefined, provider: curProvider });
+    } catch(_e) {
+      if (window.GIS.chat && window.GIS.chat.addMessage)
+        window.GIS.chat.addMessage('触发异常: ' + (_e.message || _e), 'system');
     }
   }
 
@@ -1411,6 +1446,35 @@ var _undoSkip = false;
       delete _rasterLayers[name];
       delete layers[name];
     }
+  }
+
+  /** 在线 XYZ 瓦片图层 */
+  function addTileLayer(url, name, options) {
+    if (!mapInstance) return null;
+    options = options || {};
+    var tile = L.tileLayer(url, {
+      maxZoom: options.maxZoom || 19,
+      attribution: options.attribution || name,
+      opacity: options.opacity !== undefined ? options.opacity : 1.0,
+      crossOrigin: true
+    }).addTo(mapInstance);
+    layers[name] = tile;
+    return tile;
+  }
+
+  /** 在线 WMS 图层 */
+  function addWmsLayer(url, layerName, name, options) {
+    if (!mapInstance) return null;
+    options = options || {};
+    var wms = L.tileLayer.wms(url, {
+      layers: layerName || '',
+      format: options.format || 'image/png',
+      transparent: true,
+      attribution: options.attribution || name,
+      opacity: options.opacity !== undefined ? options.opacity : 1.0,
+    }).addTo(mapInstance);
+    layers[name] = wms;
+    return wms;
   }
 
   /** 折点编辑模式 */
@@ -2044,6 +2108,8 @@ var _undoSkip = false;
       mapInstance.setView(center, zoom);
     },
     getMap: function() { return mapInstance; },
+    addTileLayer: addTileLayer,
+    addWmsLayer: addWmsLayer,
     _openManual: function() { _openManual(); },
   };
 })();
