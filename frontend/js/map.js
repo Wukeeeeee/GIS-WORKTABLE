@@ -1151,6 +1151,11 @@ var _undoSkip = false;
   /** 执行菜单项动作 */
   function _handleMenuAction(action) {
     switch (action) {
+      case 'geosource':
+        if (window.GIS.geosource && typeof window.GIS.geosource.show === 'function') {
+          window.GIS.geosource.show();
+        }
+        break;
       case 'import':
         var uploadBtn = document.getElementById('uploadTrigger') || document.getElementById('uploadTriggerBtn');
         if (uploadBtn) uploadBtn.click();

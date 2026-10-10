@@ -119,8 +119,10 @@ def http_download_to_temp(url: str, fmt: str = "") -> str:
 
 def resolve_vector_source(source: str, fmt: str = "矢量") -> str:
     """矢量数据源解析：优先 /vsicurl/ 流式（元信息探测成功即用），证书受限时回退下载"""
+    s_raw = str(source).strip()
+    is_remote = s_raw.startswith(("http://", "https://", "/vsicurl/http://", "/vsicurl/https://"))
     src = _as_vsi_path(source)
-    if not _is_http(source):
+    if not is_remote:
         if not os.path.exists(src):
             raise CloudNativeError(f"文件不存在: {src}")
         return src
@@ -133,10 +135,11 @@ def resolve_vector_source(source: str, fmt: str = "矢量") -> str:
     except Exception as e:
         # GDAL 网络错误表现不稳定（schannel 证书链 / 间歇性 open 失败），
         # http 源统一尝试 urllib 下载回退；下载也失败则报下载错误
+        http_url = s_raw[len("/vsicurl/"):] if s_raw.startswith("/vsicurl/") else s_raw
         if _is_curl_cert_error(e):
-            return http_download_to_temp(str(source), fmt)
+            return http_download_to_temp(http_url, fmt)
         try:
-            return http_download_to_temp(str(source), fmt)
+            return http_download_to_temp(http_url, fmt)
         except CloudNativeError:
             raise CloudNativeError(f"{fmt} 元信息读取失败: {str(e)[:300]}")
 

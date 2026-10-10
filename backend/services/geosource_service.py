@@ -19,16 +19,31 @@ _DEFAULT_DB_PATH = os.path.join(_REPO_ROOT, "data", "gis_services.db")
 
 
 def get_db_path() -> str:
-    """获取 gis_services.db 的实际绝对路径。"""
+    r"""获取 gis_services.db 的实际绝对路径。
+    自动检测策略：
+    1. 环境变量 GEOSOURCE_DB_PATH
+    2. 同级开发的 GeoSource 仓库（E:\my_repo\GeoSource\gis_services.db），若更新时间更新则优先使用
+    3. 本地 data/gis_services.db
+    """
     env_path = os.environ.get("GEOSOURCE_DB_PATH", "").strip()
     if env_path and os.path.exists(env_path):
         return os.path.abspath(env_path)
-    if os.path.exists(_DEFAULT_DB_PATH):
-        return _DEFAULT_DB_PATH
-    # 兼容 backend/data/ 路径
-    alt_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "gis_services.db")
-    if os.path.exists(alt_path):
-        return alt_path
+
+    local_path = _DEFAULT_DB_PATH if os.path.exists(_DEFAULT_DB_PATH) else os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "gis_services.db"
+    )
+
+    # 检查同级目录下的独立 GeoSource 仓库
+    sibling_path = os.path.abspath(os.path.join(_REPO_ROOT, "..", "GeoSource", "gis_services.db"))
+    if os.path.exists(sibling_path):
+        # 如果同级 GeoSource 的数据库存在且更新时间更晚，优先使用最新的 GeoSource 数据
+        if not os.path.exists(local_path) or os.path.getmtime(sibling_path) >= os.path.getmtime(local_path):
+            return sibling_path
+
+    if os.path.exists(local_path):
+        return local_path
+    if os.path.exists(sibling_path):
+        return sibling_path
     return _DEFAULT_DB_PATH
 
 
@@ -185,8 +200,22 @@ def get_service_detail(service_id: str) -> Dict[str, Any]:
     return service_data
 
 
-@lru_cache(maxsize=1)
-def _cached_stats_tuple():
+_last_db_mtime = 0.0
+_cached_stats_data = None
+
+
+def list_categories_and_stats() -> Dict[str, Any]:
+    """获取 GeoSource 数据源库全貌统计信息：总数、主流分类、协议及国家覆盖（根据 DB 修改时间智能缓存）。"""
+    global _last_db_mtime, _cached_stats_data
+    db_path = get_db_path()
+    try:
+        current_mtime = os.path.getmtime(db_path)
+    except Exception:
+        current_mtime = 0.0
+
+    if _cached_stats_data is not None and current_mtime == _last_db_mtime:
+        return dict(_cached_stats_data)
+
     conn = get_db_connection(readonly=True)
     cur = conn.cursor()
 
@@ -207,24 +236,22 @@ def _cached_stats_tuple():
     top_protocols = [dict(r) for r in cur.fetchall()]
 
     cur.execute(
-        "SELECT country, count(*) as count FROM master WHERE country != '' GROUP BY country ORDER BY count DESC LIMIT 15"
+        "SELECT country, count(*) as count FROM master WHERE country != '' GROUP BY country ORDER BY count DESC LIMIT 20"
     )
     top_countries = [dict(r) for r in cur.fetchall()]
 
     conn.close()
 
-    return {
+    _cached_stats_data = {
         "total_services": total_services,
         "total_layers": total_layers,
         "top_categories": top_categories,
         "top_protocols": top_protocols,
-        "top_countries": top_countries
+        "top_countries": top_countries,
+        "db_path": db_path
     }
-
-
-def list_categories_and_stats() -> Dict[str, Any]:
-    """获取 GeoSource 数据源库全貌统计信息：总数、主流分类、协议及国家覆盖（带高速内存缓存）。"""
-    return dict(_cached_stats_tuple())
+    _last_db_mtime = current_mtime
+    return dict(_cached_stats_data)
 
 
 def query_sql(query: str) -> Dict[str, Any]:

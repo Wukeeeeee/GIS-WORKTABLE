@@ -72,7 +72,7 @@ GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需
 
 ### 数据获取与连接器
 
-- **GeoSource 全球空间服务与图层目录（内嵌）**：内置 2,198+ 个全球真实 GIS 服务与 1,561+ 个空间图层（基于 SQLite 本地索引），覆盖 OGC WMS、WFS、WMTS、XYZ、ArcGIS REST、STAC 等；支持多维筛选（关键词/国家/协议/免Key/免费）、Agent 自然语言检索推荐与地图一键上图直连加载（斜杠命令 `/geosource` 直达）
+- **GeoSource 全球空间服务与图层目录（内嵌）**：内置 **11,054+** 个全球真实 GIS 服务与 **18,292+** 个空间图层（5,771 条已验证服务、832 条强协议实证，基于 SQLite 本地索引），覆盖 OGC WMS、WFS、WMTS、XYZ、ArcGIS REST、STAC、CKAN、DKAN 等，覆盖 319 个国家/地区与 102 个专业分类；支持多维筛选（关键词/国家/协议/免Key/免费）、Agent 自然语言检索推荐与地图一键上图直连加载；支持输入框底部 🌐 快捷接入、态势大屏联动与本地 GeoSource 数据库零拷贝热同步（斜杠命令 `/geosource` 直达）
 - **云原生格式流式加载**：COG（/vsicurl 降采样预览）、PMTiles（HTTP Range 按需读瓦片，MVT 解码上图）、GeoParquet / FlatGeobuf（pyogrio + BBOX 空间过滤/行数上限）；粘贴 URL、拖拽文件、AI 指令三入口
 - 高德地图：POI 搜索、地理编码/逆地理编码/批量地理编码
 - DataV 行政区划边界、OSM 开放数据发现与下载、USGS 地震、Open-Meteo 天气
@@ -87,11 +87,19 @@ GIS-WORKTABLE 是一个 AI 驱动的 GIS 工作平台：用自然语言描述需
 - DAG 工作流引擎：Agent 可生成结构化工作流并执行
 - 网络代理设置：支持系统代理自动检测，海外数据源国内可直连
 
+### 全球空间数据源索引与 MCP 互通 (GeoSource Catalog)
+
+- **超万级 GIS 服务索引与协议实证**：内置收录全球 **11,054+** 个公开 GIS 服务条目、**18,292+** 个图层（涵盖 319 个国家和地区、102 个专题分类），支持 WMS、WFS、WMTS、ArcGIS REST、OGC API 等协议；经自动化网络与协议验证，已探活通过 **5,771+** 个可用服务，包含 **832+** 个通过强协议探测（GetCapabilities / FeatureInfo）验证的标准化接口。
+- **输入框快捷入口与大屏联动**：输入框底部操作栏集成 GeoSource 快捷入口（🌐 按钮），单击呼出轻量检索弹窗，支持按住 `Ctrl+Click` 直开全球大屏；地图顶栏「文件」下拉菜单与斜杠命令 `/geosource` 全面打通。
+- **单色工程制图规范 (Monochromatic Neutral UI)**：全球态势与中国省级下钻大屏（[frontend/geosource_map.html](frontend/geosource_map.html)）全面统一为 Material 3 黑白灰中性工程制图语言（`#1c1b1b` / `#ffffff` / `#747878`），采用浅底单色阶梯透明度渲染与系统通用类名，杜绝杂乱彩色与花哨渐变，兼顾海量服务分布辨识度与严谨制图美感。
+- **Zero-Copy 零拷贝热同步**：后端服务（`geosource_service.py`）自动动态探测同级开发的 `GeoSource` 仓库数据库（`gis_services.db`），根据文件修改时间（`mtime`）自动实现零拷贝挂载与全库缓存热失效，上游抓取/探活数据更新无需手动复制即可无缝实时同步。
+- **MCP Server 互通**：除 Gis-WorkTable 原生内嵌支持外，亦可作为独立 MCP Server（[GeoSource-MCP](https://github.com/Wukeeeeee/geosource)）无缝接入 Claude Desktop、Claude Code、Cursor 等任意 LLM Agent 工具链。项目主页与独立索引仓库见 [Wukeeeeee/geosource](https://github.com/Wukeeeeee/geosource)。
+
 ### MCP Server 与质量守卫
 
 - **MCP Server**（`python -m backend.services.mcp_server`）：stdio 传输，把全部 @tool 工具以 tools_list / tool_call / list_layers / get_task_status 四个 MCP 工具开放给 Claude Code、Cursor 等外部客户端；注册表自动反射、图层产物落盘会话目录、路径白名单 confinement（`GEOWORKTABLE_MCP_ROOTS`），配置示例见 [docs/mcp_server.md](docs/mcp_server.md)
 - **地理质量自检（Geo QA）**：图层出通道时自动体检——CRS 未转换/经纬颠倒、空结果、无效几何、退化多边形变成显式警告而非静默错误
-- **E2E 测试**：伪造数据经 HTTP 走完整直连链（缓冲→裁剪→统计→分区统计→卷帘→历史重跑），浏览器级 UI 链路可重放
+- **E2E 测试**：伪造数据经 HTTP 走完整直连链（缓冲→裁剪→统计→分区统计→卷帘→历史重跑），浏览器级 UI链路可重放
 
 ***
 
@@ -251,7 +259,7 @@ cd backend
 python -m pytest tests/ -v
 ```
 
-当前收集 492 项：487 项通过，5 项远程集成测试在无网络环境自动跳过。覆盖范围：工具注册完整性守卫、图层通道静态守卫、结果真实性自检、下钻与 3D 可视化、知识库加载、空间分析、栅格工具、网络分析、空间统计、遥感指数、任务管理、坐标转换、Workflow 引擎、凭据安全等。
+当前收集 511 项：510 项通过，1 项远程集成测试在无网络环境自动跳过。覆盖范围：工具注册完整性守卫、图层通道静态守卫、结果真实性自检、下钻与 3D 可视化、知识库加载、空间分析、栅格工具、网络分析、空间统计、遥感指数、任务管理、坐标转换、Workflow 引擎、凭据安全、GeoSource 全球数据源探活与检索等。
 
 ### 新增 GIS 工具
 

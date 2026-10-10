@@ -217,6 +217,13 @@
             </div>  <!-- close model-picker -->
             </div>  <!-- close model-bar-left -->
             <div class="model-bar-right">
+              <button class="icon-btn" id="geosourceTrigger" title="全球空间数据超市 (GeoSource) · 11,000+ 在线图层">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#888" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/>
+                  <line x1="2" y1="12" x2="22" y2="12"/>
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+              </button>
               <button class="icon-btn" id="connectorBtn" title="连接器（数据源）">
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#888" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
@@ -304,6 +311,11 @@
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
               <span>文件</span>
               <div class="map-menu-dropdown">
+                <button class="map-menu-item" data-action="geosource">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  <span>全球数据超市 (GeoSource)</span>
+                </button>
+                <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="import">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                   <span>导入图层</span>
@@ -1572,9 +1584,15 @@
           </span>
           <span class="geosource-badge" id="geosourceModalStatsBadge">2,198 服务 · 1,561 图层</span>
         </div>
-        <button class="modal-close-top" id="geosourceCloseBtn" title="关闭" style="position:static;">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <a href="geosource_map.html" target="_blank" class="geosource-badge" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;color:var(--on-surface,#1c1b1b);background:var(--surface-container-high,#ebe7e6);border:1px solid var(--outline-variant,#c4c7c7);font-weight:500;" title="在大屏世界地图中探索全球数据分布与下钻">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            打开全球态势大屏 ↗
+          </a>
+          <button class="modal-close-top" id="geosourceCloseBtn" title="关闭" style="position:static;">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
       </div>
 
       <div class="geosource-modal-body">

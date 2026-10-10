@@ -8385,7 +8385,8 @@ def geometry_convert(layer_name: str, target_type: str = "lines") -> str:
                 return "线要素无法多边形化（未构成闭合环），请检查几何"
             out = gpd.GeoDataFrame(geometry=polys, crs=gdf.crs)
         elif t == "convex_hull":
-            hull = gdf.geometry.unary_union.convex_hull
+            union_geom = gdf.geometry.union_all() if hasattr(gdf.geometry, "union_all") else gdf.geometry.unary_union
+            hull = union_geom.convex_hull
             out = gpd.GeoDataFrame(geometry=[hull], crs=gdf.crs)
         elif t == "bounding_box":
             minx, miny, maxx, maxy = gdf.total_bounds

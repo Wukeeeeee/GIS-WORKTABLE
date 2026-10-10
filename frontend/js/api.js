@@ -25,6 +25,9 @@ window.GIS.api = (() => {
       var stored = localStorage.getItem('gis_api_base_url');
       if (stored) return stored;
     } catch(e) { /* localStorage 不可用（如 Safari 无痕模式） */ }
+    if (typeof window !== 'undefined' && window.location && window.location.origin && window.location.protocol.startsWith('http')) {
+      return window.location.origin;
+    }
     return 'http://localhost:8000';
   })();
 

@@ -119,6 +119,18 @@
       });
     }
 
+    var triggerBtn = document.getElementById('geosourceTrigger');
+    if (triggerBtn) {
+      triggerBtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (e.ctrlKey || e.metaKey) {
+          window.open('geosource_map.html', '_blank');
+        } else {
+          show();
+        }
+      });
+    }
+
     // 异步加载全库统计信息
     loadStats();
   }
@@ -142,13 +154,33 @@
     if (!window.GIS.api || typeof window.GIS.api.geosourceStats !== 'function') return;
     window.GIS.api.geosourceStats().then(function (data) {
       _stats = data;
+      var totalSvc = (data.total_services || 11054).toLocaleString();
+      var totalLyr = (data.total_layers || 18292).toLocaleString();
+
       var badge = document.getElementById('geosourceModalStatsBadge');
-      if (badge && data) {
-        badge.textContent = (data.total_services || 2198) + ' 服务 · ' + (data.total_layers || 1561) + ' 图层';
+      if (badge) {
+        badge.textContent = totalSvc + ' 服务 · ' + totalLyr + ' 图层';
       }
       var cardBadge = document.getElementById('geosourceServiceBadge');
-      if (cardBadge && data) {
-        cardBadge.textContent = (data.total_services || 2198) + ' 服务';
+      if (cardBadge) {
+        cardBadge.textContent = totalSvc + ' 服务';
+      }
+
+      // 动态将真实覆盖的国家/地区注入国家筛选下拉列表
+      if (data.top_countries && data.top_countries.length > 0) {
+        var countrySelect = document.getElementById('geosourceCountry');
+        if (countrySelect) {
+          var currentVal = countrySelect.value;
+          var html = '<option value="">全部国家/地区</option>';
+          data.top_countries.forEach(function (c) {
+            var name = c.country || '';
+            if (!name) return;
+            var cnt = typeof c.count === 'number' ? ' (' + c.count + ')' : '';
+            html += '<option value="' + window.GIS.utils.escapeHtml(name) + '">' + window.GIS.utils.escapeHtml(name) + cnt + '</option>';
+          });
+          countrySelect.innerHTML = html;
+          if (currentVal) countrySelect.value = currentVal;
+        }
       }
     }).catch(function (e) {
       console.warn('[GeoSource] 加载统计概况失败', e);
