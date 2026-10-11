@@ -541,10 +541,10 @@
     function onEachWorldFeature(feature, layer) {
       const p = feature.properties;
       const tipText = p.is_china 
-        ? `<b>🇨🇳 中华人民共和国</b><br>收录 ${p.count} 项服务<br><span style="color:#38bdf8;">👉 点击下钻查看各省市分布</span>`
+        ? `<b>🇨🇳 中华人民共和国</b><br>收录 ${p.count} 项服务<br><span style="color:#0284c7;font-weight:600;">👉 点击下钻查看各省市分布</span>`
         : `<b>${p.name}</b>: ${p.count} 项服务 (${p.verified} 项已验证)`;
 
-      layer.bindTooltip(`<div style="font-size:12px;color:#fff;padding:2px 4px;">${tipText}</div>`, { sticky: true, opacity: 0.95 });
+      layer.bindTooltip(`<div style="font-size:12px;color:var(--on-surface, #1c1b1b);padding:2px 4px;">${tipText}</div>`, { sticky: true, opacity: 0.95 });
 
       layer.on({
         mouseover: (e) => {
@@ -582,7 +582,7 @@
     function onEachProvinceFeature(feature, layer) {
       const p = feature.properties;
       layer.bindTooltip(`
-        <div style="font-size:12px;color:#fff;padding:2px 4px;">
+        <div style="font-size:12px;color:var(--on-surface, #1c1b1b);padding:2px 4px;">
           <b>${p.name}</b>: ${p.count} 项省/市级服务
         </div>
       `, { sticky: true, opacity: 0.95 });

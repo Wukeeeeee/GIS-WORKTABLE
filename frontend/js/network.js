@@ -285,7 +285,7 @@ window.GIS = window.GIS || {};
           '</div>' +
         '</div>' +
         '<div class="network-field">' +
-          '<label>途经点 <span class="network-help" title="点击「添加途经点」后在地图上点击添加，可添加多个">ⓘ</span></label>' +
+          '<label>途经点</label>' +
           '<div class="network-point-row">' +
             '<button class="network-set-btn" id="networkAddWaypointBtn">' +
               "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-2f4a8a68fd9f.png')\"></span>" +

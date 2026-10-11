@@ -133,7 +133,7 @@ def save_project(
 
     # 存储图层 → CAS blob
     layer_refs = []
-    for layer in layers:
+    for idx, layer in enumerate(layers):
         geojson = layer.get("geojson") or layer.get("geojson_data")
         if geojson:
             blob = _blob_put(geojson)
@@ -143,9 +143,14 @@ def save_project(
             "name": layer.get("filename") or layer.get("name", "未命名"),
             "blob": blob,
             "color": layer.get("color", "#1c1b1b"),
-            "visible": layer.get("visible", True),
+            "visible": layer.get("visible", True) if layer.get("visible") is not False else False,
             "geometry_type": layer.get("geometry_type", "未知"),
             "source": layer.get("source", "ai"),
+            "order": idx,
+            "url": layer.get("url") or layer.get("service_url") or "",
+            "service_type": layer.get("service_type") or layer.get("protocol") or "",
+            "sublayer": layer.get("sublayer") or layer.get("sublayer_name") or "",
+            "crs": layer.get("crs") or "WGS-84",
         })
 
     # 构造工程数据

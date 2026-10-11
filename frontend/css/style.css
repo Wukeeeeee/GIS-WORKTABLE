@@ -1213,7 +1213,8 @@ html, body {
   opacity: 0.7;
 }
 
-.map-zoom-btn .ui-icon {
+.map-zoom-btn .ui-icon,
+.map-zoom-btn svg {
   width: 22px;
   height: 22px;
 }
@@ -4390,8 +4391,10 @@ html.theme-dark .network-tab.active { color: var(--primary-fixed-dim); }
 /* ============================================================
    空间分析面板 (复用网络分析面板风格)
    ============================================================ */
-#spatialPanelContainer { position: fixed; z-index: 9998; }
-#spatialPanelContainer.dragging { transition: none !important; pointer-events: none; user-select: none; }
+#spatialPanelContainer,
+#spatialStatsPanelContainer { position: fixed; z-index: 9998; }
+#spatialPanelContainer.dragging,
+#spatialStatsPanelContainer.dragging { transition: none !important; pointer-events: none; user-select: none; }
 .spatial-panel {
   display: flex; flex-direction: column;
   width: 380px; max-width: 90vw;

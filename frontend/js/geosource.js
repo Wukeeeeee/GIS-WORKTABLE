@@ -449,7 +449,7 @@
       html += '      ' + UI_ICONS.layers + ' <span>图层与详情</span>';
       html += '    </button>';
       if (canLoad && s.service_url) {
-        html += '    <button class="geosource-action-btn btn-primary" onclick="window.GIS.geosource.loadService(' + index + ')">';
+        html += '    <button class="geosource-action-btn btn-primary" onclick="window.GIS.geosource.loadService(' + index + ', this)">';
         html += '      ' + UI_ICONS.mapPlus + ' <span>' + (/ArcGIS/i.test(s.protocol || '') ? '浏览并接入' : '加载图层') + '</span>';
         html += '    </button>';
       }
@@ -583,13 +583,33 @@
     });
   }
 
-  function loadService(index) {
+  function loadService(index, btnEl) {
     var s = typeof index === 'object' ? index : _lastResults[index];
     if (!s || !s.service_url) return;
 
     var name = s.service_name || s.service_id;
     var proto = s.protocol || '';
+
+    // 按钮反馈与防止重复点击
+    var origText = '';
+    if (btnEl && btnEl.querySelector) {
+      var span = btnEl.querySelector('span');
+      if (span) {
+        origText = span.textContent;
+        span.textContent = '正在连接与解析…';
+      }
+      btnEl.disabled = true;
+    }
+    function restoreBtn() {
+      if (btnEl && btnEl.querySelector) {
+        var span = btnEl.querySelector('span');
+        if (span && origText) span.textContent = origText;
+        btnEl.disabled = false;
+      }
+    }
+
     if (/ArcGIS/i.test(proto) || /\/(?:FeatureServer|MapServer)(?:\/|$)/i.test(s.service_url) || /\/rest\/services(?:\/|$)/i.test(s.service_url)) {
+      restoreBtn();
       browseArcgis(s.service_url, name);
       return;
     }
@@ -597,12 +617,14 @@
     // 1. OGC WMS 服务
     if (/WMS/i.test(proto)) {
       window.GIS.api.geosourceDetail(s.service_id).then(function (det) {
+        restoreBtn();
         var layerName = '';
         if (det.layers && det.layers.length > 0) {
           layerName = det.layers[0].layer_name;
         }
         loadWmsSublayer(encodeURIComponent(s.service_url), encodeURIComponent(layerName), encodeURIComponent(name));
-      }).catch(function () {
+      }).catch(function (err) {
+        restoreBtn();
         loadWmsSublayer(encodeURIComponent(s.service_url), '', encodeURIComponent(name));
       });
       return;
@@ -610,6 +632,7 @@
 
     // 2. XYZ 瓦片服务
     if (/XYZ/i.test(proto) || /\{[xyz]\}/i.test(s.service_url)) {
+      restoreBtn();
       loadXyzLayer(s.service_url, name);
       return;
     }
@@ -617,14 +640,16 @@
     // 5. 默认尝试以 GeoJSON 格式加载（优先直连，CORS 失败自动回退代理）
     fetchWithProxy(s.service_url)
       .then(function (gj) {
+        restoreBtn();
         if (gj && (gj.type === 'FeatureCollection' || gj.type === 'Feature' || gj.coordinates || gj.features)) {
           loadGeoJsonLayer(gj, name, s.crs);
         } else {
-          fallbackNotifyUrl(s, name);
+          fallbackNotifyUrl(s, name, '返回数据非有效 GeoJSON 矢量要素格式');
         }
       })
-      .catch(function () {
-        fallbackNotifyUrl(s, name);
+      .catch(function (err) {
+        restoreBtn();
+        fallbackNotifyUrl(s, name, err.message || '网络连接或 CORS 拦截失败');
       });
   }
 
@@ -706,14 +731,17 @@
     }
   }
 
-  function fallbackNotifyUrl(serviceObj, name) {
+  function fallbackNotifyUrl(serviceObj, name, reason) {
     var url = serviceObj.service_url || serviceObj.official_url || '';
+    var reasonText = reason ? ('\n\n**具体原因**：' + reason) : '';
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       var proto = serviceObj.protocol || 'REST';
-      var msg = '**数据源接入指引** · ' + name + '\n\n' +
-        '此端点尚不能直接作为地图图层加载，可能需要子图层、认证或指定格式。请在数据源详情中查看服务说明：\n\n' +
+      var msg = '**数据源接入指引** · ' + name + reasonText + '\n\n' +
+        '此端点尚不能直接作为地图图层自动渲染，可能需要子图层、认证或指定格式。请在数据源详情中查看服务说明：\n\n' +
         '`' + url + '`';
       window.GIS.chat.addMessage(msg, 'system');
+    } else {
+      alert('无法直接上图：' + (reason || '该端点不支持直接矢量渲染') + '\n\n' + url);
     }
   }
 

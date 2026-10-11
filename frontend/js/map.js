@@ -1078,7 +1078,7 @@ var _undoSkip = false;
           }
 
           if (window.GIS && window.GIS.chat && window.GIS.chat.addMessage) {
-            window.GIS.chat.addMessage('📍 **位置识别结果**：' + addr + ' `[' + lng + ', ' + lat + ']`', 'system');
+            window.GIS.chat.addMessage('**位置识别结果**：' + addr + ' `[' + lng + ', ' + lat + ']`', 'system');
           }
         })
         .catch(function(err) {

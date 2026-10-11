@@ -132,7 +132,7 @@
           <div class="chat-input-model-bar">
             <div class="model-bar-left">
               <div class="model-select-wrapper" id="modelSelectTrigger">
-                <span class="ui-icon model-status-dot" aria-hidden="true" id="modelStatusDot" style=";width:8px;height:8px;--ui-icon-image:url('/assets/ui-icons/icon-4d6a0a6417c0.png')"></span>
+                <span class="model-status-dot online" aria-hidden="true" id="modelStatusDot" title="AI 模型：在线可用"></span>
                 <span id="modelSelectValue">GLM-4.7-Flash+</span>
                 <span class="ui-icon model-select-arrow" aria-hidden="true" style=";width:10px;height:6px;--ui-icon-image:url('/assets/ui-icons/icon-fac439e3e52a.png')"></span>
                 <!-- 隐藏的原生 select（保持 JS 兼容） -->
@@ -889,11 +889,6 @@
   <!-- ========================================================= -->
   <span class="ui-icon" aria-hidden="true" style="display:none;;--ui-icon-image:url('/assets/ui-icons/icon-c7b5fb2ea8c3.png')"></span>
   <div id="mapContextMenu" class="map-context-menu" style="display:none;">
-    <div class="context-menu-item" data-action="what-is-here">
-      <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-2200e2433552.png')"></span>
-      <span>这里是哪里？(秒级识别)</span>
-      <span class="ctx-badge" style="background:#e0f2fe;color:#0284c7;font-size:10px;padding:1px 5px;border-radius:3px;font-weight:600;">极速</span>
-    </div>
     <div class="context-menu-item" data-action="send-location-routed">
       <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-050db8fc6bba.png')"></span>
       <span>问 AI 深度分析此地</span>
@@ -908,17 +903,15 @@
   <!-- ========================================================= -->
   <!-- 图层检查器面板（浮窗）                                      -->
   <!-- ========================================================= -->
-  <div class="inspector-overlay" id="layerInspector" style="display:none;">
-    <div class="inspector-panel">
-      <div class="inspector-header">
-        <span class="inspector-title" id="inspectorTitle">图层检查</span>
-        <button class="inspector-close" id="inspectorClose" title="关闭">
-          <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
-        </button>
-      </div>
-      <div class="inspector-body custom-scrollbar" id="inspectorBody">
-        <!-- 由 JS 填充 -->
-      </div>
+  <div class="inspector-panel" id="layerInspector" style="display:none;">
+    <div class="inspector-header" id="inspectorHeader">
+      <span class="inspector-title" id="inspectorTitle">图层检查</span>
+      <button class="inspector-close" id="inspectorClose" title="关闭">
+        <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
+      </button>
+    </div>
+    <div class="inspector-body custom-scrollbar" id="inspectorBody">
+      <!-- 由 JS 填充 -->
     </div>
   </div>
 

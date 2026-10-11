@@ -568,7 +568,7 @@ window.GIS = window.GIS || {};
     var resultBody = document.getElementById('spatialResultBody');
     var loader = document.getElementById('spatialLoader');
     loader.style.display = 'flex';
-    if (GIS.workspace) GIS.workspace.toolPending('spatialPanel');
+    if (GIS.workspace) GIS.workspace.toolPending('spatialPanel', btn);
     const buttons = document.querySelectorAll('#spatialPanel .spatial-run-btn');
     buttons.forEach(function(button) { button.disabled = true; });
 

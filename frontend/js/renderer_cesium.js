@@ -17,6 +17,9 @@ window.GIS = window.GIS || {};
 
   const GIS = window.GIS;
 
+  const ICON_3D = '<span class="ui-icon" aria-hidden="true" style="width:18px;height:18px;--ui-icon-image:url(\'/assets/ui-icons/workspace-3d.png\')"></span>';
+  const ICON_2D = '<span class="ui-icon" aria-hidden="true" style="width:18px;height:18px;--ui-icon-image:url(\'/assets/ui-icons/workspace-map.png\')"></span>';
+
   // ============================================================
   // Cesium 懒加载（本地 vendor → 国内 CDN → unpkg → 官方 CDN）
   // ============================================================
@@ -176,8 +179,23 @@ window.GIS = window.GIS || {};
         e._gisLayerId = rec.layer_id;
         // outline 在部分 GPU 上不可靠；面要素用填充色即可辨识
         if (e.polygon) e.polygon.outline = false;
-        // 点要素按线宽放大像素点，默认过小不易点选
-        if (e.point) e.point.pixelSize = ((rec.style && rec.style.weight) || 2) * 4;
+        // 点要素：Cesium 默认给 GeoJSON Point 生成 Pin 气球图标 (billboard)，将其去除并强制渲染为实心圆点 + 细白边
+        const ptColor = Cesium.Color.fromCssColorString((rec.style && (rec.style.fillColor || rec.style.color)) || '#3498db');
+        const ptSize = Math.max(9, ((rec.style && rec.style.weight) || 2) * 4);
+        if (e.billboard) {
+          e.billboard = undefined;
+          e.point = new Cesium.PointGraphics({
+            pixelSize: ptSize,
+            color: ptColor.withAlpha(opScale),
+            outlineColor: Cesium.Color.WHITE.withAlpha(0.95),
+            outlineWidth: 2,
+          });
+        } else if (e.point) {
+          e.point.pixelSize = ptSize;
+          e.point.color = ptColor.withAlpha(opScale);
+          e.point.outlineColor = Cesium.Color.WHITE.withAlpha(0.95);
+          e.point.outlineWidth = 2;
+        }
       });
       viewer.dataSources.add(ds);
       dsMap[rec.layer_id] = ds;
@@ -347,12 +365,14 @@ window.GIS = window.GIS || {};
     }
     // 切换按钮 + 3D 专属按钮（挂在缩放/绘制快捷栏，与 2D 同一套样式）
     const toolbar = document.getElementById('mapZoomControls');
+
     if (toolbar && !document.getElementById('toggle3dBtn')) {
       const btn = document.createElement('button');
       btn.id = 'toggle3dBtn';
       btn.className = 'map-zoom-btn m3d-keep';
       btn.title = '切换 2D / 3D Globe';
-      btn.innerHTML = '<span style="font-size:11px;font-weight:700;">3D</span>';
+      btn.setAttribute('aria-label', btn.title);
+      btn.innerHTML = ICON_3D;
       btn.addEventListener('click', function() {
         toggle3D().catch(function(e) {
           if (GIS.chat && GIS.chat.addMessage) {
@@ -369,6 +389,7 @@ window.GIS = window.GIS || {};
         b.id = id;
         b.className = 'map-zoom-btn m3d-3dbtn m3d-keep';
         b.title = title;
+        b.setAttribute('aria-label', title);
         b.innerHTML = '<span style="font-size:11px;font-weight:600;">' + label + '</span>';
         b.addEventListener('click', onclick);
         return b;
@@ -721,9 +742,24 @@ window.GIS = window.GIS || {};
         });
       }
       // 把现有图层同步进 3D（只取含 GeoJSON 的）
-      GIS.state.getLayers().forEach(function(rec) {
+      const existingLayers = (GIS.state && typeof GIS.state.getLayers === 'function') ? GIS.state.getLayers() : [];
+      existingLayers.forEach(function(rec) {
         if (!dsMap[rec.layer_id]) syncLayer(rec);
       });
+      // 容错：若某些图层仅存在于 GIS.layers（如早期导入但未进 state）
+      if (GIS.layers && typeof GIS.layers.getLayers === 'function') {
+        GIS.layers.getLayers().forEach(function(pl) {
+          if (pl.geojson && !dsMap[pl.layer_id]) {
+            syncLayer({
+              layer_id: pl.layer_id,
+              name: pl.filename || pl.name || '图层',
+              geojson: pl.geojson,
+              style: { color: pl.color || '#1c1b1b', fillColor: pl.color || '#1c1b1b' },
+              visible: pl.visible !== false,
+            });
+          }
+        });
+      }
       requestRender();
     } else {
       container3d.style.display = 'none';
@@ -734,7 +770,11 @@ window.GIS = window.GIS || {};
       mode = '2d';
     }
     const btn = document.getElementById('toggle3dBtn');
-    if (btn) btn.querySelector('span').textContent = mode === '2d' ? '3D' : '2D';
+    if (btn) {
+      btn.innerHTML = mode === '2d' ? ICON_3D : ICON_2D;
+      btn.title = mode === '2d' ? '切换 2D / 3D Globe' : '切换至 2D 平面地图';
+      btn.setAttribute('aria-label', btn.title);
+    }
     // body 级 3D 标记：CSS 据此隐藏 2D 专属元素（如坐标显示）
     document.body.classList.toggle('gis-mode-3d', mode === '3d');
     const coordsEl = document.getElementById('mapCoords');

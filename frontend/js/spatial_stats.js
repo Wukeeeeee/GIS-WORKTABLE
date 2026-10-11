@@ -11,6 +11,8 @@ window.GIS = window.GIS || {};
   var GIS = window.GIS;
   var _active = false;
   var _initialized = false;
+  var PANEL_WIDTH = 380;
+  var _panelLeft = NaN, _panelTop = NaN;
 
   var PANEL_HTML =
     ("<div class=\"spatial-panel\" id=\"spatialStatsPanel\">"
@@ -158,6 +160,7 @@ window.GIS = window.GIS || {};
     }
     container.innerHTML = PANEL_HTML;
     _centerPanel(container);
+    _initDrag(container);
 
     document.getElementById('spatialStatsClose').addEventListener('click', deactivate);
     if (GIS.workspace) GIS.workspace.preparePanel('spatialStatsPanel', 'spatialStatsToolbar', 'spatialStatsClose', '空间统计');
@@ -193,13 +196,94 @@ window.GIS = window.GIS || {};
     contents.forEach(function (c) { c.classList.toggle('active', c.id === 'stab' + tab.charAt(0).toUpperCase() + tab.slice(1)); });
   }
 
+  function _chatRightEdge() {
+    var chatPanel = document.querySelector('.chat-panel');
+    if (!chatPanel) return 0;
+    var r = chatPanel.getBoundingClientRect();
+    return (r.width > 0 ? r.right : 0) + 4;
+  }
+
+  function _clampToMapArea(container, left, top) {
+    if (GIS.workspace) return GIS.workspace.clampPanel(container, left, top, PANEL_WIDTH);
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var minLeft = _chatRightEdge();
+    var w = container.offsetWidth || PANEL_WIDTH;
+    var h = container.offsetHeight || 300;
+    left = Math.max(minLeft, Math.min(vw - w - 10, left));
+    top = Math.max(34, Math.min(vh - h - 10, top));
+    return [left, top];
+  }
+
   function _centerPanel(container) {
     container.style.position = 'fixed';
-    container.style.left = '50%';
-    container.style.top = '50%';
-    container.style.transform = 'translate(-50%, -50%)';
     container.style.zIndex = '1100';
-    if (GIS.workspace) GIS.workspace.centerPanel(container, 380);
+    if (!isNaN(_panelLeft) && !isNaN(_panelTop)) {
+      var clamped = _clampToMapArea(container, _panelLeft, _panelTop);
+      _panelLeft = clamped[0]; _panelTop = clamped[1];
+      container.style.left = _panelLeft + 'px';
+      container.style.top = _panelTop + 'px';
+      container.style.transform = 'none';
+      return;
+    }
+    if (GIS.workspace) {
+      var pos = GIS.workspace.centerPanel(container, PANEL_WIDTH);
+      _panelLeft = pos[0]; _panelTop = pos[1];
+      return;
+    }
+    var vw = window.innerWidth;
+    var chatRight = _chatRightEdge();
+    var mapAreaWidth = vw - chatRight;
+    var coords = _clampToMapArea(container,
+      Math.round(chatRight + (mapAreaWidth - PANEL_WIDTH) / 2), 80);
+    _panelLeft = coords[0];
+    _panelTop = coords[1];
+    container.style.left = _panelLeft + 'px';
+    container.style.top = _panelTop + 'px';
+    container.style.transform = 'none';
+  }
+
+  function _initDrag(container) {
+    var header = document.getElementById('spatialStatsToolbar');
+    if (!header) return;
+    var startX, startY, startLeft, startTop;
+
+    function onStart(e) {
+      if (e.target.closest('button')) return;
+      var ev = e.touches ? e.touches[0] : e;
+      startX = ev.clientX;
+      startY = ev.clientY;
+      var currentRect = container.getBoundingClientRect();
+      startLeft = currentRect.left;
+      startTop = currentRect.top;
+      container.classList.add('dragging');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onEnd);
+      document.addEventListener('touchmove', onMove, {passive: false});
+      document.addEventListener('touchend', onEnd);
+    }
+
+    function onMove(e) {
+      var ev = e.touches ? e.touches[0] : e;
+      var dx = ev.clientX - startX;
+      var dy = ev.clientY - startY;
+      var clamped = _clampToMapArea(container, startLeft + dx, startTop + dy);
+      container.style.left = clamped[0] + 'px';
+      container.style.top = clamped[1] + 'px';
+      _panelLeft = clamped[0];
+      _panelTop = clamped[1];
+    }
+
+    function onEnd() {
+      container.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onEnd);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onEnd);
+    }
+
+    header.addEventListener('mousedown', onStart);
+    header.addEventListener('touchstart', onStart, {passive: true});
   }
 
   function activate() {

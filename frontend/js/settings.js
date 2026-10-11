@@ -1,4 +1,4 @@
-﻿/**
+/**
  * GIS AI WorkTable — 设置模块（Provider 列表化版）
  * 设置弹窗、Provider 动态列表编辑器、模型选择器、主题/字号
  *
@@ -622,8 +622,16 @@ window.GIS = window.GIS || {};
     var cur = GIS.api.currentProvider();
     var status = cur ? GIS.api.getModelStatus(cur.id) : 'untested';
     dot.classList.remove('online', 'offline', 'checking');
-    if (cur && cur.api_key && status === 'online') dot.classList.add('online');
-    else dot.classList.add('offline');
+    if (cur && status === 'offline') {
+      dot.classList.add('offline');
+      dot.title = (cur.name || 'AI 模型') + '：连接离线';
+    } else if (cur && status === 'checking') {
+      dot.classList.add('checking');
+      dot.title = (cur.name || 'AI 模型') + '：检测中...';
+    } else {
+      dot.classList.add('online');
+      dot.title = (cur ? cur.name : 'AI 模型') + '：就绪在线';
+    }
     updateModelWarning();
   }
 

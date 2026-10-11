@@ -6,7 +6,7 @@
 
 结合自然语言 AI Agent 与手动工具的开源 GIS 工作台，用于空间数据处理、分析及 2D/3D 地图可视化。
 
-[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](backend/requirements.txt)
 
 [快速开始](#快速开始) · [功能说明](docs/features.md) · [架构](docs/architecture.md) · [参与贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)
@@ -15,7 +15,7 @@
 
 GIS WorkTable 将数据加载、空间分析、地图展示和结果导出放在同一工作台中。用户可以通过手动面板执行分析，也可以用自然语言让 Agent 组合 GIS 工具，并在地图上检查结果。
 
-界面采用黑白灰布局：顶部菜单、左侧数据 / 图层 / 处理 / AI 导航、中央地图及底部工具条。AI 助手默认收起，各侧面板可关闭、重新打开，并通过与地图之间的分隔条调整宽度。全球数据地图在中央工作区打开，可返回原地图；经纬度显示在底部状态栏。2D 与 3D 使用同一组工作台入口；在线服务是否可接入取决于协议、服务权限与可用性。
+界面采用黑白灰布局：顶部菜单、左侧首页 / 数据 / 图层 / 处理 / AI 导航、中央地图及底部工具条。首次访问默认打开首页面板，提供上手指引、一键运行样例与最近工程；后续自动记忆上次打开的面板与收起状态。AI 助手默认收起，各侧面板可关闭、重新打开，并通过与地图之间的分隔条调整宽度。全球数据地图在中央工作区打开，可返回原地图且保持当前状态；经纬度显示在底部状态栏。2D 与 3D 使用同一组工作台入口；在线服务是否可接入取决于协议、服务权限与可用性。
 
 适合 GIS 学习、空间分析原型验证和工作流演示。项目持续开发中；桌面客户端为实验性功能，分析结果需要结合数据质量、坐标系和方法适用性核验。
 
@@ -36,7 +36,7 @@ GIS WorkTable 将数据加载、空间分析、地图展示和结果导出放在
 | 2D/3D 地图 | Leaflet / CesiumJS 共享图层状态，行政区下钻、面要素拉伸展示 | 底图和在线边界服务需要网络 |
 | 栅格与空间统计 | 地形分析、遥感指数、插值、自相关、热点与网络分析 | 对应输入数据；部分工具需要在线数据 |
 | 数据接入 | 文件导入、GeoSource 目录检索、OGC/ArcGIS 服务、云原生格式 | 数据库快照、服务可用性及授权因来源而异 |
-| 工程与互通 | 工程保存、地图及报告导出、DAG 工作流、stdio MCP Server | MCP 接入见专门文档 |
+| 工程与互通 | 工程保存与恢复（.giswork）、图层导出（Shapefile/GeoJSON 兼容 QGIS 与 ArcGIS）、地图及报告导出、DAG 工作流、stdio MCP Server | MCP 接入见专门文档 |
 
 完整清单见 [功能说明](docs/features.md)。工具以源代码注册表为准；数据目录的数量与探活结果以实际数据库快照为准。
 
@@ -169,6 +169,6 @@ GIS 结果仅供研究和辅助分析，不替代专业判断。软件许可证�
 
 ## 许可证与致谢
 
-项目采用 [GNU AGPL v3](LICENSE)。Leaflet、CesiumJS、FastAPI、LangGraph、GeoPandas、Shapely、Rasterio 等依赖及第三方数据仍适用各自许可证和使用条款。
+项目采用 [MIT License](LICENSE)。Leaflet、CesiumJS、FastAPI、LangGraph、GeoPandas、Shapely、Rasterio 等依赖及第三方数据仍适用各自许可证和使用条款。
 
 卫星影像巡检的算法思路参考 [GeoHarness](https://github.com/Star-Learning/GeoHarness)；空间服务目录关联项目为 [GeoSource](https://github.com/Wukeeeeee/geosource)。

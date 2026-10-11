@@ -97,20 +97,28 @@ window.GIS = window.GIS || {};
     const geometryNames = {Point:'点', MultiPoint:'多点', LineString:'线', MultiLineString:'多线', Polygon:'面', MultiPolygon:'多面', GeometryCollection:'集合'};
     const type = (layer.geometry_type || '未知类型').split(',').map(t => geometryNames[t.trim()] || t.trim()).join(' / ');
     const features = layer.geojson && (layer.geojson.type === 'FeatureCollection' ? (layer.geojson.features || []).length : layer.geojson.type === 'Feature' ? 1 : null);
+    const op = Math.round((layer.opacity !== undefined ? layer.opacity : 1) * 100);
     return '<tr class="' + (layer.visible === false ? 'layer-hidden' : '') + '" draggable="true" data-index="' + index + '" data-id="' + escapeHtml(layer.layer_id || '') + '"' +
       (layer.groupId ? ' data-group="' + escapeHtml(layer.groupId) + '"' : '') + hiddenStyle + '>' +
       "<td class=\"col-drag\"><span class=\"drag-handle\" draggable=\"true\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-102a87898985.png')\"></span></span></td>" +
       '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + (layer.layer_id || '') + '" aria-pressed="' + String(layer.visible !== false) + '" aria-label="' + (layer.visible !== false ? '隐藏图层' : '显示图层') + '" title="' + (layer.visible !== false ? '隐藏图层' : '显示图层') + '">' +
       '<span class="ui-visibility-check' + (layer.visible !== false ? ' checked' : '') + '" aria-hidden="true"></span></button></td>' +
-      '<td class="col-name"><span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '"></span>' +
-      '<span class="layer-source layer-source-' + (layer.source || 'upload') + '">' +
-      (layer.source === 'ai'
-        ? "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-78988e3d1dd2.png')\"></span>"
-        : "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-e5befca1a25f.png')\"></span>") +
-      '</span><span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="' + escapeHtml(layer.filename || '未命名') + ' · 双击重命名">' + escapeHtml(layer.filename || '未命名') + '</span></td>' +
-      '<td class="col-type"><span class="layer-type">' + escapeHtml(type) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">· ' + features + ' 个要素</span>' : '') + '</td>' +
+      '<td class="col-name">' +
+        '<div class="layer-title-line">' +
+          '<span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '" title="修改颜色"></span>' +
+          '<span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="' + escapeHtml(layer.filename || '未命名') + ' · 双击重命名">' + escapeHtml(layer.filename || '未命名') + '</span>' +
+        '</div>' +
+        '<div class="layer-meta-line">' +
+          '<span class="layer-type">' + escapeHtml(type) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">· ' + features + ' 个要素</span>' : '') +
+        '</div>' +
+        '<div class="layer-op-row" title="透明度：拖动调整">' +
+          '<span class="layer-op-label">不透明度</span>' +
+          '<input type="range" class="layer-row-opacity" min="0" max="100" value="' + op + '" data-id="' + (layer.layer_id || '') + '">' +
+          '<span class="layer-op-val" id="opval_' + (layer.layer_id || '') + '">' + op + '%</span>' +
+        '</div>' +
+      '</td>' +
       '<td class="col-actions"><div class="layer-actions">' +
-      '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + "\" title=\"检查图层\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-658e8e14699f.png')\"></span></button>" +
+      '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + '" title="检查图层"><span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url(\'/assets/ui-icons/icon-658e8e14699f.png\')"></span></button>' +
       '<button class="layer-action-btn layer-more-btn" data-action="more" data-id="' + (layer.layer_id || '') + '" title="更多图层操作" aria-label="更多图层操作" aria-haspopup="menu">⋯</button>' +
       '</div></td></tr>';
   }
@@ -254,17 +262,17 @@ window.GIS = window.GIS || {};
         '<div class="download-dialog-subtitle">' + escapeHtml(layer.filename || '图层') + '</div>' +
         '<div class="download-dialog-options">' +
           '<label class="download-dialog-option selected" data-format="geojson">' +
-            "<span class=\"download-dialog-radio\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-66c4545647cb.png')\"></span></span>" +
-            '<span class="download-dialog-label"><strong>GeoJSON</strong><span class="download-dialog-desc">标准地理数据格式，保留完整属性</span></span>' +
+            '<span class="download-dialog-radio"><span class="download-dialog-radio-dot"></span></span>' +
+            '<span class="download-dialog-label"><strong>GeoJSON (.geojson)</strong><span class="download-dialog-desc">通用地理数据，QGIS / ArcGIS / WebGIS 均可直接打开</span></span>' +
           '</label>' +
           '<label class="download-dialog-option" data-format="shp">' +
-            '<span class="download-dialog-radio"></span>' +
-            '<span class="download-dialog-label"><strong>Shapefile (.shp)</strong><span class="download-dialog-desc">兼容 ArcGIS/QGIS，含 .shp .shx .dbf .prj .cpg</span></span>' +
+            '<span class="download-dialog-radio"><span class="download-dialog-radio-dot"></span></span>' +
+            '<span class="download-dialog-label"><strong>Shapefile (.shp / .zip)</strong><span class="download-dialog-desc">经典 GIS 工业格式，打包含 .shp .shx .dbf .prj，QGIS / ArcGIS 无缝兼容</span></span>' +
           '</label>' +
         '</div>' +
         '<div class="download-dialog-actions">' +
           '<button class="download-dialog-btn download-dialog-cancel">取消</button>' +
-          '<button class="download-dialog-btn download-dialog-confirm">下载</button>' +
+          '<button class="download-dialog-btn download-dialog-confirm">立即下载</button>' +
         '</div>' +
       '</div>';
     document.body.appendChild(overlay);
@@ -603,6 +611,27 @@ window.GIS = window.GIS || {};
         b.title = b.dataset.action === 'more' ? '更多图层操作' : '卷帘对比（先点一个图层，再点另一个）';
       });
     }
+
+    // 透明度滑块输入联动
+    tbody.addEventListener('input', function(e) {
+      var slider = e.target.closest('.layer-row-opacity');
+      if (!slider) return;
+      var id = slider.dataset.id;
+      if (!id) return;
+      var layer = layerData.find(function(l) { return l.layer_id === id; });
+      if (!layer) return;
+      var o = parseInt(slider.value, 10) / 100;
+      layer.opacity = o;
+      var valEl = document.getElementById('opval_' + id);
+      if (valEl) valEl.textContent = slider.value + '%';
+      if (GIS.map && GIS.map.setLayerOpacity) {
+        GIS.map.setLayerOpacity(layer._rawName || layer.layer_id, o);
+      }
+      if (window.GIS.state && typeof window.GIS.state.setOpacity === 'function' &&
+          window.GIS.state.getLayer(id)) {
+        window.GIS.state.setOpacity(id, o);
+      }
+    });
 
     // 双击图层名重命名
     tbody.addEventListener('dblclick', function(e) {
@@ -1100,6 +1129,13 @@ window.GIS = window.GIS || {};
     // 初始化列宽拖拽
     _enableColumnResize('attrDataTable');
 
+    if (window.GIS.workspace && typeof window.GIS.workspace.preparePanel === 'function') {
+      window.GIS.workspace.preparePanel('layerInspector', 'inspectorHeader', 'inspectorClose', '图层检查');
+      window.GIS.workspace.expandPanel('layerInspector');
+      if (!panel.style.left || panel.style.left === 'auto') {
+        window.GIS.workspace.centerPanel('layerInspector');
+      }
+    }
     panel.style.display = 'flex';
   }
 
