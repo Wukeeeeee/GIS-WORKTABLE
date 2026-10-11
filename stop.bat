@@ -1,30 +1,12 @@
 @echo off
-REM ============================================================
-REM  GIS-WORKTABLE Service Terminator
-REM  Stops backend process listening on port 8000
-REM ============================================================
+setlocal
 title Stop GIS-WORKTABLE
 chcp 65001 >nul
 cd /d "%~dp0"
-
-set "PORT=8000"
-echo.
-echo  Checking services on port %PORT%...
-echo.
-
-set "FOUND=0"
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%PORT% " ^| findstr "LISTENING"') do (
-  set "FOUND=1"
-  echo  Stopping process with PID: %%a on port %PORT%
-  taskkill /F /PID %%a >nul 2>&1
-)
-
-if "%FOUND%"=="1" (
-  echo.
-  echo  [OK] Port %PORT% service terminated successfully.
-) else (
-  echo  [INFO] No active service found on port %PORT%.
-)
-
-echo.
-timeout /t 2 >nul
+set "PY="
+if defined GIS_PYTHON set "PY=%GIS_PYTHON%"
+if not defined PY if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
+if not defined PY if exist "D:\python\python.exe" set "PY=D:\python\python.exe"
+if not defined PY set "PY=python"
+"%PY%" -m backend.launcher stop
+if errorlevel 1 pause

@@ -107,7 +107,8 @@ window.GIS = window.GIS || {};
       name: uniqueName,
       _rawName: uniqueName,          // map.js/layers.js 以此查找
       geojson: geojson,
-      style: record.style || null,
+      style: Object.assign({ color: record.color ||
+        (GIS.layers && GIS.layers.nextColor ? GIS.layers.nextColor() : '#e74c3c') }, record.style || {}),
       source: record.source || 'ai',
       crs: 'EPSG:4326',
       visible: record.visible !== false,
@@ -131,6 +132,8 @@ window.GIS = window.GIS || {};
     // _skip2DRender：layers.addLayer 桥接来的图层，调用方已渲染过 2D，避免双重加载
     if (!record._skip2DRender && GIS.map && GIS.map.loadGeoJSON && rec.visible) {
       GIS.map.loadGeoJSON(geojson, rawName, rec.style || {});
+    } else if (record._skip2DRender && GIS.map && GIS.map.setLayerStyle) {
+      GIS.map.setLayerStyle(rawName, rec.style);
     }
     if (GIS.layers && GIS.layers.addLayer) {
       GIS.layers.addLayer({
@@ -139,7 +142,7 @@ window.GIS = window.GIS || {};
         geometry_type: detectGeomType(features),
         crs: 'WGS-84',
         geojson: geojson,
-        color: record.color,
+        color: rec.style.fillColor || rec.style.color,
         visible: rec.visible,
         source: rec.source,
         _rawName: rawName,
@@ -181,6 +184,16 @@ window.GIS = window.GIS || {};
     rec.style = Object.assign({}, rec.style || {}, style || {});
     if (GIS.map && GIS.map.setLayerStyle) GIS.map.setLayerStyle(rec._rawName, rec.style);
     emit('layer-style', rec);
+  }
+
+  /** 重命名图层（同步共享状态中的 name 与 _rawName，并发出 layer-renamed 事件） */
+  function renameLayer(layerId, newName) {
+    var rec = findLayer(layerId);
+    if (!rec) return;
+    var oldName = rec.name;
+    rec.name = newName;
+    rec._rawName = newName;
+    emit('layer-renamed', { layerId: layerId, oldName: oldName, newName: newName, layer: rec });
   }
 
   /** 图层透明度（0-1）。2D 由调用方直接驱动 map.setLayerOpacity（避免整层重设样式），
@@ -415,6 +428,7 @@ window.GIS = window.GIS || {};
     setVisible: setVisible,
     setStyle: setStyle,
     setOpacity: setOpacity,
+    renameLayer: renameLayer,
     setFeatureColors: setFeatureColors,
     applyVisualization: applyVisualization,
     selectFeature: selectFeature,

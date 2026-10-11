@@ -29,7 +29,6 @@ let _featureMap = {};         // { "layerName:idx": LeafletLayer } — 要素索
 let _highlightedFeature = null; // 当前高亮的 Leaflet 图层
 let _featureInfoActive = false; // 选择要素工具是否激活
 var _labelConfigs = {};
-var _patternsInited = false;  // SVG pattern defs 是否已注入
 var _rasterLayers = {};       // { name: ImageOverlay }
 var _northArrowControl = null;       // { name: {field, fontSize, color} } — 标注配置
 var _undoStack = [];          // [{name, geojson}]
@@ -148,7 +147,9 @@ var _undoSkip = false;
       zoomControl: false,
       attributionControl: true,
       preferCanvas: true,  // Canvas 渲染，大幅提升大数据性能
+      renderer: _createCanvasRenderer(),
     });
+    mapInstance.attributionControl.setPrefix('<a href="https://leafletjs.com" title="Leaflet">Leaflet</a>');
 
     // 卫星底图（Esri / Bing 中国区 / 白底）
     _currentBaseMap = localStorage.getItem('gis_basemap') || 'bing';
@@ -445,6 +446,34 @@ var _undoSkip = false;
     return q;
   }
 
+  // 点符号独立于面填充：实心数据色 + 细白边，便于在影像底图上辨认。
+  function _pointStyle(style) {
+    style = style || {};
+    return {
+      radius: style.radius !== undefined ? style.radius : 6,
+      fillColor: style.fillColor || style.color || '#e74c3c',
+      color: style.pointOutlineColor || '#ffffff',
+      weight: style.pointOutlineWeight !== undefined ? style.pointOutlineWeight : 1.5,
+      opacity: style.opacity !== undefined ? style.opacity : 1,
+      fillOpacity: style.fillOpacity !== undefined ? style.fillOpacity :
+        (style.opacity !== undefined ? style.opacity : 1),
+    };
+  }
+
+  function _isPointFeature(feature) {
+    return feature && feature.geometry &&
+      (feature.geometry.type === 'Point' || feature.geometry.type === 'MultiPoint');
+  }
+
+  function _eachStyledPath(layer, callback, pointGroup) {
+    var isPoint = pointGroup || _isPointFeature(layer.feature);
+    if (typeof layer.eachLayer === 'function') {
+      layer.eachLayer(function(child) { _eachStyledPath(child, callback, isPoint); });
+    } else if (typeof layer.setStyle === 'function') {
+      callback(layer, isPoint);
+    }
+  }
+
   /** 加载 GeoJSON 到地图 */
   function loadGeoJSON(geojson, name, style) {
     if (!mapInstance || !geojson) return null;
@@ -455,6 +484,7 @@ var _undoSkip = false;
 
     var defaultStyle = { color: '#1c1b1b', weight: 2, fillColor: '#1c1b1b', fillOpacity: 0.1 };
     var mergedStyle = Object.assign({}, defaultStyle, style);
+    if (style.color && !style.fillColor) mergedStyle.fillColor = style.color;
 
     // 调试：检查 GeoJSON 是否有效
     var featCount = geojson.type === 'FeatureCollection' ? (geojson.features || []).length : 1;
@@ -482,7 +512,8 @@ var _undoSkip = false;
       layer = L.vectorGrid.slicer(geojson, {
         rendererFactory: L.canvas.tile,
         vectorTileLayerStyles: {
-          sliced: function(properties, zoom) {
+          sliced: function(properties, zoom, geometryDimension) {
+            if (geometryDimension === 1) return _pointStyle(style);
             var w = zoom > 15 ? 3 : (zoom > 12 ? 2 : 1);
             return { color: mergedStyle.color, weight: w, opacity: 0.8 };
           },
@@ -494,12 +525,11 @@ var _undoSkip = false;
       console.log('[GIS Map] 大数据模式(VectorGrid):', name, featCount, '个要素');
     } else {
       layer = L.geoJSON(geojson, {
-        style: mergedStyle,
+        style: function(feature) {
+          return _isPointFeature(feature) ? _pointStyle(style) : mergedStyle;
+        },
         pointToLayer: function(feature, latlng) {
-          return L.circleMarker(latlng, {
-            radius: 2.5, fillColor: mergedStyle.fillColor,
-            color: mergedStyle.fillColor, weight: 0, opacity: 1, fillOpacity: 1,
-          });
+          return L.circleMarker(latlng, _pointStyle(style));
         },
         coordsToLatLng: function(coords) {
           var lng = coords[0], lat = coords[1];
@@ -592,6 +622,35 @@ var _undoSkip = false;
     if (_swipe) _applySwipeClip(_swipe.ratio);
   }
 
+  /** 重命名图层（迁移 layers、geoStore、drawnItems 和 _featureMap 的键名） */
+  function renameLayer(oldName, newName) {
+    if (!oldName || !newName || oldName === newName) return;
+    if (layers[oldName]) {
+      layers[newName] = layers[oldName];
+      delete layers[oldName];
+    }
+    if (geoStore[oldName]) {
+      geoStore[newName] = geoStore[oldName];
+      delete geoStore[oldName];
+    }
+    if (_rasterLayers[oldName]) {
+      _rasterLayers[newName] = _rasterLayers[oldName];
+      delete _rasterLayers[oldName];
+    }
+    if (drawnItems) {
+      drawnItems.eachLayer(function(l) {
+        if (l._name === oldName) l._name = newName;
+      });
+    }
+    Object.keys(_featureMap).forEach(function(k) {
+      if (k.startsWith(oldName + ':')) {
+        var subKey = k.substring(oldName.length);
+        _featureMap[newName + subKey] = _featureMap[k];
+        delete _featureMap[k];
+      }
+    });
+  }
+
   /** 获取 Leaflet 图层对象 */
   function getLayer(name) {
     return layers[name] || null;
@@ -607,10 +666,15 @@ var _undoSkip = false;
       if (layer) layers[name] = layer; // 缓存到 layers 方便下次查找
     }
     if (!layer) return;
-    if (typeof layer.setStyle === 'function') {
+    if (typeof layer.eachLayer === 'function') {
+      _eachStyledPath(layer, function(sub, isPoint) {
+        sub.setStyle(isPoint
+          ? { fillColor: color } : { color: color, fillColor: color });
+      });
+    } else if (typeof layer.setStyle === 'function') {
       layer.setStyle({ color: color, fillColor: color });
     }
-    if (geoStore[name]) geoStore[name].style = { color: color, fillColor: color };
+    if (geoStore[name]) geoStore[name].style = Object.assign({}, geoStore[name].style, { color: color, fillColor: color });
   }
 
   /** 图层透明度（0-1）：以首次调用时的样式为基准做缩放，反复拖动不累积 */
@@ -627,8 +691,7 @@ var _undoSkip = false;
       });
     }
     if (!layer || typeof layer.eachLayer !== 'function') return;
-    layer.eachLayer(function(sub) {
-      if (!sub || typeof sub.setStyle !== 'function') return;
+    _eachStyledPath(layer, function(sub) {
       if (!sub._baseOpacity) {
         sub._baseOpacity = {
           opacity: sub.options.opacity !== undefined ? sub.options.opacity : 1,
@@ -656,48 +719,70 @@ var _undoSkip = false;
     if (style.color) { opts.color = style.color; opts.fillColor = style.color; }
     if (style.opacity !== undefined) { opts.opacity = style.opacity; opts.fillOpacity = style.opacity; }
     if (style.weight !== undefined) { opts.weight = style.weight; }
+    if (style.radius !== undefined) { opts.radius = style.radius; }
+    if (style.fillColor) { opts.fillColor = style.fillColor; }
+    if (style.fillOpacity !== undefined) { opts.fillOpacity = style.fillOpacity; }
     if (style.fillPattern) {
       opts.fillPattern = style.fillPattern;
     }
-    if (typeof layer.setStyle === 'function') {
+    if (typeof layer.eachLayer === 'function') {
+      _eachStyledPath(layer, function(sub, isPoint) {
+        var subStyle = Object.assign({}, opts);
+        if (isPoint) {
+          if (style.color) subStyle.color = sub.options.color;
+          if (style.pointOutlineColor) subStyle.color = style.pointOutlineColor;
+          if (style.pointOutlineWeight !== undefined) subStyle.weight = style.pointOutlineWeight;
+        }
+        sub.setStyle(subStyle);
+        // 后续透明度滑块以最新样式为基准。
+        delete sub._baseOpacity;
+      });
+    } else if (typeof layer.setStyle === 'function') {
       layer.setStyle(opts);
     }
-    if (geoStore[name]) geoStore[name].style = { ...(geoStore[name].style || {}), ...opts };
-    // 对面要素应用填充图案（SVG 渲染器）
-    if (opts.fillPattern && layer._path) {
-      _ensureFillPatterns();
-      var patternId = 'fp-' + opts.fillPattern;
-      if (layer._path.setAttribute) {
-        layer._path.setAttribute('fill', 'url(#' + patternId + ')');
-        if (opts.fillColor) layer._path.setAttribute('fill-pattern-color', opts.fillColor);
-      }
-    }
+    if (geoStore[name]) geoStore[name].style = { ...(geoStore[name].style || {}), ...style, ...opts };
   }
 
-  /** 向地图 SVG 注入 fill pattern defs */
-  function _ensureFillPatterns() {
-    if (_patternsInited) return;
-    var mapPanes = mapInstance && mapInstance.getPanes();
-    var svgRoot = mapPanes && (mapPanes.overlayPane || mapPanes.mapPane);
-    if (!svgRoot) return;
-    var svg = svgRoot.querySelector('svg');
-    if (!svg) return;
-    var defs = svg.querySelector('defs');
-    if (!defs) {
-      defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-      svg.insertBefore(defs, svg.firstChild);
+  function _createCanvasRenderer() {
+    const Renderer = L.Canvas.extend({
+      _fillStroke: function(ctx, layer) {
+        const opts = layer.options;
+        const originalColor = opts.fillColor;
+        if (opts.fill && opts.fillPattern) {
+          const color = originalColor || opts.color || '#222';
+          const key = opts.fillPattern + ':' + color;
+          this._patternCache = this._patternCache || Object.create(null);
+          const pattern = this._patternCache[key] || _makeFillPattern(ctx, opts.fillPattern, color);
+          if (pattern) { this._patternCache[key] = pattern; opts.fillColor = pattern; }
+        }
+        try { L.Canvas.prototype._fillStroke.call(this, ctx, layer); }
+        finally { opts.fillColor = originalColor; }
+      }
+    });
+    return new Renderer();
+  }
+
+  function _makeFillPattern(ctx, name, color) {
+    if (!['hatch', 'crosshatch', 'dots', 'grid', 'diagonal'].includes(name)) return null;
+    const tile = document.createElement('canvas');
+    tile.width = tile.height = 16;
+    const paint = tile.getContext('2d');
+    paint.strokeStyle = paint.fillStyle = color;
+    paint.lineWidth = name === 'grid' ? 0.5 : 1;
+    if (name === 'dots') {
+      [[4,4],[12,4],[4,12],[12,12]].forEach(function(p) {
+        paint.beginPath(); paint.arc(p[0], p[1], 2, 0, Math.PI * 2); paint.fill();
+      });
+    } else {
+      paint.beginPath();
+      const segments = name === 'grid' ? [[8,0,8,16],[0,8,16,8]]
+        : name === 'diagonal' ? [[0,16,16,0],[-4,10,10,-4],[6,20,20,6]]
+        : name === 'crosshatch' ? [[0,0,16,16],[16,0,0,16]]
+        : [[0,0,16,16],[8,-4,20,4],[-4,8,4,20]];
+      segments.forEach(function(p) { paint.moveTo(p[0],p[1]); paint.lineTo(p[2],p[3]); });
+      paint.stroke();
     }
-    var defsXml = [
-      '<pattern id="fp-hatch" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M0 0L16 16M8-4L20 4M-4 8L4 20" stroke="currentColor" stroke-width="1" fill="none"/></pattern>',
-      '<pattern id="fp-crosshatch" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M0 0L16 16M16 0L0 16" stroke="currentColor" stroke-width="1" fill="none"/></pattern>',
-      '<pattern id="fp-dots" width="16" height="16" patternUnits="userSpaceOnUse"><circle cx="4" cy="4" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="4" r="2" fill="currentColor"/><circle cx="4" cy="12" r="2" fill="currentColor"/></pattern>',
-      '<pattern id="fp-grid" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M8 0L8 16M0 8L16 8" stroke="currentColor" stroke-width="0.5" fill="none"/></pattern>',
-      '<pattern id="fp-diagonal" width="16" height="16" patternUnits="userSpaceOnUse"><path d="M0 16L16 0M-4 10L10-4M6 20L20 6" stroke="currentColor" stroke-width="1" fill="none"/></pattern>',
-    ];
-    var temp = document.createElement('div');
-    temp.innerHTML = defsXml.join('');
-    while (temp.firstChild) defs.appendChild(temp.firstChild);
-    _patternsInited = true;
+    return ctx.createPattern(tile, 'repeat');
   }
 
   function toggleLayer(name) {
@@ -768,7 +853,7 @@ var _undoSkip = false;
   }
 
   function onMouseMove(e) {
-    if (_coordsEl) _coordsEl.textContent = 'WGS-84 | ' + e.latlng.lat.toFixed(5) + ', ' + e.latlng.lng.toFixed(5);
+    if (_coordsEl) _coordsEl.textContent = 'WGS-84 · 经度 ' + e.latlng.lng.toFixed(5) + ' · 纬度 ' + e.latlng.lat.toFixed(5);
   }
 
   function onZoomEnd() {
@@ -967,12 +1052,12 @@ var _undoSkip = false;
 
           // 地图弹出气泡
           if (mapInstance && typeof L !== 'undefined') {
-            var popupContent = '<div style="font-family:sans-serif;font-size:13px;line-height:1.5;min-width:180px;">' +
-              '<div style="font-weight:700;color:#0f172a;margin-bottom:4px;display:flex;align-items:center;gap:4px;">📍 ' + title + '</div>' +
-              '<div style="color:#475569;font-size:12px;margin-bottom:6px;">' + addr + '</div>' +
-              '<div style="color:#64748b;font-size:11px;font-family:monospace;margin-bottom:8px;">坐标: ' + lng + ', ' + lat + '</div>' +
-              '<div style="display:flex;gap:6px;">' +
-                '<button id="ctxAskAiBtn" style="background:#2563eb;color:#fff;border:none;border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;font-weight:600;">✨ 问 AI 深度分析</button>' +
+            var popupContent = '<div class="location-popup">' +
+              '<strong class="location-popup-title">' + escapeHtml(title) + '</strong>' +
+              '<div class="location-popup-address">' + escapeHtml(addr) + '</div>' +
+              '<div class="location-popup-coords">经度 ' + escapeHtml(lng) + ' · 纬度 ' + escapeHtml(lat) + '</div>' +
+              '<div>' +
+                '<button id="ctxAskAiBtn" class="location-popup-analyze">交给 AI 分析</button>' +
               '</div>' +
             '</div>';
 
@@ -1002,6 +1087,7 @@ var _undoSkip = false;
           }
         });
       return;
+    }
     if (action === 'send-location' || action === 'send-location-routed') {
       _triggerAiLocationAnalysis(lat, lng, '');
       return;
@@ -1150,6 +1236,15 @@ var _undoSkip = false;
 
   /** 执行菜单项动作 */
   function _handleMenuAction(action) {
+    if (GIS.renderers && GIS.renderers.is3D && GIS.renderers.is3D() &&
+        ['tool-polygon', 'tool-rectangle', 'tool-circle', 'tool-polyline', 'tool-marker',
+         'tool-feature-info', 'tool-delete', 'export', 'toggle-basemap', 'cycle-satellite-source'].indexOf(action) >= 0) {
+      GIS.renderers.toggle3D().then(function() {
+        if (GIS.chat) GIS.chat.addMessage('此操作使用 2D 地图，已切换到 2D。', 'system');
+        _handleMenuAction(action);
+      });
+      return;
+    }
     switch (action) {
       case 'geosource':
         if (window.GIS.geosource && typeof window.GIS.geosource.show === 'function') {
@@ -1295,6 +1390,7 @@ var _undoSkip = false;
       style: function(feature) {
         var idx = features.indexOf(feature);
         var custom = styleMap ? styleMap[idx] : null;
+        if (_isPointFeature(feature)) return _pointStyle(custom);
         if (custom) {
           return {
             color: custom.color || '#1c1b1b',
@@ -1309,12 +1405,7 @@ var _undoSkip = false;
       pointToLayer: function(feature, latlng) {
         var idx = features.indexOf(feature);
         var custom = styleMap ? styleMap[idx] : null;
-        var r = (custom && custom.radius) ? custom.radius : 2.5;
-        var c = (custom && custom.color) ? custom.color : '#1c1b1b';
-        return L.circleMarker(latlng, {
-          radius: r, fillColor: c, color: c, weight: custom && custom.weight !== undefined ? custom.weight : 0,
-          opacity: 1, fillOpacity: custom && custom.fillOpacity !== undefined ? custom.fillOpacity : 1,
-        });
+        return L.circleMarker(latlng, _pointStyle(custom));
       },
       coordsToLatLng: function(coords) {
         var lng = coords[0], lat = coords[1];
@@ -1936,10 +2027,7 @@ var _undoSkip = false;
     var divider = document.createElement('div');
     divider.className = 'swipe-divider swipe-' + orientation;
     divider.innerHTML =
-      '<div class="swipe-handle">' +
-        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 3 12 9 6"/><polyline points="15 6 21 12 15 18"/></svg>' +
-      '</div>' +
-      '<button class="swipe-close" title="关闭卷帘对比">✕</button>';
+      "<div class=\"swipe-handle\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-501a6d71bf48.png')\"></span></div><button class=\"swipe-close\" title=\"关闭卷帘对比\">✕</button>";
     mapInstance.getContainer().appendChild(divider);
 
     _swipe = { leftLayer: leftLayer, rightLayer: rightLayer, orientation: orientation, divider: divider, ratio: 0.5 };
@@ -2113,6 +2201,7 @@ var _undoSkip = false;
       mapInstance.setView(center, zoom);
     },
     getMap: function() { return mapInstance; },
+    renameLayer: renameLayer,
     addTileLayer: addTileLayer,
     addWmsLayer: addWmsLayer,
     _openManual: function() { _openManual(); },

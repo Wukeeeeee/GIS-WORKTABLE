@@ -1,5 +1,7 @@
 # GIS AI WorkTable 前端重构设计文档
 
+> 历史设计记录：其中 SVG 图标方案已被 2026-10-11 用户要求替代。当前整个工作台使用 PNG / CSS 图形，开发时遵循[现行界面规范](../../ui-guidelines.md)。
+
 ## 概述
 
 将 `indexbygoogle.html` 的 Google Material Design 风格复刻到 `frontend/index.html`，使用纯内联 SVG 图标替代 Google Material Symbols，通过 jsDelivr 国内 CDN 加载 Leaflet，确保在国内无需 VPN 即可使用。

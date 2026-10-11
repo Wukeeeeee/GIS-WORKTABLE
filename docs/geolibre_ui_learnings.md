@@ -1,5 +1,7 @@
 # GeoLibre 手动交互与性能优化学习笔记
 
+> **2026-10-11 复核说明**：本文记录历史调研与开发过程，部分“已有/未做/对方没有”已不适用于当前版本。GeoLibre 当前官方文档已包含数据目录、检索及部分下载能力，不应据此文推断它没有资源获取。当前对照与后续方向见 [仓库盘点](repository-audit.md)，官方依据见 [Data Integrations](https://geolibre.app/user-guide/data-integrations/) 和 [Web Services](https://geolibre.app/user-guide/web-services/)。
+
 > 目标：把「不接 Agent 也能干活的人工操作」补齐到 GIS-WorkTable。
 > 来源：geolibre.app 用户指南（Map Controls & Tools 页面抓取，2026-09）+ 此前源码调研（见 research_3d_globe_drilldown.md）。
 

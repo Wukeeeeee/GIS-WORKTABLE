@@ -130,6 +130,7 @@ html, body {
 .app-body {
   display: flex;
   flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -166,7 +167,7 @@ html, body {
   border-radius: 2px;
 }
 
-.top-nav-brand-icon svg {
+.top-nav-brand-icon .ui-icon {
   width: 18px;
   height: 18px;
 }
@@ -180,6 +181,7 @@ html, body {
 
 /* ========== Left Chat Panel ========== */
 .chat-panel {
+  min-height: 0;
   width: var(--panel-width-chat);
   min-width: var(--panel-width-chat);
   display: flex;
@@ -210,7 +212,7 @@ html, body {
   flex-shrink: 0;
 }
 
-.chat-header-avatar svg {
+.chat-header-avatar .ui-icon {
   width: 22px;
   height: 22px;
 }
@@ -232,6 +234,8 @@ html, body {
 /* ========== Messages Area ========== */
 .chat-messages {
   flex: 1;
+  min-height: 0;
+  overscroll-behavior-y: contain;
   overflow-y: auto;
   overflow-x: hidden;
   padding: var(--margin-md);
@@ -253,6 +257,7 @@ html, body {
 
 /* Message Bubbles */
 .message {
+  flex-shrink: 0;
   display: flex;
   gap: 8px;
   max-width: 90%;
@@ -275,7 +280,7 @@ html, body {
   margin-top: 2px;
 }
 
-.message-avatar svg {
+.message-avatar .ui-icon {
   width: 14px;
   height: 14px;
 }
@@ -436,7 +441,7 @@ html, body {
   flex-shrink: 0;
   color: var(--on-surface-variant);
 }
-.slash-item-icon svg {
+.slash-item-icon .ui-icon {
   width: 14px;
   height: 14px;
   display: block;
@@ -794,7 +799,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 0;
-  z-index: 5;
+  z-index: 600;
   background: var(--surface-container-lowest, #fff);
   border-bottom: 1px solid var(--ui-gray-200, #e0e0e0);
   -webkit-user-select: none;
@@ -815,7 +820,7 @@ html, body {
 .map-menu-trigger:hover {
   background: var(--surface-container-low, #f5f5f5);
 }
-.map-menu-trigger svg {
+.map-menu-trigger .ui-icon {
   flex-shrink: 0;
   display: block;
 }
@@ -851,7 +856,7 @@ html, body {
 .map-menu-item:hover {
   background: var(--surface-container-low, #f5f5f5);
 }
-.map-menu-item svg {
+.map-menu-item .ui-icon {
   flex-shrink: 0;
   color: var(--ui-gray-400, #999);
 }
@@ -878,7 +883,7 @@ html, body {
 .dark .map-menu-item:hover {
   background: var(--surface-container-low, #2a2a2a);
 }
-.dark .map-menu-item svg {
+.dark .map-menu-item .ui-icon {
   color: var(--ui-gray-400, #777);
 }
 
@@ -987,7 +992,7 @@ html, body {
   color: var(--ui-gray-600, #666);
   transition: background var(--transition-fast, 0.15s), color var(--transition-fast, 0.15s);
 }
-.manual-nav-item svg {
+.manual-nav-item .ui-icon {
   flex-shrink: 0;
 }
 .manual-nav-item:hover {
@@ -1135,12 +1140,12 @@ html, body {
   right: 1px;
   width: 10px;
   height: 10px;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%232e7d32'%3E%3Cpath d='M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z'/%3E%3C/svg%3E") no-repeat center;
+  background: url("../assets/ui-icons/icon-ac7e66c96891.png") no-repeat center;
   background-size: contain;
   pointer-events: none;
 }
 .dark .map-draw-btn.active::after {
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%2366bb6a'%3E%3Cpath d='M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z'/%3E%3C/svg%3E") no-repeat center;
+  background: url("../assets/ui-icons/icon-0d20cee3ee12.png") no-repeat center;
   background-size: contain;
 }
 
@@ -1208,7 +1213,7 @@ html, body {
   opacity: 0.7;
 }
 
-.map-zoom-btn svg {
+.map-zoom-btn .ui-icon {
   width: 22px;
   height: 22px;
 }
@@ -1317,7 +1322,7 @@ html, body {
 .map-layer-btn.primary:hover {
   opacity: 0.85;
 }
-.map-layer-btn svg { flex-shrink: 0; }
+.map-layer-btn .ui-icon { flex-shrink: 0; }
 
 .map-layer-body {
   flex: 1;
@@ -1338,7 +1343,7 @@ html, body {
   font-size: var(--fs-13);
   background: var(--ui-gray-100) /* -> --surface-container-high */;
 }
-.map-layer-empty svg { opacity: 0.4; }
+.map-layer-empty .ui-icon { opacity: 0.4; }
 
 /* 图层表格（浮窗版，保持原底部风格） */
 .map-layer-table {
@@ -1454,11 +1459,11 @@ html, body {
   color: var(--error);
   background: var(--error-container);
 }
-.map-layer-table .layer-action-btn svg {
+.map-layer-table .layer-action-btn .ui-icon {
   width: 16px;
   height: 16px;
 }
-.map-layer-table .col-vis .layer-action-btn svg {
+.map-layer-table .col-vis .layer-action-btn .ui-icon {
   width: 18px;
   height: 18px;
 }
@@ -1491,7 +1496,7 @@ html, body {
 .map-context-menu .context-menu-item:hover {
   background: var(--surface-variant, #e5e2e1);
 }
-.map-context-menu .context-menu-item svg {
+.map-context-menu .context-menu-item .ui-icon {
   flex-shrink: 0;
   opacity: 0.7;
 }
@@ -1608,7 +1613,7 @@ html, body {
   cursor: grabbing;
 }
 
-.drag-handle svg {
+.drag-handle .ui-icon {
   width: 16px;
   height: 16px;
 }
@@ -1667,7 +1672,7 @@ html, body {
   color: var(--error);
 }
 
-.layer-action-btn svg {
+.layer-action-btn .ui-icon {
   width: 16px;
   height: 16px;
 }
@@ -1705,7 +1710,7 @@ html, body {
   flex-shrink: 0;
 }
 
-.file-item-icon svg {
+.file-item-icon .ui-icon {
   width: 20px;
   height: 20px;
 }
@@ -1777,7 +1782,7 @@ html, body {
   background: var(--ui-gray-400) /* -> --on-surface */;
 }
 
-.upload-btn svg {
+.upload-btn .ui-icon {
   width: 14px;
   height: 14px;
 }
@@ -1799,7 +1804,7 @@ html, body {
   color: var(--ui-gray-900) /* -> --on-surface */;
 }
 
-.download-header-btn svg {
+.download-header-btn .ui-icon {
   width: 18px;
   height: 18px;
 }
@@ -1817,20 +1822,35 @@ html, body {
   line-height: 0;
 }
 
-/* ========== SVG Icon Helper ========== */
-.svg-icon {
+/* ========== PNG Icon Helper ========== */
+.ui-icon {
   width: 20px;
   height: 20px;
   display: inline-block;
   vertical-align: middle;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask-image: var(--ui-icon-image);
+  mask-image: var(--ui-icon-image);
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
+img.ui-logo { background: transparent; object-fit: contain; mask-image: none; -webkit-mask-image: none; }
+.theme-dark img.ui-logo { filter: invert(1); }
+.ui-visibility-check { display: inline-block; width: 15px; height: 15px; border: 1px solid var(--outline-variant); border-radius: 3px; box-sizing: border-box; }
+.ui-visibility-check.checked { position: relative; background: var(--on-surface); border-color: var(--on-surface); }
+.ui-visibility-check.checked::after { content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid var(--surface-container-lowest); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 
-.svg-icon-sm {
+.ui-icon-sm {
   width: 16px;
   height: 16px;
 }
 
-.svg-icon-lg {
+.ui-icon-lg {
   width: 24px;
   height: 24px;
 }
@@ -2131,7 +2151,7 @@ html.theme-dark .step-running { color:var(--on-surface); }
   color: #2e7d32;
   opacity: 1;
 }
-.btn-copy-ai svg {
+.btn-copy-ai .ui-icon {
   width: 14px;
   height: 14px;
 }
@@ -2171,7 +2191,7 @@ html.theme-dark .step-running { color:var(--on-surface); }
   color: #2f7bf6 !important;
   opacity: 1 !important;
 }
-.btn-quote-ai svg {
+.btn-quote-ai .ui-icon {
   width: 14px !important;
   height: 14px !important;
   display: block !important;
@@ -2615,11 +2635,11 @@ html.theme-dark .step-running { color:var(--on-surface); }
   border-left-color: var(--ui-gray-900);
   font-weight: 600;
 }
-.modal-sidenav-item svg {
+.modal-sidenav-item .ui-icon {
   flex-shrink: 0;
   opacity: 0.7;
 }
-.modal-sidenav-item.active svg {
+.modal-sidenav-item.active .ui-icon {
   opacity: 1;
 }
 
@@ -3026,7 +3046,7 @@ html.theme-dark {
   white-space: nowrap;
   transition: background 0.12s, border-color 0.12s;
 }
-.attr-btn svg {
+.attr-btn .ui-icon {
   flex-shrink: 0;
 }
 .attr-btn:hover {
@@ -3872,8 +3892,8 @@ html.theme-dark .inspector-data-table tbody tr.feat-row-active td { background: 
 .download-dialog-option.selected .download-dialog-radio {
   border-color: var(--primary-container); color: var(--primary-container);
 }
-.download-dialog-radio svg { display: none; }
-.download-dialog-option.selected .download-dialog-radio svg { display: block; }
+.download-dialog-radio .ui-icon { display: none; }
+.download-dialog-option.selected .download-dialog-radio .ui-icon { display: block; }
 .download-dialog-label { display: flex; flex-direction: column; gap: 1px; }
 .download-dialog-label strong { font-size: 13px; color: var(--on-surface); }
 .download-dialog-desc { font-size: 11px; color: var(--ui-gray-300); }
@@ -4144,7 +4164,7 @@ html.theme-dark .symb-actions { border-color: var(--ui-gray-700); }
   border-bottom: 1px solid var(--outline-variant);
   flex-shrink: 0;
 }
-.network-toolbar svg { flex-shrink: 0; color: var(--on-surface-variant); }
+.network-toolbar .ui-icon { flex-shrink: 0; color: var(--on-surface-variant); }
 .network-toolbar-title {
   font-size: var(--fs-14); font-weight: 600;
   color: var(--on-surface); flex: 1;
@@ -4178,7 +4198,7 @@ html.theme-dark .symb-actions { border-color: var(--ui-gray-700); }
   content: ''; position: absolute; bottom: -1px; left: 8px; right: 8px;
   height: 2px; background: var(--primary-container); border-radius: 1px;
 }
-.network-tab svg { flex-shrink: 0; }
+.network-tab .ui-icon { flex-shrink: 0; }
 /* ===== 主体 ===== */
 .network-body { display: flex; flex: 1; overflow: hidden; }
 /* 右侧内容 */
@@ -4238,7 +4258,7 @@ html.theme-dark .symb-actions { border-color: var(--ui-gray-700); }
 html.theme-dark .network-set-btn.done {
   background: #1b5e20; color: #a5d6a7; border-color: #2e7d32;
 }
-.network-set-btn svg { flex-shrink: 0; }
+.network-set-btn .ui-icon { flex-shrink: 0; }
 .network-coord {
   font-size: var(--fs-11); color: var(--on-surface);
   font-family: var(--font-mono);
@@ -4270,7 +4290,7 @@ html.theme-dark .network-set-btn.done {
 }
 .network-solve-btn:hover:not(:disabled) { opacity: 0.85; }
 .network-solve-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.network-solve-btn svg { flex-shrink: 0; }
+.network-solve-btn .ui-icon { flex-shrink: 0; }
 /* 结果区 */
 .network-result {
   border: 1px solid var(--outline-variant); border-radius: 4px;
@@ -4310,7 +4330,7 @@ html.theme-dark .network-set-btn.done {
   font-family: inherit;
 }
 .network-export-btn:hover { background: var(--surface-container-high); }
-.network-export-btn svg { flex-shrink: 0; }
+.network-export-btn .ui-icon { flex-shrink: 0; }
 /* 状态栏 */
 .network-status {
   padding: 6px 14px 8px; font-size: var(--fs-11);
@@ -4390,7 +4410,7 @@ html.theme-dark .network-tab.active { color: var(--primary-fixed-dim); }
   flex-shrink: 0; cursor: grab;
 }
 .spatial-toolbar:active { cursor: grabbing; }
-.spatial-toolbar svg { flex-shrink: 0; color: var(--on-surface-variant); }
+.spatial-toolbar .ui-icon { flex-shrink: 0; color: var(--on-surface-variant); }
 .spatial-toolbar-title {
   font-family: var(--font-headline);
   font-size: var(--fs-14); font-weight: 600;
@@ -4910,7 +4930,7 @@ html.theme-dark .group-name-text:hover { background: var(--surface-dim, #333); }
 .mode-switch-wrapper.mode-fast:hover {
   background: #dde9ff;
 }
-.mode-switch-wrapper svg {
+.mode-switch-wrapper .ui-icon {
   flex-shrink: 0;
 }
 .mode-switch-wrapper #modeSwitchLabel {
@@ -4922,6 +4942,9 @@ html.theme-dark .group-name-text:hover { background: var(--surface-dim, #333); }
    只留 3D/2D 切换（.m3d-keep）与 3D 专属按钮 */
 .map-zoom-controls.mode-3d {
   z-index: 450;
+}
+body.gis-mode-3d .map-layer-panel {
+  z-index: 460;
 }
 .map-zoom-controls.mode-3d > :not(.m3d-keep) {
   display: none;
@@ -4940,6 +4963,11 @@ body.gis-mode-3d .map-coords {
   display: none;
 }
 .map-zoom-controls.mode-3d > [data-tool="spatial-analysis"] {
+  display: flex;
+}
+.map-zoom-controls.mode-3d > [data-tool="network-analysis"],
+.map-zoom-controls.mode-3d > #toggleHistoryPanel,
+.map-zoom-controls.mode-3d > #toggleLayerPanel {
   display: flex;
 }
 
@@ -5279,7 +5307,7 @@ body.gis-mode-3d .map-coords {
   gap: 8px;
 }
 
-.geosource-title svg {
+.geosource-title .ui-icon {
   color: var(--on-surface, #1c1b1b);
   opacity: 0.85;
 }
@@ -5593,7 +5621,7 @@ body.gis-mode-3d .map-coords {
   border-radius: 4px;
 }
 
-.geosource-tag svg {
+.geosource-tag .ui-icon {
   flex-shrink: 0;
   opacity: 0.75;
 }

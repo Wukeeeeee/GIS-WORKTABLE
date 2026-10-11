@@ -957,8 +957,18 @@ def execute_python(code: str) -> str:
     start_time = time.time()
 
     try:
-        # 环境初始化：OSM 镜像（多镜像自动切换）+ matplotlib 中文字体
-        _setup_blocks = r"""
+        # 按用户代码需要初始化，避免每次 print/numpy 运算也探测 OSM 网络和加载绘图库。
+        _code_tree = ast.parse(code)
+        _imports = set()
+        for _node in ast.walk(_code_tree):
+            if isinstance(_node, ast.Import):
+                _imports.update(_alias.name.split('.')[0] for _alias in _node.names)
+            elif isinstance(_node, ast.ImportFrom) and _node.module:
+                _imports.add(_node.module.split('.')[0])
+        _needs_plot = 'matplotlib' in _imports or any(
+            isinstance(_node, ast.Name) and _node.id == 'plt'
+            for _node in ast.walk(_code_tree))
+        _osm_setup_code = r"""
 try:
     import osmnx as _ox
     import requests, json
@@ -979,7 +989,9 @@ try:
             continue
 except Exception:
     pass
+""" if 'osmnx' in _imports else ""
 
+        _setup_blocks = r"""
 # matplotlib 中文字体配置（由公共模块动态生成，避免重复实现）
 {font_setup_code}
 
@@ -990,10 +1002,12 @@ _os.makedirs('output', exist_ok=True)
 
         _amap_injection = f'_AMAP_KEY = {_current_amap_key!r}\n\n'
         # P2: 动态注入公共模块生成的字体配置代码（替换占位符）
-        from backend.services.matplotlib_font import get_sandbox_setup_code
-        _font_setup_code = get_sandbox_setup_code()
+        _font_setup_code = ""
+        if _needs_plot:
+            from backend.services.matplotlib_font import get_sandbox_setup_code
+            _font_setup_code = get_sandbox_setup_code()
         _setup_blocks_filled = _setup_blocks.replace('{font_setup_code}', _font_setup_code)
-        _final_code = _amap_injection + _setup_blocks_filled.rstrip() + '\n\n' + code
+        _final_code = _amap_injection + _osm_setup_code + _setup_blocks_filled.rstrip() + '\n\n' + code
 
         temp_path = os.path.join(exec_dir, '_user_code_.py')
         with open(temp_path, 'w', encoding='utf-8') as f:
@@ -1667,8 +1681,9 @@ def measure_area(layer_name: str) -> str:
         _b = gdf.total_bounds
         lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
 
-        # UTM 带号：zone = floor((lon + 180) / 6) + 1
+        # UTM 带号：zone = floor((lon + 180) / 6) + 1，严格限制在 1~60
         utm_zone = int(np.floor((lon + 180) / 6)) + 1
+        utm_zone = max(1, min(60, utm_zone))
         # 北/南半球 EPSG 编号
         if lat >= 0:
             epsg_code = 32600 + utm_zone  # 32601~32660
@@ -2730,6 +2745,13 @@ def _parse_coord(s: str) -> tuple:
         raise ValueError(f"坐标值非数字，收到: '{s}'")
 
 
+def _get_utm_crs(lon: float, lat: float) -> str:
+    """根据经纬度计算标准 UTM 投影坐标系，带号严格约束在 1~60 之间。"""
+    utm_zone = int((lon + 180) / 6) + 1
+    utm_zone = max(1, min(60, utm_zone))
+    return f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+
+
 # ============================================================
 # 辅助函数：图层 ↔ GeoDataFrame 互转（供空间分析工具使用）
 # ============================================================
@@ -2763,10 +2785,11 @@ def _gdf_to_layer(gdf, name: str):
     _register_layer(name, geojson_data)
 
 
-def _gdf_area_km2(gdf):
+def _gdf_area_km2(gdf, unique=False):
     """计算 GeoDataFrame 的总面积（平方千米）。
     输入为 EPSG:4326 经纬度时，转到 EPSG:6933 全球等面积投影再求和，
-    避免把经纬度 degree² 直接当平方米。失败时返回 None。"""
+    避免把经纬度 degree² 直接当平方米。unique=True 时统计去重覆盖面积，
+    防止叠置产物的重叠记录重复计入覆盖比例。失败时返回 None。"""
     try:
         import warnings
         with warnings.catch_warnings():
@@ -2775,6 +2798,9 @@ def _gdf_area_km2(gdf):
             if crs is None:
                 gdf = gdf.set_crs("EPSG:4326")
             ea = gdf.to_crs("EPSG:6933")
+            if unique:
+                merged = ea.geometry.union_all() if hasattr(ea.geometry, 'union_all') else ea.geometry.unary_union
+                return float(merged.area) / 1e6
             return float(ea.geometry.area.sum()) / 1e6
     except Exception:
         return None
@@ -2811,8 +2837,7 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
         # 用 bounds 中心确定 UTM 带号（避免在 geographic CRS 下计算 centroid 的 warning）
         _b = gdf.total_bounds
         lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
-        utm_zone = int((lon + 180) / 6) + 1
-        crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+        crs_utm = _get_utm_crs(lon, lat)
         gdf_utm = gdf.to_crs(crs_utm)
         gdf_utm["geometry"] = gdf_utm.geometry.buffer(distance_m)
         if dissolve:
@@ -2852,8 +2877,7 @@ def spatial_multi_ring_buffer(layer_name: str, distances: str, unit: str = "m", 
         # 用 bounds 中心确定 UTM 带号（避免 geographic CRS 下计算 centroid 的 warning）
         _b = gdf.total_bounds
         lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
-        utm_zone = int((lon + 180) / 6) + 1
-        crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+        crs_utm = _get_utm_crs(lon, lat)
         gdf_utm = gdf.to_crs(crs_utm)
 
         rings = []
@@ -2922,8 +2946,7 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
         # 用 bounds 中心确定 UTM 带号（避免 geographic CRS 下计算 centroid 的 warning）
         _b = gdf.total_bounds
         lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
-        utm_zone = int((lon + 180) / 6) + 1
-        crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+        crs_utm = _get_utm_crs(lon, lat)
 
         gdf_utm = gdf.to_crs(crs_utm)
         gdf_utm.geometry = gdf_utm.geometry.translate(xoff=dx, yoff=dy)
@@ -3138,8 +3161,7 @@ def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> 
                 return "半径必须大于 0"
             center_pt = Point(pts[0])
             lon, lat = pts[0]
-            utm_zone = int((lon + 180) / 6) + 1
-            crs_utm = f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
+            crs_utm = _get_utm_crs(lon, lat)
             center_gdf = gpd.GeoDataFrame({"geometry": [center_pt]}, crs="EPSG:4326")
             center_utm = center_gdf.to_crs(crs_utm)
             circle_utm = center_utm.geometry.buffer(radius)
@@ -3186,14 +3208,14 @@ def spatial_intersect(layer_a: str, layer_b: str) -> str:
             return f"「{name_a}」和「{name_b}」没有重叠区域"
         result_name = f"{name_a}_∩_{name_b}"
         _gdf_to_layer(result, result_name)
-        # 真实统计：结果面积 + 占两个输入图层的比例（等面积投影）
-        res_area = _gdf_area_km2(result)
-        area_a = _gdf_area_km2(gdf_a)
-        area_b = _gdf_area_km2(gdf_b)
+        # 按去重覆盖面积计算比例；叠置记录保留属性组合，不合并要素。
+        res_area = _gdf_area_km2(result, unique=True)
+        area_a = _gdf_area_km2(gdf_a, unique=True)
+        area_b = _gdf_area_km2(gdf_b, unique=True)
         stat = [f"相交分析完成，结果图层「{result_name}」已加载到地图。",
                 f"- 相交要素数：{len(result)}"]
         if res_area is not None:
-            stat.append(f"- 相交总面积：{res_area:.4f} 平方千米")
+            stat.append(f"- 相交覆盖面积（去除重叠）：{res_area:.4f} 平方千米")
             if area_a:
                 stat[-1] += f"，占「{name_a}」的 {res_area/area_a*100:.2f}%"
             if area_b:

@@ -53,7 +53,8 @@
     // 设置页「地理服务」里的快捷入口 → 打开浮层面板
     var openOnlineBtn = document.getElementById('openOnlineDataBtn');
     if (openOnlineBtn) {
-      openOnlineBtn.addEventListener('click', function () {
+      openOnlineBtn.addEventListener('click', function (event) {
+        event.stopPropagation();
         hide();   // 先收起设置面板浮层下的面板
         var modal = document.getElementById('settingsModal');
         if (modal) modal.style.display = 'none';

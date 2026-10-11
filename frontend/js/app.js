@@ -29,7 +29,7 @@ window.GIS = window.GIS || {};
         if (!GIS.chat || typeof GIS.chat.init !== 'function') missing.push('聊天');
         if (!GIS.layers || typeof GIS.layers.init !== 'function') missing.push('图层');
         if (missing.length) {
-          var errMsg = '模块加载失败: ' + missing.join(', ') + '。请检查网络连接后刷新页面。';
+          var errMsg = '模块加载失败: ' + missing.join(', ') + '。可能是脚本加载失败或代码错误，请查看浏览器控制台中的具体原因。';
           console.error('[GIS] ' + errMsg);
           var chatArea = document.querySelector('.chat-messages');
           if (chatArea) {
@@ -127,6 +127,7 @@ window.GIS = window.GIS || {};
     var toggleBtn = document.getElementById('toggleLayerPanel');
     if (layerPanel && toggleBtn) {
       toggleBtn.addEventListener('click', function() {
+        if (GIS.workspace) { GIS.workspace.toggleLayers(); return; }
         layerPanel.classList.toggle('collapsed');
         toggleBtn.classList.toggle('active');
       });

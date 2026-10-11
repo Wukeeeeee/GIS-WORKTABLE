@@ -16,6 +16,7 @@ window.GIS = window.GIS || {};
   let layerData = [];
   let groups = {};             // { groupId: {id, name, collapsed} }
   let _groupIdCounter = 0;
+  let _handleSwipeAction = null;
 
   function init() {
     tbody = document.getElementById('layerTbody');
@@ -33,6 +34,8 @@ window.GIS = window.GIS || {};
   function renderList(data) {
     if (data) layerData = data;
     if (!tbody) return;
+    const count = document.getElementById('workspaceLayerCount');
+    if (count) count.textContent = layerData.length + ' 个图层';
 
     if (layerData.length === 0) {
       tbody.innerHTML = '';
@@ -91,28 +94,24 @@ window.GIS = window.GIS || {};
   }
 
   function _renderLayerRow(layer, index, hiddenStyle) {
-    return '<tr draggable="true" data-index="' + index + '" data-id="' + (layer.layer_id || '') + '"' +
+    const geometryNames = {Point:'点', MultiPoint:'多点', LineString:'线', MultiLineString:'多线', Polygon:'面', MultiPolygon:'多面', GeometryCollection:'集合'};
+    const type = (layer.geometry_type || '未知类型').split(',').map(t => geometryNames[t.trim()] || t.trim()).join(' / ');
+    const features = layer.geojson && (layer.geojson.type === 'FeatureCollection' ? (layer.geojson.features || []).length : layer.geojson.type === 'Feature' ? 1 : null);
+    return '<tr class="' + (layer.visible === false ? 'layer-hidden' : '') + '" draggable="true" data-index="' + index + '" data-id="' + escapeHtml(layer.layer_id || '') + '"' +
       (layer.groupId ? ' data-group="' + escapeHtml(layer.groupId) + '"' : '') + hiddenStyle + '>' +
-      '<td class="col-drag"><span class="drag-handle" draggable="true"><svg><use href="assets/icons.svg#icon-drag"/></svg></span></td>' +
-      '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + (layer.layer_id || '') + '" title="显隐">' +
-      '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-      (layer.visible !== false
-        ? '<rect x="3" y="3" width="18" height="18" rx="3" fill="var(--ui-gray-900)" stroke="var(--ui-gray-900)"/><polyline points="7 12 10 15 17 8" stroke="#fff" stroke-width="2.5"/>'
-        : '<rect x="3"="3" width="18" height="18" rx="3" fill="none" stroke="var(--ui-gray-300)"/>') +
-      '</svg></button></td>' +
+      "<td class=\"col-drag\"><span class=\"drag-handle\" draggable=\"true\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-102a87898985.png')\"></span></span></td>" +
+      '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + (layer.layer_id || '') + '" aria-pressed="' + String(layer.visible !== false) + '" aria-label="' + (layer.visible !== false ? '隐藏图层' : '显示图层') + '" title="' + (layer.visible !== false ? '隐藏图层' : '显示图层') + '">' +
+      '<span class="ui-visibility-check' + (layer.visible !== false ? ' checked' : '') + '" aria-hidden="true"></span></button></td>' +
       '<td class="col-name"><span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '"></span>' +
       '<span class="layer-source layer-source-' + (layer.source || 'upload') + '">' +
       (layer.source === 'ai'
-        ? '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#8B5CF6" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>'
-        : '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>') +
-      '</span><span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="双击重命名">' + escapeHtml(layer.filename || '未命名') + '</span></td>' +
-      '<td class="col-type"><span class="layer-type">' + escapeHtml(layer.geometry_type || '未知') + '</span></td>' +
+        ? "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-78988e3d1dd2.png')\"></span>"
+        : "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-e5befca1a25f.png')\"></span>") +
+      '</span><span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="' + escapeHtml(layer.filename || '未命名') + ' · 双击重命名">' + escapeHtml(layer.filename || '未命名') + '</span></td>' +
+      '<td class="col-type"><span class="layer-type">' + escapeHtml(type) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">· ' + features + ' 个要素</span>' : '') + '</td>' +
       '<td class="col-actions"><div class="layer-actions">' +
-      '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + '" title="检查图层"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button>' +
-      '<button class="layer-action-btn" data-action="analyze" data-id="' + (layer.layer_id || '') + '" title="发送给AI分析"><svg><use href="assets/icons.svg#icon-ai-send"/></svg></button>' +
-      '<button class="layer-action-btn" data-action="swipe" data-id="' + (layer.layer_id || '') + '" title="卷帘对比（先点一个图层，再点另一个）"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="8" y1="10" x2="5" y2="12"/><line x1="8" y1="14" x2="5" y2="12"/><line x1="16" y1="10" x2="19" y2="12"/><line x1="16" y1="14" x2="19" y2="12"/></svg></button>' +
-      '<button class="layer-action-btn" data-action="download" data-id="' + (layer.layer_id || '') + '" title="下载"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>' +
-      '<button class="layer-action-btn btn-danger" data-action="delete" data-id="' + (layer.layer_id || '') + '" title="删除"><svg><use href="assets/icons.svg#icon-delete"/></svg></button>' +
+      '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + "\" title=\"检查图层\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-658e8e14699f.png')\"></span></button>" +
+      '<button class="layer-action-btn layer-more-btn" data-action="more" data-id="' + (layer.layer_id || '') + '" title="更多图层操作" aria-label="更多图层操作" aria-haspopup="menu">⋯</button>' +
       '</div></td></tr>';
   }
 
@@ -130,6 +129,11 @@ window.GIS = window.GIS || {};
   }
 
   // 添加图层：加入列表 + 渲染
+  function nextColor() {
+    var colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
+    return colors[layerData.length % colors.length];
+  }
+
   function addLayer(layer, skipRegister) {
     // —— 桥接：手动路径（上传/绘制/工程/网络等）的图层统一入共享状态 ——
     // state 会回调本函数（带 _panelSync）走下面的正常入库，并跳过 2D 重复渲染；
@@ -142,8 +146,8 @@ window.GIS = window.GIS || {};
         name: bridgeMapName,
         _mapName: bridgeMapName,   // 2D 已按此名渲染，地图操作沿用
         geojson: layer.geojson,
-        style: { color: layer.color || '#1c1b1b' },
-        color: layer.color,
+        style: layer.style || { color: layer.color || nextColor() },
+        color: layer.color || nextColor(),
         source: layer.source || 'upload',
         visible: layer.visible !== false,
         _panelSync: true,
@@ -168,6 +172,7 @@ window.GIS = window.GIS || {};
     // 兜底生成 layer_id：工程恢复等场景可能不带 layer_id，缺失会导致删除按钮 data-id 为空而失效
     var _layerId = layer.layer_id || ('layer_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e6).toString(36));
     layerData.push({ ...layer, layer_id: _layerId, filename: name, _rawName, visible: true, color });
+    if (!layer._panelSync && GIS.map && GIS.map.setLayerColor) GIS.map.setLayerColor(_rawName, color);
     renderList();
     _syncLayerOrder();
     if (!skipRegister && window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
@@ -249,7 +254,7 @@ window.GIS = window.GIS || {};
         '<div class="download-dialog-subtitle">' + escapeHtml(layer.filename || '图层') + '</div>' +
         '<div class="download-dialog-options">' +
           '<label class="download-dialog-option selected" data-format="geojson">' +
-            '<span class="download-dialog-radio"><svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg></span>' +
+            "<span class=\"download-dialog-radio\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-66c4545647cb.png')\"></span></span>" +
             '<span class="download-dialog-label"><strong>GeoJSON</strong><span class="download-dialog-desc">标准地理数据格式，保留完整属性</span></span>' +
           '</label>' +
           '<label class="download-dialog-option" data-format="shp">' +
@@ -515,7 +520,9 @@ window.GIS = window.GIS || {};
             layer.color = this.value;
             dot.style.background = this.value;
             dot.dataset.color = this.value;
-            if (GIS.map && GIS.map.setLayerColor) {
+            if (GIS.state && GIS.state.getLayer(id)) {
+              GIS.state.setStyle(id, { color: this.value, fillColor: this.value });
+            } else if (GIS.map && GIS.map.setLayerColor) {
               GIS.map.setLayerColor(layer._rawName || layer.layer_id, this.value);
             }
             if (!layer.visible && GIS.map && GIS.map.setLayerVisible) {
@@ -541,6 +548,11 @@ window.GIS = window.GIS || {};
       if (action === 'analyze') analyzeLayer(id);
       if (action === 'inspect') showLayerInspector(id);
       if (action === 'swipe') handleSwipeAction(id, btn);
+      if (action === 'more') {
+        e.stopPropagation();
+        const rect = btn.getBoundingClientRect();
+        _showContextMenu(rect.left, rect.bottom + 4, id);
+      }
     });
 
     // ============================================================
@@ -548,6 +560,7 @@ window.GIS = window.GIS || {};
     // 再点另一个图层的「卷帘」按钮即开启 A|B 对比；再点 A 或点 ✕ 可关闭。
     // ============================================================
     var _swipeSelId = null;
+    _handleSwipeAction = handleSwipeAction;
 
     function handleSwipeAction(id, btn) {
       // 3D 模式不支持
@@ -587,7 +600,7 @@ window.GIS = window.GIS || {};
       _swipeSelId = null;
       tbody.querySelectorAll('.layer-action-btn.swipe-armed').forEach(function(b) {
         b.classList.remove('swipe-armed');
-        b.title = '卷帘对比（先点一个图层，再点另一个）';
+        b.title = b.dataset.action === 'more' ? '更多图层操作' : '卷帘对比（先点一个图层，再点另一个）';
       });
     }
 
@@ -795,22 +808,22 @@ window.GIS = window.GIS || {};
         '<span class="inspector-section-title" style="margin-bottom:0;border:none;">属性数据 (' + features.length + ' 条)</span>' +
         '<div class="attr-toolbar-btns">' +
           '<button class="attr-btn" data-action="save-attrs" data-layer="' + layerId + '" title="保存修改">' +
-            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 5v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h7l2 2z"/><path d="M5 11h6"/><path d="M5 8h6"/><path d="M5 5h2"/></svg>' +
+            "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-d6c0572e9989.png')\"></span>" +
             '保存' +
           '</button>' +
           '<button class="attr-btn" data-action="add-row" data-layer="' + layerId + '" title="添加行">' +
-            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>' +
+            "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-493d1c3ed7c4.png')\"></span>" +
             '行' +
           '</button>' +
           '<button class="attr-btn" data-action="toggle-filter" data-layer="' + layerId + '" title="筛选">' +
-            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2h12l-5 6.5V14l-2-1V8.5L2 2z"/></svg>' +
+            "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9cd115a22f65.png')\"></span>" +
             '筛选' +
           '</button>' +
           '<button class="attr-btn" data-action="export-csv" data-layer="' + layerId + '" title="导出 CSV">' +
-            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1v10"/><path d="M4 7l4 4 4-4"/><path d="M2 13h12"/></svg>' +
+            "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-e41ef486154e.png')\"></span>" +
           '</button>' +
           '<button class="attr-btn" data-action="symbology" data-layer="' + layerId + '" title="符号化">' +
-            '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="5" cy="5" r="2.5"/><circle cx="11" cy="5" r="3.5"/><circle cx="8" cy="11" r="2"/></svg>' +
+            "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-b4f5de0d0c02.png')\"></span>" +
           '</button>' +
         '</div>' +
       '</div>' +
@@ -1447,7 +1460,6 @@ window.GIS = window.GIS || {};
       if (keys.length > 10) info += '  ... 还有 ' + (keys.length - 10) + ' 个类别';
       window.GIS.chat.addMessage(info, 'system');
     }
-    layer.color = defaultColor;
   }
 
   /** 分级色彩渲染 */
@@ -1491,7 +1503,6 @@ window.GIS = window.GIS || {};
 
     _applyStyleToMap(layer, gj, styleMap);
     _push3dFeatureColors(layer, features, styleMap);
-    layer.color = scheme[0];
 
     // 存储图例数据
     if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
@@ -2030,6 +2041,7 @@ window.GIS = window.GIS || {};
     analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
     syncLayerOrder: _syncLayerOrder,
     getLayers: () => [...layerData],
+    nextColor: nextColor,
     /** 返回所有图层名称列表（供网络分析面板使用） */
     getLayerNames: function() {
       return layerData.map(function(l) { return l.filename; });
@@ -2099,7 +2111,8 @@ window.GIS = window.GIS || {};
     if (!menu) {
       menu = document.createElement('div');
       menu.id = 'layerContextMenu';
-      menu.className = 'context-menu';
+    menu.className = 'context-menu';
+      menu.setAttribute('role', 'menu');
       document.body.appendChild(menu);
     }
 
@@ -2107,6 +2120,7 @@ window.GIS = window.GIS || {};
       var tr = e.target.closest('tr[draggable]');
       if (!tr) return;
       e.preventDefault();
+      e.stopPropagation();
       var layerId = tr.dataset.id;
       if (!layerId) return;
       _showContextMenu(e.clientX, e.clientY, layerId);
@@ -2130,6 +2144,8 @@ window.GIS = window.GIS || {};
       '<div class="context-menu-divider"></div>' +
       '<div class="context-menu-item" data-action="color" title="更改图层颜色">更改颜色</div>' +
       '<div class="context-menu-item" data-action="fit" title="缩放至图层范围">缩放至</div>' +
+      '<div class="context-menu-item" data-action="analyze">发送给 AI 分析</div>' +
+      '<div class="context-menu-item" data-action="swipe">卷帘对比</div>' +
       '<div class="context-menu-divider"></div>' +
       '<div class="context-menu-item" data-action="rename" title="重命名图层">重命名</div>' +
       '<div class="context-menu-item" data-action="download" title="下载图层">下载</div>' +
@@ -2140,9 +2156,18 @@ window.GIS = window.GIS || {};
     menu.style.top = y + 'px';
     menu.style.display = 'block';
     menu._layerId = layerId;
+    const bounds = menu.getBoundingClientRect();
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8)) + 'px';
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8)) + 'px';
 
     // 点击菜单项
     menu.querySelectorAll('.context-menu-item').forEach(function(item) {
+      item.setAttribute('role', 'menuitem');
+      item.tabIndex = 0;
+      item.addEventListener('keydown', function(ev) {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); item.click(); }
+        if (ev.key === 'Escape') _hideContextMenu();
+      });
       item.addEventListener('click', function(ev) {
         ev.stopPropagation();
         var action = this.dataset.action;
@@ -2150,11 +2175,19 @@ window.GIS = window.GIS || {};
         _execContextAction(action, layerId);
       });
     });
+    menu.querySelector('.context-menu-item').focus();
   }
 
   function _hideContextMenu() {
     var menu = document.getElementById('layerContextMenu');
-    if (menu) menu.style.display = 'none';
+    if (menu) {
+      const restoreFocus = menu.contains(document.activeElement);
+      menu.style.display = 'none';
+      if (restoreFocus && menu._layerId) {
+        const button = tbody.querySelector('.layer-more-btn[data-id="' + CSS.escape(menu._layerId) + '"]');
+        if (button) button.focus();
+      }
+    }
   }
 
   function _execContextAction(action, layerId) {
@@ -2182,6 +2215,13 @@ window.GIS = window.GIS || {};
       case 'download':
         downloadLayer(layerId);
         break;
+      case 'analyze':
+        if (GIS.workspace) GIS.workspace.toggleAI(true);
+        analyzeLayer(layerId);
+        break;
+      case 'swipe':
+        if (_handleSwipeAction) _handleSwipeAction(layerId, tbody.querySelector('.layer-more-btn[data-id="' + CSS.escape(layerId) + '"]'));
+        break;
       case 'delete':
         if (confirm('确定删除图层「' + (layer.filename || '图层') + '」？')) {
           removeLayer(layerId);
@@ -2203,7 +2243,9 @@ window.GIS = window.GIS || {};
           l.color = this.value;
           dot.style.background = this.value;
           dot.dataset.color = this.value;
-          if (GIS.map && GIS.map.setLayerColor) {
+          if (GIS.state && GIS.state.getLayer(layerId)) {
+            GIS.state.setStyle(layerId, { color: this.value, fillColor: this.value });
+          } else if (GIS.map && GIS.map.setLayerColor) {
             GIS.map.setLayerColor(l._rawName || l.layer_id, this.value);
           }
         }
@@ -2237,7 +2279,22 @@ window.GIS = window.GIS || {};
         val = val + '(' + suffix + ')';
       }
       layer.filename = val;
+      layer._rawName = val;
       nameEl.textContent = val;
+      if (val !== oldName) {
+        if (window.GIS.state && window.GIS.state.renameLayer) {
+          window.GIS.state.renameLayer(layerId, val);
+        }
+        if (window.GIS.map && window.GIS.map.renameLayer) {
+          window.GIS.map.renameLayer(oldName, val);
+        }
+        if (window.GIS.api && window.GIS.api.registerLayer && layer.geojson) {
+          window.GIS.api.registerLayer(val, layer.geojson);
+          if (window.GIS.api.unregisterLayer) {
+            window.GIS.api.unregisterLayer(oldName);
+          }
+        }
+      }
     }
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', function(ke) {

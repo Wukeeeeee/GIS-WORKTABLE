@@ -26,6 +26,7 @@ from backend.services.llm_config import LLMConfig, resolve_llm_config
 from backend.services.tools import _register_layer, _unregister_layer
 from backend.services.layer_service import inspect_geojson
 from backend.services import project_service
+from backend.launcher import health_identity
 
 
 # ===== 版本信息（服务器启动时自动生成） =====
@@ -287,7 +288,9 @@ async def chat_stream(request: ChatRequest):
     # 构建 system prompt + 消息（复用 ai_service 的构建逻辑）
     force_skills = request.force_skills or []
     history = _get_or_create_history(session_id, request.message)
-    system_content, skill_text, _ = _build_system_content(cfg, request.message, session_id, force_skills)
+    # 技能路由可能等待远程模型；不能在事件循环中同步等待，阻塞健康检查和取消请求。
+    system_content, skill_text, _ = await asyncio.to_thread(
+        _build_system_content, cfg, request.message, session_id, force_skills)
 
     # 如果前端附带了待分析图层，将 GeoJSON 注入到用户消息中（同时进入 agent 上下文和校验器）
     original_message = request.message
@@ -441,7 +444,7 @@ async def save_proxy_config(req: dict):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    return health_identity()
 
 @app.get("/api/layers/names")
 async def list_layer_names():
@@ -597,7 +600,7 @@ async def clear_chat_memory(session_id: str = "default"):
 async def test_key_endpoint(request: TestKeyRequest):
     # 兼容旧前端：只带 provider + api_key 时翻译成内置默认 cfg
     cfg = resolve_llm_config(request.llm_config, request.provider or "", request.api_key or "")
-    success, message = test_key(cfg)
+    success, message = await asyncio.to_thread(test_key, cfg)
     return {"success": success, "message": message}
 
 @app.get('/api/boundary')
@@ -1223,7 +1226,7 @@ async def api_geosource_detail(service_id: str):
 @app.post('/api/geosource/proxy')
 async def api_geosource_proxy(url: str = Query(..., description="远程目标 URL")):
     """代理获取远程 GIS 服务端点、GeoJSON 或元数据，避免浏览器端跨域（CORS）与网络限制。"""
-    from backend.services.tools import _get_effective_proxies
+    from backend.services.model_transport import effective_model_proxy
     import urllib.request
     import urllib.error
 
@@ -1234,7 +1237,8 @@ async def api_geosource_proxy(url: str = Query(..., description="远程目标 UR
     loop = asyncio.get_event_loop()
 
     def _fetch():
-        proxy_dict = _get_effective_proxies()
+        proxy = effective_model_proxy(url_str)
+        proxy_dict = {"http": proxy, "https": proxy} if proxy else {}
         handler = urllib.request.ProxyHandler(proxy_dict) if proxy_dict else urllib.request.ProxyHandler({})
         opener = urllib.request.build_opener(handler)
         req = urllib.request.Request(

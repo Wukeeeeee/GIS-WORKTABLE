@@ -16,36 +16,10 @@ window.GIS = window.GIS || {};
   var PANEL_WIDTH = 380;
   var METERS_PER_DEGREE = 111320;
 
-  var SEL = '<option value="">-- 请选择图层 --</option>';
+  var SEL = '<option value="">选择图层</option>';
 
   var PANEL_HTML =
-    '<div class="spatial-panel" id="spatialPanel">' +
-
-      '<div class="spatial-toolbar" id="spatialToolbar">' +
-        '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>' +
-        '<span class="spatial-toolbar-title">空间分析（直连）</span>' +
-        '<button class="spatial-toolbar-close" id="spatialClose">' +
-          '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
-        '</button>' +
-      '</div>' +
-
-      '<div class="spatial-tabs" id="spatialTabs">' +
-        '<button class="spatial-tab active" data-tab="buffer">缓冲区</button>' +
-        '<button class="spatial-tab" data-tab="overlay">叠置</button>' +
-        '<button class="spatial-tab" data-tab="clip">裁剪</button>' +
-        '<button class="spatial-tab" data-tab="geom">几何工具</button>' +
-        '<button class="spatial-tab" data-tab="select">选择</button>' +
-        '<button class="spatial-tab" data-tab="stats">统计</button>' +
-        '<button class="spatial-tab" data-tab="data">数据</button>' +
-      '</div>' +
-
-      '<div class="spatial-body" id="spatialBody">' +
-
-        /* ===== 缓冲区（含多环） ===== */
-        '<div class="spatial-tab-content active" id="tabBuffer">' +
-          '<div class="spatial-field">' +
-            '<label>图层</label>' +
-            '<select id="bufferLayer">' + SEL + '</select>' +
+    "<div class=\"spatial-panel\" id=\"spatialPanel\"><div class=\"spatial-toolbar\" id=\"spatialToolbar\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-bbcc4564de3a.png')\"></span><span class=\"spatial-toolbar-title\">空间分析</span><button class=\"spatial-toolbar-close\" id=\"spatialClose\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-28a441e0afbc.png')\"></span></button></div><div class=\"spatial-tabs\" id=\"spatialTabs\"><button class=\"spatial-tab active\" data-tab=\"buffer\">缓冲区</button><button class=\"spatial-tab\" data-tab=\"overlay\">叠置</button><button class=\"spatial-tab\" data-tab=\"clip\">裁剪</button><button class=\"spatial-tab\" data-tab=\"geom\">几何工具</button><button class=\"spatial-tab\" data-tab=\"select\">选择</button><button class=\"spatial-tab\" data-tab=\"stats\">统计</button><button class=\"spatial-tab\" data-tab=\"data\">获取数据</button></div><div class=\"spatial-body\" id=\"spatialBody\"><div class=\"spatial-tab-content active\" id=\"tabBuffer\"><div class=\"spatial-field\"><label>图层</label><select id=\"bufferLayer\">" + SEL + '</select>' +
           '</div>' +
           '<div class="spatial-field">' +
             '<label>距离</label>' +
@@ -58,8 +32,8 @@ window.GIS = window.GIS || {};
             '</div>' +
           '</div>' +
           '<div class="spatial-field">' +
-            '<label>多环距离（可选，逗号分隔，如 100,300,500）</label>' +
-            '<input type="text" id="bufferRings" class="spatial-input" placeholder="留空=单环缓冲">' +
+            '<label>多环缓冲距离（可选）</label>' +
+            '<input type="text" id="bufferRings" class="spatial-input" placeholder="例如 100,300,500；留空使用上方距离">' +
           '</div>' +
           '<div class="spatial-field">' +
             '<label class="spatial-checkbox-label">' +
@@ -117,7 +91,7 @@ window.GIS = window.GIS || {};
               '<option value="dissolve">属性融合</option>' +
               '<option value="voronoi">泰森多边形</option>' +
               '<option value="cluster">空间聚类（DBSCAN）</option>' +
-              '<option value="merge">与其它图层合并（行合并）</option>' +
+              '<option value="merge">合并图层</option>' +
               '<option value="fix_geometry">修复无效几何</option>' +
               '<option value="check_duplicates">检测重复要素</option>' +
               '<option value="explode">分解多部件要素</option>' +
@@ -127,7 +101,7 @@ window.GIS = window.GIS || {};
             '</select>' +
           '</div>' +
           '<div class="spatial-field" id="geomSimplifyField" style="display:none">' +
-            '<label>简化容差（度，0.001≈100m）</label>' +
+            '<label>简化容差（度）</label>' +
             '<input type="number" id="geomSimplifyTolerance" class="spatial-input" value="0.001" min="0.0001" step="0.0001">' +
           '</div>' +
           '<div class="spatial-field" id="geomDissolveField" style="display:none">' +
@@ -170,9 +144,9 @@ window.GIS = window.GIS || {};
           '<div class="spatial-field" id="selectPredicateField">' +
             '<label>空间关系</label>' +
             '<select id="selectPredicate">' +
-              '<option value="intersects">相交 intersects</option>' +
-              '<option value="within">包含于 within</option>' +
-              '<option value="contains">包含 contains</option>' +
+              '<option value="intersects">相交</option>' +
+              '<option value="within">在参照要素内</option>' +
+              '<option value="contains">包含参照要素</option>' +
             '</select>' +
           '</div>' +
           '<div class="spatial-field" id="selectNearField" style="display:none">' +
@@ -196,7 +170,7 @@ window.GIS = window.GIS || {};
             '<input type="text" id="selectAttrValue" class="spatial-input" placeholder="属性值" style="margin-top:4px;">' +
           '</div>' +
           '<div class="spatial-field" id="selectSampleField" style="display:none">' +
-            '<label>采样数量（或比例，如 0.2）</label>' +
+            '<label>采样数量或比例</label>' +
             '<input type="text" id="selectSampleN" class="spatial-input" placeholder="100 或 0.2">' +
           '</div>' +
           '<button class="spatial-run-btn" data-op="select">执行选择</button>' +
@@ -209,24 +183,24 @@ window.GIS = window.GIS || {};
             '<select id="statsLayer">' + SEL + '</select>' +
           '</div>' +
           '<div class="spatial-field">' +
-            '<label>统计项</label>' +
+            '<label>统计方式</label>' +
             '<select id="statsOp">' +
-              '<option value="field_stats">字段统计（count/min/max/均值…）</option>' +
-              '<option value="measure_area">面积量测（UTM 精确）</option>' +
-              '<option value="join">空间连接（把 B 的属性按位置连进来）</option>' +
-              '<option value="zonal">分区统计（栅格×面）</option>' +
+              '<option value="field_stats">字段统计</option>' +
+              '<option value="measure_area">面积统计</option>' +
+              '<option value="join">空间连接</option>' +
+              '<option value="zonal">栅格分区统计</option>' +
             '</select>' +
           '</div>' +
           '<div class="spatial-field" id="statsFieldSelWrap">' +
             '<label>数值字段</label>' +
-            '<select id="statsFieldSel"><option value="">-- 自动选择 --</option></select>' +
+            '<select id="statsFieldSel"><option value="">全部数值字段</option></select>' +
           '</div>' +
           '<div class="spatial-field" id="statsJoinWrap" style="display:none">' +
             '<label>被连接图层（提供属性）</label>' +
             '<select id="statsJoinLayer">' + SEL + '</select>' +
           '</div>' +
           '<div class="spatial-field" id="statsZonalWrap" style="display:none">' +
-            '<label>栅格图层名（上传的 GeoTIFF 文件名）</label>' +
+            '<label>栅格文件名</label>' +
             '<input type="text" id="statsZonalRaster" class="spatial-input" placeholder="如 dem">' +
           '</div>' +
           '<button class="spatial-run-btn" data-op="stats">运行统计</button>' +
@@ -310,6 +284,7 @@ window.GIS = window.GIS || {};
     _initDrag(container);
 
     document.getElementById('spatialClose').addEventListener('click', deactivate);
+    if (GIS.workspace) GIS.workspace.preparePanel('spatialPanel', 'spatialToolbar', 'spatialClose', '空间分析');
 
     document.getElementById('spatialTabs').addEventListener('click', function(e) {
       var btn = e.target.closest('.spatial-tab');
@@ -341,7 +316,7 @@ window.GIS = window.GIS || {};
 
     document.getElementById('statsOp').addEventListener('change', function() {
       var v = this.value;
-      document.getElementById('statsFieldSelWrap').style.display = v === 'join' ? 'none' : '';
+      document.getElementById('statsFieldSelWrap').style.display = v === 'field_stats' ? '' : 'none';
       document.getElementById('statsJoinWrap').style.display = v === 'join' ? '' : 'none';
       document.getElementById('statsZonalWrap').style.display = v === 'zonal' ? '' : 'none';
     });
@@ -351,11 +326,29 @@ window.GIS = window.GIS || {};
       document.getElementById(id).addEventListener('change', _refreshFieldSelects);
     });
 
-    document.querySelectorAll('.spatial-run-btn').forEach(function(btn) {
+    container.querySelectorAll('.spatial-run-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
-        _runOperation(this.dataset.op);
+        try { _runOperation(this.dataset.op, this); }
+        catch (error) { if (GIS.workspace) GIS.workspace.toolFeedback('spatialPanel', null, error); }
       });
     });
+    const intro = document.createElement('p');
+    intro.className = 'workspace-tool-intro';
+    intro.textContent = '选择图层和参数后运行。生成的图层会加入左侧列表，处理记录保存在历史中。';
+    document.getElementById('spatialBody').prepend(intro);
+    const hint = document.createElement('p');
+    hint.id = 'statsOperationHint';
+    hint.className = 'spatial-field-help';
+    const statHints = {
+      field_stats:'计算数量、最小值、最大值、平均值等；可选一个数值字段或统计全部。',
+      measure_area:'计算面要素的面积，结果单位为平方千米。',
+      join:'按空间相交关系，把另一图层的属性连接到当前图层。',
+      zonal:'统计每个面覆盖范围内的栅格平均值，需要已上传的 GeoTIFF。'
+    };
+    document.getElementById('statsOp').parentElement.appendChild(hint);
+    function updateStatsHint() { hint.textContent=statHints[document.getElementById('statsOp').value]; }
+    document.getElementById('statsOp').addEventListener('change', updateStatsHint);
+    updateStatsHint();
 
     _initialized = true;
   }
@@ -367,6 +360,7 @@ window.GIS = window.GIS || {};
     var container = document.getElementById('spatialPanelContainer');
     if (!container) return;
     container.style.display = '';
+    if (GIS.workspace) GIS.workspace.expandPanel('spatialPanel');
     _refreshLayers();
     _centerPanel(container);
     _active = true;
@@ -396,6 +390,7 @@ window.GIS = window.GIS || {};
 
   /** 把面板坐标夹紧在地图区域内：左不越聊天面板、右/下不出视口 */
   function _clampToMapArea(container, left, top) {
+    if (GIS.workspace) return GIS.workspace.clampPanel(container, left, top, PANEL_WIDTH);
     var vw = window.innerWidth;
     var vh = window.innerHeight;
     var minLeft = _chatRightEdge();
@@ -407,6 +402,11 @@ window.GIS = window.GIS || {};
   }
 
   function _centerPanel(container) {
+    if (GIS.workspace) {
+      var pos = GIS.workspace.centerPanel(container, PANEL_WIDTH);
+      _panelLeft = pos[0]; _panelTop = pos[1];
+      return;
+    }
     var vw = window.innerWidth;
     var chatRight = _chatRightEdge();
     var mapAreaWidth = vw - chatRight;
@@ -426,12 +426,13 @@ window.GIS = window.GIS || {};
     var startX, startY, startLeft, startTop;
 
     function onStart(e) {
-      if (e.target.closest('.spatial-toolbar-close')) return;
+      if (e.target.closest('button')) return;
       var ev = e.touches ? e.touches[0] : e;
       startX = ev.clientX;
       startY = ev.clientY;
-      startLeft = _panelLeft;
-      startTop = _panelTop;
+      var currentRect = container.getBoundingClientRect();
+      startLeft = currentRect.left;
+      startTop = currentRect.top;
       container.classList.add('dragging');
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onEnd);
@@ -464,13 +465,15 @@ window.GIS = window.GIS || {};
 
 
   function _switchTab(tab) {
-    document.querySelectorAll('.spatial-tab').forEach(function(b) {
+    document.querySelectorAll('#spatialTabs .spatial-tab').forEach(function(b) {
       b.classList.toggle('active', b.dataset.tab === tab);
     });
-    document.querySelectorAll('.spatial-tab-content').forEach(function(c) {
+    document.querySelectorAll('#spatialBody .spatial-tab-content').forEach(function(c) {
       c.classList.toggle('active', c.id === 'tab' + tab.charAt(0).toUpperCase() + tab.slice(1));
     });
     document.getElementById('spatialResult').style.display = 'none';
+    const feedback = document.querySelector('#spatialPanel .workspace-tool-feedback');
+    if (feedback) feedback.remove();
   }
 
 
@@ -534,7 +537,7 @@ window.GIS = window.GIS || {};
       if (!layerSel || !fieldSel) return;
       var layerName = layerSel.value;
       var current = fieldSel.value;
-      fieldSel.innerHTML = pair[2] ? '<option value="">-- 自动选择 --</option>' : '<option value="">-- 选择字段 --</option>';
+      fieldSel.innerHTML = pair[2] ? '<option value="">全部数值字段</option>' : '<option value="">-- 选择字段 --</option>';
       if (!layerName || !GIS.layers || !GIS.layers.getLayerByName) return;
       var layer = GIS.layers.getLayerByName(layerName);
       var props = layer && layer.geojson && layer.geojson.features && layer.geojson.features[0]
@@ -555,7 +558,7 @@ window.GIS = window.GIS || {};
   function _val(id) { return document.getElementById(id).value; }
   function _requireLayer(id) {
     var v = _val(id);
-    if (!v) { alert('请先选择图层'); throw new Error('no layer'); }
+    if (!v) throw new Error('请先选择要处理的图层。');
     return v;
   }
 
@@ -564,8 +567,10 @@ window.GIS = window.GIS || {};
     var resultEl = document.getElementById('spatialResult');
     var resultBody = document.getElementById('spatialResultBody');
     var loader = document.getElementById('spatialLoader');
-    loader.style.display = '';
-    if (btn) { btn.disabled = true; }
+    loader.style.display = 'flex';
+    if (GIS.workspace) GIS.workspace.toolPending('spatialPanel');
+    const buttons = document.querySelectorAll('#spatialPanel .spatial-run-btn');
+    buttons.forEach(function(button) { button.disabled = true; });
 
     // 把参数里引用的图层先同步进后端注册表（绘制/手动图层只在前端存在）
     var layerNames = Object.keys(args || {})
@@ -584,22 +589,24 @@ window.GIS = window.GIS || {};
 
     p.then(function(result) {
       loader.style.display = 'none';
-      if (btn) btn.disabled = false;
+      buttons.forEach(function(button) { button.disabled = false; });
+      if (GIS.workspace && !GIS.workspace.toolFeedback('spatialPanel', result)) return;
       // 图层/op/热力图/图片统一上图
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
+      _refreshLayers();
       // 文本结果展示在面板底部
       resultBody.textContent = result.response || '';
-      resultEl.style.display = '';
+      resultEl.style.display = GIS.workspace ? 'none' : '';
     }).catch(function(err) {
       loader.style.display = 'none';
-      if (btn) btn.disabled = false;
+      buttons.forEach(function(button) { button.disabled = false; });
+      if (GIS.workspace) GIS.workspace.toolFeedback('spatialPanel', null, err);
       resultBody.textContent = '执行失败: ' + err.message;
-      resultEl.style.display = '';
+      resultEl.style.display = GIS.workspace ? 'none' : '';
     });
   }
 
-  function _runOperation(op) {
-    var btn = event && event.target ? event.target.closest('.spatial-run-btn') : null;
+  function _runOperation(op, btn) {
 
     if (op === 'buffer') {
       var layer = _requireLayer('bufferLayer');
@@ -609,7 +616,9 @@ window.GIS = window.GIS || {};
         args = { layer_name: layer, distances: rings, unit: _val('bufferUnit'), dissolve: document.getElementById('bufferDissolve').checked };
         return _invoke('spatial_multi_ring_buffer', args, btn);
       }
-      args = { layer_name: layer, distance: parseFloat(_val('bufferDistance')) || 500, unit: _val('bufferUnit'), dissolve: document.getElementById('bufferDissolve').checked };
+      const distance = Number(_val('bufferDistance'));
+      if (!Number.isFinite(distance) || distance <= 0) throw new Error('缓冲距离必须大于 0。');
+      args = { layer_name: layer, distance: distance, unit: _val('bufferUnit'), dissolve: document.getElementById('bufferDissolve').checked };
       return _invoke('spatial_buffer', args, btn);
     }
 
@@ -684,7 +693,7 @@ window.GIS = window.GIS || {};
       }
       if (stOp === 'zonal') {
         var raster = _val('statsZonalRaster').trim();
-        if (!raster) { alert('请填写栅格图层名（上传的 GeoTIFF 文件名）'); return; }
+        if (!raster) { alert('请填写栅格文件名'); return; }
         return _invoke('zonal_statistics', { raster_layer: raster, zone_layer: stLayer, stat: 'mean' }, btn);
       }
       return;

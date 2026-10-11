@@ -1,5 +1,7 @@
 # GIS AI WorkTable 前端重构实施计划
 
+> 历史实施计划：其中 SVG 图标步骤已被 2026-10-11 用户要求替代。当前整个工作台使用 PNG / CSS 图形，开发时遵循[现行界面规范](../../ui-guidelines.md)，不执行本页已过时的图标方案。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将 indexbygoogle.html 的 Google Material 风格复刻到 frontend/index.html，纯内联 SVG 图标，通过 jsDelivr 国内 CDN 加载 Leaflet，JS 文件预留 API 接口骨架

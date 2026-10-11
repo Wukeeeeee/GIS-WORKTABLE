@@ -31,85 +31,122 @@ window.GIS = window.GIS || {};
   ];
 
   var PANEL_HTML =
-    '<div class="spatial-panel" id="rasterToolsPanel">' +
-      '<div class="spatial-toolbar" id="rasterToolsToolbar">' +
-        '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="0"/><line x1="2" y1="7" x2="22" y2="7"/><line x1="7" y1="2" x2="7" y2="22"/></svg>' +
-        '<span class="spatial-toolbar-title">栅格与工具（直连）</span>' +
-        '<button class="spatial-toolbar-close" id="rasterToolsClose">' +
-          '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
-        '</button>' +
-      '</div>' +
-      '<div class="spatial-body" id="rasterToolsBody">' +
-        '<div class="spatial-field">' +
-          '<label>功能</label>' +
-          '<select id="rtOp"></select>' +
-        '</div>' +
-        '<div class="spatial-field" id="rtLayerField">' +
-          '<label id="rtLayerLabel">图层</label>' +
-          '<select id="rtLayer"><option value="">-- 请选择图层 --</option></select>' +
-          '<input type="text" id="rtLayerText" class="spatial-input" placeholder="或直接输入栅格文件名（如 dem）" style="margin-top:4px;display:none;">' +
-        '</div>' +
-        '<div class="spatial-field" id="rtIntervalField" style="display:none">' +
-          '<label>等高距（米，0=自动）</label>' +
-          '<input type="number" id="rtInterval" class="spatial-input" value="0" min="0" step="10">' +
-        '</div>' +
-        '<div class="spatial-field" id="rtBandsField" style="display:none">' +
-          '<label>红波段 / 近红外波段（1 起）</label>' +
-          '<div class="spatial-row">' +
-            '<input type="number" id="rtRed" class="spatial-input" value="3" min="1" step="1">' +
-            '<input type="number" id="rtNir" class="spatial-input" value="4" min="1" step="1">' +
-          '</div>' +
-        '</div>' +
-        '<div class="spatial-field" id="rtExpressionField" style="display:none">' +
-          '<label>表达式（如 B1*2-B2）</label>' +
-          '<input type="text" id="rtExpression" class="spatial-input" placeholder="B1*2-B2">' +
-        '</div>' +
-        '<div class="spatial-field" id="rtFieldField" style="display:none">' +
-          '<label>插值字段（数值）</label>' +
-          '<select id="rtFieldSel"><option value="">-- 选择字段 --</option></select>' +
-          '<div class="spatial-row" style="margin-top:4px;">' +
-            '<select id="rtMethod" class="spatial-select-short">' +
-              '<option value="idw">IDW 反距离权重</option>' +
-              '<option value="kriging">Kriging 克里金</option>' +
-            '</select>' +
-          '</div>' +
-        '</div>' +
-        '<div class="spatial-field" id="rtHydroField" style="display:none">' +
-          '<label>分析类型</label>' +
-          '<select id="rtHydroOp">' +
-            '<option value="flowacc">汇流累积量</option>' +
-            '<option value="watershed">流域划分</option>' +
-            '<option value="stream">河网提取</option>' +
-          '</select>' +
-        '</div>' +
-        '<div class="spatial-field" id="rtWeightField" style="display:none">' +
-          '<label>权重字段（可选）</label>' +
-          '<select id="rtWeightSel"><option value="">-- 无权重（按点密度） --</option></select>' +
-        '</div>' +
-        '<div class="spatial-field" id="rtCoordsField" style="display:none">' +
-          '<label>坐标（lng,lat，分号分隔可批量）</label>' +
-          '<input type="text" id="rtCoords" class="spatial-input" placeholder="112.94,28.23">' +
-          '<div class="spatial-row" style="margin-top:4px;">' +
-            '<select id="rtSrcCrs" class="spatial-select-short">' +
-              '<option value="wgs84">WGS84</option>' +
-              '<option value="gcj02">GCJ02（高德/腾讯）</option>' +
-              '<option value="web_mercator">Web Mercator</option>' +
-              '<option value="utm_auto">UTM 自动</option>' +
-            '</select>' +
-            '<span style="align-self:center;font-size:12px;color:var(--ui-gray-500);">→</span>' +
-            '<select id="rtDstCrs" class="spatial-select-short">' +
-              '<option value="web_mercator">Web Mercator</option>' +
-              '<option value="wgs84">WGS84</option>' +
-              '<option value="utm_auto">UTM 自动</option>' +
-            '</select>' +
-          '</div>' +
-        '</div>' +
-        '<button class="spatial-run-btn" id="rtRun">运行</button>' +
-        '<div class="spatial-result" id="rtResult" style="display:none">' +
-          '<div class="spatial-result-body" id="rtResultBody"></div>' +
-        '</div>' +
-      '</div>' +
-    '</div>';
+    ("<div class=\"spatial-panel\" id=\"rasterToolsPanel\">"
+      + "<div class=\"spatial-toolbar\" id=\"rasterToolsToolbar\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')\">"
+      + "</span>"
+      + "<span class=\"spatial-toolbar-title\">栅格与地理工具"
+      + "</span>"
+      + "<button class=\"spatial-toolbar-close\" id=\"rasterToolsClose\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-28a441e0afbc.png')\">"
+      + "</span>"
+      + "</button>"
+      + "</div>"
+      + "<div class=\"spatial-body\" id=\"rasterToolsBody\">"
+      + "<div class=\"spatial-field\">"
+      + "<label>功能"
+      + "</label>"
+      + "<select id=\"rtOp\">"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"rtLayerField\">"
+      + "<label id=\"rtLayerLabel\">图层"
+      + "</label>"
+      + "<select id=\"rtLayer\">"
+      + "<option value=\"\">-- 请选择图层 --"
+      + "</option>"
+      + "</select>"
+      + "<input type=\"text\" id=\"rtLayerText\" class=\"spatial-input\" placeholder=\"或直接输入栅格文件名（如 dem）\" style=\"margin-top:4px;display:none;\">"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"rtIntervalField\" style=\"display:none\">"
+      + "<label>等高距（米，0=自动）"
+      + "</label>"
+      + "<input type=\"number\" id=\"rtInterval\" class=\"spatial-input\" value=\"0\" min=\"0\" step=\"10\">"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"rtBandsField\" style=\"display:none\">"
+      + "<label>红波段 / 近红外波段（1 起）"
+      + "</label>"
+      + "<div class=\"spatial-row\">"
+      + "<input type=\"number\" id=\"rtRed\" class=\"spatial-input\" value=\"3\" min=\"1\" step=\"1\">"
+      + "<input type=\"number\" id=\"rtNir\" class=\"spatial-input\" value=\"4\" min=\"1\" step=\"1\">"
+      + "</div>"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"rtExpressionField\" style=\"display:none\">"
+      + "<label>表达式（如 B1*2-B2）"
+      + "</label>"
+      + "<input type=\"text\" id=\"rtExpression\" class=\"spatial-input\" placeholder=\"B1*2-B2\">"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"rtFieldField\" style=\"display:none\">"
+      + "<label>插值字段（数值）"
+      + "</label>"
+      + "<select id=\"rtFieldSel\">"
+      + "<option value=\"\">-- 选择字段 --"
+      + "</option>"
+      + "</select>"
+      + "<div class=\"spatial-row\" style=\"margin-top:4px;\">"
+      + "<select id=\"rtMethod\" class=\"spatial-select-short\">"
+      + "<option value=\"idw\">IDW 反距离权重"
+      + "</option>"
+      + "<option value=\"kriging\">Kriging 克里金"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"rtHydroField\" style=\"display:none\">"
+      + "<label>分析类型"
+      + "</label>"
+      + "<select id=\"rtHydroOp\">"
+      + "<option value=\"flowacc\">汇流累积量"
+      + "</option>"
+      + "<option value=\"watershed\">流域划分"
+      + "</option>"
+      + "<option value=\"stream\">河网提取"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"rtWeightField\" style=\"display:none\">"
+      + "<label>权重字段（可选）"
+      + "</label>"
+      + "<select id=\"rtWeightSel\">"
+      + "<option value=\"\">-- 无权重（按点密度） --"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"rtCoordsField\" style=\"display:none\">"
+      + "<label>坐标（lng,lat，分号分隔可批量）"
+      + "</label>"
+      + "<input type=\"text\" id=\"rtCoords\" class=\"spatial-input\" placeholder=\"112.94,28.23\">"
+      + "<div class=\"spatial-row\" style=\"margin-top:4px;\">"
+      + "<select id=\"rtSrcCrs\" class=\"spatial-select-short\">"
+      + "<option value=\"wgs84\">WGS84"
+      + "</option>"
+      + "<option value=\"gcj02\">GCJ02（高德/腾讯）"
+      + "</option>"
+      + "<option value=\"web_mercator\">Web Mercator"
+      + "</option>"
+      + "<option value=\"utm_auto\">UTM 自动"
+      + "</option>"
+      + "</select>"
+      + "<span style=\"align-self:center;font-size:12px;color:var(--ui-gray-500);\">→"
+      + "</span>"
+      + "<select id=\"rtDstCrs\" class=\"spatial-select-short\">"
+      + "<option value=\"web_mercator\">Web Mercator"
+      + "</option>"
+      + "<option value=\"wgs84\">WGS84"
+      + "</option>"
+      + "<option value=\"utm_auto\">UTM 自动"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "</div>"
+      + "<button class=\"spatial-run-btn\" id=\"rtRun\">运行"
+      + "</button>"
+      + "<div class=\"spatial-result\" id=\"rtResult\" style=\"display:none\">"
+      + "<div class=\"spatial-result-body\" id=\"rtResultBody\">"
+      + "</div>"
+      + "</div>"
+      + "</div>"
+      + "</div>");
 
   function _opById(id) {
     for (var i = 0; i < OPS.length; i++) if (OPS[i].id === id) return OPS[i];
@@ -141,6 +178,7 @@ window.GIS = window.GIS || {};
     });
 
     document.getElementById('rasterToolsClose').addEventListener('click', deactivate);
+    if (GIS.workspace) GIS.workspace.preparePanel('rasterToolsPanel', 'rasterToolsToolbar', 'rasterToolsClose', '栅格处理');
     opSel.addEventListener('change', function () { _applyOpVisibility(); _refreshLayers(); });
     document.getElementById('rtLayer').addEventListener('change', _refreshFieldSel);
     document.getElementById('rtRun').addEventListener('click', _run);
@@ -157,6 +195,7 @@ window.GIS = window.GIS || {};
     var container = document.getElementById('rasterToolsPanelContainer');
     if (!container) return;
     container.style.display = '';
+    if (GIS.workspace) GIS.workspace.expandPanel('rasterToolsPanel');
     _refreshLayers();
     _centerPanel(container);
     _active = true;
@@ -273,6 +312,7 @@ window.GIS = window.GIS || {};
   }
 
   function _clampToMapArea(container, left, top) {
+    if (GIS.workspace) return GIS.workspace.clampPanel(container, left, top, 380);
     var vw = window.innerWidth;
     var vh = window.innerHeight;
     var chatPanel = document.querySelector('.chat-panel');
@@ -289,6 +329,11 @@ window.GIS = window.GIS || {};
   }
 
   function _centerPanel(container) {
+    if (GIS.workspace) {
+      var pos = GIS.workspace.centerPanel(container, 380);
+      _lastLeft = pos[0]; _lastTop = pos[1];
+      return;
+    }
     var vw = window.innerWidth;
     var chatPanel = document.querySelector('.chat-panel');
     var chatRight = 4;
@@ -309,10 +354,11 @@ window.GIS = window.GIS || {};
     if (!header) return;
     var startX, startY, startLeft, startTop;
     function onStart(e) {
-      if (e.target.closest('.spatial-toolbar-close')) return;
+      if (e.target.closest('button')) return;
       var ev = e.touches ? e.touches[0] : e;
       startX = ev.clientX; startY = ev.clientY;
-      startLeft = _lastLeft; startTop = _lastTop;
+      var currentRect = container.getBoundingClientRect();
+      startLeft = currentRect.left; startTop = currentRect.top;
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onEnd);
     }
@@ -336,6 +382,7 @@ window.GIS = window.GIS || {};
     resultEl.style.display = 'none';
     resultBody.textContent = '计算中...';
     resultEl.style.display = '';
+    if (GIS.workspace) { GIS.workspace.toolPending('rasterToolsPanel'); resultEl.style.display='none'; }
     var layerNames = Object.keys(args || {})
       .filter(function (k) { return /layer/.test(k) && typeof args[k] === 'string'; })
       .map(function (k) { return args[k]; });
@@ -346,9 +393,11 @@ window.GIS = window.GIS || {};
       if (!(GIS.api && GIS.api.invokeTool)) throw new Error('GIS.api.invokeTool 不可用');
       return GIS.api.invokeTool(tool, args);
     }).then(function (result) {
+      if (GIS.workspace && !GIS.workspace.toolFeedback('rasterToolsPanel', result)) return;
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
       resultBody.textContent = result.response || '';
     }).catch(function (err) {
+      if (GIS.workspace) GIS.workspace.toolFeedback('rasterToolsPanel', null, err);
       resultBody.textContent = '执行失败: ' + err.message;
     });
   }

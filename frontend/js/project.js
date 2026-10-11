@@ -55,11 +55,7 @@ window.GIS = window.GIS || {};
     if (!list) return;
     if (!projects || projects.length === 0) {
       list.innerHTML =
-        '<div class="history-empty">' +
-          '<svg width="48" height="48" opacity="0.3"><use href="assets/icons.svg#icon-history"/></svg>' +
-          '<div class="history-empty-text">暂无历史会话</div>' +
-          '<div class="history-empty-hint">开始新对话后自动保存</div>' +
-        '</div>';
+        "<div class=\"history-empty\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:48px;height:48px;opacity:0.3;--ui-icon-image:url('/assets/ui-icons/icon-10c1d9af6139.png')\"></span><div class=\"history-empty-text\">暂无历史会话</div><div class=\"history-empty-hint\">开始新对话后自动保存</div></div>";
       return;
     }
 
@@ -97,16 +93,16 @@ window.GIS = window.GIS || {};
             '</div>' +
             '<div class="history-item-actions">' +
               '<button class="history-action-btn" data-action="load" title="继续">' +
-                '<svg width="14" height="14"><use href="assets/icons.svg#icon-send"/></svg>' +
+                "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-f91a12a9cc81.png')\"></span>" +
               '</button>' +
               '<button class="history-action-btn" data-action="rename" title="重命名">' +
-                '<svg width="14" height="14"><use href="assets/icons.svg#icon-rename"/></svg>' +
+                "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3de3336f34e0.png')\"></span>" +
               '</button>' +
               '<button class="history-action-btn history-action-delete" data-action="delete" title="删除">' +
-                '<svg width="14" height="14"><use href="assets/icons.svg#icon-delete"/></svg>' +
+                "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-01e0637d9a44.png')\"></span>" +
               '</button>' +
               '<button class="history-action-btn" data-action="export" title="导出">' +
-                '<svg width="14" height="14"><use href="assets/icons.svg#icon-download"/></svg>' +
+                "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-b070c6cd9465.png')\"></span>" +
               '</button>' +
             '</div>' +
           '</div>';

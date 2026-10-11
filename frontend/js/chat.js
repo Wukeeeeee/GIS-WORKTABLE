@@ -24,6 +24,10 @@ if (typeof marked !== 'undefined') {
 
   /** @type {HTMLElement} */
   let messagesContainer = null;
+  let followOutput = true;
+  function scrollMessages() {
+    if (messagesContainer && followOutput) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
   let inputEl = null;
   let sendBtn = null;
 
@@ -42,37 +46,37 @@ if (typeof marked !== 'undefined') {
   };
   // 每个命令的 SVG icon（14x14，currentColor）
   const SLASH_ICONS = {
-    geosource: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="1.5" y1="7" x2="12.5" y2="7" stroke="currentColor" stroke-width="1.2"/><ellipse cx="7" cy="7" rx="3" ry="5.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    buffer: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="2.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
-    intersection: '<svg viewBox="0 0 14 14"><circle cx="5.2" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8.8" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
-    union: '<svg viewBox="0 0 14 14"><path d="M4 3v5a3 3 0 006 0V3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4 3h6" stroke="currentColor" stroke-width="1.3"/></svg>',
-    difference: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M7 2.5v9" stroke="currentColor" stroke-width="1.3"/></svg>',
-    centroid: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="7" r="1" fill="currentColor"/></svg>',
-    simplify: '<svg viewBox="0 0 14 14"><polyline points="1,10 4,4 7,9 10,3 13,8" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="1,11 13,11" fill="none" stroke="currentColor" stroke-width="1" opacity=".4"/></svg>',
-    area: '<svg viewBox="0 0 14 14"><rect x="2" y="3" width="10" height="8" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M2 3L12 11" stroke="currentColor" stroke-width=".8" opacity=".3"/></svg>',
-    length: '<svg viewBox="0 0 14 14"><line x1="2" y1="7" x2="12" y2="7" stroke="currentColor" stroke-width="1.3"/><polyline points="9,4 12,7 9,10" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    make_valid: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.2"/><polyline points="4.5,7 6.5,9 9.5,5.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
-    aoi: '<svg viewBox="0 0 14 14"><path d="M2 12V3l5-2 5 2v9zm5-9v8M2 5h10M2 9h10" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    boundary: '<svg viewBox="0 0 14 14"><polygon points="7,1 12,4 12,10 7,13 2,10 2,4" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="7" r="1.5" fill="none" stroke="currentColor" stroke-width="1"/></svg>',
-    heatmap: '<svg viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="1" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><rect x="8" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="3.5" cy="3.5" r="1.2" fill="currentColor" opacity=".6"/><circle cx="10.5" cy="3.5" r=".8" fill="currentColor" opacity=".4"/><circle cx="3.5" cy="10.5" r="1.5" fill="currentColor" opacity=".8"/></svg>',
-    plot: '<svg viewBox="0 0 14 14"><rect x="2" y="8" width="2.5" height="4" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="5.5" y="4" width="2.5" height="8" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="6" width="2.5" height="6" rx=".5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    amap: '<svg viewBox="0 0 14 14"><path d="M7 1a5 5 0 00-5 5c0 3.5 5 7 5 7s5-3.5 5-7a5 5 0 00-5-5zm0 7a2 2 0 110-4 2 2 0 010 4z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    export: '<svg viewBox="0 0 14 14"><path d="M7 1v8M4 6l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 10v2h10v-2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
-    chart: '<svg viewBox="0 0 14 14"><polyline points="1,11 3,7 5.5,9 8,4 11,6 13,2" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="1" y1="11" x2="13" y2="11" stroke="currentColor" stroke-width="1.2"/></svg>',
-    network: '<svg viewBox="0 0 14 14"><circle cx="7" cy="3" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="3" cy="11" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="11" cy="11" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="5.5" y1="4.5" x2="4.5" y2="9.5" stroke="currentColor" stroke-width="1.2"/><line x1="8.5" y1="4.5" x2="9.5" y2="9.5" stroke="currentColor" stroke-width="1.2"/></svg>',
-    help: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.2 5.2a1.8 1.8 0 013.6 0c0 1.2-1.8 1.8-1.8 1.8v1" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="11" r=".6" fill="currentColor"/></svg>',
-    clip: '<svg viewBox="0 0 14 14"><polygon points="2,2 12,2 12,12 2,12" fill="none" stroke="currentColor" stroke-width="1.2"/><polygon points="4,4 10,4 10,10 4,10" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    dissolve: '<svg viewBox="0 0 14 14"><circle cx="4" cy="4" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="10" cy="4" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="10" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M5.5 5.5l1.5 3.5M8.5 5.5l-1.5 3.5" stroke="currentColor" stroke-width="1"/></svg>',
-    join: '<svg viewBox="0 0 14 14"><rect x="1" y="1" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="8" y="8" width="5" height="5" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="6" y1="3" x2="8" y2="10" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2"/></svg>',
-    merge: '<svg viewBox="0 0 14 14"><path d="M3 7h8M7 3v8" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    split: '<svg viewBox="0 0 14 14"><line x1="7" y1="1" x2="7" y2="13" stroke="currentColor" stroke-width="1.3"/><path d="M3 4l4-3 4 3M3 10l4 3 4-3" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    geocode: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7" r="1.5" fill="currentColor"/></svg>',
-    select: '<svg viewBox="0 0 14 14"><rect x="2" y="2" width="10" height="10" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="7" cy="7" r="2" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    sample: '<svg viewBox="0 0 14 14"><circle cx="3" cy="3" r="1" fill="currentColor"/><circle cx="11" cy="4" r="1" fill="currentColor"/><circle cx="6" cy="10" r="1" fill="currentColor"/><circle cx="10" cy="9" r="1" fill="currentColor"/></svg>',
-    near: '<svg viewBox="0 0 14 14"><circle cx="7" cy="7" r="1.5" fill="currentColor"/><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    cluster: '<svg viewBox="0 0 14 14"><circle cx="4" cy="4" r="2.5" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="10" cy="10" r="3" fill="none" stroke="currentColor" stroke-width="1.2"/><circle cx="4" cy="10" r="1.5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    voronoi: '<svg viewBox="0 0 14 14"><polygon points="1,1 13,1 7,13" fill="none" stroke="currentColor" stroke-width="1.2"/><polygon points="1,1 7,9 1,13" fill="none" stroke="currentColor" stroke-width="1.2"/><polygon points="13,1 7,9 13,5" fill="none" stroke="currentColor" stroke-width="1.2"/><polygon points="7,9 1,13 7,13 13,5" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>',
-    stats: '<svg viewBox="0 0 14 14"><polyline points="2,12 4,7 6,9 8,4 12,2" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="2" y1="12" x2="12" y2="12" stroke="currentColor" stroke-width="1.2"/></svg>',
+    geosource: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-c85a4814bdb4.png')\"></span>",
+    buffer: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-8f5a4112e257.png')\"></span>",
+    intersection: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-41795f2d789c.png')\"></span>",
+    union: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-6b5b6eae0c0a.png')\"></span>",
+    difference: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-9478f11a1237.png')\"></span>",
+    centroid: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-284e841b1c7c.png')\"></span>",
+    simplify: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-c18efbbf2ab6.png')\"></span>",
+    area: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-a4e0e193fc8e.png')\"></span>",
+    length: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-2b5ecc26521d.png')\"></span>",
+    make_valid: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-13f024058ec9.png')\"></span>",
+    aoi: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-09e5528af4cd.png')\"></span>",
+    boundary: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-00fe3e193028.png')\"></span>",
+    heatmap: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-95364f06eede.png')\"></span>",
+    plot: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-051bf27e596b.png')\"></span>",
+    amap: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-dc13a9e486f1.png')\"></span>",
+    export: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-f1cd017de809.png')\"></span>",
+    chart: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-0742652879d1.png')\"></span>",
+    network: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-72a2f58db0ce.png')\"></span>",
+    help: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-ef31a201422b.png')\"></span>",
+    clip: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-00ece071fd14.png')\"></span>",
+    dissolve: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-ed491c2db219.png')\"></span>",
+    join: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-b8514e62df84.png')\"></span>",
+    merge: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-6390b2c5ce5d.png')\"></span>",
+    split: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-45665d1fa471.png')\"></span>",
+    geocode: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-58451fcc0ae2.png')\"></span>",
+    select: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-a519c972ec87.png')\"></span>",
+    sample: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-5544ac241c3e.png')\"></span>",
+    near: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-806a1de13166.png')\"></span>",
+    cluster: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-34a533003eaf.png')\"></span>",
+    voronoi: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-bfd3a4ec37dc.png')\"></span>",
+    stats: "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-2a93cc365cca.png')\"></span>",
   };
 
   const SLASH_COMMANDS = [
@@ -142,6 +146,9 @@ if (typeof marked !== 'undefined') {
    */
   function init() {
     messagesContainer = document.getElementById('chatMessages');
+    if (messagesContainer) messagesContainer.addEventListener('scroll', function() {
+      followOutput = messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 72;
+    }, { passive: true });
     inputEl = document.getElementById('chatInput');
     sendBtn = document.getElementById('sendBtn');
 
@@ -422,6 +429,7 @@ if (typeof marked !== 'undefined') {
 
   /** 设置待发送的图层附件（在输入框上方显示） */
   function setPendingLayer(info) {
+    if (GIS.workspace) GIS.workspace.toggleAI(true);
     _pendingLayer = info;
     const bar = document.getElementById('layerAttachBar');
     const nameEl = document.getElementById('attachLayerName');
@@ -545,6 +553,8 @@ if (typeof marked !== 'undefined') {
       text = inputEl ? inputEl.value.trim() : '';
     }
     if (!text) return;
+    if (GIS.workspace) GIS.workspace.toggleAI(true);
+    followOutput = true;
 
     // 如果有正在跑的 AI 请求，先取消
     if (window._aiRunning) {
@@ -807,9 +817,9 @@ if (typeof marked !== 'undefined') {
                 var toolLabel = evt.name + (evt.input ? '(' + evt.input.slice(0, 60) + ')' : '');
                 var stepEl = document.createElement('div');
                 stepEl.className = 'step-item step-running';
-                stepEl.innerHTML = '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" style="vertical-align:-2px;margin-right:4px;"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/><line x1="12" y1="22" x2="12" y2="15.5"/><polyline points="22 8.5 12 15.5 2 8.5"/></svg><strong>' + GIS.utils.escapeHtml(toolLabel) + '</strong>';
+                stepEl.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"vertical-align:-2px;margin-right:4px;;width:11px;height:11px;--ui-icon-image:url('/assets/ui-icons/icon-a53011a6a003.png')\"></span><strong>" + GIS.utils.escapeHtml(toolLabel) + '</strong>';
                 stepLog.appendChild(stepEl);
-                if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                scrollMessages();
                 lastStepEl = stepEl;
               } else if (evt.type === 'tool_end') {
                 if (lastStepEl) {
@@ -828,7 +838,7 @@ if (typeof marked !== 'undefined') {
                 verifyEl.innerHTML = '<span style="color:#ff9800;">⟳</span> <strong>校验结果...</strong>';
                 stepLog.appendChild(verifyEl);
                 lastStepEl = verifyEl;
-                if (messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                scrollMessages();
               } else if (evt.type === 'done') {
                 _receivedDone = true;
                 result = evt;
@@ -1064,9 +1074,7 @@ if (typeof marked !== 'undefined') {
             const dlImgBtn = document.createElement('button');
             dlImgBtn.title = '下载图片';
             dlImgBtn.innerHTML =
-              '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-                '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>' +
-              '</svg>';
+              "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9a58c1268267.png')\"></span>";
             dlImgBtn.style.cssText = 'position:absolute;top:4px;right:4px;width:28px;height:28px;background:rgba(255,255,255,0.9);border:1px solid var(--ui-gray-200);border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--ui-gray-900);opacity:0;transition:opacity 0.15s;cursor:pointer;padding:0;';
             dlImgBtn.addEventListener('click', function(e) { e.stopPropagation(); downloadFile(fullUrl, fileName); });
             wrapper.addEventListener('mouseenter', function() { dlImgBtn.style.opacity = '1'; });
@@ -1128,8 +1136,15 @@ if (typeof marked !== 'undefined') {
               break;
             case 'rename':
               if (target && window.GIS.layers) {
+                var oldN = target.filename || target._rawName;
                 target.filename = op.new_name;
                 target._rawName = op.new_name;
+                if (window.GIS.state && window.GIS.state.renameLayer) {
+                  window.GIS.state.renameLayer(target.layer_id, op.new_name);
+                }
+                if (window.GIS.map && window.GIS.map.renameLayer) {
+                  window.GIS.map.renameLayer(oldN, op.new_name);
+                }
                 window.GIS.layers.renderList();
               }
               break;
@@ -1563,7 +1578,7 @@ if (typeof marked !== 'undefined') {
       }
       row.appendChild(bubble);
       messagesContainer.appendChild(row);
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      scrollMessages();
       return row;
     }
 
@@ -1575,8 +1590,8 @@ if (typeof marked !== 'undefined') {
     const avatar = document.createElement('div');
     avatar.className = 'message-avatar' + (type === 'user' ? ' message-avatar-user' : ' message-avatar-ai');
     avatar.innerHTML = type === 'user'
-      ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
-      : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0 4 4 4 4 0 0 0 4-4V6a4 4 0 0 0-4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><circle cx="12" cy="6" r="1"/></svg>';
+      ? "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-5df592d75d04.png')\"></span>"
+      : "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-04301442a3cd.png')\"></span>";
     row.appendChild(avatar);
 
     const bubble = document.createElement('div');
@@ -1612,8 +1627,7 @@ if (typeof marked !== 'undefined') {
       var attachRow = document.createElement('div');
       attachRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;padding:6px 10px;border:1px solid var(--ui-gray-200);border-radius:2px;background:var(--ui-gray-50,#f8f9fa);';
       attachRow.innerHTML =
-        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" style="flex-shrink:0;"><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16v-2"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>' +
-        '<span style="font-size:12px;font-weight:600;color:var(--ui-gray-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;">' + (layerInfo.name || '图层') + '</span>' +
+        "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-4575ae6edd83.png')\"></span><span style=\"font-size:12px;font-weight:600;color:var(--ui-gray-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;\">" + (layerInfo.name || '图层') + '</span>' +
         '<span style="font-size:11px;color:var(--ui-gray-300);margin-left:auto;">' + (layerInfo.type || '') + (layerInfo.count !== undefined ? ' · ' + layerInfo.count + ' 要素' : '') + '</span>';
       bubble.appendChild(attachRow);
     }
@@ -1645,7 +1659,7 @@ if (typeof marked !== 'undefined') {
       const quoteBtn = document.createElement('button');
       quoteBtn.className = 'btn-quote-ai';
       quoteBtn.title = '引用此回复';
-      quoteBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/></svg>';
+      quoteBtn.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-b335f3f42caa.png')\"></span>";
       quoteBtn.addEventListener('click', function() {
         const plainText = content.textContent || content.innerText || text;
         _quotedMessage = { text: plainText.slice(0, 3000), time: Date.now() };
@@ -1658,16 +1672,16 @@ if (typeof marked !== 'undefined') {
       const copyBtn = document.createElement('button');
       copyBtn.className = 'btn-copy-ai';
       copyBtn.title = '复制回复';
-      copyBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      copyBtn.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-7f7694309e7d.png')\"></span>";
       copyBtn.addEventListener('click', function() {
         // 取纯文本（跳过 markdown HTML 标签）
         const plainText = content.textContent || content.innerText || text;
         navigator.clipboard.writeText(plainText).then(function() {
           copyBtn.classList.add('copied');
-          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+          copyBtn.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-eba4e2d5125d.png')\"></span>";
           setTimeout(function() {
             copyBtn.classList.remove('copied');
-            copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+            copyBtn.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-7f7694309e7d.png')\"></span>";
           }, 2000);
         }).catch(function() {
           // fallback: 用 textarea 复制
@@ -1687,7 +1701,7 @@ if (typeof marked !== 'undefined') {
     messagesContainer.appendChild(row);
 
     requestAnimationFrame(function() { row.style.opacity = '1'; });
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    scrollMessages();
     return row;
   }
 

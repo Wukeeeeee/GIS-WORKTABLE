@@ -149,6 +149,26 @@ class TestSpatialBuffer:
 
 
 class TestSpatialIntersect:
+    def test_overlapping_input_records_use_unique_coverage(self):
+        """覆盖范围叠置自身：保留四条属性组合，覆盖占比仍为 100%。"""
+        from pyproj import Transformer
+        rectangles = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": i}, "geometry": {
+                "type": "Polygon", "coordinates": [[[x, 0], [x + 2, 0],
+                    [x + 2, 2], [x, 2], [x, 0]]]}}
+            for i, x in enumerate([0, 1])
+        ]}
+        _setup("overlapping_A", rectangles)
+        _setup("overlapping_B", rectangles)
+        result = spatial_intersect.invoke({"layer_a": "overlapping_A", "layer_b": "overlapping_B"})
+        assert len(_pending_layers[-1]["geojson"]["features"]) == 4
+        assert result.count("100.00%") == 2, result
+        projection = Transformer.from_crs("EPSG:4326", "EPSG:6933", always_xy=True)
+        left, bottom = projection.transform(0, 0)
+        right, top = projection.transform(3, 2)
+        expected = (right - left) * (top - bottom) / 1e6
+        assert f"{expected:.4f} 平方千米" in result
+
     def test_overlapping(self):
         _setup("A", _SQUARE_A)
         _setup("B", _SQUARE_B)
@@ -1056,6 +1076,34 @@ class TestMatplotlibPNG:
         fpath = os.path.join(T._temp_output_dir, fname)
         assert os.path.exists(fpath), f"PNG file not found: {fpath}"
         assert os.path.getsize(fpath) > 0
+
+
+def test_utm_crs_boundary():
+    """验证经度在 180°/-180° 极值边界时的 UTM 投影计算不会越界超 60 带"""
+    crs_180_pos = T._get_utm_crs(180.0, 39.9)
+    assert crs_180_pos == "EPSG:32660"
+    crs_180_neg = T._get_utm_crs(-180.0, -39.9)
+    assert crs_180_neg == "EPSG:32701"
+
+
+def test_layer_control_rename_sync():
+    """验证 layer_control rename 能正确同步更新后端注册图层名"""
+    reset_state()
+    fc = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [116.4, 39.9]},
+            "properties": {"name": "北京点"}
+        }]
+    }
+    _register_layer("原测试图层", fc)
+    assert "原测试图层" in _registered_layers
+
+    res = T.layer_control.invoke({"action": "rename", "name": "原测试图层", "new_name": "新测试图层"})
+    assert "已重命名图层" in res
+    assert "新测试图层" in _registered_layers
+    assert "原测试图层" not in _registered_layers
 
 
 

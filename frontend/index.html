@@ -4,13 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GIS AI WorkTable</title>
-  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+  <link rel="icon" type="image/png" href="assets/favicon.png" />
 
   <!-- ===== Leaflet CSS (国内 CDN — bootcdn) ===== -->
   <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 
   <!-- ===== 自定义样式 ===== -->
   <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/workspace.css" />
 
   <!-- ===== 内联关键样式（防止 FOUC） ===== -->
   <style>
@@ -32,37 +33,17 @@
       <!-- ======== 左侧聊天面板 ======== -->
       <aside class="chat-panel">
         <div class="chat-header">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" style="height:48px;width:auto;color:var(--ui-gray-900);">
-            <g transform="translate(10, 10)">
-              <rect x="0" y="0" width="40" height="40" fill="none" stroke="var(--ui-gray-900)" stroke-width="2.5" rx="4"/>
-              <line x1="20" y1="5" x2="20" y2="35" stroke="var(--ui-gray-900)" stroke-width="1.5" stroke-dasharray="2 2"/>
-              <line x1="5" y1="20" x2="35" y2="20" stroke="var(--ui-gray-900)" stroke-width="1.5" stroke-dasharray="2 2"/>
-              <circle cx="20" cy="20" r="4" fill="var(--ui-gray-900)"/>
-            </g>
-            <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="var(--ui-gray-900)">GIS</text>
-            <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="var(--ui-gray-400)">WORKTABLE</text>
-          </svg>
+          <img class="ui-icon ui-logo" src="/assets/ui-icons/logo-a620969d3899.png" alt="GIS WORKTABLE" style="height:48px;width:auto;color:var(--ui-gray-900);">
           <!-- header 右侧按钮组 -->
           <div style="margin-left:auto;display:flex;align-items:center;gap:4px;">
             <button id="historyBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="历史会话">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"/>
-                <polyline points="12 6 12 12 16 14"/>
-                <polyline points="3 4 5 2 7 4"/>
-                <path d="M5 2v3h3"/>
-              </svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-b671bf6acfa7.png')"></span>
             </button>
             <button id="settingsBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="设置">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="3"/>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-              </svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-07bee9074e9f.png')"></span>
             </button>
             <button id="clearMemoryBtn" style="background:none;border:1px solid var(--ui-gray-200);border-radius:4px;padding:4px 6px;cursor:pointer;line-height:1;display:flex;align-items:center;" title="新建会话">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--ui-gray-400)" stroke-width="2" stroke-linecap="round">
-              <line x1="12" y1="5" x2="12" y2="19"/>
-              <line x1="5" y1="12" x2="19" y2="12"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-03a8fc7ef349.png')"></span>
           </button>
         </div>
       </div>
@@ -78,25 +59,17 @@
       <div class="chat-history" id="chatHistory" style="display:none;">
         <div class="chat-history-header">
           <button class="chat-history-back" id="historyCloseBtn">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <line x1="19" y1="12" x2="5" y2="12"/>
-              <polyline points="12 19 5 12 12 5"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-3fb662fc7ca9.png')"></span>
             返回
           </button>
           <span class="chat-history-title">历史会话</span>
           <button class="chat-history-clearall" id="historyClearAllBtn" title="全部删除">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="3 6 5 6 21 6"/>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              <line x1="10" y1="11" x2="10" y2="17"/>
-              <line x1="14" y1="11" x2="14" y2="17"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-cac4fc89d2be.png')"></span>
           </button>
         </div>
         <div class="chat-history-list custom-scrollbar" id="projectHistoryList">
           <div class="toolhist-empty">
-            <svg width="48" height="48" opacity="0.3"><use href="assets/icons.svg#icon-history"/></svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:48px;height:48px;opacity:0.3;--ui-icon-image:url('/assets/ui-icons/icon-10c1d9af6139.png')"></span>
             <div class="toolhist-empty-text">暂无历史会话</div>
             <div class="toolhist-empty-hint">开始新对话后自动保存</div>
           </div>
@@ -108,7 +81,7 @@
           <!-- 斜杠命令弹出菜单 -->
           <div class="slash-menu" id="slashMenu" style="display:none;">
             <div class="slash-menu-header">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9fb7c5fd4d0a.png')"></span>
               <span>命令面板</span>
               <span class="slash-menu-hint">↑↓ 选择 · Enter 确认 · Esc 取消</span>
             </div>
@@ -119,11 +92,7 @@
           <!-- 图层附件预览条（分析按钮点击后显示） -->
           <div class="layer-attach-bar" id="layerAttachBar" style="display:none;">
             <div class="layer-attach-icon" id="attachLayerIcon">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16v-2"/>
-                <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
-                <line x1="12" y1="22.08" x2="12" y2="12"/>
-              </svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:20px;height:20px;--ui-icon-image:url('/assets/ui-icons/icon-01e07b5acc53.png')"></span>
             </div>
             <div class="layer-attach-body">
               <div class="layer-attach-name" id="attachLayerName"></div>
@@ -134,20 +103,20 @@
               <span class="attach-badge-count" id="attachBadgeCount"></span>
             </div>
             <button class="layer-attach-close" id="attachLayerClose" title="移除附件">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-73fd2751026c.png')"></span>
             </button>
           </div>
           <!-- 引用预览条：点击 AI 回复旁引用按钮后显示，带被引用内容摘要 -->
           <div class="quote-attach-bar" id="quoteAttachBar" style="display:none;">
             <div class="quote-attach-icon">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V20c0 1 0 1 1 1z"/><path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 1 0 1 1 1z"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-727cc1364301.png')"></span>
             </div>
             <div class="quote-attach-body">
               <div class="quote-attach-label">引用回复</div>
               <div class="quote-attach-text" id="quoteAttachText"></div>
             </div>
             <button class="quote-attach-close" id="quoteAttachClose" title="取消引用">
-              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-73fd2751026c.png')"></span>
             </button>
           </div>
           <div class="chat-input-wrapper">
@@ -163,13 +132,9 @@
           <div class="chat-input-model-bar">
             <div class="model-bar-left">
               <div class="model-select-wrapper" id="modelSelectTrigger">
-                <svg class="model-status-dot" id="modelStatusDot" viewBox="0 0 8 8" width="8" height="8">
-                  <circle cx="4" cy="4" r="4" fill="#d32f2f"/>
-                </svg>
+                <span class="ui-icon model-status-dot" aria-hidden="true" id="modelStatusDot" style=";width:8px;height:8px;--ui-icon-image:url('/assets/ui-icons/icon-4d6a0a6417c0.png')"></span>
                 <span id="modelSelectValue">GLM-4.7-Flash+</span>
-                <svg class="model-select-arrow" viewBox="0 0 10 6" width="10" height="6">
-                  <path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
+                <span class="ui-icon model-select-arrow" aria-hidden="true" style=";width:10px;height:6px;--ui-icon-image:url('/assets/ui-icons/icon-fac439e3e52a.png')"></span>
                 <!-- 隐藏的原生 select（保持 JS 兼容） -->
                 <select id="modelSelector" title="选择AI模型" style="display:none;">
                   <option value="deepseek-routed">DeepSeek V4 Flash+</option>
@@ -184,10 +149,7 @@
                   <span class="model-picker-name">DeepSeek V4 Flash+</span>
                   <span class="model-picker-desc">GLM 路由 + DeepSeek 执行 · 按需加载技能，节省 token</span>
                 </div>
-                <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
-                  <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M5 8l2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
+                <span class="ui-icon model-picker-check" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-12b588a53e04.png')"></span>
               </div>
               <div class="model-picker-divider"></div>
               <div class="model-picker-option" data-value="glm-routed">
@@ -196,10 +158,7 @@
                   <span class="model-picker-desc">本地路由 + 技能文档</span>
                 </div>
                 <span class="model-picker-free">免费</span>
-                <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
-                  <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M5 8l2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
+                <span class="ui-icon model-picker-check" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-12b588a53e04.png')"></span>
               </div>
               <div class="model-picker-divider"></div>
               <div class="model-picker-option" data-value="agnes">
@@ -208,36 +167,26 @@
                   <span class="model-picker-desc">GLM 路由 + AGNES</span>
                 </div>
                 <span class="model-picker-free">免费</span>
-                <svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">
-                  <circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M5 8l2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
+                <span class="ui-icon model-picker-check" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-12b588a53e04.png')"></span>
               </div>
 
             </div>  <!-- close model-picker -->
             </div>  <!-- close model-bar-left -->
             <div class="model-bar-right">
               <button class="icon-btn" id="geosourceTrigger" title="全球空间数据超市 (GeoSource) · 11,000+ 在线图层">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#888" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10"/>
-                  <line x1="2" y1="12" x2="22" y2="12"/>
-                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-                </svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-4205168da1f5.png')"></span>
               </button>
               <button class="icon-btn" id="connectorBtn" title="连接器（数据源）">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#888" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                </svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-491a80299561.png')"></span>
               </button>
               <button class="icon-btn" id="uploadTrigger" title="上传文件">
-                <svg class="svg-icon" style="color:var(--ui-gray-400)"><use href="assets/icons.svg#icon-attach"/></svg>
+                <span class="ui-icon ui-icon" aria-hidden="true" style="color:var(--ui-gray-400);--ui-icon-image:url('/assets/ui-icons/icon-b2a7871663cc.png')"></span>
               </button>
               <button class="icon-btn" id="stopBtn" title="停止" style="display:none;color:#e53935;">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:20px;height:20px;--ui-icon-image:url('/assets/ui-icons/icon-a290deadae03.png')"></span>
               </button>
               <button class="icon-btn" id="sendBtn" title="发送">
-                <svg class="svg-icon" style="color:var(--ui-gray-900)"><use href="assets/icons.svg#icon-send"/></svg>
+                <span class="ui-icon ui-icon" aria-hidden="true" style="color:var(--ui-gray-900);--ui-icon-image:url('/assets/ui-icons/icon-f91a12a9cc81.png')"></span>
               </button>
             </div>
           </div>
@@ -250,17 +199,13 @@
               <span class="connector-panel-title">连接器（数据源）</span>
               <span class="connector-panel-count" id="connectorCount">0 / 11 已配置</span>
               <button class="connector-close" id="connectorClose" title="关闭">
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-73fd2751026c.png')"></span>
               </button>
             </div>
             <div class="connector-list" id="connectorList"></div>
             <div class="connector-online" id="connectorGeoSource" style="border-bottom:1px solid var(--ui-border);padding-bottom:10px;margin-bottom:10px;">
               <div class="connector-online-title" style="color:var(--ui-accent, #3b82f6);font-weight:600;">
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <line x1="2" y1="12" x2="22" y2="12"></line>
-                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-                </svg>
+                <span class="ui-icon" aria-hidden="true" style="vertical-align:middle;margin-right:4px;;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-797270c0fa88.png')"></span>
                 GeoSource 全球空间数据源 (内嵌)
               </div>
               <div style="font-size:11px;color:var(--ui-gray-500);margin-bottom:6px;">
@@ -270,10 +215,7 @@
             </div>
             <div class="connector-online" id="connectorOnline">
               <div class="connector-online-title">
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
-                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                </svg>
+                <span class="ui-icon" aria-hidden="true" style="vertical-align:middle;margin-right:4px;;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-9155ffdbf56d.png')"></span>
                 添加在线数据（云原生格式）
               </div>
               <div class="connector-online-row">
@@ -308,192 +250,192 @@
           <div class="map-menu-bar" id="mapMenuBar">
             <!-- 文件 -->
             <div class="map-menu-trigger" data-menu="file">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-f085d129a8aa.png')"></span>
               <span>文件</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item" data-action="geosource">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-5f556805c8b8.png')"></span>
                   <span>全球数据超市 (GeoSource)</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="import">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-e5befca1a25f.png')"></span>
                   <span>导入图层</span>
                 </button>
                 <button class="map-menu-item" data-action="export">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-0f769c14acd8.png')"></span>
                   <span>导出</span>
                 </button>
                 <button class="map-menu-item" data-action="save-project">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-23a6a20e01e5.png')"></span>
                   <span>保存工程</span>
                 </button>
                 <button class="map-menu-item" data-action="load-project">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><polyline points="12 11 12 17"/><polyline points="9 14 12 17 15 14"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-2ffcf9faa1eb.png')"></span>
                   <span>加载工程</span>
                 </button>
               </div>
             </div>
             <!-- 绘制 -->
             <div class="map-menu-trigger" data-menu="draw">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-7da01517cad1.png')"></span>
               <span>绘制</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item map-menu-item-shortcut" data-action="shortcut-draw">
-                  <svg class="shortcut-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                  <span class="ui-icon shortcut-check" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-957ccd64c833.png')"></span>
                   <span>添加至快捷栏</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-polygon">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-1bdeabfadfaa.png')"></span>
                   <span>多边形</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-rectangle">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-b6b0619c33d8.png')"></span>
                   <span>矩形</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-circle">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-98274ee67719.png')"></span>
                   <span>圆</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-polyline">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3e7ade8477b0.png')"></span>
                   <span>线</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-marker">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-735101c88687.png')"></span>
                   <span>标记</span>
                 </button>
               </div>
             </div>
             <!-- 视图 -->
             <div class="map-menu-trigger" data-menu="view">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-251357cedc55.png')"></span>
               <span>视图</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item" data-action="toggle-layer-panel">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-23cb3a9a30b8.png')"></span>
                   <span>图层面板</span>
                 </button>
                 <button class="map-menu-item map-menu-item-toggle" data-action="toggle-coords">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="11"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-76e31db3f60c.png')"></span>
                   <span>坐标信息</span>
-                  <svg class="toggle-check off" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                  <span class="ui-icon toggle-check off" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-957ccd64c833.png')"></span>
                 </button>
                 <button class="map-menu-item map-menu-item-toggle" data-action="toggle-basemap">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/><path d="M4.93 4.93l2.83 2.83"/><path d="M16.24 16.24l2.83 2.83"/><path d="M4.93 19.07l2.83-2.83"/><path d="M16.24 7.76l2.83-2.83"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-70b6cf7a3fec.png')"></span>
                   <span>卫星底图</span>
-                  <svg class="toggle-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                  <span class="ui-icon toggle-check" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-957ccd64c833.png')"></span>
                 </button>
                 <button class="map-menu-item" data-action="toggle-3d">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l10 6-10 6L2 8z"/><path d="M2 14l10 6 10-6"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-fa4f531638d9.png')"></span>
                   <span>3D 地球 / 2D 地图</span>
                 </button>
                 <button class="map-menu-item" data-action="cycle-satellite-source">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-6d019c93cb3e.png')"></span>
                   <span id="sat-source-label">Esri</span>
                 </button>
               </div>
             </div>
             <!-- 工具 -->
             <div class="map-menu-trigger" data-menu="tools">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-7ca9741d80f3.png')"></span>
               <span>工具</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item map-menu-item-shortcut" data-action="shortcut-tools">
-                  <svg class="shortcut-check" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                  <span class="ui-icon shortcut-check" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-957ccd64c833.png')"></span>
                   <span>添加至快捷栏</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-feature-info">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-658e8e14699f.png')"></span>
                   <span>选择要素</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-delete">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-7a438f2a2604.png')"></span>
                   <span>删除要素</span>
                 </button>
                 <button class="map-menu-item" data-action="toggle-attr-table">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-adba29e01c8a.png')"></span>
                   <span>属性表</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-network-analysis">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3e7ade8477b0.png')"></span>
                   <span>网络分析</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-spatial-analysis">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
                   <span>空间分析</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-spatial-stats">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-264735cdc8d3.png')"></span>
                   <span>空间统计</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-debug-panel">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-054c0c901442.png')"></span>
                   <span>调试面板</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-coord-convert">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="11"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-a7deedee28a9.png')"></span>
                   <span>坐标转换</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-topology">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="8.5" x2="22" y2="8.5"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-671da9ab114b.png')"></span>
                   <span>拓扑检查</span>
                 </button>
               </div>
             </div>
             <!-- 栅格 -->
             <div class="map-menu-trigger" data-menu="raster">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="2"/><line x1="2" y1="7" x2="22" y2="7"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="14" y1="2" x2="14" y2="22"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-0c2f14e36120.png')"></span>
               <span>栅格</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item" data-action="tool-slope">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="21" x2="21" y2="3"/><line x1="3" y1="21" x2="9" y2="21"/><line x1="3" y1="21" x2="3" y2="15"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-29d7f91050b7.png')"></span>
                   <span>坡度分析</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-aspect">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 2 12 12 16 16"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-47307ffc7e82.png')"></span>
                   <span>坡向分析</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-hillshade">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-51b3a09ff72d.png')"></span>
                   <span>山体阴影</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-contour">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 15c4-6 10-8 14 0s6 4 8-2"/><path d="M3 19c4-6 10-8 14 0s6 4 8-2"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-f05554199c0d.png')"></span>
                   <span>等高线</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-ndvi">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2L2 12h4v8h12v-8h4L12 2z"/><path d="M12 6v8"/><path d="M8 10l4 4 4-4"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-aa7850988324.png')"></span>
                   <span>NDVI 计算</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-rastercalc">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="9" y1="8" x2="9" y2="16"/><line x1="15" y1="8" x2="15" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-176ae2516405.png')"></span>
                   <span>栅格计算器</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-interpolate">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 20 9 12 13 16 21 4"/><circle cx="3" cy="20" r="1.5" fill="currentColor"/><circle cx="9" cy="12" r="1.5" fill="currentColor"/><circle cx="13" cy="16" r="1.5" fill="currentColor"/><circle cx="21" cy="4" r="1.5" fill="currentColor"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-d2a06ecf500b.png')"></span>
                   <span>空间插值</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-hydrology">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2C8 6 4 10 4 14a8 8 0 0 0 16 0c0-4-4-8-8-12z"/><path d="M8 14a4 4 0 0 0 8 0"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-0d786ed7ae54.png')"></span>
                   <span>水文分析</span>
                 </button>
               </div>
             </div>
             <!-- 帮助 -->
             <div class="map-menu-trigger" data-menu="help">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3ae040c4fdb6.png')"></span>
               <span>帮助</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item" data-action="manual">
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-01bac4c88eb4.png')"></span>
                   <span>操作手册</span>
                 </button>
               </div>
@@ -505,7 +447,7 @@
             <div class="manual-modal">
               <div class="manual-header">
                 <span class="manual-title">
-                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-01bac4c88eb4.png')"></span>
                   操作手册
                 </span>
                 <button class="manual-close" id="manualClose">&times;</button>
@@ -513,27 +455,27 @@
               <div class="manual-body">
                 <nav class="manual-nav" id="manualNav">
                   <button class="manual-nav-item active" data-section="map">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-735101c88687.png')"></span>
                     地图操作
                   </button>
                   <button class="manual-nav-item" data-section="draw">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-7da01517cad1.png')"></span>
                     绘制工具
                   </button>
                   <button class="manual-nav-item" data-section="layer">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5"/></svg>
+                    <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-1bdeabfadfaa.png')"></span>
                     图层管理
                   </button>
                   <button class="manual-nav-item" data-section="menu">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                    <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-8c352764b929.png')"></span>
                     顶部菜单
                   </button>
                   <button class="manual-nav-item" data-section="analyze">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3e7ade8477b0.png')"></span>
                     空间分析
                   </button>
                   <button class="manual-nav-item" data-section="ai">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                    <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-2383f0df0c86.png')"></span>
                     AI 对话
                   </button>
                 </nav>
@@ -561,7 +503,7 @@
                     <ul>
                       <li>点击右侧快捷栏的绘图按钮（多边形/矩形/圆/线/标记）进入绘制模式</li>
                       <li>在地图上依次点击生成图形，完成后自动添加到图层列表</li>
-                      <li>绘制按钮右下角 <strong><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:#43a047;vertical-align:middle;"><polyline points="4 8 7 11 12 5"/></svg> 绿色</strong> 表示当前选中</li>
+                      <li>绘制按钮右下角 <strong><span class="ui-icon" aria-hidden="true" style="color:#43a047;vertical-align:middle;;width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9b1464d8859b.png')"></span> 绿色</strong> 表示当前选中</li>
                       <li>按 <kbd>Esc</kbd> 取消绘制</li>
                       <li>也可通过顶部菜单 <strong>绘制</strong> 操作</li>
                     </ul>
@@ -585,7 +527,7 @@
                     <ul>
                       <li>点击快捷栏底部的 <strong>图层图标</strong> 打开/关闭图层面板</li>
                       <li>面板位于地图右上角，列出所有已加载的图层</li>
-                      <li>每行显示图层名称、类型、可见性开关（<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg> 点击切换）</li>
+                      <li>每行显示图层名称、类型、可见性开关（<span class="ui-icon" aria-hidden="true" style="vertical-align:middle;;width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-251357cedc55.png')"></span> 点击切换）</li>
                       <li>图层行悬停显示操作按钮：属性表、改色、缩放至、删除</li>
                     </ul>
                     <h3>上传文件</h3>
@@ -832,50 +774,43 @@
           <!-- === 右上角：绘制 + 缩放控件 === -->
           <div class="map-zoom-controls" id="mapZoomControls">
             <button class="map-zoom-btn map-draw-btn" data-tool="select" title="选择/移动">
-              <svg><use href="assets/icons.svg#icon-select"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-68eba88b11ab.png')"></span>
             </button>
             <div class="map-ctrl-divider" data-shortcut-group="draw"></div>
             <button class="map-zoom-btn map-draw-btn" data-tool="polygon" data-shortcut-group="draw" title="绘制多边形">
-              <svg><use href="assets/icons.svg#icon-draw-polygon"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-f8584aed34c3.png')"></span>
             </button>
             <button class="map-zoom-btn map-draw-btn" data-tool="rectangle" data-shortcut-group="draw" title="绘制矩形">
-              <svg><use href="assets/icons.svg#icon-draw-rect"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-55d459d50109.png')"></span>
             </button>
             <button class="map-zoom-btn map-draw-btn" data-tool="circle" data-shortcut-group="draw" title="绘制圆">
-              <svg><use href="assets/icons.svg#icon-draw-circle"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-fb09568cabd7.png')"></span>
             </button>
             <button class="map-zoom-btn map-draw-btn" data-tool="polyline" data-shortcut-group="draw" title="绘制线">
-              <svg><use href="assets/icons.svg#icon-draw-line"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-e71631e0e33e.png')"></span>
             </button>
             <button class="map-zoom-btn map-draw-btn" data-tool="marker" data-shortcut-group="draw" title="添加标记点">
-              <svg><use href="assets/icons.svg#icon-draw-marker"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-da4032db3d0e.png')"></span>
             </button>
             <div class="map-ctrl-divider" data-shortcut-group="tools"></div>
             <button class="map-zoom-btn map-draw-btn" data-tool="feature-info" data-shortcut-group="tools" title="选择要素（点击地图要素查看属性）">
-              <svg><use href="assets/icons.svg#icon-info"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-8db12d869a0f.png')"></span>
             </button>
             <button class="map-zoom-btn map-draw-btn" data-tool="delete" data-shortcut-group="tools" title="删除要素（点击即删）">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-7a438f2a2604.png')"></span>
             </button>
             <button class="map-zoom-btn map-draw-btn" data-tool="network-analysis" data-shortcut-group="tools" title="网络分析（路径/服务区/最近设施）">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-3e7ade8477b0.png')"></span>
             </button>
             <button class="map-zoom-btn map-draw-btn" data-tool="spatial-analysis" data-shortcut-group="tools" title="空间分析（缓冲区/叠置/裁剪）">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
             </button>
             <div class="map-ctrl-divider"></div>
             <button class="map-zoom-btn" id="toggleHistoryPanel" title="处理历史（工具执行记录与重跑）">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"/>
-                <polyline points="12 6 12 12 16 14"/>
-              </svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-2446122b4620.png')"></span>
             </button>
             <button class="map-zoom-btn map-toggle-layer" id="toggleLayerPanel" title="切换图层面板">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                <line x1="3" y1="9" x2="21" y2="9"/>
-                <line x1="9" y1="21" x2="9" y2="9"/>
-              </svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-d87541636149.png')"></span>
             </button>
           </div>
 
@@ -883,20 +818,16 @@
           <div class="map-layer-panel collapsed" id="mapLayerPanel">
             <div class="map-layer-header">
               <span class="map-layer-title">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;margin-right:4px;">
-                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                  <line x1="3" y1="9" x2="21" y2="9"/>
-                  <line x1="9" y1="21" x2="9" y2="9"/>
-                </svg>
-                图层列表
+                <span class="ui-icon" aria-hidden="true" style="vertical-align:middle;margin-right:4px;;width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-48ab35c5ac5b.png')"></span>
+                <span id="workspaceLayerCount">0 个图层</span>
               </span>
               <div class="map-layer-header-actions">
                 <button class="map-layer-btn" id="newGroupBtn" title="新建分组">
-                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-1bc78eefed8c.png')"></span>
                   分组
                 </button>
                 <button class="map-layer-btn primary" id="uploadTriggerBtn" title="上传文件">
-                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  <span class="ui-icon" aria-hidden="true" style=";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-e5befca1a25f.png')"></span>
                   上传
                 </button>
               </div>
@@ -904,9 +835,10 @@
             <div class="map-layer-body custom-scrollbar" id="layersTableWrapper">
               <!-- 空状态 -->
               <div class="map-layer-empty" id="layersEmpty">
-                <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                <span>暂无图层</span>
-                <span style="font-size:11px;opacity:0.5;">上传文件或让 AI 生成</span>
+                <span class="ui-icon" aria-hidden="true" style=";width:28px;height:28px;--ui-icon-image:url('/assets/ui-icons/icon-d53b6d013255.png')"></span>
+                <strong>地图还没有图层</strong>
+                <p>导入本地文件，或从全球数据中接入。<br>分析结果也会出现在这里。</p>
+                <button class="layer-empty-import" data-workspace-action="upload">导入数据</button>
               </div>
               <!-- 图层列表 -->
               <table class="map-layer-table" id="layersTable" style="display:none;">
@@ -922,18 +854,17 @@
                 <tbody id="layerTbody"></tbody>
               </table>
             </div>
+            <p class="workspace-layer-hint">拖动手柄调整叠放顺序 · 双击名称重命名</p>
           </div>
 
           <!-- === 浮动处理历史面板（右上角，与图层面板并排） === -->
           <div class="toolhist-panel" id="historyPanel">
-            <div class="toolhist-header">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;">
-                <circle cx="12" cy="12" r="10"/>
-                <polyline points="12 6 12 12 16 14"/>
-              </svg>
+            <div class="toolhist-header" id="toolHistHeader">
+              <span class="ui-icon" aria-hidden="true" style="vertical-align:middle;;width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-1ac76c22d680.png')"></span>
               <span>处理历史</span>
               <span class="toolhist-title-spacer"></span>
               <button class="toolhist-clear" id="toolHistClearBtn" title="清空历史记录">清空</button>
+              <button class="workspace-icon-btn" id="toolHistCloseBtn" type="button" title="关闭处理历史" aria-label="关闭处理历史"><span class="ui-icon" aria-hidden="true" style=";width:17px;height:17px;--ui-icon-image:url('/assets/ui-icons/icon-4518b8fcf719.png')"></span></button>
             </div>
             <div class="toolhist-body custom-scrollbar" id="historyBody">
               <div class="toolhist-empty">暂无记录：执行任意工具后在此查看</div>
@@ -956,27 +887,20 @@
   <!-- ========================================================= -->
   <!-- 地图右键菜单                                              -->
   <!-- ========================================================= -->
-  <svg style="display:none;" aria-hidden="true">
-    <defs>
-      <linearGradient id="ctx-ai-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#8B5CF6"/>
-        <stop offset="100%" stop-color="#3B82F6"/>
-      </linearGradient>
-    </defs>
-  </svg>
+  <span class="ui-icon" aria-hidden="true" style="display:none;;--ui-icon-image:url('/assets/ui-icons/icon-c7b5fb2ea8c3.png')"></span>
   <div id="mapContextMenu" class="map-context-menu" style="display:none;">
     <div class="context-menu-item" data-action="what-is-here">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--primary,#2563eb)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-2200e2433552.png')"></span>
       <span>这里是哪里？(秒级识别)</span>
       <span class="ctx-badge" style="background:#e0f2fe;color:#0284c7;font-size:10px;padding:1px 5px;border-radius:3px;font-weight:600;">极速</span>
     </div>
     <div class="context-menu-item" data-action="send-location-routed">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="url(#ctx-ai-grad)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M12 2v4"/><path d="M12 18v4"/><path d="M2 12h4"/><path d="M18 12h4"/></svg>
+      <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-050db8fc6bba.png')"></span>
       <span>问 AI 深度分析此地</span>
       <span class="ctx-badge ctx-badge-ai">AI</span>
     </div>
     <div class="context-menu-item" data-action="copy-coords">
-      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+      <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-53bb8fdc3902.png')"></span>
       <span>复制经纬度坐标</span>
     </div>
   </div>
@@ -989,7 +913,7 @@
       <div class="inspector-header">
         <span class="inspector-title" id="inspectorTitle">图层检查</span>
         <button class="inspector-close" id="inspectorClose" title="关闭">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
         </button>
       </div>
       <div class="inspector-body custom-scrollbar" id="inspectorBody">
@@ -1019,45 +943,31 @@
       <div class="modal-sidenav">
         <div class="modal-sidenav-items">
           <div class="modal-sidenav-item active" data-panel="appearance">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M4.93 19.07l1.41-1.41"/><path d="M17.66 6.34l1.41-1.41"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-08e774e9dc94.png')"></span>
             <span>界面设置</span>
           </div>
           <div class="modal-sidenav-item" data-panel="ai-api">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 2a4 4 0 0 0-4 4v1a4 4 0 0 0 4 4 4 4 0 0 0 4-4V6a4 4 0 0 0-4-4z"/><path d="M16 14H8a4 4 0 0 0-4 4v2h16v-2a4 4 0 0 0-4-4z"/><circle cx="12" cy="6" r="1"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-780dae398160.png')"></span>
             <span>AI 模型</span>
           </div>
           <div class="modal-sidenav-item" data-panel="geo-api">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-06165a411d3a.png')"></span>
             <span>地理服务</span>
           </div>
           <div class="modal-sidenav-item" data-panel="network">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-65b72db558ba.png')"></span>
             <span>网络代理</span>
           </div>
           <div class="modal-sidenav-item" data-panel="history">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-21db89b5c210.png')"></span>
             <span>历史记录</span>
           </div>
           <div class="modal-sidenav-item" data-panel="logs">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-561b7236da10.png')"></span>
             <span>日志导出</span>
           </div>
           <div class="modal-sidenav-item" data-panel="about">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-bf4752aa7208.png')"></span>
             <span>关于</span>
           </div>
         </div>
@@ -1066,7 +976,7 @@
       <!-- ===== 右侧内容面板 ===== -->
       <div class="modal-panels">
         <button class="modal-close-top" id="modalCloseBtn" title="关闭">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
         </button>
 
         <!-- === 面板1：界面设置 === -->
@@ -1085,11 +995,11 @@
             <label class="setting-label">主题</label>
             <div class="theme-options">
               <button class="theme-btn active" data-theme="light">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><path d="M12 1v2"/><path d="M12 21v2"/><path d="M4.22 4.22l1.42 1.42"/><path d="M18.36 18.36l1.42 1.42"/><path d="M1 12h2"/><path d="M21 12h2"/><path d="M4.22 19.78l1.42-1.42"/><path d="M18.36 5.64l1.42-1.42"/></svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-ed64c3b3f0de.png')"></span>
                 浅色
               </button>
               <button class="theme-btn" data-theme="dark">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-78ca46c22ea5.png')"></span>
                 深色
               </button>
             </div>
@@ -1115,10 +1025,7 @@
           <div class="model-config-card" style="border: 1px solid var(--outline-variant); background: var(--surface-container-low);">
             <div class="model-config-header">
               <span class="model-config-name" style="font-weight:600;display:inline-flex;align-items:center;gap:6px;">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line>
-                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-                </svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-945fce68e81e.png')"></span>
                 GeoSource 全球空间服务检索 (内嵌)
               </span>
               <span class="model-config-badge configured" id="geosourceServiceBadge">2,198 服务</span>
@@ -1149,9 +1056,7 @@
             <div class="modal-input-wrapper">
               <input type="password" class="modal-input" id="amapApiKeyInput" placeholder="高德 Web 服务 Key" />
               <button class="modal-toggle-vis" id="toggleAmapKeyVis" title="显示/隐藏密钥">
-                <svg id="amapEyeIcon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
-                </svg>
+                <span class="ui-icon" aria-hidden="true" id="amapEyeIcon" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-a829fac28fad.png')"></span>
               </button>
             </div>
             <div class="modal-test-result" id="amapTestResult"></div>
@@ -1177,7 +1082,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="copernicus" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1205,7 +1110,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="usgs" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1233,7 +1138,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="gscloud" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1259,7 +1164,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="nasa" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1281,7 +1186,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-key" data-cred="opentopo" placeholder="API Key" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1307,7 +1212,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="asf" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1329,7 +1234,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-key" data-cred="tianditu" placeholder="天地图 tk" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1355,7 +1260,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="resdc" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1381,7 +1286,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="geoss" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1407,7 +1312,7 @@
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="pie" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
-                    <svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <span class="ui-icon prov-eye" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')"></span>
                   </button>
                 </div>
               </div>
@@ -1480,15 +1385,15 @@
             <label class="setting-label">操作</label>
             <div class="logs-actions">
               <button class="btn-primary" id="logsExportBtn">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span class="ui-icon" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;;width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9a58c1268267.png')"></span>
                 导出日志 (Markdown)
               </button>
               <button class="btn-secondary" id="logsRefreshBtn">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                <span class="ui-icon" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;;width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-a36bc9400736.png')"></span>
                 刷新统计
               </button>
               <button class="btn-danger" id="logsClearBtn">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                <span class="ui-icon" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;;width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-7a438f2a2604.png')"></span>
                 清除当前会话日志
               </button>
             </div>
@@ -1511,21 +1416,12 @@
         <!-- === 面板6：关于 === -->
         <div class="modal-panel" id="panelAbout">
           <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:20px;">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" style="height:52px;width:auto;margin-bottom:16px;">
-              <g transform="translate(10, 10)">
-                <rect x="0" y="0" width="40" height="40" fill="none" stroke="var(--ui-gray-900)" stroke-width="2.5" rx="4"/>
-                <line x1="20" y1="5" x2="20" y2="35" stroke="var(--ui-gray-900)" stroke-width="1.5" stroke-dasharray="2 2"/>
-                <line x1="5" y1="20" x2="35" y2="20" stroke="var(--ui-gray-900)" stroke-width="1.5" stroke-dasharray="2 2"/>
-                <circle cx="20" cy="20" r="4" fill="var(--ui-gray-900)"/>
-              </g>
-              <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="var(--ui-gray-900)">GIS</text>
-              <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="var(--ui-gray-900)">WORKTABLE</text>
-            </svg>
+            <img class="ui-icon ui-logo" src="/assets/ui-icons/logo-f6643615cd42.png" alt="GIS WORKTABLE" style="height:52px;width:auto;margin-bottom:16px;">
             <p style="font-size:13px;color:var(--ui-gray-500);line-height:1.6;margin:0 0 12px;max-width:300px;">
               GIS WorkTable 是一个基于 Web 的 GIS 数据处理可视化工作台，可接入 DeepSeek、GLM、Agnes 等多种 AI Model，支持自然语言交互。
             </p>
             <a href="https://github.com/Wukeeeeee/GIS-WORKTABLE" target="_blank" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ui-gray-600);text-decoration:none;padding:6px 14px;border:1px solid var(--ui-gray-300);border-radius:6px;">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-0f311e24c618.png')"></span>
               GitHub
             </a>
           </div>
@@ -1568,6 +1464,7 @@
   <script src="js/raster_tools.js"></script>
   <script src="js/app.js"></script>
   <script src="js/time.js"></script>
+  <script src="js/workspace.js"></script>
 
   <!-- ===== GeoSource 全球空间数据源弹窗（统一 SVG UI 设计） ===== -->
   <div class="modal-overlay" id="geosourceModal" style="display:none;">
@@ -1575,22 +1472,18 @@
       <div class="geosource-modal-header">
         <div class="geosource-title-area">
           <span class="geosource-title">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"></circle>
-              <line x1="2" y1="12" x2="22" y2="12"></line>
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
-            </svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-d94b206f7029.png')"></span>
             GeoSource 全球空间数据源检索中心
           </span>
           <span class="geosource-badge" id="geosourceModalStatsBadge">2,198 服务 · 1,561 图层</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           <a href="geosource_map.html" target="_blank" class="geosource-badge" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;color:var(--on-surface,#1c1b1b);background:var(--surface-container-high,#ebe7e6);border:1px solid var(--outline-variant,#c4c7c7);font-weight:500;" title="在大屏世界地图中探索全球数据分布与下钻">
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            打开全球态势大屏 ↗
+            <span class="ui-icon" aria-hidden="true" style=";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-5f556805c8b8.png')"></span>
+            打开全球数据地图
           </a>
           <button class="modal-close-top" id="geosourceCloseBtn" title="关闭" style="position:static;">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
           </button>
         </div>
       </div>
@@ -1601,21 +1494,15 @@
           <div class="geosource-search-row">
             <div class="geosource-search-input-wrap">
               <span class="geosource-search-icon">
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <circle cx="11" cy="11" r="8"></circle>
-                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                </svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-2f93b29e7150.png')"></span>
               </span>
               <input type="text" id="geosourceKeyword" class="geosource-search-input" placeholder="输入搜索关键词（如：DEM、影像、气象、土地利用、道路、Sentinel、Landsat）..." />
               <button class="geosource-search-clear" id="geosourceSearchClear" title="清除输入">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
               </button>
             </div>
             <button class="geosource-search-btn" id="geosourceSearchBtn">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="11" cy="11" r="8"></circle>
-                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-              </svg>
+              <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-75a78f502b5f.png')"></span>
               检索
             </button>
           </div>

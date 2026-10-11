@@ -1,12 +1,18 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="gis-workspace">
 <head>
   <meta charset="utf-8">
   <title>GIS-WorkTable · GeoSource 全球空间数据源态势地图</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>
+    if (new URLSearchParams(window.location.search).get('embedded') === '1') {
+      document.documentElement.classList.add('geosource-embedded');
+    }
+  </script>
     <link rel="stylesheet" href="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.css" />
   <script src="https://cdn.bootcdn.net/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
   <link rel="stylesheet" href="css/style.css" />
+  <link rel="stylesheet" href="css/workspace.css" />
   <style>
     /* 强制覆盖与 WorkTable 完全一致的中性统一语言，无任何炫光与杂色渐变 */
     body {
@@ -131,7 +137,7 @@
     .map-floating-bar {
       position: absolute;
       top: 14px;
-      left: 436px;
+      left: 16px;
       z-index: 500;
       display: flex;
       align-items: center;
@@ -178,7 +184,7 @@
     .map-legend {
       position: absolute;
       bottom: 20px;
-      left: 436px;
+      left: 16px;
       z-index: 500;
       background: var(--surface-container-lowest, #ffffff);
       border: 1px solid var(--outline-variant, #c4c7c7);
@@ -361,6 +367,25 @@
       font-size: var(--fs-11, 11px) !important;
       line-height: 1.4 !important;
     }
+    .geosource-embedded .viewport .sidebar { width: 320px; min-width: 0; flex-shrink: 0; }
+    .geosource-card-url-row { display: flex; align-items: center; gap: 6px; }
+    .geosource-card-url-row .geosource-url-input { min-width: 0; flex: 1; width: 0; }
+    .geosource-card-url-row .geosource-copy-btn { flex-shrink: 0; white-space: nowrap; }
+    .search-input { min-width: 0; }
+    @media (max-width: 1100px) {
+      .header-stats .stat-chip { display: none; }
+      .brand-section .brand-subtag { display: none; }
+    }
+    @media (max-width: 700px) {
+      header.wtb-unified-header { padding: 0 10px; }
+      .brand-section .ui-logo { max-width: 130px; }
+      .viewport { flex-direction: column; }
+      .viewport #map { min-height: 35%; }
+      .map-floating-bar { flex-direction: column; align-items: flex-start; gap: 4px; }
+      .map-tool-btn { padding: 4px 8px; font-size: 10px; }
+      .map-legend { display: none; }
+      .viewport .sidebar, .geosource-embedded .viewport .sidebar { width: 100%; min-width: 0; height: 60%; border-right: 0; border-top: 1px solid var(--outline-variant); }
+    }
   </style>
 </head>
 <body>
@@ -368,16 +393,7 @@
 
       <header class="wtb-unified-header">
     <div class="brand-section">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 60" style="height:32px;width:auto;color:var(--ui-gray-900);">
-        <g transform="translate(10, 10)">
-          <rect x="0" y="0" width="40" height="40" fill="none" stroke="var(--ui-gray-900)" stroke-width="2.5" rx="4"/>
-          <line x1="20" y1="5" x2="20" y2="35" stroke="var(--ui-gray-900)" stroke-width="1.5" stroke-dasharray="2 2"/>
-          <line x1="5" y1="20" x2="35" y2="20" stroke="var(--ui-gray-900)" stroke-width="1.5" stroke-dasharray="2 2"/>
-          <circle cx="20" cy="20" r="4" fill="var(--ui-gray-900)"/>
-        </g>
-        <text x="60" y="32" font-family="Hanken Grotesk, sans-serif" font-weight="800" font-size="18" letter-spacing="0.1em" fill="var(--ui-gray-900)">GIS</text>
-        <text x="60" y="48" font-family="Hanken Grotesk, sans-serif" font-weight="300" font-size="14" letter-spacing="0.3em" fill="var(--ui-gray-400)">WORKTABLE</text>
-      </svg>
+      <img class="ui-icon ui-logo" src="/assets/ui-icons/logo-79de3f597d85.png" alt="GIS WORKTABLE" style="height:32px;width:auto;color:var(--ui-gray-900);">
       <span class="brand-subtag">全球空间数据源态势</span>
     </div>
 
@@ -396,9 +412,7 @@
       </div>
       <div style="margin-left:8px;">
         <a class="btn-return-wtb" href="index.html" title="返回主工作台">
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="15 18 9 12 15 6"></polyline>
-          </svg>
+          <span class="ui-icon" aria-hidden="true" style=";width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-ec4aced734fd.png')"></span>
           <span>返回工作台</span>
         </a>
       </div>
@@ -411,15 +425,15 @@
         <!-- 顶层面包屑下钻导航 -->
     <div class="map-floating-bar" id="breadcrumbBar">
       <button class="map-tool-btn active" id="btnWorldView">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+        <span class="ui-icon" aria-hidden="true" style=";width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-5f556805c8b8.png')"></span>
         <span>全球视图</span>
       </button>
       <button class="map-tool-btn map-tool-btn-primary" id="btnDrillUp" style="display:none;">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="19" x2="5" y2="5"/><polyline points="12 5 5 5 5 12"/></svg>
+        <span class="ui-icon" aria-hidden="true" style=";width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-468d692891bb.png')"></span>
         <span>返回世界地图</span>
       </button>
       <button class="map-tool-btn" id="globalPoolBtn">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+        <span class="ui-icon" aria-hidden="true" style=";width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-a8671dbf3ee1.png')"></span>
         <span>跨国与全球公共数据源池 (2,603)</span>
       </button>
     </div>
@@ -479,8 +493,10 @@
       zoom: 3,
       minZoom: 2,
       maxZoom: 12,
+      preferCanvas: true,
       zoomControl: false
     });
+    map.attributionControl.setPrefix('<a href="https://leafletjs.com" title="Leaflet">Leaflet</a>');
 
     L.control.zoom({ position: 'bottomright' }).addTo(map);
 
@@ -782,6 +798,7 @@
             <div class="geosource-card-url-row">
               <input type="text" readonly class="geosource-url-input" value="${escapeHtml(s.url)}" />
               <button class="geosource-copy-btn" onclick="copyUrl('${escapeJs(s.url)}', this)">复制</button>
+              ${window.parent !== window ? `<button class="geosource-copy-btn" data-source-url="${escapeHtml(s.url)}" data-source-name="${escapeHtml(s.name)}" data-source-proto="${escapeHtml(proto)}" onclick="selectService(this)">接入工作台</button>` : ''}
             </div>
           </div>
         `;
@@ -798,7 +815,13 @@
       return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     }
 
-        window.copyUrl = function(url, btn) {
+    window.selectService = function(btn) {
+      window.parent.postMessage({type: 'geosource-select', service: {
+        url: btn.dataset.sourceUrl, name: btn.dataset.sourceName, proto: btn.dataset.sourceProto
+      }}, window.location.origin);
+    };
+
+    window.copyUrl = function(url, btn) {
       navigator.clipboard.writeText(url).then(() => {
         showToast();
         if (btn) {
@@ -816,6 +839,18 @@
 
     searchInput.addEventListener('input', filterAndRender);
     protoFilter.addEventListener('change', filterAndRender);
+  </script>
+  <script>
+    document.querySelector('.btn-return-wtb').addEventListener('click', function(event) {
+      if (window.parent !== window) {
+        event.preventDefault();
+        window.parent.postMessage({type: 'geosource-close'}, window.location.origin);
+      } else if (window.opener && !window.opener.closed && window.opener.location.origin === window.location.origin) {
+        event.preventDefault();
+        window.opener.focus();
+        window.close();
+      }
+    });
   </script>
 </body>
 </html>

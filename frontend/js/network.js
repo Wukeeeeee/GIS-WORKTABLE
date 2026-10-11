@@ -34,86 +34,96 @@ window.GIS = window.GIS || {};
   }
 
   var PANEL_HTML =
-    '<div class="network-panel" id="networkPanel">' +
-
-      /* ===== 顶部工具栏 ===== */
-      '<div class="network-toolbar" id="networkToolbar">' +
-        '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="12" r="2"/><circle cx="10" cy="18" r="2"/><line x1="7.5" y1="7.5" x2="16.5" y2="11"/><line x1="11" y1="16.5" x2="17" y2="13"/></svg>' +
-        '<span class="network-toolbar-title">网络分析</span>' +
-        '<button class="network-toolbar-close" id="networkClose">' +
-          '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
-        '</button>' +
-      '</div>' +
-
-      /* ===== 顶部标签栏 ===== */
-      '<div class="network-tabs" id="networkTabs">' +
-        '<button class="network-tab active" data-type="route">' +
-          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="12" x2="2" y2="12"/><polyline points="5 9 2 12 5 15"/><polyline points="19 9 22 12 19 15"/></svg>' +
-          '<span>路线</span>' +
-        '</button>' +
-        '<button class="network-tab" data-type="service_area">' +
-          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="2"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="9"/></svg>' +
-          '<span>服务区</span>' +
-        '</button>' +
-        '<button class="network-tab" data-type="closest_facility">' +
-          '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>' +
-          '<span>最近设施</span>' +
-        '</button>' +
-      '</div>' +
-
-      /* ===== 主体 ===== */
-      '<div class="network-body">' +
-
-        /* ===== 内容区 ===== */
-        '<div class="network-content" id="networkContent">' +
-
-          '<div class="network-section-title">路网图层</div>' +
-          '<div class="network-field">' +
-            '<select id="networkLayerSelect"><option value="">-- 请选择路网图层 --</option></select>' +
-          '</div>' +
-
-          '<div class="network-section-title" style="margin-top:8px;">参数设置</div>' +
-          '<div id="networkInputs"></div>' +
-
-          '<div id="networkBreaksField" class="network-field" style="display:none">' +
-            '<label>断值（米）<span class="network-help" title="从设施点出发沿路网可到达的距离范围">ⓘ</span></label>' +
-            '<div class="network-breaks-row">' +
-              '<input type="number" class="network-break-input" value="1000" min="100" step="100">' +
-              '<input type="number" class="network-break-input" value="3000" min="100" step="100">' +
-              '<input type="number" class="network-break-input" value="5000" min="100" step="100">' +
-            '</div>' +
-          '</div>' +
-
-          '<div id="networkNField" class="network-field" style="display:none">' +
-            '<label>返回条数</label>' +
-            '<input type="number" class="network-n-input" value="3" min="1" max="20">' +
-          '</div>' +
-
-          '<button class="network-solve-btn" id="networkSolveBtn">' +
-            '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>' +
-            '<span>求解</span>' +
-          '</button>' +
-
-          '<div id="networkResult" class="network-result" style="display:none">' +
-            '<div class="network-result-title">分析结果</div>' +
-            '<div class="network-result-body" id="networkResultBody"></div>' +
-            '<button class="network-export-btn" id="networkExportBtn">' +
-              '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
-              '<span>导出为图层</span>' +
-            '</button>' +
-          '</div>' +
-
-          '<div class="network-loader" id="networkLoader">' +
-            '<div class="network-spinner"></div>' +
-            '<span>正在计算...</span>' +
-          '</div>' +
-
-        '</div>' + /* /networkContent */
-      '</div>' + /* /network-body */
-
-      /* ===== 底部状态栏 ===== */
-      '<div class="network-status" id="networkStatus"></div>' +
-    '</div>';
+    ("<div class=\"network-panel\" id=\"networkPanel\">"
+      + "<div class=\"network-toolbar\" id=\"networkToolbar\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-981005acafb9.png')\">"
+      + "</span>"
+      + "<span class=\"network-toolbar-title\">网络分析"
+      + "</span>"
+      + "<button class=\"network-toolbar-close\" id=\"networkClose\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-28a441e0afbc.png')\">"
+      + "</span>"
+      + "</button>"
+      + "</div>"
+      + "<div class=\"network-tabs\" id=\"networkTabs\">"
+      + "<button class=\"network-tab active\" data-type=\"route\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-b848e1a6413c.png')\">"
+      + "</span>"
+      + "<span>路线"
+      + "</span>"
+      + "</button>"
+      + "<button class=\"network-tab\" data-type=\"service_area\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-98c821907300.png')\">"
+      + "</span>"
+      + "<span>服务区"
+      + "</span>"
+      + "</button>"
+      + "<button class=\"network-tab\" data-type=\"closest_facility\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-b3ac4de8a781.png')\">"
+      + "</span>"
+      + "<span>最近设施"
+      + "</span>"
+      + "</button>"
+      + "</div>"
+      + "<div class=\"network-body\">"
+      + "<div class=\"network-content\" id=\"networkContent\">"
+      + "<div class=\"network-section-title\">路网图层"
+      + "</div>"
+      + "<div class=\"network-field\">"
+      + "<select id=\"networkLayerSelect\">"
+      + "<option value=\"\">-- 请选择路网图层 --"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"network-section-title\" style=\"margin-top:8px;\">参数设置"
+      + "</div>"
+      + "<div id=\"networkInputs\">"
+      + "</div>"
+      + "<div id=\"networkBreaksField\" class=\"network-field\" style=\"display:none\">"
+      + "<label>断值（米）"
+      + "<span class=\"network-help\" title=\"从设施点出发沿路网可到达的距离范围\">ⓘ"
+      + "</span>"
+      + "</label>"
+      + "<div class=\"network-breaks-row\">"
+      + "<input type=\"number\" class=\"network-break-input\" value=\"1000\" min=\"100\" step=\"100\">"
+      + "<input type=\"number\" class=\"network-break-input\" value=\"3000\" min=\"100\" step=\"100\">"
+      + "<input type=\"number\" class=\"network-break-input\" value=\"5000\" min=\"100\" step=\"100\">"
+      + "</div>"
+      + "</div>"
+      + "<div id=\"networkNField\" class=\"network-field\" style=\"display:none\">"
+      + "<label>返回条数"
+      + "</label>"
+      + "<input type=\"number\" class=\"network-n-input\" value=\"3\" min=\"1\" max=\"20\">"
+      + "</div>"
+      + "<button class=\"network-solve-btn\" id=\"networkSolveBtn\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-ed552e756087.png')\">"
+      + "</span>"
+      + "<span>求解"
+      + "</span>"
+      + "</button>"
+      + "<div id=\"networkResult\" class=\"network-result\" style=\"display:none\">"
+      + "<div class=\"network-result-title\">分析结果"
+      + "</div>"
+      + "<div class=\"network-result-body\" id=\"networkResultBody\">"
+      + "</div>"
+      + "<button class=\"network-export-btn\" id=\"networkExportBtn\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-0f769c14acd8.png')\">"
+      + "</span>"
+      + "<span>导出为图层"
+      + "</span>"
+      + "</button>"
+      + "</div>"
+      + "<div class=\"network-loader\" id=\"networkLoader\">"
+      + "<div class=\"network-spinner\">"
+      + "</div>"
+      + "<span>正在计算..."
+      + "</span>"
+      + "</div>"
+      + "</div>"
+      + "</div>"
+      + "<div class=\"network-status\" id=\"networkStatus\">"
+      + "</div>"
+      + "</div>");
 
 
   var _initialized = false;
@@ -143,6 +153,7 @@ window.GIS = window.GIS || {};
     _initDrag(container);
 
     document.getElementById('networkClose').addEventListener('click', deactivate);
+    if (GIS.workspace) GIS.workspace.preparePanel('networkPanel', 'networkToolbar', 'networkClose', '网络分析');
 
     document.getElementById('networkTabs').addEventListener('click', function(e) {
       var btn = e.target.closest('.network-tab');
@@ -162,6 +173,11 @@ window.GIS = window.GIS || {};
 
 
   function _centerPanel(container) {
+    if (GIS.workspace) {
+      var pos = GIS.workspace.centerPanel(container, PANEL_WIDTH);
+      _panelLeft = pos[0]; _panelTop = pos[1];
+      return;
+    }
     var vw = window.innerWidth;
     var vh = window.innerHeight;
     var chatPanel = document.querySelector('.chat-panel');
@@ -182,12 +198,13 @@ window.GIS = window.GIS || {};
     var startX, startY, startLeft, startTop;
 
     function onStart(e) {
-      if (e.target.closest('.network-toolbar-close')) return;
+      if (e.target.closest('button')) return;
       var ev = e.touches ? e.touches[0] : e;
       startX = ev.clientX;
       startY = ev.clientY;
-      startLeft = _panelLeft;
-      startTop = _panelTop;
+      var currentRect = container.getBoundingClientRect();
+      startLeft = currentRect.left;
+      startTop = currentRect.top;
       container.classList.add('dragging');
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onEnd);
@@ -201,6 +218,12 @@ window.GIS = window.GIS || {};
       var dy = ev.clientY - startY;
       var left = startLeft + dx;
       var top = startTop + dy;
+      if (GIS.workspace) {
+        var pos = GIS.workspace.clampPanel(container, left, top, PANEL_WIDTH);
+        container.style.left = pos[0]+'px'; container.style.top = pos[1]+'px';
+        _panelLeft = pos[0]; _panelTop = pos[1];
+        return;
+      }
       var vw = window.innerWidth;
       var vh = window.innerHeight;
       // 左边界：AI 聊天面板右边缘 + 4px 间距，确保不进入聊天区
@@ -250,7 +273,7 @@ window.GIS = window.GIS || {};
     var nField = document.getElementById('networkNField');
 
     // 设点按钮统一 SVG 图标
-    var _pinIcon = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>';
+    var _pinIcon = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-2200e2433552.png')\"></span>";
 
     if (type === 'route') {
       inputs.innerHTML =
@@ -265,7 +288,7 @@ window.GIS = window.GIS || {};
           '<label>途经点 <span class="network-help" title="点击「添加途经点」后在地图上点击添加，可添加多个">ⓘ</span></label>' +
           '<div class="network-point-row">' +
             '<button class="network-set-btn" id="networkAddWaypointBtn">' +
-              '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
+              "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-2f4a8a68fd9f.png')\"></span>" +
               '<span>添加途经点</span>' +
             '</button>' +
           '</div>' +
@@ -317,7 +340,7 @@ window.GIS = window.GIS || {};
           '<label>手动添加设施点 <span class="network-help" title="点击后在地图上点选添加设施点，可混用图层">ⓘ</span></label>' +
           '<div class="network-point-row">' +
             '<button class="network-set-btn" id="networkAddFacilityBtn">' +
-              '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>' +
+              "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-2f4a8a68fd9f.png')\"></span>" +
               '<span>添加设施点</span>' +
             '</button>' +
           '</div>' +
@@ -996,6 +1019,8 @@ window.GIS = window.GIS || {};
     init();
     var panel = document.getElementById('networkPanel');
     if (panel) panel.style.display = 'flex';
+    if (GIS.workspace) GIS.workspace.expandPanel('networkPanel');
+    _centerPanel(document.getElementById('networkPanelContainer'));
     _updateLayerList();
     _switchType('route');
     _setStatus('点击地图设置点，然后求解');

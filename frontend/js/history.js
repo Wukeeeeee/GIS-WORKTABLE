@@ -18,14 +18,23 @@
     _body = document.getElementById('historyBody');
     var toggleBtn = document.getElementById('toggleHistoryPanel');
     var clearBtn = document.getElementById('toolHistClearBtn');
+    var closeBtn = document.getElementById('toolHistCloseBtn');
     if (!toggleBtn) return;
 
     toggleBtn.addEventListener('click', function () {
       if (!_panel) return;
       var willOpen = !_panel.classList.contains('open');
       _panel.classList.toggle('open', willOpen);
+      if (GIS.workspace) {
+        GIS.workspace.preparePanel('historyPanel', 'toolHistHeader', 'toolHistCloseBtn', '处理历史');
+        if (willOpen) GIS.workspace.expandPanel('historyPanel');
+      }
       toggleBtn.classList.toggle('active', willOpen);
       if (willOpen) refresh();
+    });
+    if (closeBtn) closeBtn.addEventListener('click', function() {
+      _panel.classList.remove('open');
+      toggleBtn.classList.remove('active');
     });
 
     if (clearBtn) {

@@ -31,7 +31,7 @@ window.GIS = window.GIS || {};
     // AI 头像
     var avatar = document.createElement('div');
     avatar.className = 'message-avatar message-avatar-ai';
-    avatar.innerHTML = '<svg class="svg-icon-sm"><use href="assets/icons.svg#icon-ai"/></svg>';
+    avatar.innerHTML = "<span class=\"ui-icon ui-icon-sm\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-a2d4741348c3.png')\"></span>";
     row.appendChild(avatar);
 
     // 气泡

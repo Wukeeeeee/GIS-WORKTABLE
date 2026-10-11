@@ -2,6 +2,7 @@
 apikey.txt
 
 # Python
+.venv/
 __pycache__/
 *.pyc
 *.pyo

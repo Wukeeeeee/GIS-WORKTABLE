@@ -64,7 +64,14 @@ function updateGreeting() {
     }
 
     var el = document.getElementsByClassName('chat-messages-empty')[0];
-    if (el) el.textContent = greeting;
+    if (el) {
+        el.innerHTML = [
+            '<div class="welcome-box" style="display:flex;flex-direction:column;align-items:center;max-width:320px;margin:0 auto;text-align:center;">',
+            '  <div style="font-size:14px;font-weight:600;color:var(--ui-gray-800);margin-bottom:6px;">' + greeting + '</div>',
+            '  <div style="font-size:12px;color:var(--ui-gray-500);line-height:1.6;">描述你的空间任务，AI 助手会协助检索数据、分析并展示结果。</div>',
+            '</div>'
+        ].join('\n');
+    }
 }
 
 // 页面加载时执行

@@ -82,6 +82,7 @@ window.GIS = window.GIS || {};
 
   const ESRI_IMAGERY = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
   const ESRI_STREET = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+  const DARK_MAP = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
 
   /** 按需渲染：requestRenderMode 下实体属性/材质变更必须显式触发一帧 */
   function requestRender() {
@@ -139,6 +140,19 @@ window.GIS = window.GIS || {};
         type: 'Feature', properties: props, geometry: null,
       }, '3d', idx);
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    const coordsEl = document.getElementById('mapCoords');
+    clickHandler.setInputAction(function(movement) {
+      if (mode !== '3d' || !coordsEl) return;
+      const ray = viewer.camera.getPickRay(movement.endPosition);
+      const point = ray && viewer.scene.globe.pick(ray, viewer.scene);
+      if (!point) {
+        coordsEl.textContent = 'WGS-84 · 经度 -- · 纬度 --';
+        return;
+      }
+      const position = Cesium.Cartographic.fromCartesian(point);
+      coordsEl.textContent = 'WGS-84 · 经度 ' + Cesium.Math.toDegrees(position.longitude).toFixed(5) +
+        ' · 纬度 ' + Cesium.Math.toDegrees(position.latitude).toFixed(5);
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
   }
 
   // ============================================================
@@ -327,7 +341,7 @@ window.GIS = window.GIS || {};
       container3d = document.createElement('div');
       container3d.id = 'map3d';
       container3d.style.cssText =
-        'position:absolute;inset:0;display:none;z-index:400;background:#0b1020;';
+        'position:absolute;inset:30px 0 26px;display:none;z-index:400;background:#0b1020;';
       if (mapEl && mapEl.parentNode) mapEl.parentNode.insertBefore(container3d, mapEl);
       else document.body.appendChild(container3d);
     }
@@ -361,7 +375,7 @@ window.GIS = window.GIS || {};
       };
       frag.appendChild(mkBtn('m3dBmSat', '影像', 'Esri 影像底图', function() { setBasemap('satellite'); }));
       frag.appendChild(mkBtn('m3dBmStreet', '街道', 'Esri 街道底图', function() { setBasemap('street'); }));
-      frag.appendChild(mkBtn('m3dBmDark', '深色', '深色球体（无底图）', function() { setBasemap('dark'); }));
+      frag.appendChild(mkBtn('m3dBmDark', '深色', 'Esri 深灰地图', function() { setBasemap('dark'); }));
       const divider = document.createElement('div');
       divider.className = 'map-ctrl-divider m3d-3dbtn m3d-keep';
       frag.appendChild(divider);
@@ -374,7 +388,7 @@ window.GIS = window.GIS || {};
         bb.id = 'bmBtn';
         bb.className = 'map-zoom-btn m3d-keep';
         bb.title = '视图书签（保存/回到常用视角）';
-        bb.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
+        bb.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-e44f7be95633.png')\"></span>";
         bb.addEventListener('click', function(e) { e.stopPropagation(); toggleBmPanel(); });
         toolbar.insertBefore(bb, btn.nextSibling);
       }
@@ -451,7 +465,8 @@ window.GIS = window.GIS || {};
     if (!panel) return;
     const sel = GIS.state.getSelection();
     if (!sel || !sel.props) { panel.style.display = 'none'; return; }
-    let html = '<div style="font-weight:700;margin-bottom:6px;">' + escapeHtml(String(sel.name)) + '</div>';
+    let html = '<div id="featurePanelHeader" class="workspace-panel-heading"><strong>' + escapeHtml(String(sel.name)) + '</strong>' +
+      "<button id=\"featurePanelClose\" class=\"workspace-icon-btn\" title=\"关闭要素属性\" aria-label=\"关闭要素属性\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:17px;height:17px;--ui-icon-image:url('/assets/ui-icons/icon-4518b8fcf719.png')\"></span></button></div>";
     const keys = Object.keys(sel.props).filter(function(k) { return k !== '_fid'; }).slice(0, 12);
     if (keys.length) {
       html += '<table style="width:100%;border-collapse:collapse;">';
@@ -465,11 +480,13 @@ window.GIS = window.GIS || {};
     }
     if (sel.adcode !== null && sel.adcode !== undefined) {
       html += '<button id="fpDrillBtn" style="margin-top:8px;width:100%;padding:5px 0;' +
-        'background:#2563eb;color:#fff;border:none;border-radius:0;cursor:pointer;font-size:12px;">' +
+        'background:var(--on-surface);color:var(--surface-container-lowest);border:none;border-radius:6px;cursor:pointer;font-size:12px;">' +
         '下钻到下一级政区</button>';
     }
     panel.innerHTML = html;
     panel.style.display = 'block';
+    document.getElementById('featurePanelClose').onclick = function() { panel.style.display = 'none'; };
+    if (GIS.workspace) GIS.workspace.preparePanel('featurePanel', 'featurePanelHeader', 'featurePanelClose', '要素属性');
     const drillBtn = document.getElementById('fpDrillBtn');
     if (drillBtn) {
       drillBtn.addEventListener('click', function() {
@@ -495,13 +512,13 @@ window.GIS = window.GIS || {};
     if (!viewer) return;
     basemap = key;
     viewer.imageryLayers.removeAll(true);
-    if (key === 'satellite' || key === 'street') {
+    if (key === 'satellite' || key === 'street' || key === 'dark') {
       viewer.imageryLayers.addImageryProvider(new Cesium.UrlTemplateImageryProvider({
-        url: key === 'street' ? ESRI_STREET : ESRI_IMAGERY,
+        url: key === 'dark' ? DARK_MAP : (key === 'street' ? ESRI_STREET : ESRI_IMAGERY),
         credit: 'Tiles © Esri',
       }));
     }
-    // dark：无底图，显示球体基色
+    // 瓦片尚未到达时的球体基色。
     viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#0b1020');
     const bmIds = { satellite: 'm3dBmSat', street: 'm3dBmStreet', dark: 'm3dBmDark' };
     Object.keys(bmIds).forEach(function(k) {
@@ -598,7 +615,10 @@ window.GIS = window.GIS || {};
     if (!panel) panel = createBmPanel();
     const show = panel.style.display !== 'block';
     panel.style.display = show ? 'block' : 'none';
-    if (show) renderBmList();
+    if (show) {
+      if (GIS.workspace) GIS.workspace.expandPanel('bmPanel');
+      renderBmList();
+    }
   }
 
   function createBmPanel() {
@@ -608,14 +628,11 @@ window.GIS = window.GIS || {};
       'background:var(--ui-white,#fff);border:1px solid var(--ui-gray-200,#ddd);border-radius:8px;' +
       'box-shadow:0 4px 16px rgba(0,0,0,0.15);padding:8px;font-size:12px;color:var(--ui-gray-900,#1c1b1b);';
     panel.innerHTML =
-      '<div style="font-weight:700;margin-bottom:6px;">视图书签</div>' +
-      '<div id="bmList" style="max-height:200px;overflow:auto;margin-bottom:6px;"></div>' +
-      '<div style="display:flex;gap:4px;">' +
-        '<input id="bmName" placeholder="书签名称" style="flex:1;min-width:0;padding:3px 6px;border:1px solid var(--ui-gray-200,#ddd);border-radius:4px;font-size:12px;background:#fff;color:inherit;" />' +
-        '<button id="bmSave" style="padding:3px 8px;background:#2563eb;color:#fff;border:none;border-radius:4px;cursor:pointer;">保存</button>' +
-      '</div>';
+      "<div id=\"bmPanelHeader\" class=\"workspace-panel-heading\"><strong>视图书签</strong><button id=\"bmPanelClose\" class=\"workspace-icon-btn\" title=\"关闭视图书签\" aria-label=\"关闭视图书签\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:17px;height:17px;--ui-icon-image:url('/assets/ui-icons/icon-4518b8fcf719.png')\"></span></button></div><div id=\"bmList\" style=\"max-height:200px;overflow:auto;margin-bottom:6px;\"></div><div style=\"display:flex;gap:4px;\"><input id=\"bmName\" placeholder=\"书签名称\" style=\"flex:1;min-width:0;padding:3px 6px;border:1px solid var(--ui-gray-200,#ddd);border-radius:4px;font-size:12px;background:#fff;color:inherit;\" /><button id=\"bmSave\" style=\"padding:3px 8px;background:var(--on-surface);color:var(--surface-container-lowest);border:none;border-radius:6px;cursor:pointer;\">保存</button></div>";
     const mapEl = document.getElementById('map');
     if (mapEl && mapEl.parentNode) mapEl.parentNode.insertBefore(panel, mapEl);
+    document.getElementById('bmPanelClose').onclick = function() { panel.style.display = 'none'; };
+    if (GIS.workspace) GIS.workspace.preparePanel('bmPanel', 'bmPanelHeader', 'bmPanelClose', '视图书签');
     document.getElementById('bmSave').addEventListener('click', function() {
       const input = document.getElementById('bmName');
       const name = (input.value || '').trim();
@@ -720,6 +737,8 @@ window.GIS = window.GIS || {};
     if (btn) btn.querySelector('span').textContent = mode === '2d' ? '3D' : '2D';
     // body 级 3D 标记：CSS 据此隐藏 2D 专属元素（如坐标显示）
     document.body.classList.toggle('gis-mode-3d', mode === '3d');
+    const coordsEl = document.getElementById('mapCoords');
+    if (coordsEl) coordsEl.textContent = 'WGS-84 · 经度 -- · 纬度 --';
   }
 
   // ============================================================

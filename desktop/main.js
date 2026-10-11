@@ -2,7 +2,7 @@
  * GIS-WORKTABLE 本地客户端外壳
  *
  * 职责：
- *  1. 检测后端（127.0.0.1:8000）是否已运行
+ *  1. 使用 GIS_PORT 或默认 8000 端口，只复用当前仓库的后端
  *  2. 未运行时，用本地 Python 启动 uvicorn（工作目录 = 项目根）
  *  3. 等待健康检查通过后，创建 Electron 窗口加载前端
  *  4. 窗口关闭时，仅结束"本客户端拉起的"后端进程（外部已有后端不动）
@@ -13,15 +13,15 @@
  */
 
 const { app, BrowserWindow, dialog } = require('electron');
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
-const BACKEND_URL = 'http://127.0.0.1:8000';
-const HEALTH_URL = `${BACKEND_URL}/api/health`;
-const PORT = 8000;
+let PORT;
+let BACKEND_URL;
+let HEALTH_URL;
 const LOG_DIR = path.join(__dirname, 'logs');
 
 let backendProc = null;      // 本客户端拉起的后端进程
@@ -36,13 +36,14 @@ let windowMain = null;
 function findPython() {
   const candidates = [
     process.env.GIS_PYTHON,
+    path.join(PROJECT_ROOT, '.venv', 'Scripts', 'python.exe'),
     'D:\\python\\python.exe',
     'python',
     'python3',
   ].filter(Boolean);
   for (const py of candidates) {
     try {
-      require('child_process').execSync(`"${py}" --version`, { stdio: 'ignore', timeout: 5000 });
+      execFileSync(py, ['--version'], { stdio: 'ignore', timeout: 5000, windowsHide: true });
       return py;
     } catch {
       // 继续尝试下一个
@@ -70,9 +71,18 @@ async function waitForBackend(timeoutMs = 90000) {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 3000);
-      const resp = await fetch(HEALTH_URL, { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (resp.ok) return true;
+      try {
+        const resp = await fetch(HEALTH_URL, { signal: ctrl.signal });
+        if (resp.ok) {
+          const data = await resp.json();
+          const normalize = (p) => process.platform === 'win32' ? path.resolve(p).toLowerCase() : path.resolve(p);
+          if (data.status === 'ok' && data.service === 'gis-worktable'
+              && typeof data.workspace === 'string'
+              && normalize(data.workspace) === normalize(fs.realpathSync(PROJECT_ROOT))) return true;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
     } catch {
       // 后端还没起来，继续轮询
     }
@@ -119,34 +129,39 @@ function startBackend(python) {
 // ============================================================
 
 async function ensureBackend() {
-  // 1) 端口已被占用 → 直接认为后端可用（可能是外部服务）
+  const python = findPython();
+  if (!python) {
+    dialog.showErrorBox('未找到 Python', '请安装 Python，或通过 GIS_PYTHON 指定解释器路径。');
+    return false;
+  }
+  try {
+    PORT = Number(execFileSync(python, ['-m', 'backend.launcher', 'select'], {
+      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 20000, windowsHide: true,
+    }).trim());
+    if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('Invalid backend port');
+    BACKEND_URL = `http://127.0.0.1:${PORT}`;
+    HEALTH_URL = `${BACKEND_URL}/api/health`;
+  } catch (err) {
+    const detail = String(err.stderr || err.message || err);
+    const conflict = detail.match(/Port (\d+) is occupied by another service or checkout/);
+    dialog.showErrorBox('无法启动 GIS 工作台', conflict
+      ? `端口 ${conflict[1]} 已被其他项目或另一份仓库占用。\n\n请先关闭占用该端口的服务，再重新启动。工作台默认使用 8000。\n\n如需使用其他端口，请明确设置 GIS_PORT。`
+      : `无法检查后端端口，请确认 Python 和 GIS_PORT 配置。\n\n${detail.trim().split('\n').pop()}`);
+    return false;
+  }
+  // 仅复用同一仓库、身份匹配的 GIS 服务。
   if (await isPortInUse(PORT)) {
-    console.log('[GIS-Desktop] 端口 8000 已被占用，尝试健康检查...');
+    console.log(`[GIS-Desktop] 端口 ${PORT} 已被占用，检查项目身份...`);
     if (await waitForBackend(10000)) {
       console.log('[GIS-Desktop] 复用已运行的后端');
       backendSpawned = false;
       return true;
     }
-    console.warn('[GIS-Desktop] 端口被占用但健康检查失败，可能不是本项目的后端');
-  }
-
-  // 2) 尝试探测健康检查（后端已在运行但端口检查异常的情况）
-  if (await waitForBackend(5000)) {
-    console.log('[GIS-Desktop] 检测到后端已运行');
-    backendSpawned = false;
-    return true;
-  }
-
-  // 3) 启动后端
-  const python = findPython();
-  if (!python) {
-    dialog.showErrorBox(
-      '未找到 Python',
-      '无法定位 Python 解释器。\n\n请通过环境变量 GIS_PYTHON 指定 Python 路径，例如：\nset GIS_PYTHON=D:\\python\\python.exe'
-    );
+    dialog.showErrorBox('端口冲突', `端口 ${PORT} 的服务身份不匹配，请重新启动或设置 GIS_PORT。`);
     return false;
   }
 
+  // 3) 启动后端
   startBackend(python);
   backendSpawned = true;
 

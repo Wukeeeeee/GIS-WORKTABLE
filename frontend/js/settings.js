@@ -14,10 +14,7 @@ window.GIS = window.GIS || {};
 
   // 复用已有 CSS 的模型选择器 check 图标
   const CHECK_SVG =
-    '<svg class="model-picker-check" viewBox="0 0 16 16" width="16" height="16">' +
-    '<circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/>' +
-    '<path d="M5 8l2 2 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>' +
-    '</svg>';
+    "<span class=\"ui-icon model-picker-check\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-2317bb688770.png')\"></span>";
 
   function init() {
     // 各块互相隔离：任何一块报错都不影响顶栏模型名同步等其余功能
@@ -260,10 +257,7 @@ window.GIS = window.GIS || {};
       '<div class="modal-input-wrapper" style="flex:1;">' +
       '<input type="' + (show ? 'password' : type) + '" class="modal-input" data-field="' + field + '" value="' +
       GIS.utils.escapeHtml(value || '') + '" placeholder="' + placeholder + '" autocomplete="off" />' +
-      (show ? '<button class="modal-toggle-vis" type="button" title="显示/隐藏密钥">' +
-        '<svg class="prov-eye" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
-        '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>' +
-        '</svg></button>' : '') +
+      (show ? "<button class=\"modal-toggle-vis\" type=\"button\" title=\"显示/隐藏密钥\"><span class=\"ui-icon prov-eye\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')\"></span></button>" : '') +
       '</div></div>';
   }
 

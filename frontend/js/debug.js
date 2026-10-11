@@ -8,23 +8,23 @@ window.GIS = window.GIS || {};
 
   var PANEL_HTML = [
     '<div class="debug-panel" id="debugPanel" style="display:none;">',
-    '  <div class="debug-panel-header">',
-    '    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    '  <div class="debug-panel-header" id="debugPanelHeader">',
+    "    <span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-054c0c901442.png')\"></span>",
     '    <span>\u8c03\u8bd5\u9762\u677f</span>',
     '    <span class="debug-header-info" id="debugConnStatus">\u68c0\u67e5\u4e2d...</span>',
     '    <button class="debug-panel-close" id="debugPanelClose" title="\u5173\u95ed">',
-    '      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>',
+    "      <span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-73fd2751026c.png')\"></span>",
     '    </button>',
     '  </div>',
     '  <div class="debug-panel-body custom-scrollbar">',
     '    <div class="debug-section">',
-    '      <div class="debug-section-title"><svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="7" cy="7" r="5"/><line x1="7" y1="3" x2="7" y2="7"/><line x1="7" y1="7" x2="10" y2="9"/></svg> \u7cfb\u7edf\u4fe1\u606f</div>',
+    "      <div class=\"debug-section-title\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-6616d622fbcc.png')\"></span> 系统信息</div>",
     '      <div class="debug-row"><span class="debug-label">\u5f53\u524d\u6a21\u578b</span><span class="debug-value" id="debugModel"></span></div>',
     '      <div class="debug-row"><span class="debug-label">\u9ad8\u5fb7 Key</span><span class="debug-value" id="debugAmapKey"></span></div>',
     '      <div class="debug-row"><span class="debug-label">\u540e\u7aef\u72b6\u6001</span><span class="debug-value" id="debugBackendStatus"></span></div>',
     '    </div>',
     '    <div class="debug-section">',
-    '      <div class="debug-section-title"><svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3"><polygon points="1,12 7,1 13,12"/><line x1="7" y1="5" x2="7" y2="9"/><line x1="7" y1="10.5" x2="7.01" y2="10.5"/></svg> \u56fe\u5c42</div>',
+    "      <div class=\"debug-section-title\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-94d8a506cd23.png')\"></span> 图层</div>",
     '      <div class="debug-row"><span class="debug-label">\u5df2\u6ce8\u518c\u56fe\u5c42</span><span class="debug-value" id="debugLayerCount"></span></div>',
     '      <div class="debug-layer-list" id="debugLayerList"></div>',
     '    </div>',
@@ -33,7 +33,7 @@ window.GIS = window.GIS || {};
     '      <div class="debug-row"><span class="debug-label">\u65e5\u5fd7\u6761\u6570</span><span class="debug-value" id="debugSessionLogs"></span></div>',
     '    </div>',
     '    <div class="debug-section" id="debugApiTestSection">',
-    '      <div class="debug-section-title"><svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 2h10v10H2z"/><line x1="7" y1="2" x2="7" y2="12"/><line x1="2" y1="7" x2="12" y2="7"/></svg> \u63a5\u53e3\u6d4b\u8bd5</div>',
+    "      <div class=\"debug-section-title\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-afff92b26f09.png')\"></span> 接口测试</div>",
     '      <div class="debug-btn-row">',
     '        <button class="debug-btn debug-btn-sm" data-api="layers">GET /api/layers</button>',
     '        <button class="debug-btn debug-btn-sm" data-api="health">GET /api/health</button>',
@@ -42,7 +42,7 @@ window.GIS = window.GIS || {};
     '      <div class="debug-api-result" id="debugApiResult"></div>',
     '    </div>',
     '    <div class="debug-section" id="debugLoadDataSection">',
-    '      <div class="debug-section-title"><svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M7 1v8M4 6l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M2 10v2h10v-2" fill="none" stroke="currentColor" stroke-width="1.3"/></svg> \u52a0\u8f7d\u6d4b\u8bd5\u6570\u636e</div>',
+    "      <div class=\"debug-section-title\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-e17ca7aaa0a1.png')\"></span> 加载测试数据</div>",
     '      <div class="debug-btn-row">',
     '        <button class="debug-btn debug-btn-sm debug-load-sample" data-layer="polygons">\u52a0\u8f7d 2 \u4e2a\u77e9\u5f62</button>',
     '        <button class="debug-btn debug-btn-sm debug-load-sample" data-layer="points">\u52a0\u8f7d 5 \u4e2a\u968f\u673a\u70b9</button>',
@@ -54,7 +54,7 @@ window.GIS = window.GIS || {};
     '      </div>',
     '    </div>',
     '    <div class="debug-section">',
-    '      <div class="debug-section-title"><svg viewBox="0 0 14 14" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> \u5371\u9669\u64cd\u4f5c</div>',
+    "      <div class=\"debug-section-title\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-5f880ef8e203.png')\"></span> 危险操作</div>",
     '      <button class="debug-btn debug-btn-danger" id="debugResetState">\u91cd\u7f6e\u540e\u7aef\u72b6\u6001</button>',
     '    </div>',
     '  </div>',
@@ -186,6 +186,10 @@ window.GIS = window.GIS || {};
     if (!panel) return;
     visible = true;
     panel.style.display = '';
+    if (GIS.workspace) {
+      GIS.workspace.preparePanel('debugPanel', 'debugPanelHeader', 'debugPanelClose', '调试面板');
+      GIS.workspace.expandPanel('debugPanel');
+    }
     GIS.debugPanelVisible = true;
     positionPanel();
     checkBackend();
@@ -207,6 +211,13 @@ window.GIS = window.GIS || {};
 
   function positionPanel() {
     if (!panel) return;
+    if (GIS.workspace) {
+      panel.style.position = 'fixed';
+      GIS.workspace.centerPanel(panel, 380);
+      var bounds = GIS.workspace.panelBounds(panel.offsetWidth || 380);
+      panel.style.maxHeight = (bounds.bottom-bounds.top)+'px';
+      return;
+    }
     var mapArea = document.getElementById('mapArea');
     if (!mapArea) return;
     var mr = mapArea.getBoundingClientRect();

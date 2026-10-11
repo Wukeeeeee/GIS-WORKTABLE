@@ -1,6 +1,6 @@
 // ============================================================
 // spatial_stats.js — 空间统计快捷面板
-// 顶栏「工具 → 空间统计」入口，组装自然语言发给 AI 执行
+// 顶栏「工具 → 空间统计」入口，直接调用本地后端工具
 // 方法：Moran's I 全局/局部自相关、Getis-Ord Gi* 热点、KDE 核密度
 // ============================================================
 window.GIS = window.GIS || {};
@@ -13,101 +13,133 @@ window.GIS = window.GIS || {};
   var _initialized = false;
 
   var PANEL_HTML =
-    '<div class="spatial-panel" id="spatialStatsPanel">' +
-      '<div class="spatial-loader" id="ssLoader" style="display:none">' +
-        '<div class="spatial-spinner"></div>' +
-        '<span>计算中...</span>' +
-      '</div>' +
-      '<div class="spatial-toolbar" id="spatialStatsToolbar">' +
-        '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 4 4 5-5"/></svg>' +
-        '<span class="spatial-toolbar-title">空间统计</span>' +
-        '<button class="spatial-toolbar-close" id="spatialStatsClose">' +
-          '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>' +
-        '</button>' +
-      '</div>' +
-
-      '<div class="spatial-tabs" id="spatialStatsTabs">' +
-        '<button class="spatial-tab active" data-tab="moran">自相关</button>' +
-        '<button class="spatial-tab" data-tab="hotspot">热点</button>' +
-        '<button class="spatial-tab" data-tab="kde">密度</button>' +
-      '</div>' +
-
-      '<div class="spatial-body" id="spatialStatsBody">' +
-
-        /* ===== Moran's I 自相关 ===== */
-        '<div class="spatial-tab-content active" id="stabMoran">' +
-          '<div class="spatial-field">' +
-            '<label>图层</label>' +
-            '<select id="ssMoranLayer"><option value="">-- 请选择图层 --</option></select>' +
-          '</div>' +
-          '<div class="spatial-field">' +
-            '<label>分析字段（数值）</label>' +
-            '<select id="ssMoranField"><option value="">-- 自动选择第一个数值字段 --</option></select>' +
-          '</div>' +
-          '<div class="spatial-field">' +
-            '<label>空间权重</label>' +
-            '<select id="ssMoranWeight">' +
-              '<option value="distance">距离权重</option>' +
-              '<option value="knn">K近邻权重</option>' +
-            '</select>' +
-          '</div>' +
-          '<div class="spatial-field" id="ssMoranDistField">' +
-            '<label>距离阈值（米）</label>' +
-            '<input type="number" id="ssMoranDist" class="spatial-input" value="1000" min="1" step="100">' +
-          '</div>' +
-          '<div class="spatial-field" id="ssMoranKnnField" style="display:none;">' +
-            '<label>K近邻数</label>' +
-            '<input type="number" id="ssMoranK" class="spatial-input" value="5" min="1" max="50">' +
-          '</div>' +
-          '<div class="spatial-field">' +
-            '<label class="spatial-checkbox-label">' +
-              '<input type="checkbox" id="ssMoranLocal" checked> 同时计算局部 LISA（HH/HL/LH/LL 聚类图）' +
-            '</label>' +
-          '</div>' +
-          '<button class="spatial-run-btn" data-op="moran">运行 Moran\'s I 分析</button>' +
-        '</div>' +
-
-        /* ===== Getis-Ord Gi* 热点 ===== */
-        '<div class="spatial-tab-content" id="stabHotspot">' +
-          '<div class="spatial-field">' +
-            '<label>图层</label>' +
-            '<select id="ssHotspotLayer"><option value="">-- 请选择图层 --</option></select>' +
-          '</div>' +
-          '<div class="spatial-field">' +
-            '<label>分析字段（数值）</label>' +
-            '<select id="ssHotspotField"><option value="">-- 自动选择第一个数值字段 --</option></select>' +
-          '</div>' +
-          '<div class="spatial-field">' +
-            '<label>距离阈值（米）</label>' +
-            '<input type="number" id="ssHotspotDist" class="spatial-input" value="1000" min="1" step="100">' +
-          '</div>' +
-
-          '<button class="spatial-run-btn" data-op="hotspot">运行热点分析（Gi*）</button>' +
-        '</div>' +
-
-        /* ===== KDE 核密度 ===== */
-        '<div class="spatial-tab-content" id="stabKde">' +
-          '<div class="spatial-field">' +
-            '<label>图层</label>' +
-            '<select id="ssKdeLayer"><option value="">-- 请选择图层 --</option></select>' +
-          '</div>' +
-          '<div class="spatial-field">' +
-            '<label>带宽（米，自动换算为度；留空自动估算）</label>' +
-            '<input type="number" id="ssKdeBandwidth" class="spatial-input" placeholder="自动" min="1" step="100">' +
-          '</div>' +
-          '<div class="spatial-field">' +
-            '<label>网格分辨率</label>' +
-            '<select id="ssKdeGrid">' +
-              '<option value="80">精细（80×80，较慢）</option>' +
-              '<option value="50" selected>标准（50×50）</option>' +
-              '<option value="30">粗略（30×30，快）</option>' +
-            '</select>' +
-          '</div>' +
-          '<button class="spatial-run-btn" data-op="kde">运行核密度估计</button>' +
-        '</div>' +
-
-      '</div>' +
-    '</div>';
+    ("<div class=\"spatial-panel\" id=\"spatialStatsPanel\">"
+      + "<div class=\"spatial-loader\" id=\"ssLoader\" style=\"display:none\">"
+      + "<div class=\"spatial-spinner\">"
+      + "</div>"
+      + "<span>计算中..."
+      + "</span>"
+      + "</div>"
+      + "<div class=\"spatial-toolbar\" id=\"spatialStatsToolbar\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-b5c56f814b9e.png')\">"
+      + "</span>"
+      + "<span class=\"spatial-toolbar-title\">空间统计"
+      + "</span>"
+      + "<button class=\"spatial-toolbar-close\" id=\"spatialStatsClose\">"
+      + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-28a441e0afbc.png')\">"
+      + "</span>"
+      + "</button>"
+      + "</div>"
+      + "<div class=\"spatial-tabs\" id=\"spatialStatsTabs\">"
+      + "<button class=\"spatial-tab active\" data-tab=\"moran\">自相关"
+      + "</button>"
+      + "<button class=\"spatial-tab\" data-tab=\"hotspot\">热点"
+      + "</button>"
+      + "<button class=\"spatial-tab\" data-tab=\"kde\">密度"
+      + "</button>"
+      + "</div>"
+      + "<div class=\"spatial-body\" id=\"spatialStatsBody\">"
+      + "<div class=\"spatial-tab-content active\" id=\"stabMoran\">"
+      + "<div class=\"spatial-field\">"
+      + "<label>图层"
+      + "</label>"
+      + "<select id=\"ssMoranLayer\">"
+      + "<option value=\"\">-- 请选择图层 --"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\">"
+      + "<label>分析字段（数值）"
+      + "</label>"
+      + "<select id=\"ssMoranField\">"
+      + "<option value=\"\">-- 自动选择第一个数值字段 --"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\">"
+      + "<label>空间权重"
+      + "</label>"
+      + "<select id=\"ssMoranWeight\">"
+      + "<option value=\"distance\">距离权重"
+      + "</option>"
+      + "<option value=\"knn\">K近邻权重"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"ssMoranDistField\">"
+      + "<label>距离阈值（米）"
+      + "</label>"
+      + "<input type=\"number\" id=\"ssMoranDist\" class=\"spatial-input\" value=\"1000\" min=\"1\" step=\"100\">"
+      + "</div>"
+      + "<div class=\"spatial-field\" id=\"ssMoranKnnField\" style=\"display:none;\">"
+      + "<label>K近邻数"
+      + "</label>"
+      + "<input type=\"number\" id=\"ssMoranK\" class=\"spatial-input\" value=\"5\" min=\"1\" max=\"50\">"
+      + "</div>"
+      + "<div class=\"spatial-field\">"
+      + "<label class=\"spatial-checkbox-label\">"
+      + "<input type=\"checkbox\" id=\"ssMoranLocal\" checked> 同时计算局部 LISA（HH/HL/LH/LL 聚类图）"
+      + "</label>"
+      + "</div>"
+      + "<button class=\"spatial-run-btn\" data-op=\"moran\">运行 Moran's I 分析"
+      + "</button>"
+      + "</div>"
+      + "<div class=\"spatial-tab-content\" id=\"stabHotspot\">"
+      + "<div class=\"spatial-field\">"
+      + "<label>图层"
+      + "</label>"
+      + "<select id=\"ssHotspotLayer\">"
+      + "<option value=\"\">-- 请选择图层 --"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\">"
+      + "<label>分析字段（数值）"
+      + "</label>"
+      + "<select id=\"ssHotspotField\">"
+      + "<option value=\"\">-- 自动选择第一个数值字段 --"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\">"
+      + "<label>距离阈值（米）"
+      + "</label>"
+      + "<input type=\"number\" id=\"ssHotspotDist\" class=\"spatial-input\" value=\"1000\" min=\"1\" step=\"100\">"
+      + "</div>"
+      + "<button class=\"spatial-run-btn\" data-op=\"hotspot\">运行热点分析（Gi*）"
+      + "</button>"
+      + "</div>"
+      + "<div class=\"spatial-tab-content\" id=\"stabKde\">"
+      + "<div class=\"spatial-field\">"
+      + "<label>图层"
+      + "</label>"
+      + "<select id=\"ssKdeLayer\">"
+      + "<option value=\"\">-- 请选择图层 --"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<div class=\"spatial-field\">"
+      + "<label>带宽（米，自动换算为度；留空自动估算）"
+      + "</label>"
+      + "<input type=\"number\" id=\"ssKdeBandwidth\" class=\"spatial-input\" placeholder=\"自动\" min=\"1\" step=\"100\">"
+      + "</div>"
+      + "<div class=\"spatial-field\">"
+      + "<label>网格分辨率"
+      + "</label>"
+      + "<select id=\"ssKdeGrid\">"
+      + "<option value=\"80\">精细（80×80，较慢）"
+      + "</option>"
+      + "<option value=\"50\" selected>标准（50×50）"
+      + "</option>"
+      + "<option value=\"30\">粗略（30×30，快）"
+      + "</option>"
+      + "</select>"
+      + "</div>"
+      + "<button class=\"spatial-run-btn\" data-op=\"kde\">运行核密度估计"
+      + "</button>"
+      + "</div>"
+      + "</div>"
+      + "</div>");
 
   function init() {
     if (_initialized) return;
@@ -128,6 +160,7 @@ window.GIS = window.GIS || {};
     _centerPanel(container);
 
     document.getElementById('spatialStatsClose').addEventListener('click', deactivate);
+    if (GIS.workspace) GIS.workspace.preparePanel('spatialStatsPanel', 'spatialStatsToolbar', 'spatialStatsClose', '空间统计');
 
     // 标签切换
     document.getElementById('spatialStatsTabs').addEventListener('click', function (e) {
@@ -166,6 +199,7 @@ window.GIS = window.GIS || {};
     container.style.top = '50%';
     container.style.transform = 'translate(-50%, -50%)';
     container.style.zIndex = '1100';
+    if (GIS.workspace) GIS.workspace.centerPanel(container, 380);
   }
 
   function activate() {
@@ -174,6 +208,8 @@ window.GIS = window.GIS || {};
     var container = document.getElementById('spatialStatsPanelContainer');
     if (!container) return;
     container.style.display = '';
+    if (GIS.workspace) GIS.workspace.expandPanel('spatialStatsPanel');
+    _centerPanel(container);
     _refreshLayers();
     _active = true;
   }
@@ -240,7 +276,8 @@ window.GIS = window.GIS || {};
 
   function _invoke(tool, args) {
     var loader = document.getElementById('ssLoader');
-    if (loader) loader.style.display = '';
+    if (loader) loader.style.display = 'flex';
+    if (GIS.workspace) GIS.workspace.toolPending('spatialStatsPanel');
     var syncP = (GIS.api && GIS.api.syncLayer && args.layer_name)
       ? GIS.api.syncLayer(args.layer_name) : Promise.resolve();
     var p = syncP.then(function() {
@@ -249,6 +286,7 @@ window.GIS = window.GIS || {};
     });
     p.then(function(result) {
       if (loader) loader.style.display = 'none';
+      if (GIS.workspace && !GIS.workspace.toolFeedback('spatialStatsPanel', result)) return;
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
       // 统计解读直接展示到聊天区（系统消息），图层已上图
       if (GIS.chat && GIS.chat.addMessage && result.response) {
@@ -256,7 +294,8 @@ window.GIS = window.GIS || {};
       }
     }).catch(function(err) {
       if (loader) loader.style.display = 'none';
-      alert('执行失败: ' + err.message);
+      if (GIS.workspace) GIS.workspace.toolFeedback('spatialStatsPanel', null, err);
+      else alert('执行失败: ' + err.message);
     });
   }
 
@@ -274,7 +313,6 @@ window.GIS = window.GIS || {};
       } else {
         args.k = parseInt(document.getElementById('ssMoranK').value, 10) || 5;
       }
-      deactivate();
       return _invoke('spatial_moran', args);
     }
     if (op === 'hotspot') {
@@ -282,7 +320,6 @@ window.GIS = window.GIS || {};
       if (!layer2) { alert('请选择图层'); return; }
       var field2 = document.getElementById('ssHotspotField').value;
       var dist2 = parseFloat(document.getElementById('ssHotspotDist').value) || 1000;
-      deactivate();
       return _invoke('spatial_hotspot', {
         layer_name: layer2, field: field2 || '',
         threshold: +(dist2 / METERS_PER_DEGREE).toFixed(6),  // 米 → 度
@@ -295,7 +332,6 @@ window.GIS = window.GIS || {};
       var grid = parseInt(document.getElementById('ssKdeGrid').value, 10) || 50;
       var args3 = { layer_name: layer3, grid_size: grid };
       if (bw) args3.bandwidth = +(bw / METERS_PER_DEGREE).toFixed(6);  // 米 → 度
-      deactivate();
       return _invoke('spatial_kde', args3);
     }
   }

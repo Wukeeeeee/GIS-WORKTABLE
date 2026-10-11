@@ -1029,6 +1029,8 @@ def test_key(cfg) -> tuple:
                 f"API 根地址（形如 https://host/v1），程序会向该地址请求 "
                 f"/chat/completions。"
             )
+        if "connection error" in low or "connecterror" in low:
+            return False, "无法连接模型服务。请检查接口地址、代理端口是否正常，以及 DNS / TLS 连接；这不一定是密钥错误。"
         return False, f"连接失败: {err_msg[:200]}"
 
 

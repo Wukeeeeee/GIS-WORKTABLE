@@ -281,13 +281,7 @@ window.GIS = window.GIS || {};
       var bubble = document.createElement('div');
       bubble.style.cssText = 'font-size:12px;color:var(--ui-gray-900);background:var(--message-bg-ai, var(--surface-container-low));padding:8px 14px;border-radius:10px;text-align:left;max-width:90%;';
       bubble.innerHTML =
-        '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
-          '<svg class="upload-msg-svg" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' +
-            '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
-            '<polyline points="17 8 12 3 7 8"/>' +
-            '<line x1="12" y1="3" x2="12" y2="15"/>' +
-          '</svg>' +
-          '<span style="font-weight:500;">导入中: ' + escapeHtml(_currentFileName) + '</span>' +
+        "<div style=\"display:flex;align-items:center;gap:8px;flex-wrap:wrap;\"><span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span style=\"font-weight:500;\">导入中: " + escapeHtml(_currentFileName) + '</span>' +
           '<button class="upload-cancel-btn" id="uploadCancelBtn" style="margin-left:auto;font-size:11px;padding:2px 10px;border:1px solid var(--ui-gray-300);border-radius:4px;background:none;cursor:pointer;color:var(--ui-gray-600);white-space:nowrap;">取消导入</button>' +
         '</div>';
       row.appendChild(bubble);
@@ -297,8 +291,8 @@ window.GIS = window.GIS || {};
 
       _uploadMsgEl = row;
 
-      var svgEl = row.querySelector('.upload-msg-svg');
-      if (svgEl) svgEl.style.animation = 'upload-bounce 0.6s ease-in-out infinite alternate';
+      var iconEl = row.querySelector('.upload-msg-icon');
+      if (iconEl) iconEl.style.animation = 'upload-bounce 0.6s ease-in-out infinite alternate';
 
       var cancelBtn = row.querySelector('#uploadCancelBtn');
       if (cancelBtn) {
@@ -333,22 +327,14 @@ window.GIS = window.GIS || {};
 
       if (status === 'success') {
         contentDiv.innerHTML =
-          '<span style="display:inline-flex;align-items:center;gap:6px;">' +
-            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#2e7d32" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' +
-              '<polyline points="4 12 9 17 20 6"/>' +
-            '</svg>' +
-            '<span style="color:#2e7d32;">上传成功' + (msg ? ': ' + escapeHtml(msg) : '') + '</span>' +
+          "<span style=\"display:inline-flex;align-items:center;gap:6px;\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-ae6516c4f98b.png')\"></span><span style=\"color:#2e7d32;\">上传成功" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>' +
           '</span>';
         _uploadStatusTimer = setTimeout(function() {
           if (_uploadMsgEl) { _uploadMsgEl.remove(); _uploadMsgEl = null; }
         }, 3000);
       } else if (status === 'error') {
         contentDiv.innerHTML =
-          '<span style="display:inline-flex;align-items:center;gap:6px;">' +
-            '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#d32f2f" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">' +
-              '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>' +
-            '</svg>' +
-            '<span style="color:#d32f2f;">上传失败' + (msg ? ': ' + escapeHtml(msg) : '') + '</span>' +
+          "<span style=\"display:inline-flex;align-items:center;gap:6px;\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-22ff8b401bb5.png')\"></span><span style=\"color:#d32f2f;\">上传失败" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>' +
           '</span>';
         _uploadStatusTimer = setTimeout(function() {
           if (_uploadMsgEl) { _uploadMsgEl.remove(); _uploadMsgEl = null; }
