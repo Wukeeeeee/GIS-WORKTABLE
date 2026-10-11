@@ -656,7 +656,7 @@
     if (oldLogo) {
       const heading = document.createElement('div');
       heading.className = 'workspace-ai-heading';
-      heading.innerHTML = icon('ai')+'<span>AI 助手<small>用自然语言完成空间任务</small></span>';
+      heading.innerHTML = icon('ai')+'<span>AI 助手</span>';
       oldLogo.replaceWith(heading);
     }
     const closeAI = document.createElement('button');

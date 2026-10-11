@@ -508,6 +508,7 @@ if (typeof marked !== 'undefined') {
     if (messagesContainer) {
       messagesContainer.innerHTML = '<div class="chat-messages-empty"></div>';
       messagesContainer.style.display = '';
+      if (typeof updateGreeting === 'function') updateGreeting();
     }
     var historyPanel = document.getElementById('chatHistory');
     if (historyPanel) historyPanel.style.display = 'none';

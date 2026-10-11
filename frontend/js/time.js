@@ -1,78 +1,41 @@
-var greetings = {
-  dawn: [
-    '夜深了，早点休息',
-    '凌晨了，还没睡呢',
-    '这么晚了，注意身体',
-  ],
-  morning: [
-    '早上好，今天打算构建什么',
-    '早上好，开始今天的工作吧',
-    '早啊，准备好开工了吗',
-    '早上好，新的一天开始了',
-  ],
-  forenoon: [
-    '上午好，有什么需要帮忙的吗',
-    '上午好，GIS 时间到了',
-    '上午好，正在处理什么数据',
-  ],
-  noon: [
-    '中午好，先吃个饭吧',
-    '中午好，休息一下再继续',
-    '中午了，歇一会儿吧',
-  ],
-  afternoon: [
-    '下午好，进度还顺利吗',
-    '下午好，继续加油',
-    '下午好，有什么需要处理的',
-  ],
-  night: [
-    '晚上好，还在工作呢',
-    '晚上好，辛苦了',
-    '晚上好，今天收获怎么样',
-  ],
-};
-
-function randomPick(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
+// AI 面板空状态与配置引导
 function updateGreeting() {
-    var date = new Date();
-    var hours = date.getHours();
-    var minutes = date.getMinutes();
-    var seconds = date.getSeconds();
-    var ampm = hours >= 12 ? 'PM' : 'AM';
-    var displayHours = hours % 12;
-    displayHours = displayHours ? displayHours : 12;
-    minutes = minutes < 10 ? '0' + minutes : minutes;
-    seconds = seconds < 10 ? '0' + seconds : seconds;
-    var strTime = displayHours + ':' + minutes + ':' + seconds + ' ' + ampm;
+  var el = document.getElementsByClassName('chat-messages-empty')[0];
+  if (!el) return;
 
-    var greeting = '';
-    if (hours < 6) {
-        greeting = randomPick(greetings.dawn);
-    } else if (hours < 9) {
-        greeting = randomPick(greetings.morning);
-    } else if (hours < 12) {
-        greeting = randomPick(greetings.forenoon);
-    } else if (hours < 14) {
-        greeting = randomPick(greetings.noon);
-    } else if (hours < 18) {
-        greeting = randomPick(greetings.afternoon);
-    } else {
-        greeting = randomPick(greetings.night);
+  var isConfigured = false;
+  try {
+    if (window.GIS && window.GIS.api && window.GIS.api.currentProvider) {
+      var cur = window.GIS.api.currentProvider();
+      isConfigured = cur && !!cur.api_key;
     }
+  } catch (_) {}
 
-    var el = document.getElementsByClassName('chat-messages-empty')[0];
-    if (el) {
-        el.innerHTML = [
-            '<div class="welcome-box" style="display:flex;flex-direction:column;align-items:center;max-width:320px;margin:0 auto;text-align:center;">',
-            '  <div style="font-size:14px;font-weight:600;color:var(--ui-gray-800);margin-bottom:6px;">' + greeting + '</div>',
-            '  <div style="font-size:12px;color:var(--ui-gray-500);line-height:1.6;">描述你的空间任务，AI 助手会协助检索数据、分析并展示结果。</div>',
-            '</div>'
-        ].join('\n');
+  if (!isConfigured) {
+    el.innerHTML = [
+      '<div class="chat-empty-state">',
+      '  <div class="chat-empty-title">尚未配置 AI 模型</div>',
+      '  <div class="chat-empty-hint">请先配置 API Key 以启用智能对话与空间 Agent</div>',
+      '  <button type="button" class="chat-empty-config-btn" id="emptyPanelConfigBtn">去配置</button>',
+      '</div>'
+    ].join('\n');
+    var btn = document.getElementById('emptyPanelConfigBtn');
+    if (btn) {
+      btn.onclick = function() {
+        var s = document.getElementById('settingsBtn');
+        if (s) s.click();
+      };
     }
+  } else {
+    el.innerHTML = [
+      '<div class="chat-empty-state">',
+      '  <div class="chat-empty-title" style="font-weight:500;color:var(--on-surface-variant);">输入任务指令，按 Enter 发送</div>',
+      '</div>'
+    ].join('\n');
+  }
 }
 
-// 页面加载时执行
-document.addEventListener('DOMContentLoaded', updateGreeting);
+document.addEventListener('DOMContentLoaded', function() {
+  setTimeout(updateGreeting, 50);
+});
+window.updateGreeting = updateGreeting;

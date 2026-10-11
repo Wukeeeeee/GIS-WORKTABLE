@@ -385,10 +385,79 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
 .workspace-ai-heading { display: flex; align-items: center; gap: 9px; flex-shrink: 0; }
 .workspace-ai-heading > .ui-icon { width: 20px; height: 20px; color: var(--workspace-accent); }
 .workspace-ai-heading > span { font-size: 13px; font-weight: 650; }
-.workspace-ai-heading small { display: block; color: var(--on-surface-variant); font-size: 9px; font-weight: 400; margin-top: 3px; }
-.workbench .chat-header button { border: 0 !important; padding: 5px !important; }
+.workbench .chat-header button.workspace-icon-btn {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 28px !important;
+  height: 28px !important;
+  padding: 5px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--on-surface-variant) !important;
+  cursor: pointer !important;
+}
+.workbench .chat-header button.workspace-icon-btn:hover {
+  background: var(--surface-container-high) !important;
+  color: var(--on-surface) !important;
+}
+.workbench .chat-header button.workspace-icon-btn .ui-icon {
+  color: inherit !important;
+}
 .workbench .chat-messages { padding: 18px 16px; background: var(--surface-container-lowest); }
-.workbench .chat-messages-empty { padding: 8px; color: var(--on-surface-variant); }
+.workbench .chat-messages-empty { padding: 8px; color: var(--on-surface-variant); height: 100%; display: flex; align-items: center; justify-content: center; }
+
+/* 简约空聊天状态与未配置提示 */
+.workbench .chat-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px 16px;
+  box-sizing: border-box;
+}
+.workbench .chat-empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--on-surface);
+  margin-bottom: 6px;
+}
+.workbench .chat-empty-hint {
+  font-size: 12px;
+  color: var(--on-surface-variant);
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+.workbench .chat-empty-config-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--outline-variant);
+  border-radius: 6px;
+  background: var(--surface-container-high);
+  color: var(--on-surface);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.workbench .chat-empty-config-btn:hover {
+  background: var(--on-surface);
+  color: var(--surface-container-lowest);
+}
+.workbench .model-warning {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--surface-container-high) !important;
+  color: var(--on-surface-variant) !important;
+  border: 1px solid var(--outline-variant) !important;
+  border-radius: 4px;
+}
 .workbench .chat-input-area { background: var(--surface-container-lowest); border-top: 1px solid var(--outline-variant); padding: 12px; }
 .workbench .chat-input-wrapper { background: var(--surface-container-lowest); border: 1px solid var(--outline-variant); border-radius: 6px; }
 .workbench .chat-input-wrapper textarea.chat-input { background: transparent; color: var(--on-surface); min-height: 94px; font-size: 12px; }

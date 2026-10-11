@@ -633,6 +633,7 @@ window.GIS = window.GIS || {};
       dot.title = (cur ? cur.name : 'AI 模型') + '：就绪在线';
     }
     updateModelWarning();
+    if (typeof updateGreeting === 'function') updateGreeting();
   }
 
   function updateModelWarning() {
@@ -642,16 +643,23 @@ window.GIS = window.GIS || {};
     var anyKey = providers.some(function(p) { return !!p.api_key; });
     var cur = GIS.api.currentProvider();
     if (!anyKey) {
-      warn.style.display = 'block';
-      warn.querySelector('span').textContent = '请配置 API Key（任选一个 Provider 填 Key），点击齿轮按钮设置';
+      warn.style.display = 'flex';
+      warn.innerHTML = '<span>尚未配置 API Key</span> <button type="button" class="warn-config-link" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11px;padding:0 2px;">去配置</button>';
     } else if (cur && !cur.api_key) {
-      warn.style.display = 'block';
-      warn.querySelector('span').textContent = '当前 Provider 未填 Key，请先在设置里配置';
+      warn.style.display = 'flex';
+      warn.innerHTML = '<span>当前模型未填 Key</span> <button type="button" class="warn-config-link" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11px;padding:0 2px;">去配置</button>';
     } else if (cur && cur.api_key && GIS.api.getModelStatus(cur.id) === 'offline') {
-      warn.style.display = 'block';
-      warn.querySelector('span').textContent = '当前 Provider 连接失败，请检查密钥 / 接口地址';
+      warn.style.display = 'flex';
+      warn.innerHTML = '<span>当前模型连接失败</span> <button type="button" class="warn-config-link" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11px;padding:0 2px;">检查设置</button>';
     } else {
       warn.style.display = 'none';
+    }
+    var link = warn.querySelector('.warn-config-link');
+    if (link) {
+      link.onclick = function() {
+        var s = document.getElementById('settingsBtn');
+        if (s) s.click();
+      };
     }
   }
 
