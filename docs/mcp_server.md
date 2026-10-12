@@ -60,15 +60,15 @@ set GEOWORKTABLE_MCP_ROOTS=D:\gis_data;E:\my_repo\Gis-WorkTable
       "command": "python",
       "args": ["-m", "backend.services.mcp_server"],
       "env": {
-        "PYTHONPATH": "E:\\my_repo\\Gis-WorkTable",
-        "GEOWORKTABLE_MCP_ROOTS": "E:\\my_repo\\Gis-WorkTable;D:\\gis_data"
+        "PYTHONPATH": "<你的Gis-WorkTable仓库根目录绝对路径，如 D:\\projects\\Gis-WorkTable>",
+        "GEOWORKTABLE_MCP_ROOTS": "<允许读写的GIS数据根目录，多个用分号分隔>"
       }
     }
   }
 }
 ```
 
-注意：`args` 中的模块路径依赖 `PYTHONPATH` 指向仓库根目录（Windows 路径转义为 `\\`）。
+注意：`args` 中的模块路径依赖 `PYTHONPATH` 指向仓库根目录（Windows 路径在 JSON 中需双斜杠 `\\` 转义）。
 
 ## 在 Cursor 中配置
 
@@ -81,8 +81,8 @@ set GEOWORKTABLE_MCP_ROOTS=D:\gis_data;E:\my_repo\Gis-WorkTable
       "command": "python",
       "args": ["-m", "backend.services.mcp_server"],
       "env": {
-        "PYTHONPATH": "E:\\my_repo\\Gis-WorkTable",
-        "GEOWORKTABLE_MCP_ROOTS": "E:\\my_repo\\Gis-WorkTable"
+        "PYTHONPATH": "<你的Gis-WorkTable仓库根目录绝对路径>",
+        "GEOWORKTABLE_MCP_ROOTS": "<你的Gis-WorkTable仓库根目录绝对路径>"
       }
     }
   }

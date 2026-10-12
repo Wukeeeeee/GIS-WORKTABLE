@@ -30,9 +30,9 @@
   - `docs/PROJECT_AUDIT.md`：建立完整的系统架构审计与功能清单文档。
 
 ### 4. 实际执行的测试命令与结果
-- `D:\python\python.exe -m pytest backend/tests/test_spatial_tools.py -k "test_utm_crs_boundary or test_layer_control_rename_sync" -q`
+- `python -m pytest backend/tests/test_spatial_tools.py -k "test_utm_crs_boundary or test_layer_control_rename_sync" -q`
   - 结果：2 passed（通过极值边界与图层重命名状态同步测试）。
-- `D:\python\python.exe -m pytest backend/tests/test_spatial_tools.py -q`
+- `python -m pytest backend/tests/test_spatial_tools.py -q`
   - 结果：全量 66 项空间工具测试 100% passed。
 
 ### 5. 当前阻塞事项与下一步计划

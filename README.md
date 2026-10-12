@@ -80,9 +80,9 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 浏览器打开 <http://127.0.0.1:8000>。开发时可在启动命令末尾添加 `--reload`。
 
-Windows 可运行 `start.bat` 或 `start-desktop.bat`。启动器只复用当前仓库的 GIS 服务；默认固定使用 8000，冲突时报错，不自动切换端口，以保持浏览器本地存储地址稳定。可以用环境变量 `GIS_PORT` 手动指定其他端口。`stop.bat` 只停止默认端口（或 `GIS_PORT` 指定端口上）身份匹配的服务；更新前启动的旧服务请在原窗口按 Ctrl+C 关闭。
+Windows 可运行 `start.bat` 或 `scripts/start-desktop.bat`。启动器只复用当前仓库的 GIS 服务；默认固定使用 8000，冲突时报错，不自动切换端口，以保持浏览器本地存储地址稳定。可以用环境变量 `GIS_PORT` 手动指定其他端口。`scripts/stop.bat` 只停止默认端口（或 `GIS_PORT` 指定端口上）身份匹配的服务；更新前启动的旧服务请在原窗口按 Ctrl+C 关闭。
 
-Python 解释器依次选择 `GIS_PYTHON`、项目 `.venv`、`D:\python\python.exe`、PATH 中的 Python。上述手动安装命令尚未在全新环境验证，macOS / Linux 也尚未完成平台验收。
+Python 解释器依次选择 `GIS_PYTHON`、项目 `.venv`、PATH 中的 Python。上述手动安装命令尚未在全新环境验证，macOS / Linux 也尚未完成平台验收。
 
 ### 第一次操作：不配置 AI 也可体验
 
@@ -102,9 +102,9 @@ Python 解释器依次选择 `GIS_PYTHON`、项目 `.venv`、`D:\python\python.e
 
 ### Windows 脚本与桌面版
 
-依赖安装完成后，可使用根目录 `start.bat` 启动 Web 版，`stop.bat` 停止服务。
+依赖安装完成后，可使用根目录 `start.bat` 启动 Web 版，`scripts/stop.bat` 停止服务。
 
-桌面版先安装依赖，再运行根目录 `start-desktop.bat`：
+桌面版先安装依赖，再运行 `scripts/start-desktop.bat`：
 
 ```bash
 cd desktop
