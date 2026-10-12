@@ -226,8 +226,7 @@ def verify_result(final_text: str = "", pending: dict = None, task_id: str = Non
             elif st == ST_EMPTY:
                 result["issues"].append(f"产物 `{rel}` 文件存在但为 0 字节，等于未生成")
             elif st == ST_UNREGISTERED:
-                # 磁盘实际存在且非空，仅未在 registry 显式登记（例如脚本直接写盘），属真实生成产物，不作为错误拦截
-                pass
+                result["issues"].append(f"回复声称的产物 `{rel}` 存在于磁盘，但未登记在本次执行记录中（可能为历史残留文件或未受控输出）")
             elif st == ST_CLAIM_MISMATCH:
                 result["issues"].append(f"回复声称的产物 `{rel}` 与 registry 实际登记的产物不一致（LLM 可能张冠李戴）")
             elif st == ST_PATH_MISMATCH:

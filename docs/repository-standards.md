@@ -46,29 +46,61 @@ Description 用一至两句说明“是什么、解决什么问题、主要方�
 
 缩进与换行以根目录 `.editorconfig` 为准：UTF-8、LF，Python 四空格，其他文件两空格。修改旧文件时沿用局部风格，避免无关格式化。
 
-## Commit 与 PR 标题
+## Commit 规范与 Description（提交说明）
 
-采用 Conventional Commits 风格：
+采用 Conventional Commits 风格，**纯中文、重点清晰、杜绝双语冗余与八股文**。
 
-```text
-type(scope): 中文描述 / English description
-```
+> **术语约定**：开发中所述的 **Description** 均指 **Git Commit 的详细描述（Message Body）**，而非 PR 描述。
 
-类型：`feat` 新能力、`fix` 修复、`docs` 文档、`refactor` 不改变外部行为的重构、`test` 测试、`perf` 性能、`build` 依赖/构建、`ci` 自动化、`chore` 维护、`revert` 回退。
-
-scope 推荐：`agent`、`tools`、`map`、`layers`、`3d`、`geosource`、`mcp`、`desktop`、`docs`。可按模块新增，scope 可以省略。
-
-提交标题和正文使用中英双语，中文在前、英文在后。`type` 与 `scope` 保留英文机器标识；两种语言描述同一组具体变化，避免英文部分额外增加功能承诺。
+### 1. 提交标题（Commit Title）
 
 ```text
-fix(tools): 限制 UTM 带号 / Clamp UTM zones
-feat(layers): 导出选中图层 / Export selected layers
-docs: 补充贡献指南 / Add contribution guide
+type(scope): 简短精炼的核心改动总结
 ```
 
-标题建议控制在约 72 字符内。说明改了什么，避免只写 `update`、`优化`、`修复 bug`。正文先用中文描述具体改动，再给出对应英文；提交说明不包含验证结果或限制章节，验证证据仍记录在相关文档或 PR 中。破坏兼容时使用 `!`，并在正文写 `BREAKING CHANGE:` 和迁移办法。
+- **类型 (type)**：`feat`（新功能）、`fix`（缺陷修复）、`refactor`（代码重构）、`perf`（性能提升）、`test`（测试用例）、`docs`（文档更新）、`chore`（构建/工具链/维护）。
+- **范围 (scope)**：`core`、`agent`、`tools`、`layers`、`map`、`viz`、`project`、`ui` 等。
+- 建议控制在约 50~72 字符内，一眼看出核心变更。
 
-已推送的历史默认保留，不为套用规范批量改写。维护者明确要求修正某条已推送提交时，应先保留原提交的恢复引用，核对远程提交，并使用 `--force-with-lease` 防止覆盖其他人的新增提交。
+### 2. 提交说明（Commit Description）
+
+针对多模块或跨系统更新，在第一行 Title 后空一行，正文中**按模块划分小节**（格式为 `type(sub-scope): 中文小结`），并在下方列出 1~3 条核心改动要点：
+
+```text
+feat(core): 核心体验升级——图层感知增强、工作区交互完善与出图字体修复
+
+feat(layers): 优化图层属性表与拖拽排序
+- 属性表增行与保存后保持当前激活标签页，新增“+列”自定义字段与字段计算器
+- 增加图层拖拽放置指示线（上下高亮线）与卡片幽灵拖动样式
+
+feat(map): 增加缩放范围控制与透明度联动
+- 参照 ArcMap 增加图层可见缩放范围（min/max zoom），随地图缩放自适应显隐
+- 打通图层卡片与属性检查器透明度滑块的双向联动，支持手绘要素透明度调节
+
+feat(agent): 增强图层状态感知与路由稳定性
+- 扩展 get_registered_layers 返回要素数、几何类型、bbox与属性字段
+- 优化意图路由与提示词，避免图层查询被跳过，禁止图层存在时回复免责声明
+
+feat(viz): 修复 Matplotlib 中文字体方块乱码
+- 调整沙箱样式加载顺序，解决中文标签显示为方块（□□□）的问题
+- 完善专题图布局提示，防止图例表格与主图重叠
+
+feat(project): 彻底修复新建工程残留图层底图问题
+- 新建工程与重置会话时深度清理 GIS.state 与孤立图层，消除幽灵边界残留
+
+test(core): 补充图层感知工具回归测试
+- 补充针对新版 get_registered_layers 与 list_layers 的单元测试（15 passed）
+```
+
+### 3. 本地 Git 模板启用
+
+在项目根目录下已配置 `.gitmessage` 模板，可在本地终端执行以下命令将该模板绑定为本地默认提交模板：
+
+```bash
+git config --local commit.template .gitmessage
+```
+
+
 
 ## Issue、PR 与功能描述
 

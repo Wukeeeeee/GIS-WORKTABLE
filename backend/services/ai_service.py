@@ -305,6 +305,7 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
         adjust_text(texts, arrowprops=dict(arrowstyle='->', color='#666', lw=0.6))
         ```
       - **注记文本极度简练**：每处注记控制在1~2行短文本（如 `f"{name}\\n{val}亿"`），字号 7~8.5pt。**严禁**拼接“第14位·16773.5亿元”这类超长文本；背景框 bbox 必须使用极细浅灰边（`edgecolor='#bbb', lw=0.5`），严禁使用粗黑边。
+      - **右侧清单/文字列表防挤压与截断**：若需要在图表右侧排布列表（如“范围内省级行政区 → 行政中心”），**禁止使用密集的无间距循环 text**！应使用 `ax.text` 配合合理的行高间距，或使用双子图结构（左图 `ax_map`，右图 `ax_table` / `ax_list`），确保右侧文字留有充足画布宽度（如 figsize 设为 14x8 或 16x9），严禁让右侧长列表超出画幅边界。
       - **原生备选方案（指引线错落）**：若不使用 adjustText，对密集区域必须使用 `ax.annotate(..., xy=(lon, lat), xytext=(...), arrowprops=dict(arrowstyle='-', color='#888', lw=0.5))` 将注记引向东北/东南/西北不同方位拉开间距。
       - 遥感分类/土地利用图必须在图例中标注类别名称与颜色对应关系。
   - **专题图与空间可视化规范（强制执行，区分单区与多区）**：
@@ -750,7 +751,10 @@ def _build_system_content(cfg, message: str, session_id: str = "default", force_
                 _lyr_name = _lyr.get('filename') or _lyr.get('name', '未知')
                 _layer_lines.append(f"  - {_lyr_name}：{_cnt} 个 {_typ}{_ext}{_fields_str}")
             appendix_parts.append("## 当前已加载的图层\n" + "\n".join(_layer_lines) +
-                "\n重要：如果已有路网图层，优先使用现有图层做分析，严禁重复下载。")
+                "\n重要：如果已有图层，优先使用现有图层做分析，严禁重复下载。"
+                "\n提示：当用户询问当前有几个图层、图层有几个要素/东西、图层内容时，直接清晰列出图层及要素数量并给出概览；若需最新动态信息或图层有变更，可主动调用 get_registered_layers 或 list_layers 工具，绝不能回答没有拿到图层实时数据。")
+        else:
+            appendix_parts.append("## 当前已加载的图层\n当前地图尚未注册任何图层。如果用户询问图层或要求处理图层，可提醒用户先在工作区导入数据或在地图上绘制图层；亦可调用 get_registered_layers 工具实时确认。")
     except Exception:
         pass
 

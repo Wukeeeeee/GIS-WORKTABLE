@@ -155,6 +155,11 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as _fm
 import os as _os
 
+try:
+    plt.style.use("ggplot")
+except Exception:
+    pass
+
 # 候选字体路径（按优先级，与公共模块保持一致）
 _candidate_fonts = [
     r'C:\Windows\Fonts\msyh.ttc',
@@ -180,7 +185,7 @@ for _fp in _candidate_fonts:
             _fm.fontManager.addfont(_fp)
             _prop = _fm.FontProperties(fname=_fp)
             _font_name = _prop.get_name()
-            plt.rcParams['font.sans-serif'] = [_font_name] + plt.rcParams.get('font.sans-serif', ['DejaVu Sans'])
+            plt.rcParams['font.sans-serif'] = [_font_name, 'Microsoft YaHei', 'SimHei', 'Noto Sans CJK SC', 'DejaVu Sans']
             plt.rcParams['font.family'] = 'sans-serif'
             plt.rcParams['axes.unicode_minus'] = False
             _font_set = True
@@ -193,15 +198,13 @@ if not _font_set:
     try:
         for _f in _fm.fontManager.ttflist:
             if any(_kw in _f.name.lower() for _kw in ['yahei', 'simhei', 'noto sans cjk', 'noto sans sc', 'wqy', 'pingfang', 'heiti', 'songti', 'kaiti', 'fangsong']):
-                plt.rcParams['font.sans-serif'] = [_f.name] + plt.rcParams.get('font.sans-serif', ['DejaVu Sans'])
+                plt.rcParams['font.sans-serif'] = [_f.name, 'DejaVu Sans']
                 plt.rcParams['font.family'] = 'sans-serif'
                 plt.rcParams['axes.unicode_minus'] = False
                 _font_set = True
                 break
     except Exception:
         pass
-
-plt.style.use("ggplot")
 '''
 
 

@@ -207,6 +207,9 @@ window.GIS = window.GIS || {};
       // 先恢复聊天面板可见
       _hideHistory();
       // 先清理旧图层与地图要素，避免与旧工程叠加冲突
+      if (GIS.state && typeof GIS.state.clearAll === 'function') {
+        try { GIS.state.clearAll(); } catch(_) {}
+      }
       if (GIS.layers && typeof GIS.layers.clearAll === 'function') {
         try { GIS.layers.clearAll(true); } catch(_) {}
       }

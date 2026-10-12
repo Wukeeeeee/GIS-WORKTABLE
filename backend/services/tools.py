@@ -214,10 +214,24 @@ def get_pending_state():
         return result
 
 
+_current_run_id: str = ""
+
+
 def set_current_task(task_id: str):
     """设置当前任务 ID（由 graph.py 在每轮请求开始时调用）"""
     global _current_task_id
     _current_task_id = task_id or ""
+
+
+def set_current_run(run_id: str):
+    """设置当前单次执行 ID（由 graph.py 在每轮请求开始时调用）"""
+    global _current_run_id
+    _current_run_id = run_id or ""
+
+
+def get_current_run_id() -> str:
+    """获取当前单次执行 ID"""
+    return _current_run_id
 
 
 def set_last_user_message(msg: str):
@@ -1000,9 +1014,14 @@ def execute_python(code: str) -> str:
                 _imports.update(_alias.name.split('.')[0] for _alias in _node.names)
             elif isinstance(_node, ast.ImportFrom) and _node.module:
                 _imports.add(_node.module.split('.')[0])
-        _needs_plot = 'matplotlib' in _imports or any(
-            isinstance(_node, ast.Name) and _node.id == 'plt'
-            for _node in ast.walk(_code_tree))
+        _plot_libs = {'matplotlib', 'plt', 'geopandas', 'gpd', 'seaborn', 'sns', 'cartopy', 'contextily'}
+        _has_plot_import = bool(_imports.intersection({'matplotlib', 'geopandas', 'seaborn', 'cartopy', 'contextily', 'pandas'}))
+        _has_plot_call = any(
+            (isinstance(_node, ast.Name) and _node.id in {'plt', 'ax', 'fig', 'gpd'}) or
+            (isinstance(_node, ast.Attribute) and _node.attr in {'plot', 'savefig', 'subplots', 'figure'})
+            for _node in ast.walk(_code_tree)
+        )
+        _needs_plot = _has_plot_import or _has_plot_call or ('plot' in code) or ('savefig' in code)
         _osm_setup_code = r"""
 try:
     import osmnx as _ox
@@ -1413,16 +1432,40 @@ def _format_extent(bbox: list) -> str:
 
 @tool
 def get_registered_layers() -> str:
-    """查看当前地图上所有已加载的图层列表，包括图层名、要素数量、几何类型、覆盖范围"""
+    """查看当前地图上所有已加载和已注册的图层列表，包括图层名、要素数量（有几个要素/东西）、几何类型、覆盖范围和属性字段。
+    
+    【适用场景】
+    - 用户询问“现在有几个图层”、“图层有几个东西”、“有哪些图层”、“当前地图有什么数据”
+    - 对图层进行进一步空间分析、筛选或处理前，先查看当前图层状态和要素数
+    """
     if not _registered_layers:
-        return "当前没有已加载的图层"
-    lines = [f"当前共 {len(_registered_layers)} 个图层："]
+        return "当前地图没有已加载或注册的图层。"
+    lines = [f"当前地图共注册了 {len(_registered_layers)} 个图层："]
     for name, info in _registered_layers.items():
         types = ", ".join(info.get("geometry_types", ["未知"]))
         ext = _format_extent(info.get("bbox", []))
-        lines.append(f"  - {name}：{info['feature_count']} 个要素，类型：{types}，{ext}")
-    lines.append("\n如需查看某个图层的具体数据内容，可以使用 get_layer_detail 工具")
+        fc = info.get("feature_count", 0)
+        fields = []
+        geojson = info.get("geojson") or {}
+        if isinstance(geojson, dict):
+            features = geojson.get("features", [])
+            if features:
+                for f in features[:15]:
+                    props = f.get("properties") or {}
+                    for k in props.keys():
+                        if k not in fields and k != "_fid":
+                            fields.append(k)
+        fields_desc = f"，属性字段: {', '.join(fields[:8])}" if fields else ""
+        lines.append(f"  - 图层「{name}」: {fc} 个要素（东西），几何类型: {types}，范围: {ext}{fields_desc}")
+    lines.append("\n如需查看指定图层的具体属性明细或前几条要素内容，可进一步调用 get_layer_detail(layer_name) 工具；如需对图层做缓冲区、叠加分析、裁剪等处理，可直接调用对应 GIS 工具。")
     return "\n".join(lines)
+
+
+@tool
+def list_layers() -> str:
+    """查看当前工作区/地图所有已注册图层及要素数量（有几个要素/东西）、几何类型、覆盖范围、属性字段等详细信息。
+    当用户询问“现在图层有几个东西”、“有哪些图层”、“查看图层列表”时调用此工具。"""
+    return get_registered_layers()
 
 
 @tool
@@ -5941,21 +5984,21 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
 # ============================================================
 
 def _format_discover_hits(hits: list) -> str:
-    """把发现结果格式化为 Markdown 表格。"""
+    """把发现结果格式化为 Markdown 表格，并展示用于一键下载的数据句柄 (Handle)。"""
     if not hits:
         return "（无命中）"
     lines = [
-        "| 数据源 | 类型 | 区域 | 格式 | CRS | 来源 | 状态 |",
-        "|---|---|---|---|---|---|---|",
+        "| 句柄 (Handle) | 数据源 | 类型 | 区域 | 格式 | 状态 |",
+        "|---|---|---|---|---|---|",
     ]
     for h in hits:
         status = "可获取"
         if not h.get("downloadable"):
             status = "需认证" + (f"：{str(h.get('note'))[:40]}" if h.get('note') else "")
+        handle_code = f"`{h.get('handle', '-')}`"
         lines.append(
-            f"| {h.get('provider', '-')} | {h.get('kind_label', '-')} "
-            f"| {h.get('area', '-')} | {h.get('file_format', '-')} "
-            f"| {h.get('crs', '-')} | {h.get('provider_id', '-')} | {status} |"
+            f"| {handle_code} | {h.get('provider', '-')} | {h.get('kind_label', '-')} "
+            f"| {h.get('area', '-')} | {h.get('file_format', '-')} | {status} |"
         )
     return "\n".join(lines)
 
@@ -5973,7 +6016,7 @@ def discover_gis_data(query: str = "", kind: str = "", area: str = "",
 - area: 城市/区域名（中文也可，如 长沙、长沙市）；或用 bbox='minLng,minLat,maxLng,maxLat'。
 - provider: 数据源 osm/copernicus/usgs/gscloud，默认 auto 自动选。
 - time_start/time_end: 遥感数据可选时间范围（如 2024-01-01）。
-用法：用户想找开放 GIS 数据时先用本工具返回来源与可获取状态，再调用 download_gis_data 获取。"""
+用法：用户想找开放 GIS 数据时先用本工具返回来源与可获取状态，再使用返回的句柄 handle 调用 download_gis_data 获取。"""
     from backend.services import data_discovery
     try:
         r = data_discovery.discover(
@@ -5995,30 +6038,33 @@ def discover_gis_data(query: str = "", kind: str = "", area: str = "",
         for n in r["notes"]:
             parts.append(f"- {n['message']}" + (f"（{n['hint']}）" if n.get('hint') else ""))
     if r["hits"]:
+        first_handle = r['hits'][0].get('handle', '')
         parts.append(
-            "\n下一步：确认后调用 **download_gis_data** 获取并加载到地图。"
-            f"（kind='{r['kind']}', area='{r['area']}', provider 见表格）"
+            f"\n下一步：确认后直接调用 **download_gis_data(handle='{first_handle}')** 即可一键获取并加载到地图（免重复传参）。"
         )
     return "\n".join(parts)
 
 
 @tool
-def download_gis_data(query: str = "", kind: str = "", area: str = "",
+def download_gis_data(handle: str = "", query: str = "", kind: str = "", area: str = "",
                       bbox: str = "", provider: str = "", file_format: str = "geojson",
                       time_start: str = "", time_end: str = "",
                       layer_name: str = "", max_items: int = 0) -> str:
     """从开放 GIS 数据源获取数据 → 保存为标准 GIS 文件(GeoJSON/GPKG/SHP) → 完整性/CRS 校验 → 加载到地图。
 矢量数据源现支持 OpenStreetMap（provider=osm，公开免认证）。
-- kind：road/道路/路网→roads，building/建筑→buildings，poi/兴趣点→pois，
-  water/水系/河流→waterways，landuse/土地利用→landuse，transport/铁路→transport。
-- area：城市/区域名（如 长沙/长沙市），或 bbox='minLng,minLat,maxLng,maxLat'。
+
+【推荐用法】
+若前一步已执行 discover_gis_data，可直接传入 handle（如 handle='dh_osm_roads_abc'），系统自动还原所有区域和数据源参数，无需再传其他参数！
+
+常规参数：
+- kind：roads/buildings/pois/waterways/landuse/transport 等。
+- area：城市/区域名（如 长沙市），或 bbox='minLng,minLat,maxLng,maxLat'。
 - file_format：geojson/gpkg/shp，默认 geojson。
-- layer_name：自定义图层名（可选）。
-示例：kind='roads', area='长沙市' → 下载道路数据并加载。用户已看到 discover 结果后，直接调用本工具获取。"""
+- layer_name：自定义图层名（可选）。"""
     from backend.services import data_discovery
     try:
         asset = data_discovery.download(
-            query=query, kind=kind, area=area, bbox=bbox,
+            handle=handle, query=query, kind=kind, area=area, bbox=bbox,
             provider_id=provider, file_format=file_format,
             time_start=time_start, time_end=time_end,
             max_items=max_items, layer_name=layer_name,
@@ -8151,6 +8197,96 @@ def execute_workflow(workflow_json: str) -> str:
         return f"Workflow 执行失败: {str(e)[:200]}"
 
 
+@tool
+def materialize_workflow(workflow_name: str = "") -> str:
+    """【执行实录沉淀】将当前任务（或最近一次分析会话）中真实成功跑通的工具链，自动提取并物化为可调参、可复现的 DAG 工作流文件。
+
+    【适用场景】
+    - 用户完成了一次复杂的多轮空间分析（如：查边界 → 做缓冲区 → 叠置分析 → 导出统计图表），希望将其实录固化为标准工作流资产；
+    - 以后更换地点或参数时，可直接重用该 DAG。
+
+    【参数】
+    workflow_name: 可选，工作流名称。留空时自动根据当前任务命名。
+
+    【返回】
+    物化结果说明及工作流保存路径。
+    """
+    try:
+        from backend.services.workflow import materialize_from_history, save_workflow
+        tid = _current_task_id or ""
+        if not tid:
+            return "当前会话暂无活跃的任务记录，请先执行至少一次 GIS 分析操作。"
+
+        wf = materialize_from_history(tid, workflow_name=workflow_name)
+        if not wf or not wf.get("nodes"):
+            return f"任务 {tid} 中未找到成功的工具执行记录，无法物化工作流。"
+
+        save_dir = os.path.join(_temp_output_dir, "workflows")
+        os.makedirs(save_dir, exist_ok=True)
+        filename = f"{wf['id']}.giswork"
+        filepath = os.path.join(save_dir, filename)
+
+        if save_workflow(wf, filepath):
+            node_summaries = [f"  {i+1}. {n['name']} (工具: {n['tool']})" for i, n in enumerate(wf["nodes"])]
+            nodes_text = "\n".join(node_summaries)
+            return (
+                f"已成功从真实执行历史中物化 DAG 工作流！\n"
+                f"工作流名称：{wf['name']}\n"
+                f"包含节点（{len(wf['nodes'])}个）：\n{nodes_text}\n"
+                f"保存路径：{filepath}\n"
+                f"后续可通过 execute_workflow 工具或前端工作流面板直接复用/重算。"
+            )
+        else:
+            return "工作流物化生成成功，但保存到磁盘时失败。"
+    except Exception as e:
+        return f"物化工作流失败: {str(e)[:200]}"
+
+
+@tool
+def query_spatial_sql(sql: str, result_layer_name: str = "") -> str:
+    """【安全只读 SQL 查询与透视】使用标准 SQL 对当前已加载的图层属性或要素进行极速只读查询（SELECT/WITH）。
+
+    【核心能力】
+    1. 属性过滤与排序：例如 SELECT * FROM "南京市_学校" WHERE "type"='公立' ORDER BY "students" DESC LIMIT 10
+    2. 统计与透视：例如 SELECT "district", count(*) as 数量 FROM "南京市_学校" GROUP BY "district"
+    3. 自动空间上图 (Query to Layer)：若 SELECT 中包含 _geom_json，或使用了 SELECT *，系统会自动将过滤出的要素组装为高亮新图层并添加到地图上！
+    4. 严格只读安全：拒绝任何 UPDATE/DELETE/DROP/CREATE 破坏性操作。
+
+    【参数】
+    sql: 标准 SELECT 或 WITH 只读查询语句。表名即为图层名（可用双引号包裹）。
+    result_layer_name: 可选，若查询包含空间几何且需要上图，可指定生成的新图层名称。
+
+    【返回】
+    Markdown 格式的数据结果表格，若生成了新图层则一并说明。
+    """
+    try:
+        from backend.services.sql_engine import execute_layer_sql
+        res = execute_layer_sql(sql, _registered_layers, create_result_layer=True, result_layer_name=result_layer_name)
+        if not res.get("ok"):
+            return f"SQL 查询未通过: {res.get('error')}"
+
+        out_lines = [f"**SQL 执行成功**（返回 {res['row_count']} 条记录）：\n"]
+        out_lines.append(res.get("markdown_table", ""))
+
+        # 若生成了衍生图层，自动推送到地图
+        derived_geojson = res.get("derived_geojson")
+        if derived_geojson and derived_geojson.get("features"):
+            layer_name = result_layer_name or f"SQL过滤结果_{len(derived_geojson['features'])}条"
+            style = {
+                "color": "#e11d48",
+                "fillColor": "#fb7185",
+                "fillOpacity": 0.4,
+                "weight": 2
+            }
+            _push_layer(layer_name, derived_geojson, style=style)
+            _register_layer(layer_name, derived_geojson)
+            out_lines.append(f"\n✨ 已将包含空间几何的 {len(derived_geojson['features'])} 个要素自动加载为新图层「{layer_name}」！")
+
+        return "\n".join(out_lines)
+    except Exception as e:
+        return f"SQL 查询执行异常: {str(e)[:200]}"
+
+
 # ============================================================
 # 工具: get_elevation_data — 按需获取真实地表高程 DEM
 # ============================================================
@@ -9129,6 +9265,7 @@ tools = [
     cn_aoi_search,
     cn_aoi_extract,
     get_registered_layers,
+    list_layers,
     get_layer_detail,
     datav_boundary,
     drill_down,
@@ -9222,6 +9359,8 @@ tools = [
     inspect_satellite_image,
     generate_static_map,
     execute_workflow,
+    materialize_workflow,
+    query_spatial_sql,
     get_elevation_data,
     create_swipe,
     close_swipe,

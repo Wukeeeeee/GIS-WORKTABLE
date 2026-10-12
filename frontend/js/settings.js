@@ -111,8 +111,35 @@ window.GIS = window.GIS || {};
     renderProviderList();
     populateAmapInput();
     populateGeoCredentials();
+    refreshStorageStats();
     modal.style.display = 'flex';
     updateModelStatusDot();
+  }
+
+  function refreshStorageStats() {
+    fetch('/api/storage/stats')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var pEl = document.getElementById('dbPathDisplay');
+        var rEl = document.getElementById('dbRunsCount');
+        var aEl = document.getElementById('dbArtsCount');
+        var bEl = document.getElementById('dbStatusBadge');
+        if (pEl) pEl.textContent = data.db_path || '未知';
+        if (rEl) rEl.textContent = data.runs_count || 0;
+        if (aEl) aEl.textContent = data.artifacts_count || 0;
+        if (bEl) {
+          if (data.exists) {
+            bEl.textContent = '正常连接';
+            bEl.style.background = '#e6f4ea';
+            bEl.style.color = '#137333';
+          } else {
+            bEl.textContent = '库文件未就绪';
+            bEl.style.background = '#fce8e6';
+            bEl.style.color = '#c5221f';
+          }
+        }
+      })
+      .catch(function() {});
   }
 
   function closeModal() {

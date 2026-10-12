@@ -219,11 +219,11 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
 .workspace-pane-intro { color: var(--on-surface-variant); font-size: 11px; line-height: 1.7; padding: 0 10px 18px; }
 .workspace-layers { flex: 1; min-height: 0; display: flex; }
 .workbench .map-layer-panel { position: static; width: 100%; height: 100%; border: 0; border-radius: 0; box-shadow: none; background: var(--surface-container-lowest); transition: none; }
-.workbench .map-layer-header { height: 48px; background: transparent; padding: 0 12px; border-bottom: 1px solid var(--outline-variant); }
-.workbench .map-layer-title { font-size: 11px; font-weight: 400; color: var(--on-surface-variant); }
+.workbench .map-layer-header { min-height: 44px; height: auto; background: transparent; padding: 6px 12px; border-bottom: 1px solid var(--outline-variant); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.workbench .map-layer-title { font-size: 11px; font-weight: 500; color: var(--on-surface-variant); white-space: nowrap; flex-shrink: 0; }
 .workbench .map-layer-title > .ui-icon { display: none; }
-.workbench .map-layer-header-actions { margin-left: auto; gap: 6px; }
-.workbench .map-layer-btn { height: 28px; padding-inline: 8px; border: 1px solid var(--outline-variant); border-radius: 5px; background: transparent; color: var(--on-surface); font-size: 11px; }
+.workbench .map-layer-header-actions { margin-left: auto; gap: 4px; display: flex; flex-wrap: wrap; align-items: center; }
+.workbench .map-layer-btn { height: 26px; padding: 0 6px; border: 1px solid var(--outline-variant); border-radius: 4px; background: transparent; color: var(--on-surface); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 .workbench .map-layer-btn.primary { background: var(--on-surface); color: var(--surface-container-lowest); border-color: var(--on-surface); }
 .workbench .map-layer-body { flex: 1; max-height: none; min-height: 0; overflow: auto; padding: 6px 10px; }
 .workbench .map-layer-empty { min-height: 240px; gap: 12px; color: var(--on-surface-variant); text-align: center; }
@@ -249,7 +249,52 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
 .workbench .map-layer-table .col-actions { grid-column: 4; grid-row: 1 / 3; width: auto; justify-content: flex-end; align-self: center; }
 .workbench .map-layer-table .layer-action-btn { color: var(--on-surface-variant); width: 26px; height: 28px; }
 .workbench .map-layer-table .layer-more-btn { font-size: 22px; line-height: 1; }
+.workbench .map-layer-table tbody tr.drag-over-top {
+  position: relative;
+  box-shadow: 0 -3px 0 0 var(--workspace-accent, #3b82f6) !important;
+  border-top-color: var(--workspace-accent, #3b82f6) !important;
+}
+.workbench .map-layer-table tbody tr.drag-over-top::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: -2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--workspace-accent, #3b82f6);
+  box-shadow: 0 0 4px rgba(59, 130, 246, 0.6);
+  z-index: 10;
+  pointer-events: none;
+}
+.workbench .map-layer-table tbody tr.drag-over-bottom {
+  position: relative;
+  box-shadow: 0 3px 0 0 var(--workspace-accent, #3b82f6) !important;
+  border-bottom-color: var(--workspace-accent, #3b82f6) !important;
+}
+.workbench .map-layer-table tbody tr.drag-over-bottom::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: -2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--workspace-accent, #3b82f6);
+  box-shadow: 0 0 4px rgba(59, 130, 246, 0.6);
+  z-index: 10;
+  pointer-events: none;
+}
+.workbench .map-layer-table tbody tr.dragging {
+  opacity: 0.35 !important;
+  border-style: dashed !important;
+  border-color: var(--workspace-accent, #3b82f6) !important;
+  background: var(--surface-container-low, #f5f2f0) !important;
+}
 .workbench .map-layer-table .group-header { border-radius: 4px; margin-block: 8px 4px; background: var(--surface-container-low); font-size: 12px; }
+.workbench .map-layer-table .group-header.group-drag-over { outline: 2px dashed var(--primary, #000); background: var(--surface-container-high, #e0ddd9) !important; }
+.workbench .map-layer-table .group-header button:hover { background: var(--surface-container-highest, #ddd) !important; color: var(--on-surface, #000) !important; }
+.workbench .map-layer-table .group-header .group-delete-btn:hover { color: #d9534f !important; }
 .workbench .main-content { position: relative; min-width: 0; min-height: 0; margin: 12px 12px 12px 0; border-radius: 8px; overflow: hidden; }
 .workspace-divider[hidden] + .main-content { margin-left: 12px; }
 .workbench #worldMapOverlay { position: absolute; inset: 0; z-index: 800; background: var(--surface-container-lowest); }
@@ -487,31 +532,41 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
 .workbench .chat-input-wrapper {
   background: var(--surface-container-lowest);
   border: 1px solid var(--outline-variant);
-  border-radius: 6px;
+  border-radius: 8px;
   width: 100% !important;
   box-sizing: border-box !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  overflow: hidden;
+}
+.workbench .chat-input-wrapper:focus-within {
+  border-color: var(--workspace-accent, #222);
+  box-shadow: 0 0 0 1px var(--workspace-accent, #222);
 }
 .workbench .chat-input-wrapper textarea.chat-input {
   background: transparent;
   color: var(--on-surface);
-  min-height: 94px;
-  font-size: 12px;
+  min-height: 86px;
+  font-size: 12.5px;
+  line-height: 1.5;
   width: 100% !important;
   box-sizing: border-box !important;
   padding: 10px 12px;
+  border: none;
+  outline: none;
+  border-radius: 0;
 }
 .workbench .chat-input-wrapper textarea.chat-input::placeholder { color: var(--on-surface-variant); }
-.workbench .chat-input-wrapper.has-chips textarea.chat-input { min-height: 118px; }
+.workbench .chat-input-wrapper.has-chips textarea.chat-input { min-height: 110px; }
 .workbench .chat-input-model-bar {
-  margin-top: 8px !important;
-  padding: 0 !important;
+  margin-top: 0 !important;
+  padding: 4px 10px 8px 10px !important;
   width: 100% !important;
   box-sizing: border-box !important;
   display: flex !important;
   align-items: center !important;
   justify-content: space-between !important;
   background: transparent !important;
-  height: 28px !important;
+  height: 36px !important;
 }
 .workbench .model-bar-left {
   display: flex;
@@ -531,9 +586,13 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
-  border-radius: 5px !important;
+  border-radius: 6px !important;
   padding: 0 !important;
   box-sizing: border-box !important;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.workbench .model-bar-right .icon-btn:hover {
+  background: var(--surface-container-high) !important;
 }
 .workbench .model-bar-right .icon-btn#stopBtn {
   color: var(--ui-gray-400);
@@ -557,32 +616,43 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
   border: 1px solid var(--outline-variant);
   color: var(--on-surface);
   border-radius: 6px;
-  height: 28px !important;
+  height: 26px !important;
   padding: 0 8px !important;
   display: inline-flex !important;
   align-items: center !important;
   gap: 6px !important;
-  font-size: 12px !important;
+  font-size: 11.5px !important;
   box-sizing: border-box !important;
 }
 .workbench .model-select-wrapper:hover { border-color: var(--on-surface); }
 
-/* 消息气泡主题统一 */
+/* 消息气泡与头像圆角系统规范统一 */
+.workbench .message-avatar {
+  border-radius: 6px !important;
+}
 .workbench .message-bubble-ai {
   background: var(--surface-container-low);
   border: 1px solid var(--outline-variant);
   color: var(--on-surface);
-  border-radius: 6px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
 }
 .workbench .message-bubble-ai::after { display: none; }
 .workbench .message-bubble-user {
   background: var(--surface-container-high);
   border: 1px solid var(--outline-variant);
   color: var(--on-surface);
-  border-radius: 6px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
   box-shadow: none;
 }
 .workbench .message-bubble-user::after { display: none; }
+.workbench .message-bubble code {
+  border-radius: 4px !important;
+  padding: 2px 5px !important;
+}
 .message.message-system,
 .message-system {
   width: 100% !important;
@@ -650,6 +720,37 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
   align-items: center !important;
   justify-content: center !important;
   box-sizing: border-box !important;
+}
+
+/* 附件栏与标签圆角统一 */
+.workbench .layer-attach-bar {
+  border-radius: 6px !important;
+  border: 1px solid var(--outline-variant) !important;
+  background: var(--surface-container-low) !important;
+  padding: 6px 10px !important;
+  margin-bottom: 8px !important;
+}
+.workbench .layer-attach-icon {
+  border-radius: 4px !important;
+  width: 32px !important;
+  height: 32px !important;
+}
+.workbench .attach-badge-type,
+.workbench .attach-badge-count {
+  border-radius: 4px !important;
+}
+.workbench .skill-chip {
+  border-radius: 6px !important;
+  height: 22px !important;
+  font-size: 11px !important;
+}
+.workbench .slash-menu {
+  border-radius: 8px !important;
+  border: 1px solid var(--outline-variant) !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12) !important;
+}
+.workbench .slash-item {
+  border-radius: 4px !important;
 }
 
 /* 全局浮动 Toast 提示组件 */
@@ -920,7 +1021,58 @@ html.gis-workspace .inspector-panel .inspector-body {
   background: var(--on-surface);
   display: none;
 }
-.download-dialog-option.selected .download-dialog-radio-dot {
-  display: block;
+/* 属性表列删除与字段计算器样式 */
+.attr-del-col-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  background: none;
+  border: none;
+  color: var(--on-surface-variant, #999);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0;
+  border-radius: 2px;
+  opacity: 0.6;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
 }
+.attr-del-col-btn:hover {
+  opacity: 1;
+  background: rgba(217, 83, 79, 0.15);
+  color: #d9534f;
+}
+.calc-chip {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--outline-variant, #ddd);
+  background: var(--surface-container-lowest, #fff);
+  color: var(--on-surface, #1c1b1b);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.calc-chip:hover {
+  background: var(--surface-container-high, #e5e2e0);
+  border-color: var(--on-surface-variant, #888);
+}
+.calc-op-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--outline-variant, #ddd);
+  background: var(--surface-container-low, #f5f2f0);
+  color: var(--on-surface, #1c1b1b);
+  cursor: pointer;
+  font-family: monospace;
+  font-weight: 600;
+  transition: background 0.12s;
+}
+.calc-op-btn:hover {
+  background: var(--surface-container-highest, #ddd);
+}
+
 

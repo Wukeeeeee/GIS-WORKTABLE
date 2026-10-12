@@ -240,7 +240,10 @@ def _synthetic_done_stream(result: dict):
         "layer_ops": result.get("layer_ops", []),
         "pending_suggestions": result.get("pending_suggestions"),
         "confirm_pending": result.get("confirm_pending"),
+        "result_check": result.get("result_check"),
+        "qa_warnings": result.get("qa_warnings", []),
         "task_id": result.get("task_id"),
+        "run_id": result.get("run_id"),
     }
     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -1631,6 +1634,13 @@ async def delete_task(task_id: str):
     from backend.services import task_manager
     ok = task_manager.delete_task(task_id)
     return {"success": ok}
+
+
+@app.get("/api/storage/stats")
+async def get_storage_stats():
+    """获取本地 SQLite 数据库与存储状态（供设置面板查看与检查）"""
+    from backend.services import storage_service
+    return storage_service.get_db_stats()
 
 
 # ===== 前端静态文件（必须放在所有 /api 路由之后，否则 catch-all 会遮蔽 API） =====

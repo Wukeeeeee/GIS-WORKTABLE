@@ -122,6 +122,19 @@ def get_entry(index: int):
         return None
 
 
+def get_entries_by_task(task_id: str, only_ok: bool = True) -> list:
+    """按任务 ID 获取所有执行记录（按时间正序排列）"""
+    with _LOCK:
+        _load()
+        res = []
+        for e in _ENTRIES:
+            if e.get("task_id") == task_id:
+                if only_ok and not e.get("ok"):
+                    continue
+                res.append(dict(e))
+        return res
+
+
 def clear():
     """清空全部历史（含落盘文件）"""
     with _LOCK:

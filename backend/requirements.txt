@@ -1,14 +1,14 @@
 fastapi>=0.139.0
 uvicorn==0.30.0
+# openai：无直接 import，是 langchain-openai 的传递依赖；pin 上限防止其破坏 langchain 兼容（勿删）
 openai>=2.16.0,<2.45.0
-python-dotenv>=1.0.1
 playwright>=1.40
 shapely>=2.0.0
 geopandas>=1.0.0
 numpy>=1.26.0
 osmnx>=1.9.0
 matplotlib>=3.8.0
-seaborn>=0.13.0
+# pyecharts：后端代码不 import；仅 execute_python 沙箱白名单允许 Agent 生成的动态代码使用（勿删）
 pyecharts>=2.0.0
 adjustText>=1.4.0
 scrapling>=0.4.7

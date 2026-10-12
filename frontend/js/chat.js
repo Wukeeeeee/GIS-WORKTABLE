@@ -1416,6 +1416,95 @@ if (typeof marked !== 'undefined') {
         }, 200);
       }
 
+      // === 结果真实性与 GIS 质量自检徽标（中文可信度徽标与折叠审计） ===
+      if (msgEl && (result.result_check || (result.qa_warnings && result.qa_warnings.length > 0))) {
+        try {
+          var bubbleEl = msgEl.querySelector('.message-bubble') || msgEl;
+          var rc = result.result_check || {};
+          var qa = result.qa_warnings || [];
+          var isOk = rc.ok !== false && qa.length === 0;
+          var hasWarn = rc.ok !== false && qa.length > 0;
+          var hasError = rc.ok === false;
+
+          var badgeContainer = document.createElement('div');
+          badgeContainer.className = 'result-audit-box';
+          badgeContainer.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px dashed var(--ui-gray-200,#e5e7eb);font-size:12px;';
+
+          var pill = document.createElement('div');
+          pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;cursor:pointer;user-select:none;font-weight:500;transition:all 0.15s;';
+
+          var detailPanel = document.createElement('div');
+          detailPanel.style.cssText = 'display:none;margin-top:8px;padding:8px 12px;border-radius:6px;font-size:11px;line-height:1.6;background:var(--ui-gray-50,#f9fafb);border:1px solid var(--ui-gray-200,#e5e7eb);color:var(--ui-gray-700,#374151);';
+
+          // 精致轻量 SVG 图标
+          var svgCheck = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>';
+          var svgWarn = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
+          var svgAlert = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
+          var svgChevron = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+          var svgDoc = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>';
+
+          if (hasError) {
+            pill.style.background = '#fef2f2';
+            pill.style.color = '#dc2626';
+            pill.style.border = '1px solid #fecaca';
+            pill.innerHTML = '<span>' + svgAlert + ' 产物核验异常</span> <span style="font-size:10px;color:#ef4444;display:inline-flex;align-items:center;gap:2px;">查看明细 ' + svgChevron + '</span>';
+          } else if (hasWarn) {
+            pill.style.background = '#fffbeb';
+            pill.style.color = '#d97706';
+            pill.style.border = '1px solid #fde68a';
+            pill.innerHTML = '<span>' + svgWarn + ' 产物已落盘 · 存在几何提示</span> <span style="font-size:10px;color:#f59e0b;display:inline-flex;align-items:center;gap:2px;">查看明细 ' + svgChevron + '</span>';
+          } else {
+            pill.style.background = '#f0fdf4';
+            pill.style.color = '#16a34a';
+            pill.style.border = '1px solid #bbf7d0';
+            pill.innerHTML = '<span>' + svgCheck + ' 真实性已核验 · 产物已落盘</span> <span style="font-size:10px;color:#22c55e;display:inline-flex;align-items:center;gap:2px;">审计 ' + svgChevron + '</span>';
+          }
+
+          var detailHtml = '<div style="font-weight:600;margin-bottom:6px;color:var(--ui-gray-900,#111827);display:flex;align-items:center;">' + svgDoc + ' 结果确定性核验报告</div>';
+          if (rc.artifact_checks && rc.artifact_checks.length > 0) {
+            detailHtml += '<div style="margin-bottom:4px;"><b>产物三方核实：</b><ul style="margin:2px 0 4px 16px;padding:0;">';
+            rc.artifact_checks.forEach(function(c) {
+              var stText = c.status === 'VERIFIED' ? '<span style="color:#16a34a;">已生成并落盘 (通过)</span>'
+                         : c.status === 'MISSING' ? '<span style="color:#dc2626;">磁盘文件不存在 (缺失)</span>'
+                         : c.status === 'UNREGISTERED' ? '<span style="color:#dc2626;">历史残留/未在本次执行登记</span>'
+                         : c.status;
+              detailHtml += '<li><code>' + (c.path || '') + '</code>: ' + stText + '</li>';
+            });
+            detailHtml += '</ul></div>';
+          }
+
+          if (rc.issues && rc.issues.length > 0) {
+            detailHtml += '<div style="color:#dc2626;margin-bottom:4px;"><b>发现问题：</b><ul style="margin:2px 0 4px 16px;padding:0;">';
+            rc.issues.forEach(function(iss) { detailHtml += '<li>' + iss + '</li>'; });
+            detailHtml += '</ul></div>';
+          }
+
+          if (qa && qa.length > 0) {
+            detailHtml += '<div style="color:#d97706;margin-bottom:4px;"><b>GIS 几何检查提示：</b><ul style="margin:2px 0 4px 16px;padding:0;">';
+            qa.forEach(function(q) { detailHtml += '<li>图层「' + (q.layer || '') + '」: ' + (q.warning || '') + '</li>'; });
+            detailHtml += '</ul></div>';
+          }
+
+          if (result.run_id) {
+            detailHtml += '<div style="color:var(--ui-gray-400,#9ca3af);font-size:10px;margin-top:4px;">执行轮次 Run ID: <code>' + result.run_id + '</code> | 存储: 本地 SQLite</div>';
+          }
+
+          detailPanel.innerHTML = detailHtml;
+
+          pill.onclick = function() {
+            var isHidden = detailPanel.style.display === 'none';
+            detailPanel.style.display = isHidden ? 'block' : 'none';
+            var chev = pill.querySelector('svg:last-child');
+            if (chev) {
+              chev.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+            }
+          };
+
+          badgeContainer.appendChild(pill);
+          badgeContainer.appendChild(detailPanel);
+          bubbleEl.appendChild(badgeContainer);
+        } catch (e) { console.warn('[GIS Chat] 渲染可信度徽标失败:', e); }
+      }
 
       // 处理历史面板：打开状态下随每轮结果自动刷新（新工具执行记录到达）
       if (window.GIS.history && typeof window.GIS.history.refresh === 'function') {

@@ -55,6 +55,115 @@
     }
   });
 
+  var _arcgisProgressTimer = null;
+  var _arcgisCloseTimeout = null;
+
+  function setArcgisProgress(panel, state, opts) {
+    opts = opts || {};
+    if (_arcgisProgressTimer) {
+      clearInterval(_arcgisProgressTimer);
+      _arcgisProgressTimer = null;
+    }
+    if (_arcgisCloseTimeout) {
+      clearTimeout(_arcgisCloseTimeout);
+      _arcgisCloseTimeout = null;
+    }
+
+    var container = panel.querySelector('.arcgis-progress-container');
+    var bar = panel.querySelector('.arcgis-progress-bar');
+    var badge = panel.querySelector('.arcgis-progress-icon-badge');
+    var title = panel.querySelector('.arcgis-progress-title');
+    var percent = panel.querySelector('.arcgis-progress-percent');
+    var desc = panel.querySelector('.arcgis-progress-desc');
+    var actions = panel.querySelector('.arcgis-progress-actions');
+    if (!container || !bar) return;
+
+    container.className = 'arcgis-progress-container is-' + state;
+    bar.className = 'arcgis-progress-bar';
+    badge.className = 'arcgis-progress-icon-badge ' + state;
+    actions.replaceChildren();
+
+    if (state === 'loading') {
+      badge.innerHTML = '<svg class="arcgis-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg>';
+      title.textContent = opts.title || '正在加载中…';
+      title.style.color = 'var(--on-surface, #1c1b1b)';
+      desc.textContent = opts.desc || '正在请求数据，请稍候…';
+
+      var currentPct = typeof opts.initialPct === 'number' ? opts.initialPct : 15;
+      bar.style.width = currentPct + '%';
+      percent.style.display = 'block';
+      percent.textContent = currentPct + '%';
+
+      var startTime = Date.now();
+      _arcgisProgressTimer = setInterval(function () {
+        if (currentPct < 88) {
+          currentPct += Math.max(1, Math.floor(Math.random() * 7));
+          if (currentPct > 88) currentPct = 88;
+          bar.style.width = currentPct + '%';
+          percent.textContent = currentPct + '%';
+        }
+        var elapsed = Math.round((Date.now() - startTime) / 1000);
+        if (opts.showElapsed && elapsed >= 1) {
+          desc.textContent = (opts.desc || '正在请求要素并转换为 GeoJSON') + '（已耗时 ' + elapsed + ' 秒）';
+        }
+      }, 300);
+
+    } else if (state === 'success') {
+      bar.classList.add('success');
+      bar.style.width = '100%';
+      percent.style.display = 'block';
+      percent.textContent = '100%';
+      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+      title.textContent = opts.title || '✓ 导入成功';
+      title.style.color = '#166534';
+      desc.textContent = opts.desc || '已成功将图层要素加载并渲染至地图工作区！';
+
+      var viewBtn = document.createElement('button');
+      viewBtn.className = 'geosource-action-btn btn-primary';
+      viewBtn.style.cssText = 'padding:4px 12px;font-size:11px;background:#16a34a;border-color:#16a34a;color:#fff;cursor:pointer;';
+      viewBtn.textContent = '立即查看地图';
+      viewBtn.onclick = function () {
+        if (_arcgisCloseTimeout) clearTimeout(_arcgisCloseTimeout);
+        panel.style.display = 'none';
+      };
+      actions.appendChild(viewBtn);
+
+      _arcgisCloseTimeout = setTimeout(function () {
+        if (panel.style.display !== 'none' && container.classList.contains('is-success')) {
+          panel.style.display = 'none';
+        }
+      }, 2500);
+
+    } else if (state === 'error') {
+      bar.classList.add('error');
+      bar.style.width = '100%';
+      percent.style.display = 'block';
+      percent.textContent = '失败';
+      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+      title.textContent = opts.title || '✕ 导入失败';
+      title.style.color = '#991b1b';
+      desc.textContent = opts.desc || '网络连接或服务解析错误，请查看提示。';
+
+      if (typeof opts.retryFn === 'function') {
+        var retryBtn = document.createElement('button');
+        retryBtn.className = 'geosource-action-btn';
+        retryBtn.style.cssText = 'padding:4px 12px;font-size:11px;cursor:pointer;';
+        retryBtn.textContent = '重试';
+        retryBtn.onclick = opts.retryFn;
+        actions.appendChild(retryBtn);
+      }
+
+    } else {
+      // idle 就绪状态
+      bar.style.width = '0%';
+      percent.style.display = 'none';
+      badge.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#747878" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
+      title.textContent = opts.title || '准备就绪';
+      title.style.color = 'var(--on-surface, #1c1b1b)';
+      desc.textContent = opts.desc || '请点击上方目录中的图层或服务进行导入';
+    }
+  }
+
   async function browseArcgis(url, name) {
     if (_arcgisBusy) return;
     _arcgisBusy = true;
@@ -62,27 +171,30 @@
     if (!panel) {
       panel = document.createElement('div');
       panel.id = 'arcgisBrowser';
-      panel.style.cssText = 'position:fixed;inset:8% 5%;z-index:21000;background:var(--surface-container-lowest,#fff);border:1px solid var(--outline-variant);padding:20px;display:flex;flex-direction:column;gap:12px;box-shadow:0 12px 48px #0003;';
       document.body.appendChild(panel);
     }
     panel.style.display = 'flex';
     panel.replaceChildren();
+
     var header = document.createElement('div');
-    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;';
+    header.className = 'arcgis-browser-header';
     var title = document.createElement('strong');
+    title.className = 'arcgis-browser-title';
     title.textContent = name + ' · 选择服务或图层';
     var close = document.createElement('button');
-    close.textContent = '关闭';
     close.className = 'geosource-action-btn';
-    close.onclick = function() { panel.style.display = 'none'; };
+    close.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg> <span>关闭</span>';
+    close.onclick = function() {
+      if (_arcgisProgressTimer) clearInterval(_arcgisProgressTimer);
+      if (_arcgisCloseTimeout) clearTimeout(_arcgisCloseTimeout);
+      panel.style.display = 'none';
+    };
     header.append(title, close);
-    var body = document.createElement('div');
-    body.style.cssText = 'min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px;';
-    body.textContent = '正在读取服务目录…';
+
     var search = document.createElement('input');
     search.type = 'search';
     search.placeholder = '筛选当前目录中的服务或图层';
-    search.style.cssText = 'padding:8px;border:1px solid var(--outline-variant);background:var(--surface-container-low);color:var(--on-surface);';
+    search.style.cssText = 'padding:8px 12px;border:1px solid var(--outline-variant);border-radius:6px;background:var(--surface-container-low);color:var(--on-surface);font-size:12px;';
     search.oninput = function() {
       var keyword = search.value.trim().toLowerCase();
       var count = 0;
@@ -93,68 +205,287 @@
       });
       summary.textContent = count ? '当前显示 ' + count + ' 项；目录内容以服务端返回为准。' : '当前目录没有匹配项，请尝试其他关键词。';
     };
+
+    var modeRow = document.createElement('div');
+    modeRow.className = 'arcgis-browser-mode-row';
+    modeRow.innerHTML = 
+      '<span style="font-size:12px;font-weight:600;color:var(--on-surface);">导入方式:</span>' +
+      '<label class="geosource-radio-label" title="自动分批抓取全量要素（如3,143个县全量），带实时进度与主键去重">' +
+      '  <input type="radio" name="arcgisFetchMode" value="all" checked />' +
+      '  <span>自动分批拉全（全量 3,000+ 县级，推荐）</span>' +
+      '</label>' +
+      '<label class="geosource-radio-label" title="仅快速获取前 1,000 条作为轻量预览">' +
+      '  <input type="radio" name="arcgisFetchMode" value="preview" />' +
+      '  <span>快速预览（前 1,000 条）</span>' +
+      '</label>' +
+      '<label class="geosource-radio-label" title="仅加载当前地图可视区域内的要素，极致省内存">' +
+      '  <input type="radio" name="arcgisFetchMode" value="bbox" />' +
+      '  <span>当前视窗（BBOX过滤）</span>' +
+      '</label>';
+
     var summary = document.createElement('div');
     summary.style.cssText = 'font-size:12px;color:var(--on-surface-variant);';
     summary.textContent = '目录内容以服务端返回为准。';
-    panel.append(header, search, summary, body);
+
+    var body = document.createElement('div');
+    body.className = 'arcgis-browser-body';
+    body.textContent = '正在读取服务目录…';
+
+    // 底部进度条与状态卡片（响应用户点击加载时的进度条反馈、打勾成功、打叉失败）
+    var progressContainer = document.createElement('div');
+    progressContainer.className = 'arcgis-progress-container';
+    progressContainer.innerHTML = 
+      '<div class="arcgis-progress-track">' +
+      '  <div class="arcgis-progress-bar"></div>' +
+      '</div>' +
+      '<div class="arcgis-progress-content">' +
+      '  <div class="arcgis-progress-icon-badge"></div>' +
+      '  <div class="arcgis-progress-texts">' +
+      '    <div class="arcgis-progress-title-row">' +
+      '      <span class="arcgis-progress-title">准备就绪</span>' +
+      '      <span class="arcgis-progress-percent" style="display:none;">0%</span>' +
+      '    </div>' +
+      '    <div class="arcgis-progress-desc">正在连接服务目录…</div>' +
+      '  </div>' +
+      '  <div class="arcgis-progress-actions"></div>' +
+      '</div>';
+
+    panel.append(header, search, modeRow, summary, body, progressContainer);
+
+    setArcgisProgress(panel, 'loading', {
+      title: '正在读取服务目录…',
+      desc: '正在连接远程 ArcGIS 服务并获取图层元数据',
+      initialPct: 20
+    });
+
     try {
       var base = url.split('?')[0].replace(/\/+$/, '');
       var data = await fetchWithProxy(base + '?f=json');
       if (data.error) throw new Error(data.error.message || '服务拒绝访问');
       body.replaceChildren();
-      function item(label, action) {
+
+      function item(htmlContent, action) {
         var btn = document.createElement('button');
         btn.className = 'geosource-action-btn';
-        btn.style.cssText = 'text-align:left;justify-content:space-between;flex-shrink:0;';
-        btn.textContent = label;
-        btn.onclick = action;
+        btn.style.cssText = 'text-align:left;justify-content:space-between;flex-shrink:0;padding:8px 12px;border-radius:6px;';
+        btn.innerHTML = htmlContent;
+        btn.onclick = function () { action.call(btn, btn); };
         body.appendChild(btn);
+        return btn;
       }
+
       var root = base.replace(/(\/rest\/services)(?:\/.*)?$/i, '$1');
       if (base.toLowerCase() !== root.toLowerCase()) {
-        item('← 返回服务目录', function() { browseArcgis(root, 'ArcGIS'); });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> 返回上一级目录</span>', function() { browseArcgis(root, 'ArcGIS'); });
       }
       (data.folders || []).forEach(function(folder) {
-        item(folder + ' →', function() { browseArcgis(root + '/' + folder.split('/').map(encodeURIComponent).join('/'), folder); });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ' + window.GIS.utils.escapeHtml(folder) + '</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() { browseArcgis(root + '/' + folder.split('/').map(encodeURIComponent).join('/'), folder); });
       });
       (data.services || []).forEach(function(service) {
-        item(service.name + ' · ' + service.type + ' →', function() {
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg> ' + window.GIS.utils.escapeHtml(service.name) + ' · ' + window.GIS.utils.escapeHtml(service.type) + '</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() {
           browseArcgis(root + '/' + service.name.split('/').map(encodeURIComponent).join('/') + '/' + service.type, service.name);
         });
       });
       if (data.tileInfo && /\/MapServer$/i.test(base)) {
-        item('加载缓存地图', function() { loadXyzLayer(base + '/tile/{z}/{y}/{x}', name); panel.style.display = 'none'; });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg> 加载缓存瓦片地图</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#1565c0;background:#e3f2fd;border:1px solid #bbdefb;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 上图</span>', function(btn) {
+          setArcgisProgress(panel, 'loading', {
+            title: '正在加载瓦片服务…',
+            desc: '正在接入 ArcGIS 缓存瓦片地图',
+            initialPct: 50
+          });
+          try {
+            loadXyzLayer(base + '/tile/{z}/{y}/{x}', name);
+            setArcgisProgress(panel, 'success', {
+              title: '✓ 导入成功',
+              desc: '已成功将「' + name + '」缓存瓦片地图图层添加到工作区！'
+            });
+          } catch (err) {
+            setArcgisProgress(panel, 'error', {
+              title: '✕ 导入失败',
+              desc: err.message || '加载瓦片图层失败'
+            });
+          }
+        });
       }
       (data.layers || []).forEach(function(layer) {
         if (layer.type === 'Group Layer') return;
-        item('加载 ' + layer.name, function() { loadArcgisFeatures(base + '/' + layer.id, name + ' - ' + layer.name, panel); });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> 加载 ' + window.GIS.utils.escapeHtml(layer.name) + '</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 加载图层</span>', function(btn) {
+          loadArcgisFeatures(base + '/' + layer.id, name + ' - ' + layer.name, panel, btn);
+        });
       });
       if (data.type === 'Feature Layer' && /\/(FeatureServer|MapServer)\/\d+$/i.test(base)) {
-        item('加载当前图层', function() { loadArcgisFeatures(base, name, panel); });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> 加载当前要素图层</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 加载图层</span>', function(btn) {
+          loadArcgisFeatures(base, name, panel, btn);
+        });
       }
-      if (!body.childElementCount) body.textContent = '服务未提供可直接加载的图层，可能需要认证或其他协议。';
+
+      var totalItems = body.childElementCount;
+      if (!totalItems) {
+        body.textContent = '服务未提供可直接加载的图层，可能需要认证或其他协议。';
+        setArcgisProgress(panel, 'idle', {
+          title: '目录已读取（无直接可用图层）',
+          desc: '该服务未包含开放的要素图层或需要特定授权。'
+        });
+      } else {
+        setArcgisProgress(panel, 'idle', {
+          title: '准备就绪（共 ' + totalItems + ' 项）',
+          desc: '请点击上方「加载 ...」按钮导入目标图层到地图工作区'
+        });
+      }
     } catch (error) {
       body.textContent = '读取服务失败：' + error.message;
-    } finally { _arcgisBusy = false; }
+      setArcgisProgress(panel, 'error', {
+        title: '✕ 目录读取失败',
+        desc: '无法连接到服务或服务拒绝访问：' + error.message
+      });
+    } finally {
+      _arcgisBusy = false;
+    }
   }
 
-  async function loadArcgisFeatures(url, name, panel) {
+  async function loadArcgisFeatures(url, name, panel, clickedBtn) {
     if (_arcgisBusy) return;
     _arcgisBusy = true;
-    try {
-      var data = await fetchWithProxy(url + '/query?where=1%3D1&outFields=*&outSR=4326&f=geojson&resultRecordCount=1000');
-      if (data.error) throw new Error(data.error.message || '查询失败');
-      if (data.type !== 'FeatureCollection') throw new Error('该图层不支持 GeoJSON 查询');
-      loadGeoJsonLayer(data, name, 'EPSG:4326');
-      panel.style.display = 'none';
-      if (data.exceededTransferLimit || data.features.length >= 1000) {
-        window.GIS.chat.addMessage('当前加载的是最多 1000 个要素的预览，未保证获取完整数据集。', 'system');
+
+    var origText = '';
+    var bodyBtns = panel.querySelectorAll('.arcgis-browser-body button');
+    bodyBtns.forEach(function (b) { b.disabled = true; });
+
+    if (clickedBtn) {
+      origText = clickedBtn.textContent;
+      clickedBtn.classList.add('active-loading');
+      clickedBtn.textContent = '⏳ 正在请求数据…';
+    }
+
+    var selectedModeRadio = panel.querySelector('input[name="arcgisFetchMode"]:checked');
+    var fetchMode = selectedModeRadio ? selectedModeRadio.value : 'all'; // 'all' | 'preview' | 'bbox'
+
+    var pageSize = 1000;
+    var allFeatures = [];
+    var seenIds = new Set();
+    var offset = 0;
+    var maxBatches = fetchMode === 'all' ? 12 : 1; // 自动分批最多拉取 12,000 条（避免极端小区图层超负荷），preview 仅拉 1 批
+    var currentBatch = 0;
+    var hasMore = true;
+
+    // 针对 BBOX 模式，获取当前地图视窗范围
+    var bboxParam = '';
+    if (fetchMode === 'bbox') {
+      try {
+        var bounds = window.GIS.map && window.GIS.map.getBounds && window.GIS.map.getBounds();
+        if (bounds) {
+          var west = bounds.getWest();
+          var south = bounds.getSouth();
+          var east = bounds.getEast();
+          var north = bounds.getNorth();
+          bboxParam = '&geometry=' + encodeURIComponent(west + ',' + south + ',' + east + ',' + north) +
+                      '&geometryType=esriGeometryEnvelope&spatialRel=esriSpatialRelIntersects&inSR=4326';
+        }
+      } catch (e) {
+        console.warn('[GeoSource] 获取地图视窗 BBOX 失败，使用全域查询', e);
       }
+    }
+
+    try {
+      while (hasMore && currentBatch < maxBatches) {
+        currentBatch++;
+        var batchTitle = fetchMode === 'all'
+          ? '正在拉取图层「' + name + '」（第 ' + currentBatch + ' 批）…'
+          : '正在加载图层「' + name + '」…';
+        var batchDesc = fetchMode === 'all'
+          ? '正在通过代理请求要素（已获取 ' + allFeatures.length + ' 条）…'
+          : (fetchMode === 'bbox' ? '正在按当前地图视窗 BBOX 范围检索要素…' : '正在请求前 1000 条要素预览…');
+
+        var initialPct = fetchMode === 'all'
+          ? Math.min(85, Math.round(15 + (currentBatch - 1) * 20))
+          : 18;
+
+        setArcgisProgress(panel, 'loading', {
+          title: batchTitle,
+          desc: batchDesc,
+          showElapsed: true,
+          initialPct: initialPct
+        });
+
+        var queryUrl = url + '/query?where=1%3D1&outFields=*&outSR=4326&f=geojson&resultRecordCount=' + pageSize +
+                       '&resultOffset=' + offset + bboxParam;
+
+        var data = await fetchWithProxy(queryUrl);
+        if (data.error) throw new Error(data.error.message || '服务端查询返回错误');
+        if (data.type !== 'FeatureCollection') throw new Error('该图层不支持 GeoJSON 矢量查询接口');
+
+        var batchFeatures = data.features || [];
+        if (batchFeatures.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        // 精准去重校验并追加
+        for (var i = 0; i < batchFeatures.length; i++) {
+          var feat = batchFeatures[i];
+          var fid = feat.id || (feat.properties && (feat.properties.OBJECTID || feat.properties.FID || feat.properties.GEOID || feat.properties.GlobalID)) || (offset + i);
+          if (!seenIds.has(fid)) {
+            seenIds.add(fid);
+            allFeatures.push(feat);
+          }
+        }
+
+        offset += batchFeatures.length;
+
+        // 如果服务端返回要素少于每页容量，或服务端明确标记未超过上限，说明已到最后一页
+        if (batchFeatures.length < pageSize || data.exceededTransferLimit === false || fetchMode !== 'all') {
+          hasMore = false;
+        }
+
+        if (clickedBtn) {
+          clickedBtn.textContent = '⏳ 已获取 ' + allFeatures.length + ' 条…';
+        }
+      }
+
+      if (allFeatures.length === 0) {
+        throw new Error(fetchMode === 'bbox' ? '当前地图视窗范围内未检索到任何要素，请平移或缩放地图后重试。' : '未查询到任何要素数据。');
+      }
+
+      var fullGeoJson = {
+        type: 'FeatureCollection',
+        features: allFeatures
+      };
+
+      loadGeoJsonLayer(fullGeoJson, name, 'EPSG:4326');
+
+      var finalCount = allFeatures.length;
+      var note = '';
+      if (hasMore && currentBatch >= maxBatches) {
+        note = '（已达单次安全上限 ' + (maxBatches * pageSize) + ' 条熔断，如需更多区域建议使用视窗过滤）';
+      } else if (fetchMode === 'preview') {
+        note = '（快速预览模式）';
+      } else if (fetchMode === 'bbox') {
+        note = '（已按当前地图可视范围精准过滤）';
+      } else if (currentBatch > 1) {
+        note = '（全量分批拉取完成，共 ' + currentBatch + ' 批，0 重复 0 缺失）';
+      }
+
+      setArcgisProgress(panel, 'success', {
+        title: '✓ 导入成功',
+        desc: '已成功加载「' + name + '」共 ' + finalCount + ' 个要素至地图工作区！' + note
+      });
+
     } catch (error) {
-      var message = document.createElement('p');
-      message.textContent = '加载失败：' + error.message;
-      panel.appendChild(message);
-    } finally { _arcgisBusy = false; }
+      setArcgisProgress(panel, 'error', {
+        title: '✕ 导入失败',
+        desc: '图层「' + name + '」加载失败：' + (error.message || '网络或格式错误') + '。可尝试选择其他模式或图层。',
+        retryFn: function () {
+          loadArcgisFeatures(url, name, panel, clickedBtn);
+        }
+      });
+    } finally {
+      _arcgisBusy = false;
+      bodyBtns.forEach(function (b) { b.disabled = false; });
+      if (clickedBtn && origText) {
+        clickedBtn.classList.remove('active-loading');
+        clickedBtn.textContent = origText;
+      }
+    }
   }
 
   // ===== SVG 图标常量 =====
@@ -673,7 +1004,42 @@
       });
   }
 
+  function _enforceMaxLayersRule(incomingName) {
+    if (!window.GIS.layers || typeof window.GIS.layers.getLayers !== 'function') return;
+    var list = window.GIS.layers.getLayers() || [];
+    if (!list.length) return;
+
+    // 1. 同名图层覆盖：如果已存在完全同名的图层，先替换掉该旧图层
+    for (var i = list.length - 1; i >= 0; i--) {
+      var existing = list[i];
+      var exName = existing._rawName || existing.filename || existing.name || '';
+      if (exName && exName === incomingName) {
+        if (typeof window.GIS.layers.removeLayer === 'function') {
+          window.GIS.layers.removeLayer(existing.layer_id, false, true);
+        }
+      }
+    }
+
+    // 重新获取列表
+    list = window.GIS.layers.getLayers() || [];
+
+    // 2. 全局最多 3 个图层严格上限（支持同时保留州级 + 县级等共 2~3 个图层；超过 3 个才触发淘汰）
+    var MAX_LAYERS = 3;
+    while (list.length >= MAX_LAYERS) {
+      var oldest = list[0];
+      var removedName = oldest._rawName || oldest.filename || oldest.name || '图层';
+      if (typeof window.GIS.layers.removeLayer === 'function') {
+        window.GIS.layers.removeLayer(oldest.layer_id, false, false);
+      }
+      if (window.GIS.toast && typeof window.GIS.toast.info === 'function') {
+        window.GIS.toast.info('已达最多 3 个叠加图层上限，已自动替换最早图层「' + removedName + '」');
+      }
+      list = window.GIS.layers.getLayers() || [];
+    }
+  }
+
   function loadGeoJsonLayer(gj, name, crs) {
+    _enforceMaxLayersRule(name);
     if (window.GIS.map && typeof window.GIS.map.loadGeoJSON === 'function') {
       window.GIS.map.loadGeoJSON(gj, name);
     }
@@ -698,6 +1064,8 @@
     // 清理 WMS URL 中的 GetCapabilities 参数，确保标准 WMS 瓦片请求正常拼接
     var cleanUrl = rawUrl.replace(/[\?&]request=getcapabilities.*$/i, '').replace(/[\?&]service=wms.*$/i, '');
 
+    _enforceMaxLayersRule(name);
+
     if (window.GIS.map && typeof window.GIS.map.addWmsLayer === 'function') {
       window.GIS.map.addWmsLayer(cleanUrl, layerName, name);
       if (window.GIS.layers && typeof window.GIS.layers.addLayer === 'function') {
@@ -717,6 +1085,7 @@
   }
 
   function loadXyzLayer(url, name) {
+    _enforceMaxLayersRule(name);
     if (window.GIS.map && typeof window.GIS.map.addTileLayer === 'function') {
       window.GIS.map.addTileLayer(url, name);
       if (window.GIS.layers && typeof window.GIS.layers.addLayer === 'function') {

@@ -53,6 +53,95 @@ def new_node(node_id: str, name: str, tool: str, inputs: Dict = None,
     }
 
 
+def save_workflow(wf: Dict, file_path: str) -> bool:
+    """持久化保存 Workflow 到文件 (.giswork / .json)"""
+    import os
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(wf, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"[Workflow] 保存工作流失败: {e}", flush=True)
+        return False
+
+
+def load_workflow(file_path: str) -> Optional[Dict]:
+    """从文件加载 Workflow 对象"""
+    import os
+    if not os.path.exists(file_path):
+        return None
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[Workflow] 加载工作流失败: {e}", flush=True)
+        return None
+
+
+def materialize_from_history(task_id: str, workflow_name: str = "") -> Optional[Dict]:
+    """从真实执行历史中物化生成可复现的 DAG 工作流。
+    
+    自动分析历史执行记录：
+    1. 提取 task_id 关联的所有成功工具调用；
+    2. 基于输入/输出图层名自动建立节点间拓扑依赖 (depends_on 与 ${node_id.output})；
+    3. 生成标准的 Workflow DAG 对象。
+    """
+    from backend.services import history_service
+    entries = history_service.get_entries_by_task(task_id, only_ok=True)
+    if not entries:
+        return None
+
+    wf_name = workflow_name or f"任务_{task_id[:8]}_分析工作流"
+    nodes = []
+    layer_producers = {}  # layer_name -> node_id
+
+    for idx, e in enumerate(entries):
+        node_id = f"node_{idx + 1}"
+        tool_name = e.get("tool", "")
+        raw_args = dict(e.get("args", {}))
+        depends_on = []
+
+        # 检查参数中引用的图层是否由上游节点生成
+        inputs = {}
+        for k, v in raw_args.items():
+            if isinstance(v, str) and v in layer_producers:
+                dep_node = layer_producers[v]
+                if dep_node not in depends_on:
+                    depends_on.append(dep_node)
+                inputs[k] = f"${{{dep_node}.layer_name}}"
+            else:
+                inputs[k] = v
+
+        node = new_node(
+            node_id=node_id,
+            name=f"{tool_name}_{idx + 1}",
+            tool=tool_name,
+            inputs=inputs,
+            depends_on=depends_on,
+            node_type="tool"
+        )
+
+        # 记录本节点产出的图层名（供后续节点建立依赖）
+        for out_layer in e.get("layer_ids", []):
+            if out_layer:
+                layer_producers[str(out_layer)] = node_id
+
+        # 若参数里显式指定了输出图层名
+        for arg_key in ("output_layer", "result_layer", "target_layer", "name", "layer_name"):
+            if arg_key in raw_args and isinstance(raw_args[arg_key], str):
+                layer_producers[raw_args[arg_key]] = node_id
+
+        nodes.append(node)
+
+    wf = new_workflow(
+        name=wf_name,
+        description=f"由任务 {task_id} 实际执行历史自动提炼物化的 DAG 工作流，包含 {len(nodes)} 个执行节点。",
+        nodes=nodes
+    )
+    return wf
+
+
 # ============================================================
 # Schema 校验
 # ============================================================

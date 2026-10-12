@@ -37,6 +37,41 @@ from backend.services.data_providers.models import (
 VECTOR_KIND_DEFAULT_FMT = "geojson"
 RASTER_KIND_DEFAULT_FMT = "geotiff"
 
+# ============================================================
+# 数据句柄（Data Handle）注册与持久消费机制
+# 让 discover 生成的句柄可直接被 download 消费，避免大模型记忆和传递丢失长参数
+# ============================================================
+_DATA_HANDLES: dict = {}
+
+
+def register_data_handle(req: DataRequest, hit: Any = None) -> str:
+    """注册一个发现候选为简短数据句柄（如 dh_osm_roads_abc123）"""
+    import uuid
+    short_id = uuid.uuid4().hex[:6]
+    pid = getattr(hit, "provider_id", "") or req.provider_id or "auto"
+    kind = req.kind or "data"
+    handle = f"dh_{pid}_{kind}_{short_id}"
+    _DATA_HANDLES[handle] = {
+        "handle": handle,
+        "query": req.query,
+        "kind": req.kind,
+        "area": req.area,
+        "bbox": f"{req.bbox[0]},{req.bbox[1]},{req.bbox[2]},{req.bbox[3]}" if req.bbox else "",
+        "provider_id": getattr(hit, "provider_id", "") or req.provider_id,
+        "file_format": getattr(hit, "file_format", "") or req.file_format or "geojson",
+        "time_start": req.time_start,
+        "time_end": req.time_end,
+        "title": getattr(hit, "title", "") or "",
+    }
+    return handle
+
+
+def get_data_handle(handle: str) -> Optional[dict]:
+    """通过句柄反查完整的参数元数据"""
+    if not handle:
+        return None
+    return _DATA_HANDLES.get(handle.strip())
+
 
 # ============================================================
 # 需求解析（把上层解析后的字符串参数规整为 DataRequest）
@@ -157,13 +192,20 @@ def discover(*, query: str = "", kind: str = "", area: str = "", bbox: str = "",
         seen.add(key)
         uniq.append(h)
 
+    hits_dicts = []
+    for h in uniq[:50]:
+        h_dict = h.to_dict()
+        # 为每个可获取的候选生成专属句柄
+        h_dict["handle"] = register_data_handle(req, h)
+        hits_dicts.append(h_dict)
+
     return {
         "ok": bool(uniq),
         "kind": req.kind,
         "kind_label": ALL_KINDS.get(req.kind, req.kind),
         "area": req.area or (f"bbox {bbox}" if bbox else ""),
         "data_type": _kind_data_type(req.kind),
-        "hits": [h.to_dict() for h in uniq[:50]],
+        "hits": hits_dicts,
         "notes": notes,
         "message": _discover_summary(uniq, notes, req),
     }
@@ -196,14 +238,27 @@ def _discover_summary(hits: list, notes: list, req: DataRequest) -> str:
 # Data Download + Import —— 获取 → GIS 文件 → metadata
 # ============================================================
 
-def download(*, query: str = "", kind: str = "", area: str = "", bbox: str = "",
+def download(*, handle: str = "", query: str = "", kind: str = "", area: str = "", bbox: str = "",
              provider_id: str = "", file_format: str = "", time_start: str = "",
              time_end: str = "", max_items: int = 0, layer_name: str = "",
              out_dir: Optional[str] = None) -> dict:
     """获取数据并落盘为 GIS 文件（含完整性/CRS 校验 + metadata）。
 
+    若传入 handle，则自动从预存的数据句柄还原完整请求参数。
     成功返回 DownloadedAsset dict；失败抛 DataProviderError 明确子类。
     """
+    if handle:
+        h_data = get_data_handle(handle)
+        if h_data:
+            query = query or h_data.get("query", "")
+            kind = kind or h_data.get("kind", "")
+            area = area or h_data.get("area", "")
+            bbox = bbox or h_data.get("bbox", "")
+            provider_id = provider_id or h_data.get("provider_id", "")
+            file_format = file_format or h_data.get("file_format", "")
+            time_start = time_start or h_data.get("time_start", "")
+            time_end = time_end or h_data.get("time_end", "")
+
     req = resolve_request(
         query=query, kind=kind, area=area, bbox=bbox, provider_id=provider_id,
         file_format=file_format, time_start=time_start, time_end=time_end,

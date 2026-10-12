@@ -244,6 +244,17 @@ def _has_tool_messages(msgs: list) -> bool:
     return any(isinstance(m, ToolMessage) for m in (msgs or []))
 
 
+# 强制补执行时注入的纠错指令（非流式/流式共用，抽为常量便于测试回归）
+_RECOVERY_PROMPT_CODE_DUMP = (
+    "系统提示：平台完全具备直接执行 Python 并渲染图件的能力，严禁向用户声称“无法直接出图”或让用户复制代码去本地/Jupyter运行！"
+    "请你现在就直接调用 execute_python 工具执行你编写的 Python 制图代码，将成果保存为图片（例如 plt.savefig('output/xxx.png')），平台会自动渲染展示图片卡片！"
+)
+_RECOVERY_PROMPT_NO_ACTION = (
+    "你刚才只是说“开始执行”，但实际没有调用任何工具。"
+    "请现在就调用合适工具真正完成你承诺的任务，不要再只做口头承诺。"
+)
+
+
 def _auto_promote_pending(session_id: str, start_registered: set, pushed_names: list):
     """一轮 Agent 结束：把「新注册但未推送到地图」的图层挂起为 pending load_layer。
 
@@ -298,11 +309,12 @@ def run_agent(
         if isinstance(_c, str) and _c.strip():
             _ctx_texts.append(_c.strip())
     _tools_mod.set_conversation_context("\n".join(_ctx_texts))
-    # === P1-1: Agent 运行状态 ===
+    # === P1-1: Agent 运行状态与 SQLite 台账 ===
     _run_id = uuid.uuid4().hex[:12]
     _run_status = "planning"
     _run_started_at = time.time()
     _run_retry_count = 0
+    _tools_mod.set_current_run(_run_id)
     print(f"[GIS] run_id={_run_id} status=planning", flush=True)
     # 绑定本请求会话（hold 等工具写 pending 用）
     pending_action.set_active_session(session_id or "default")
@@ -313,6 +325,13 @@ def run_agent(
     set_current_task(_task_id)
     print(f"[GIS] Task ID: {_task_id}", flush=True)
 
+    # 记录到 SQLite 本地台账
+    try:
+        from backend.services import storage_service
+        storage_service.record_run_start(_run_id, session_id or "default", original_message or "", _task_id)
+    except Exception:
+        pass
+
     # 构建 LLM
     llm = build_llm(cfg)
 
@@ -321,8 +340,10 @@ def run_agent(
     _simple = True
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方'])
-        if _need_tools or len(_last) > 150:
+        _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
+        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方']
+        _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
+        if _need_tools or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
             _simple = False
     if _simple:
         if _ai_svc._request_cancelled:
@@ -330,15 +351,7 @@ def run_agent(
                     "heatmap": None, "clear_layers": False, "layer_ops": [],
                     "pending_suggestions": None}
         try:
-            # 用精简版 system prompt 替换，减少 token 开销
-            _simple_prompt = "你是GIS WorkTable的AI助手，当前运行于完整GIS模式，可以调用所有GIS工具。对于简单的知识类问题，直接回答即可，不需要调用工具。以中文为主，简洁直白，不使用emoji。"
-            _simple_msgs = []
-            for _m in messages:
-                if isinstance(_m, SystemMessage):
-                    _simple_msgs.append(SystemMessage(content=_simple_prompt))
-                else:
-                    _simple_msgs.append(_m)
-            _resp = llm.invoke(_simple_msgs)
+            _resp = llm.invoke(messages)
             return {
                 "response": _resp.content,
                 "reasoning": get_message_reasoning(_resp),
@@ -464,11 +477,9 @@ def run_agent(
         try:
             print("[GIS] 检测到未执行承诺或未执行制图代码，强制补一轮真实工具执行", flush=True)
             _prompt_text = (
-                "系统提示：平台完全具备直接执行 Python 并渲染图件的能力，严禁向用户声称“无法直接出图”或让用户复制代码去本地/Jupyter运行！"
-                "请你现在就直接调用 execute_python 工具执行你编写的 Python 制图代码，将成果保存为图片（例如 plt.savefig('output/xxx.png')），平台会自动渲染展示图片卡片！"
-            ) if _is_unexecuted_code_or_disclaimer(final_text, final_messages) else (
-                "你刚才只是说“开始执行”，但实际没有调用任何工具。"
-                "请现在就调用合适工具真正完成你承诺的任务，不要再只做口头承诺。"
+                _RECOVERY_PROMPT_CODE_DUMP
+                if _is_unexecuted_code_or_disclaimer(final_text, final_messages)
+                else _RECOVERY_PROMPT_NO_ACTION
             )
             _forced = agent.invoke(
                 {"messages": list(final_messages) + [HumanMessage(content=_prompt_text)]},
@@ -515,6 +526,14 @@ def run_agent(
     _auto_promote_pending(
         session_id, _start_registered, [l.get("name") for l in pending.get("layers", [])]
     )
+
+    # 结束记录落入 SQLite 台账
+    try:
+        from backend.services import storage_service
+        _g_status = "PASS" if _guard.get("ok") else "FAIL"
+        storage_service.record_run_finish(_run_id, final_text, "success", _g_status)
+    except Exception:
+        pass
 
     return {
         "response": final_text,
@@ -575,28 +594,30 @@ def run_agent_stream(
     _ai_svc._request_cancelled = False
     llm = build_llm(cfg)
 
-    # === Task Manager: 解析/创建任务，绑定到 tools ===
+    # === Task Manager 与 SQLite 台账: 解析/创建任务与运行轮次 ===
+    _run_id = uuid.uuid4().hex[:12]
+    _tools_mod.set_current_run(_run_id)
     _task_id = task_manager.find_or_create_task(session_id or "default", original_message or "")
     set_current_task(_task_id)
-    print(f"[GIS] 流式 Task ID: {_task_id} mode={mode}", flush=True)
+    print(f"[GIS] 流式 run_id={_run_id} Task ID: {_task_id} mode={mode}", flush=True)
+
+    try:
+        from backend.services import storage_service
+        storage_service.record_run_start(_run_id, session_id or "default", original_message or "", _task_id)
+    except Exception:
+        pass
 
     # 简单问题快速 bypass（A+ 优化：精简 prompt + 去掉易误判词）
     _simple = True
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _need_tools = any(kw in _last for kw in ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方'])
-        if _need_tools or len(_last) > 150:
+        _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
+        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方']
+        _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
+        if _need_tools or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
             _simple = False
     if _simple:
-        # 用精简版 system prompt 替换，减少 token 开销
-        _simple_prompt = "你是GIS WorkTable的AI助手，当前运行于完整GIS模式，可以调用所有GIS工具。对于简单的知识类问题，直接回答即可，不需要调用工具。以中文为主，简洁直白，不使用emoji。"
-        _simple_msgs = []
-        for _m in messages:
-            if isinstance(_m, SystemMessage):
-                _simple_msgs.append(SystemMessage(content=_simple_prompt))
-            else:
-                _simple_msgs.append(_m)
-        _resp = llm.invoke(_simple_msgs)
+        _resp = llm.invoke(messages)
         yield "data: {\"type\":\"thinking\"}\n\n"
         result = {
             "response": _resp.content,
@@ -725,11 +746,9 @@ def run_agent_stream(
             print("[GIS] 流式：检测到未执行承诺或未执行制图代码，强制补一轮真实工具执行", flush=True)
             yield "data: {\"type\":\"thinking\"}\n\n"
             _prompt_text = (
-                "系统提示：平台完全具备直接执行 Python 并渲染图件的能力，严禁向用户声称“无法直接出图”或让用户复制代码去本地/Jupyter运行！"
-                "请你现在就直接调用 execute_python 工具执行你编写的 Python 制图代码，将成果保存为图片（例如 plt.savefig('output/xxx.png')），平台会自动渲染展示图片卡片！"
-            ) if _is_unexecuted_code_or_disclaimer(final_text, msgs) else (
-                "你刚才只是说“开始执行”，但实际没有调用任何工具。"
-                "请现在就调用合适工具真正完成你承诺的任务，不要再只做口头承诺。"
+                _RECOVERY_PROMPT_CODE_DUMP
+                if _is_unexecuted_code_or_disclaimer(final_text, msgs)
+                else _RECOVERY_PROMPT_NO_ACTION
             )
             _forced = agent.invoke(
                 {"messages": list(msgs) + [HumanMessage(content=_prompt_text)]},
@@ -773,6 +792,13 @@ def run_agent_stream(
         session_id, _start_registered, [l.get("name") for l in pending.get("layers", [])]
     )
 
+    try:
+        from backend.services import storage_service
+        _g_status = "PASS" if _guard.get("ok") else "FAIL"
+        storage_service.record_run_finish(_run_id, final_text, "success", _g_status)
+    except Exception:
+        pass
+
     result = {
         "response": final_text,
         "reasoning": final_reasoning,
@@ -786,7 +812,9 @@ def run_agent_stream(
         "confirm_pending": pending_action.describe_action(
             pending_action.get_pending_action(session_id)),
         "result_check": _guard,
+        "qa_warnings": pending.get("qa_warnings", []),
         "task_id": _task_id,
+        "run_id": _run_id,
         "mode": "full",
     }
     yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"

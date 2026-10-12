@@ -531,6 +531,10 @@ var _undoSkip = false;
     });
 
     var features = (geojson.type === 'FeatureCollection' ? geojson.features : [geojson]);
+    for (var fi = 0; fi < features.length; fi++) {
+      features[fi]._featureIndex = fi;
+    }
+
     var isLarge = featCount > 5000;
 
     // 大数据使用 VectorGrid 瓦片渲染（Canvas + 按需加载，不生成 DOM 节点）
@@ -551,7 +555,11 @@ var _undoSkip = false;
       });
       console.log('[GIS Map] 大数据模式(VectorGrid):', name, featCount, '个要素');
     } else {
+      var useCanvasRenderer = featCount >= 1000 && typeof L.canvas === 'function';
+      var canvasRenderer = useCanvasRenderer ? L.canvas({ padding: 0.5 }) : undefined;
       layer = L.geoJSON(geojson, {
+        renderer: canvasRenderer,
+        smoothFactor: 1.0,
         style: function(feature) {
           return _isPointFeature(feature) ? _pointStyle(style) : mergedStyle;
         },
@@ -566,7 +574,7 @@ var _undoSkip = false;
           return L.latLng(lat, lng);
         },
         onEachFeature: featCount > 5000 ? null : function(feature, leafletLayer) {
-        var idx = features.indexOf(feature);
+        var idx = typeof feature._featureIndex === 'number' ? feature._featureIndex : features.indexOf(feature);
         if (idx === -1) return;
         var key = name + ':' + idx;
         _featureMap[key] = leafletLayer;
@@ -655,16 +663,74 @@ var _undoSkip = false;
     _featureMap = {};
     window._drawingTargetLayerId = null;
     clearHighlight();
+    if (mapInstance) {
+      mapInstance.eachLayer(function(l) {
+        if (l !== baseLayer && l !== drawnItems && !(l instanceof L.TileLayer)) {
+          try { mapInstance.removeLayer(l); } catch(_) {}
+        }
+      });
+    }
+  }
+
+  /** 图层比例尺范围（ArcMap 风格：最小缩放与最大缩放可见范围） */
+  var _layerScaleRanges = {}; // layerName -> { minZoom: number|null, maxZoom: number|null }
+
+  function setLayerScaleRange(name, minZoom, maxZoom) {
+    if (minZoom === null || minZoom === undefined || minZoom === '') minZoom = null;
+    else minZoom = Number(minZoom);
+    if (maxZoom === null || maxZoom === undefined || maxZoom === '') maxZoom = null;
+    else maxZoom = Number(maxZoom);
+
+    if (minZoom === null && maxZoom === null) {
+      delete _layerScaleRanges[name];
+    } else {
+      _layerScaleRanges[name] = { minZoom: minZoom, maxZoom: maxZoom };
+    }
+    _updateScaleVisibility(name);
+  }
+
+  function getLayerScaleRange(name) {
+    return _layerScaleRanges[name] || { minZoom: null, maxZoom: null };
+  }
+
+  function _updateScaleVisibility(singleName) {
+    if (!mapInstance) return;
+    var currentZoom = mapInstance.getZoom();
+    var names = singleName ? [singleName] : Object.keys(layers);
+
+    names.forEach(function(name) {
+      var layer = layers[name];
+      if (!layer) return;
+      var range = _layerScaleRanges[name];
+      var isVisibleUser = (layer._userVisible !== false);
+
+      if (!isVisibleUser) {
+        if (mapInstance.hasLayer(layer)) mapInstance.removeLayer(layer);
+        return;
+      }
+
+      if (!range || (range.minZoom === null && range.maxZoom === null)) {
+        if (!mapInstance.hasLayer(layer)) mapInstance.addLayer(layer);
+        return;
+      }
+
+      var inRange = true;
+      if (range.minZoom !== null && currentZoom < range.minZoom) inRange = false;
+      if (range.maxZoom !== null && currentZoom > range.maxZoom) inRange = false;
+
+      if (inRange) {
+        if (!mapInstance.hasLayer(layer)) mapInstance.addLayer(layer);
+      } else {
+        if (mapInstance.hasLayer(layer)) mapInstance.removeLayer(layer);
+      }
+    });
   }
 
   /** 切换图层显隐 */
   function setLayerVisible(name, visible) {
     if (!layers[name]) return;
-    if (visible) {
-      if (!mapInstance.hasLayer(layers[name])) mapInstance.addLayer(layers[name]);
-    } else {
-      if (mapInstance.hasLayer(layers[name])) mapInstance.removeLayer(layers[name]);
-    }
+    layers[name]._userVisible = !!visible;
+    _updateScaleVisibility(name);
     // 卷帘期间重新挂载的 renderer 容器不带裁剪，重放一次
     if (_swipe) _applySwipeClip(_swipe.ratio);
   }
@@ -736,20 +802,31 @@ var _undoSkip = false;
       drawnItems.eachLayer(function(l) {
         if (l._name === name) layer = l;
       });
+      if (layer) layers[name] = layer;
     }
-    if (!layer || typeof layer.eachLayer !== 'function') return;
-    _eachStyledPath(layer, function(sub) {
+    if (!layer) return;
+
+    function applyOpacity(sub) {
+      if (!sub) return;
       if (!sub._baseOpacity) {
         sub._baseOpacity = {
-          opacity: sub.options.opacity !== undefined ? sub.options.opacity : 1,
-          fillOpacity: sub.options.fillOpacity !== undefined ? sub.options.fillOpacity : 0.35,
+          opacity: (sub.options && sub.options.opacity !== undefined) ? sub.options.opacity : 1,
+          fillOpacity: (sub.options && sub.options.fillOpacity !== undefined) ? sub.options.fillOpacity : 0.35,
         };
       }
       var style = {};
       if (sub._baseOpacity.opacity !== undefined) style.opacity = sub._baseOpacity.opacity * o;
       if (sub._baseOpacity.fillOpacity !== undefined) style.fillOpacity = sub._baseOpacity.fillOpacity * o;
-      sub.setStyle(style);
-    });
+      if (typeof sub.setStyle === 'function') sub.setStyle(style);
+    }
+
+    if (typeof layer.eachLayer === 'function') {
+      _eachStyledPath(layer, function(sub) {
+        applyOpacity(sub);
+      });
+    } else if (typeof layer.setStyle === 'function') {
+      applyOpacity(layer);
+    }
   }
 
   /** 修改图层完整样式（颜色/透明度/线宽） */
@@ -905,6 +982,7 @@ var _undoSkip = false;
 
   function onZoomEnd() {
     if (_zoomLabelEl) _zoomLabelEl.textContent = 'Z' + mapInstance.getZoom();
+    _updateScaleVisibility();
   }
 
   /** 加载热力图（leaflet.heat） */
@@ -2168,11 +2246,14 @@ var _undoSkip = false;
   GIS.map = {
     init: init,
     loadGeoJSON: loadGeoJSON,
+    getBounds: function() { return mapInstance ? mapInstance.getBounds() : null; },
     switchBaseMap: switchBaseMap,
     applySymbology: applySymbology,
     removeLayer: removeLayer,
     clearAll: clearAll,
     setLayerVisible: setLayerVisible,
+    setLayerScaleRange: setLayerScaleRange,
+    getLayerScaleRange: getLayerScaleRange,
     setLayerColor: setLayerColor,
     setLayerOpacity: setLayerOpacity,
     setLayerStyle: setLayerStyle,

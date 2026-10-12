@@ -170,6 +170,17 @@ window.GIS = window.GIS || {};
     emit('layer-removed', { layerId: layerId });
   }
 
+  function clearAll() {
+    var copy = layers.slice();
+    copy.forEach(function(rec) {
+      removeLayer(rec.layer_id);
+    });
+    layers = [];
+    drill.stack = [];
+    clearSelection();
+    emit('drill-changed', { stack: [] });
+  }
+
   function setVisible(layerId, visible) {
     var rec = findLayer(layerId);
     if (!rec) return;
@@ -425,6 +436,7 @@ window.GIS = window.GIS || {};
     on: on,
     addLayer: addLayer,
     removeLayer: removeLayer,
+    clearAll: clearAll,
     setVisible: setVisible,
     setStyle: setStyle,
     setOpacity: setOpacity,

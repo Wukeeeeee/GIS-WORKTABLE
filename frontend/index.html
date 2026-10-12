@@ -1364,7 +1364,18 @@
 
         <!-- === 面板4：历史记录 === -->
         <div class="modal-panel" id="panelHistory">
-          <h3>历史记录</h3>
+          <h3>历史记录与数据存储</h3>
+          <div class="model-config-card" style="margin-bottom:16px;">
+            <div class="model-config-header">
+              <span class="model-config-name">本地台账数据库 (SQLite)</span>
+              <span class="model-config-badge" id="dbStatusBadge" style="background:#e6f4ea;color:#137333;">正常连接</span>
+            </div>
+            <div style="font-size:12px;color:var(--ui-gray-600);margin-top:8px;line-height:1.6;">
+              <div><b>数据库文件：</b><code id="dbPathDisplay" style="word-break:break-all;background:rgba(0,0,0,0.04);padding:2px 4px;border-radius:3px;">加载中...</code></div>
+              <div style="margin-top:4px;"><b>执行台账：</b><span id="dbRunsCount">0</span> 轮 | <b>产物总数：</b><span id="dbArtsCount">0</span> 个</div>
+              <div style="margin-top:4px;color:var(--ui-gray-400);font-size:11px;">所有产物使用相对于工作区的安全相对路径保存，移动或备份整个项目文件夹不影响历史记录读取。</div>
+            </div>
+          </div>
           <div class="history-toolbar">
             <span class="history-count" id="historyCount"></span>
             <button class="history-clear-btn" id="historyClearBtn">清除全部</button>

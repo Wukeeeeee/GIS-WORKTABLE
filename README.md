@@ -161,6 +161,13 @@ python -m pytest backend/tests/ -q
 - [参赛与项目展示准备](docs/showcase.md)：演示流程、材料清单及待核验事项。
 - 问题与建议请提交 [Issue](https://github.com/Wukeeeeee/GIS-WORKTABLE/issues)，尽量附最小复现数据。
 
+## 本地数据存储与持久化说明
+
+- **执行台账数据库**：`data/workspace.db`（本地 SQLite）。用于记录所有 Agent 执行轮次（`runs`）、工具调用与产物关联台账。
+- **相对路径设计**：数据库内所有产物均存储为相对于工作区根目录的相对路径（如 `output/nanjing_buffer.geojson`），即便更换存放磁盘或移动项目文件夹，历史记录依然能自愈解析。
+- **防历史污染机制**：基于 `run_id` 的单次执行隔离与三方核对（Claim ↔ Registry ↔ Filesystem），杜绝多轮对话中历史同名文件造成的“未真实执行却误判成功”假阳性。
+- **备份与迁移**：迁移工作台或更换电脑时，只需完整备份 `data/` 目录与输出文件即可保留所有历史分析轨迹与图层。
+
 ## 更多文档
 
 - [分层测试指南](docs/layered-testing-guide.md)

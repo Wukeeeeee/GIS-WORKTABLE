@@ -911,6 +911,7 @@
         else if (GIS.project && GIS.project.setCurrentProjectId) GIS.project.setCurrentProjectId(null);
         const nameEl = document.getElementById('workspaceCurrentProjectName');
         if (nameEl) nameEl.textContent = '未命名工程';
+        if (GIS.state && typeof GIS.state.clearAll === 'function') { try { GIS.state.clearAll(); } catch(_) {} }
         if (GIS.layers && GIS.layers.clearAll) GIS.layers.clearAll(true);
         if (GIS.map && GIS.map.clearAll) { try { GIS.map.clearAll(); } catch(_) {} }
         if (GIS.map && GIS.map.resetView) { try { GIS.map.resetView(); } catch(_) {} }

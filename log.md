@@ -289,3 +289,120 @@
    - 当前针对小于 12 个有效字符的短消息一律视为上下文延续以防止历史丢失。如果用户在同一会话中突然提出完全无关的短指令（如“查查西瓜”），系统仍会携带前置 GIS 上下文，需在后续版本中结合语义意图分类做进一步精细化分流。
 
 
+## 2026-10-12: 依赖审计、GIS 工具运行时审计与 Pyodide 可行性验证（架构审计轮）
+
+### 1. 本轮目标
+
+按「审计真实调用链 → 工具分级 → 多执行引擎设计 → Pyodide 实测 → 渐进式改动」顺序推进，不做大规模重构，不引入为新技术而技术的改动。
+
+### 2. 检查的文件
+
+- `backend/requirements.txt`（34 个顶级依赖逐包 grep 验证）
+- `backend/main.py`（启动流程、约 50 个 `/api/*` 端点、PROJ_LIB 清理）
+- `backend/services/graph.py`（create_react_agent 构建与强制补执行链）
+- `backend/services/tools.py`（9288 行，124 个 @tool，约 200 处函数内懒加载）
+- `backend/services/result_guard.py`、`datav_service.py`、`tools.py` 上下文/消歧实现
+- `backend/tests/layered/`、`conftest.py`（离线性确认：LLM 全 mock，网络测试自带 skip）
+- `frontend/index.html` + 22 个 JS（无构建、无 Turf.js、CDN 引入 Leaflet/Cesium）
+- `desktop/main.js`、`start.bat`、`backend/launcher.py`（部署链）
+
+### 3. 修改的文件
+
+| 文件 | 改动 | 原因 |
+|---|---|---|
+| `backend/requirements.txt` | 移除 `python-dotenv`、`seaborn`；为 `openai`/`pyecharts` 加防误删注释 | 两包全库零引用（grep 证实：dotenv 无任何加载约定、密钥走设置 UI；seaborn 绘图全走 matplotlib）。openai 是 langchain-openai 传递依赖（pin 有意），pyecharts 仅 execute_python 沙箱白名单使用，均保留 |
+| `backend/services/graph.py` | 强制补执行的纠错指令文本从两处内联字面量（run_agent / run_agent_stream）提取为模块常量 `_RECOVERY_PROMPT_CODE_DUMP` / `_RECOVERY_PROMPT_NO_ACTION` | 消除重复 + 可测试性；字符串逐字节相同，**零行为变化** |
+| `backend/tests/layered/test_layer1_unit.py` | 与源码对齐重写：result_guard 改用现行 API `apply_guard`；`_is_unexecuted_code_or_disclaimer` 改为现行签名 `(text, msgs)`；Prompt 断言更新为现行措辞（GLM 提示词为精简版，只校验子集）；`set_conversation_context` 按现行 `str` 签名传字符串 | 原文件 collect 即 ImportError（引用已删除的 `sanitize_user_facing_response`/`guard_response_vs_tools`），导致整个测试套件无法运行 |
+| `backend/tests/layered/test_layer2_agent.py` | 同上：移除不存在的 `_tools_mod`、`_format_agent_recovery_instruction`；断言改打现行常量 `_RECOVERY_PROMPT_CODE_DUMP`；datav_service mock 改打现行函数 `fetch_boundary`（原打不存在的 `get_boundary_by_adcode`） | 同上（collect 即 ImportError） |
+| `docs/architecture/dependency-audit.md`（新增） | 依赖审计报告：逐包引用点、冗余证据、懒加载纪律、部署链 | 本轮审计产出 |
+| `docs/architecture/gis-tool-runtime-audit.md`（新增） | 124 工具按实现族分级的运行时审计表 | 本轮审计产出 |
+| `docs/architecture/runtime-architecture.md`（新增） | 现状/目标架构 mermaid 图、确定性调度规则、统一结果协议、Pyodide 实测结论 | 本轮审计产出 |
+| `scripts/pyodide_feasibility_check.mjs`（新增） | Pyodide 最小验证脚本（Node + 官方 CDN wheel），可复现 | 本轮验证产出 |
+
+### 4. 测试与结果
+
+- **修复前基线**：`pytest backend/tests` collect 即中断——`test_layer1_unit.py`、`test_layer2_agent.py` 两个 ImportError（测试与源码脱节），558 项无法运行。
+- **修复后**：
+  - fast 层（unit+agent）：`pytest backend/tests/layered -m fast` → **8 passed, 10 deselected**（0.13s）
+  - `backend.main` 冒烟导入 → OK（requirements 变更后复验）
+  - graph.py 常量提取后检测函数行为复测：免责声明 4 组样本判定结果与提取前一致
+  - 全量回归（`-m "not slow"`，含网络型 e2e）：见第 7 节补充
+- **Pyodide 实测**（`node scripts/pyodide_feasibility_check.mjs`，Pyodide 314.0.7 npm 运行时 + 官方 CDN wheel）：
+  - 运行时加载 ≈1.4s；shapely 2.1.2 + pyproj 安装 ≈644ms（官方 wheel 可缓存）；缓冲区+投影计算 ≈777ms
+  - **与 CPython 结果逐位一致**：面积 11,483,504.84 m²、contains=True、外环 37 点
+  - 内存：进程 RSS ≈259–321MB；rasterio/GDAL 无 WASM wheel（官方索引 2026-10-12 确认）
+
+### 5. 审计结论（未做改动的部分及理由）
+
+1. **matplotlib 启动即加载不改**：实测 import 仅 167ms（tools 全模块 1586ms 的 10%），懒加载收益不抵图表类工具初始化时序风险。
+2. **前端工具迁移不做**：后端经 start.bat / Electron 壳必然本地常驻，"省后端调用"省的是 <10ms 的 localhost 环回；第一类工具（属性过滤等）数据本就在后端注册表。
+3. **Pyodide 暂缓集成**：技术可行、精度无损（实测），但当前部署形态无收益，代价确定（259MB 浏览器内存 + 10MB 首载 + geopandas 1.1.1 刚在 Pyodide 0.29 重新启用）。触发条件与试点路径写入 `docs/architecture/runtime-architecture.md`。
+
+### 6. 已知问题
+
+- 全量测试套件中部分 e2e/集成测试走真实网络（DataV/OSM），未标 `slow`，导致 `-m "not slow"` 仍需十余分钟；建议后续给网络型测试补标记或 mock。
+- `pytest backend/tests` 必须在仓库根目录执行（`cd backend` 后 `backend` 包不在 sys.path，collect 即错）；可在 pytest.ini 加 `pythonpath = ..` 根治，本轮未动（避免扩大改动面）。
+
+### 7. 补充：回归测试结果（分标记执行）
+
+全量套件含未标记 `slow` 的真实网络 e2e（DataV/OSM 下载），单次 >30 分钟，本轮改为按层验证：
+
+| 层级 | 命令 | 结果 |
+|---|---|---|
+| Layer 1+2（unit+agent，本次修复的文件所在层） | `pytest backend/tests/layered -m fast` | **8 passed**（0.13s） |
+| Layer 3+4（integration） | `pytest backend/tests -m integration` | 2 passed, **6 failed** |
+| 应用冒烟 | `import backend.main` | OK（requirements 变更后复验） |
+
+**6 个失败均为存量问题，与本次改动无关**，证据链：
+1. 失败测试文件（`test_layer3_gis_tools.py`、`test_layer4_map_integration.py`）及其依赖源码（`tools.py`、`main.py`）**均不在本次 4 个改动文件清单内**（见第 3 节）；
+2. 失败模式为确定性的测试-源码漂移：如 `test_layer4` 直接调用 `get_registered_layers()`，而该函数经 `@tool` 装饰后是 StructuredTool 对象（`tools.py:9120-9288` 注册链），`'StructuredTool' object is not callable` 必然发生，与 graph.py/requirements 改动无交集；
+3. `test_layer3` 的 execute_python 落盘断言（`integration_test_card.png` 路径）与 DataV 真实网络拉取类用例属于环境依赖失败。
+
+遗留：这 6 个用例与本次 test_layer1/2 同属"测试与源码脱节"，建议下一轮统一修复（tools.py 直调类测试应改用 `.invoke()`）。
+
+### 8. 下一步建议
+
+1. 给网络型测试补 `slow`/`network` 标记，恢复快速回归能力。
+2. pytest.ini 增加 `pythonpath` 修复 backend 目录直跑。
+3. 若决策引入"无后端模式"，按 runtime-architecture.md 从 spatial_buffer 族试点 Pyodide。
+
+---
+
+## 2026-10-13 核心能力升级与提交规范固化
+
+### 1. 发现的问题与解决思路
+1. **图层感知弱化与绕过工具执行 (P0)**：
+   - 现象：用户提问“查看有几个注册图层”等指令时，LLM 可能会走短文本直出链路回复“没有拿到实时数据”，无法准确感知注册图层要素量、几何类型与字段信息。
+   - 解决：扩展 `get_registered_layers`（及 `list_layers` 别名），返回要素数量、几何类型、外包范围（bbox）及属性字段列表；在 `graph.py` 中补充关键词匹配，防止图层查询指令误走短文本跳过分支；强化 System Prompt 禁止在图层存在时回复免责声明。
+2. **Matplotlib 沙箱出图中文字体乱码 (P0)**：
+   - 现象：专题图渲染中文标注时出现方块方框（□□□）。
+   - 解决：调整沙箱中字体初始化顺序，确保 `plt.style.use()` 在中文字体注入之前执行，杜绝样式重置覆盖微软雅黑配置；扩大绘图环境自动检测覆盖面。
+3. **图层属性检查器与拖拽反馈体验 (P1)**：
+   - 现象：属性表在增行或保存后标签页错误跳回常规属性；图层列表拖动时缺少放置分界线；缺少自定义字段与字段计算能力。
+   - 解决：增加激活 Tab 记忆；实现 `drag-over-top` / `drag-over-bottom` 放置指示线与卡片半透明幽灵样式；新增“+列”自定义字段弹窗与 ArcMap 风格“⌗ 字段计算器”。
+4. **可见缩放范围控制与透明度联动 (P1)**：
+   - 现象：无法按比例尺自动控制图层显示，卡片与检查器透明度未同步。
+   - 解决：参照 ArcMap 实现 `minZoom`（缩小极限）与 `maxZoom`（放大极限）可见范围控制并联动 `zoomend` 事件；打通透明度双向绑定并支持手绘要素。
+5. **新建工程幽灵边界残留 (P0)**：
+   - 现象：新建工程后图层列表已空，但地图上残留上一次行政区划底图/多边形。
+   - 解决：在新建工程与会话重置时前置调用 `GIS.state.clearAll()`，彻底重置图层注册表、下钻栈与选区状态。
+
+### 2. 修改的文件
+- `backend/services/tools.py`
+- `backend/services/graph.py`
+- `backend/services/ai_service.py`
+- `backend/services/matplotlib_font.py`
+- `frontend/js/layers.js`
+- `frontend/css/workspace.css`
+- `frontend/js/map.js`
+- `frontend/js/gis_state.js`
+- `frontend/js/project.js`
+- `frontend/js/workspace.js`
+- `.gitmessage`（新增）：根目录 Git 提交模板
+- `docs/repository-standards.md`：规范化 Commit Title 与 Description（多模块中英双语格式）
+
+### 3. 验证结果
+- `backend/tests/test_new_tools.py` 15 passed。
+- 前端 JS 核心文件语法检查全部通过。
+
+
