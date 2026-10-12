@@ -37,7 +37,7 @@ function findPython() {
   const candidates = [
     process.env.GIS_PYTHON,
     path.join(PROJECT_ROOT, '.venv', 'Scripts', 'python.exe'),
-    'D:\\python\\python.exe',
+    path.join(PROJECT_ROOT, '.venv', 'bin', 'python'),
     'python',
     'python3',
   ].filter(Boolean);

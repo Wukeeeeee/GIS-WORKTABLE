@@ -4,10 +4,11 @@ REM  GIS-WORKTABLE Test Suite Runner
 REM ============================================================
 title Run GIS-WORKTABLE Tests
 chcp 65001 >nul
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 set "PY="
-if exist "D:\python\python.exe" set "PY=D:\python\python.exe"
+if defined GIS_PYTHON set "PY=%GIS_PYTHON%"
+if not defined PY if exist "%~dp0..\.venv\Scripts\python.exe" set "PY=%~dp0..\.venv\Scripts\python.exe"
 if not defined PY (
   where python >nul 2>nul && set "PY=python"
 )
@@ -18,7 +19,7 @@ if not defined PY (
 )
 
 echo.
-echo  Running backend test suite (366+ tests)...
+echo  Running backend test suite...
 echo.
 "%PY%" -m pytest backend/tests/ -q
 

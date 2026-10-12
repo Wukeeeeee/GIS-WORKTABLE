@@ -15,7 +15,7 @@
 推送前于 2026-10-11 补充执行后端全量验证（Windows、Python 3.13.0、pytest 9.1.1），使用下方相同的测试进程环境变量：
 
 ```powershell
-D:\python\python.exe -m pytest backend/tests/ -q --disable-warnings --maxfail=3
+python -m pytest backend/tests/ -q --disable-warnings --maxfail=3
 ```
 
 结果为 **527 项通过、5 项跳过，耗时 70.82 秒**。跳过的项目未验证，自动测试也不表示所有外部服务和页面流程均已实际操作。推送前全部前端 JavaScript 与桌面入口脚本语法检查通过，README 的本地文档链接和截图路径存在。
@@ -25,7 +25,7 @@ D:\python\python.exe -m pytest backend/tests/ -q --disable-warnings --maxfail=3
 ```powershell
 $env:OPENBLAS_NUM_THREADS = '1'
 $env:PYTHONIOENCODING = 'utf-8'
-D:\python\python.exe -m pytest backend/tests/test_direct_invoke_e2e.py backend/tests/test_spatial_tools.py backend/tests/test_spatial_stats.py backend/tests/test_new_tools.py backend/tests/test_network.py backend/tests/test_dem_analysis.py -q --disable-warnings
+python -m pytest backend/tests/test_direct_invoke_e2e.py backend/tests/test_spatial_tools.py backend/tests/test_spatial_stats.py backend/tests/test_new_tools.py backend/tests/test_network.py backend/tests/test_dem_analysis.py -q --disable-warnings
 ```
 
 覆盖空间分析、工具 API 链路、空间统计、栅格处理、网络算法、DEM 坡度/坡向/阴影等。新增相交回归案例：两个内部重叠的图层叠置自身，保留四条属性组合，但去重覆盖比例均为 100%；面积与等面积投影下的已知矩形面积相符。

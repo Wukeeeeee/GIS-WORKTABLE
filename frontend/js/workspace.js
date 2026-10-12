@@ -2,6 +2,7 @@
 (function() {
   'use strict';
   const GIS = window.GIS = window.GIS || {};
+  const _toolTasks = {};
   const paths = {"home":"/assets/ui-icons/workspace-home.png","map":"/assets/ui-icons/workspace-map.png","folder":"/assets/ui-icons/workspace-folder.png","layers":"/assets/ui-icons/workspace-layers.png","tool":"/assets/ui-icons/workspace-tool.png","ai":"/assets/ui-icons/workspace-ai.png","globe":"/assets/ui-icons/workspace-globe.png","upload":"/assets/ui-icons/workspace-upload.png","history":"/assets/ui-icons/workspace-history.png","settings":"/assets/ui-icons/workspace-settings.png","close":"/assets/ui-icons/workspace-close.png","chevron":"/assets/ui-icons/workspace-chevron.png"};
   function icon(name) {
     return '<span class="ui-icon" aria-hidden="true" style="--ui-icon-image:url(' + (paths[name] || '') + ')"></span>';
@@ -22,6 +23,8 @@
       bottom:status ? status.getBoundingClientRect().top-12 : window.innerHeight-12};
   }
   function clampPanel(container, left, top, fallbackWidth) {
+    if (typeof container === 'string') container = document.getElementById(container);
+    if (!container) return [left || 0, top || 0];
     const width = container.offsetWidth || Math.min(fallbackWidth || 380, window.innerWidth-24);
     const height = container.offsetHeight || 300;
     const bounds = panelBounds(width);
@@ -29,6 +32,8 @@
       Math.max(bounds.top, Math.min(bounds.bottom-height, top))];
   }
   function centerPanel(container, fallbackWidth) {
+    if (typeof container === 'string') container = document.getElementById(container);
+    if (!container) return [0, 0];
     container.style.position = 'fixed';
     container.style.zIndex = '1200';
     const width = container.offsetWidth || Math.min(fallbackWidth || 380, window.innerWidth-24);
