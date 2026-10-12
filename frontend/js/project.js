@@ -6,11 +6,58 @@ window.GIS = window.GIS || {};
   const GIS = window.GIS;
 
   let _currentProjectId = null;
+  let _currentSessionId = _createSessionId();
+
+  function _createSessionId() {
+    return 'session_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
+  }
 
   function init() {
     _bindHistoryToggle();
     _bindHistoryClose();
     _bindClearAll();
+    _checkRecentProjectBanner();
+  }
+
+  function _checkRecentProjectBanner() {
+    var container = document.getElementById('chatMessages');
+    if (!container) return;
+    GIS.api.listProjects().then(function(data) {
+      var projs = data && data.projects;
+      if (!projs || projs.length === 0) return;
+      if (container.querySelectorAll('.message').length > 0) return;
+
+      var emptyEl = container.querySelector('.chat-messages-empty');
+      if (!emptyEl) return;
+
+      var latest = projs[0];
+      var name = (latest.name || '未命名工程').replace(/^\[用户引用了上一条回复.*?\]\s*/s, '').replace(/^\[附图层:.*?\]\s*/s, '').trim() || '未命名工程';
+      if (name.length > 22) name = name.slice(0, 22) + '…';
+
+      var banner = document.createElement('div');
+      banner.className = 'recent-project-banner';
+      banner.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:8px;padding:12px 18px;margin:24px auto;max-width:340px;border:1px dashed var(--outline-variant);border-radius:10px;background:var(--surface-container-low);cursor:pointer;transition:all 0.2s;text-align:center;box-sizing:border-box;user-select:none;';
+      banner.innerHTML =
+        '<div style="font-size:12px;color:var(--on-surface-variant);display:flex;align-items:center;justify-content:center;gap:6px;">' +
+          "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-21db89b5c210.png')\"></span>" +
+          '<span>上次工程: <strong>' + GIS.utils.escapeHtml(name) + '</strong></span>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--accent,#6366f1);font-weight:600;">点击一键恢复继续工作 →</div>';
+      banner.addEventListener('click', function() {
+        _loadProject(latest.id);
+      });
+      banner.addEventListener('mouseenter', function() {
+        banner.style.borderColor = 'var(--accent,#6366f1)';
+        banner.style.transform = 'translateY(-1px)';
+      });
+      banner.addEventListener('mouseleave', function() {
+        banner.style.borderColor = 'var(--outline-variant)';
+        banner.style.transform = 'none';
+      });
+
+      emptyEl.innerHTML = '';
+      emptyEl.appendChild(banner);
+    }).catch(function() {});
   }
 
   function _getProvider() {
@@ -32,11 +79,12 @@ window.GIS = window.GIS || {};
     if (!container) return msgs;
     const rows = container.querySelectorAll('.message');
     rows.forEach(function(row) {
+      if (row.classList.contains('message-system')) return;
       const isUser = row.classList.contains('message-user');
       const bubble = row.querySelector('.message-bubble');
       if (!bubble) return;
       if (row.id === 'ai-loading-msg') return;
-      var content = bubble.innerText || bubble.textContent || '';
+      var content = row._rawText || bubble.innerText || bubble.textContent || '';
       content = content.replace(/^\d{2}:\d{2}:\d{2}\s*/, '');
       msgs.push({ role: isUser ? 'user' : 'assistant', content: content.trim() });
     });
@@ -153,10 +201,18 @@ window.GIS = window.GIS || {};
         return;
       }
       _currentProjectId = data.id;
+      _currentSessionId = data.sessionId || ('proj_' + data.id);
       var capsuleName = document.getElementById('workspaceCurrentProjectName');
       if (capsuleName) capsuleName.textContent = data.name || '未命名工程';
-      // 先恢复聊天面板可见，再加载消息
+      // 先恢复聊天面板可见
       _hideHistory();
+      // 先清理旧图层与地图要素，避免与旧工程叠加冲突
+      if (GIS.layers && typeof GIS.layers.clearAll === 'function') {
+        try { GIS.layers.clearAll(true); } catch(_) {}
+      }
+      if (GIS.map && typeof GIS.map.clearAll === 'function') {
+        try { GIS.map.clearAll(); } catch(_) {}
+      }
       GIS.chat.clear();
       if (data.messages) {
         data.messages.forEach(function(msg) {
@@ -165,10 +221,6 @@ window.GIS = window.GIS || {};
         });
       }
       if (data.layers && data.layers.length > 0) {
-        // 清理当前图层避免叠加冲突
-        if (GIS.layers && typeof GIS.layers.clearAll === 'function') {
-          try { GIS.layers.clearAll(); } catch(_) {}
-        }
         data.layers.forEach(function(layer) {
           var layerName = layer.name || '图层';
           var layerColor = layer.color || '#1c1b1b';
@@ -226,22 +278,28 @@ window.GIS = window.GIS || {};
           try { GIS.map.setView([centerLat, centerLng], zoomLevel); } catch(_) {}
         }
       }
-      GIS.chat.addMessage('已恢复工程: ' + (data.name || ''), 'system');
+      var displayProjName = (data.name || '').replace(/^\[用户引用了上一条回复.*?\]\s*/s, '').replace(/^\[附图层:.*?\]\s*/s, '').trim();
+      if (!displayProjName || displayProjName === '未命名工程') displayProjName = data.name || '未命名工程';
+      if (displayProjName.length > 25) displayProjName = displayProjName.slice(0, 25) + '…';
+      GIS.chat.addMessage('已恢复工程: ' + displayProjName, 'system', { pill: true });
+      if (GIS.workspace && GIS.workspace.renderRecentProjects) {
+        try { GIS.workspace.renderRecentProjects(); } catch(_) {}
+      }
     }).catch(function(err) {
       GIS.chat.addMessage('加载工程失败: ' + err.message, 'system');
     });
   }
 
   function _deleteProject(pid, itemEl) {
-    if (!confirm('确定删除此工程？')) return;
     GIS.api.deleteProject(pid).then(function() {
       if (itemEl && itemEl.parentNode) itemEl.remove();
       _refreshList();
       // 若删除的是当前正在查看的工程，联动清空会话和图层，避免残留
       if (pid === _currentProjectId) {
         _currentProjectId = null;
+        _currentSessionId = _createSessionId();
+        if (GIS.layers && typeof GIS.layers.clearAll === 'function') GIS.layers.clearAll(true);
         GIS.chat.clear();
-        if (GIS.layers && typeof GIS.layers.clearAll === 'function') GIS.layers.clearAll();
         if (GIS.map && typeof GIS.map.resetView === 'function') { try { GIS.map.resetView(); } catch(_) {} }
       }
     }).catch(function(err) {
@@ -345,7 +403,7 @@ window.GIS = window.GIS || {};
       return GIS.api.saveProject({
         project_id: _currentProjectId,
         name: projName,
-        session_id: 'default',
+        session_id: _currentSessionId,
         provider: _getProvider(),
         map_state: _getMapState(),
         messages: _collectMessages(),
@@ -356,7 +414,7 @@ window.GIS = window.GIS || {};
       });
     },
     autoSave: function() {
-      return GIS.api.autoSaveProject().then(function(res) {
+      return GIS.api.autoSaveProject(_currentSessionId, _currentProjectId).then(function(res) {
         if (res && res.id) _currentProjectId = res.id;
         return res;
       }).catch(function() {});
@@ -366,7 +424,18 @@ window.GIS = window.GIS || {};
     },
     showHistory: _showHistory,
     hideHistory: _hideHistory,
+    loadProject: _loadProject,
     getCurrentProjectId: function() { return _currentProjectId; },
-    setCurrentProjectId: function(id) { _currentProjectId = id; },
+    setCurrentProjectId: function(id) {
+      _currentProjectId = id;
+      if (!id) _currentSessionId = _createSessionId();
+    },
+    getCurrentSessionId: function() { return _currentSessionId; },
+    setCurrentSessionId: function(sid) { _currentSessionId = sid; },
+    resetSession: function() {
+      _currentProjectId = null;
+      _currentSessionId = _createSessionId();
+      return _currentSessionId;
+    },
   };
 })();

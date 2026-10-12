@@ -93,10 +93,52 @@ window.GIS = window.GIS || {};
     tbody.innerHTML = html;
   }
 
+  function _detectGeomType(geojson) {
+    if (!geojson) return '未知';
+    var features = [];
+    if (geojson.type === 'FeatureCollection') features = geojson.features || [];
+    else if (geojson.type === 'Feature') features = [geojson];
+    else if (geojson.type) return geojson.type;
+    if (features.length === 0) return '空要素';
+    var types = {};
+    features.forEach(function(f) {
+      if (f && f.geometry && f.geometry.type) types[f.geometry.type] = (types[f.geometry.type] || 0) + 1;
+    });
+    var keys = Object.keys(types);
+    if (keys.length === 0) return '无几何';
+    if (keys.length === 1) return keys[0];
+    return 'GeometryCollection';
+  }
+
   function _renderLayerRow(layer, index, hiddenStyle) {
-    const geometryNames = {Point:'点', MultiPoint:'多点', LineString:'线', MultiLineString:'多线', Polygon:'面', MultiPolygon:'多面', GeometryCollection:'集合'};
-    const type = (layer.geometry_type || '未知类型').split(',').map(t => geometryNames[t.trim()] || t.trim()).join(' / ');
+    var rawType = layer.geometry_type;
+    if (!rawType || rawType === '未知' || rawType === '未知类型' || rawType === 'Vector') {
+      rawType = _detectGeomType(layer.geojson);
+      layer.geometry_type = rawType;
+    }
     const features = layer.geojson && (layer.geojson.type === 'FeatureCollection' ? (layer.geojson.features || []).length : layer.geojson.type === 'Feature' ? 1 : null);
+    
+    // 细分友好展示文案：针对集合特性精细化
+    var typeText = '要素';
+    if (rawType === 'Point') {
+      typeText = (features && features > 1) ? '点集合 (Point)' : '点 (Point)';
+    } else if (rawType === 'MultiPoint') {
+      typeText = '点集合 (MultiPoint)';
+    } else if (rawType === 'LineString') {
+      typeText = (features && features > 1) ? '线集合 (Line)' : '线 (LineString)';
+    } else if (rawType === 'MultiLineString') {
+      typeText = '线集合 (MultiLine)';
+    } else if (rawType === 'Polygon') {
+      typeText = (features && features > 1) ? '面集合 (Polygon)' : '面 (Polygon)';
+    } else if (rawType === 'MultiPolygon') {
+      typeText = '多面 (MultiPolygon)';
+    } else if (rawType === 'GeometryCollection') {
+      typeText = '几何集合 (点/线/面)';
+    } else {
+      const geometryNames = {Point:'点', MultiPoint:'点集合', LineString:'线', MultiLineString:'线集合', Polygon:'面', MultiPolygon:'多面', GeometryCollection:'几何集合'};
+      typeText = String(rawType).split(',').map(t => geometryNames[t.trim()] || t.trim()).join(' / ');
+    }
+
     const op = Math.round((layer.opacity !== undefined ? layer.opacity : 1) * 100);
     return '<tr class="' + (layer.visible === false ? 'layer-hidden' : '') + '" draggable="true" data-index="' + index + '" data-id="' + escapeHtml(layer.layer_id || '') + '"' +
       (layer.groupId ? ' data-group="' + escapeHtml(layer.groupId) + '"' : '') + hiddenStyle + '>' +
@@ -105,11 +147,11 @@ window.GIS = window.GIS || {};
       '<span class="ui-visibility-check' + (layer.visible !== false ? ' checked' : '') + '" aria-hidden="true"></span></button></td>' +
       '<td class="col-name">' +
         '<div class="layer-title-line">' +
-          '<span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '" title="修改颜色"></span>' +
+          '<span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + ';opacity:' + (layer.opacity !== undefined ? layer.opacity : 1) + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '" title="修改颜色 · 不透明度 ' + op + '%"></span>' +
           '<span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="' + escapeHtml(layer.filename || '未命名') + ' · 双击重命名">' + escapeHtml(layer.filename || '未命名') + '</span>' +
         '</div>' +
         '<div class="layer-meta-line">' +
-          '<span class="layer-type">' + escapeHtml(type) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">· ' + features + ' 个要素</span>' : '') +
+          '<span class="layer-type">' + escapeHtml(typeText) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">· ' + features + ' 个要素</span>' : '') +
         '</div>' +
         '<div class="layer-op-row" title="透明度：拖动调整">' +
           '<span class="layer-op-label">不透明度</span>' +
@@ -189,7 +231,7 @@ window.GIS = window.GIS || {};
   }
 
   // 删除图层：从列表移除 + 从地图清除
-  function removeLayer(layerId, _fromState) {
+  function removeLayer(layerId, _fromState, silent) {
     // 在共享状态中的图层：走 state 统一删除（会回调本函数同步面板/地图/后端）
     if (!_fromState && window.GIS.state && typeof window.GIS.state.getLayer === 'function' &&
         window.GIS.state.getLayer(layerId)) {
@@ -204,7 +246,7 @@ window.GIS = window.GIS || {};
       GIS.map.removeLayer(mapName);
     }
     if (target) {
-      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      if (!silent && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
         window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system');
       }
       if (window.GIS.api && typeof window.GIS.api.unregisterLayer === 'function') {
@@ -213,10 +255,40 @@ window.GIS = window.GIS || {};
     }
   }
 
-  // 清空所有图层（新建会话/删除工程时调用）：逐个走 removeLayer 保证地图与后端同步清理
-  function clearAll() {
+  // 清空所有图层（新建会话/删除工程时调用）：逐个走 removeLayer 保证地图与后端同步清理，默认静默执行不向聊天区灌入冗余系统提示
+  function clearAll(silent) {
+    if (silent === undefined) silent = true;
     var ids = layerData.map(function(l) { return l.layer_id; });
-    ids.forEach(function(id) { removeLayer(id); });
+    ids.forEach(function(id) { removeLayer(id, false, silent); });
+    layerData = [];
+    renderList();
+    if (GIS.map && typeof GIS.map.clearAll === 'function') {
+      try { GIS.map.clearAll(); } catch(_) {}
+    }
+  }
+
+  // 批量切换图层显隐（全部显示 / 全部隐藏）
+  function setAllVisibility(visible) {
+    if (!layerData || layerData.length === 0) return;
+    layerData.forEach(function(layer) {
+      layer.visible = !!visible;
+      if (window.GIS.state && typeof window.GIS.state.getLayer === 'function' &&
+          window.GIS.state.getLayer(layer.layer_id)) {
+        window.GIS.state.setVisible(layer.layer_id, layer.visible);
+      } else if (GIS.map && GIS.map.setLayerVisible) {
+        GIS.map.setLayerVisible(layer._rawName || layer.layer_id, layer.visible);
+      }
+    });
+    renderList();
+    if (visible) _syncLayerOrder();
+  }
+
+  function showAll() {
+    setAllVisibility(true);
+  }
+
+  function hideAll() {
+    setAllVisibility(false);
   }
 
   // 切换图层显隐
@@ -380,8 +452,46 @@ window.GIS = window.GIS || {};
     });
   }
 
-  /** 图层分组控制 */
+  /** 图层分组控制及头部批量操作 */
   function bindGroupEvents() {
+    var showAllBtn = document.getElementById('showAllLayersBtn');
+    if (showAllBtn) {
+      showAllBtn.addEventListener('click', function() {
+        showAll();
+      });
+    }
+    var hideAllBtn = document.getElementById('hideAllLayersBtn');
+    if (hideAllBtn) {
+      hideAllBtn.addEventListener('click', function() {
+        hideAll();
+      });
+    }
+    var clearAllBtn = document.getElementById('clearAllLayersBtn');
+    if (clearAllBtn) {
+      clearAllBtn.addEventListener('click', function() {
+        if (!layerData || layerData.length === 0) return;
+        var count = layerData.length;
+        var doClear = function() {
+          clearAll();
+          if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+            window.GIS.chat.addMessage('已清空全部 ' + count + ' 个图层', 'system', { pill: true });
+          }
+        };
+        if (window.GIS.workspace && typeof window.GIS.workspace.confirmModal === 'function') {
+          window.GIS.workspace.confirmModal('清空图层确认', '确定要清空当前地图上的全部 ' + count + ' 个图层吗？此操作不可恢复。', doClear, true);
+        } else if (typeof showConfirm === 'function') {
+          showConfirm('清空图层确认', '确定要清空当前地图上的全部 ' + count + ' 个图层吗？此操作不可恢复。', doClear);
+        } else if (confirm('确定要清空全部 ' + count + ' 个图层吗？')) {
+          doClear();
+        }
+      });
+    }
+    var newLayerBtn = document.getElementById('newLayerBtn');
+    if (newLayerBtn) {
+      newLayerBtn.addEventListener('click', function() {
+        _showCreateLayerModal();
+      });
+    }
     var newBtn = document.getElementById('newGroupBtn');
     if (newBtn) {
       newBtn.addEventListener('click', function() {
@@ -624,6 +734,14 @@ window.GIS = window.GIS || {};
       layer.opacity = o;
       var valEl = document.getElementById('opval_' + id);
       if (valEl) valEl.textContent = slider.value + '%';
+      var rowEl = slider.closest('tr');
+      if (rowEl) {
+        var dotEl = rowEl.querySelector('.layer-color-dot');
+        if (dotEl) {
+          dotEl.style.opacity = String(o);
+          dotEl.title = '修改颜色 · 不透明度 ' + slider.value + '%';
+        }
+      }
       if (GIS.map && GIS.map.setLayerOpacity) {
         GIS.map.setLayerOpacity(layer._rawName || layer.layer_id, o);
       }
@@ -895,8 +1013,9 @@ window.GIS = window.GIS || {};
             var v = props[k];
             cellValue = (v === null || v === undefined) ? '' : String(v);
           }
-          var readonlyAttr = isVirtual ? ' readonly class="attr-cell attr-cell-readonly"' : ' class="attr-cell"';
-          dataHtml += '<td><input' + readonlyAttr + ' data-field="' + escapeHtml(k) + '" value="' + escapeHtml(cellValue) + '" /></td>';
+          var isPointCoord = isVirtual && (k === '_经度' || k === '_纬度') && (f.geometry && f.geometry.type === 'Point');
+          var readonlyAttr = (isVirtual && !isPointCoord) ? ' readonly class="attr-cell attr-cell-readonly"' : ' class="attr-cell"';
+          dataHtml += '<td><input' + readonlyAttr + ' data-field="' + escapeHtml(k) + '" value="' + escapeHtml(cellValue) + '" ' + (isPointCoord ? 'placeholder="如 112.9388"' : '') + ' /></td>';
         });
         dataHtml += '<td class="col-locate"><button class="attr-locate-btn" data-idx="' + i + '" title="在地图上定位此要素">◎</button></td>';
         dataHtml += '<td><button class="attr-del-btn" data-idx="' + i + '" title="删除此行">×</button></td>';
@@ -1487,15 +1606,7 @@ window.GIS = window.GIS || {};
       items: keys.map(function(k) { return { label: k, color: colorMap[k], count: values[k].length }; }),
     };
 
-    // 更新符号化信息
-    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
-      var info = '已应用唯一值符号化: ' + field + '（' + keys.length + ' 个类别）\n';
-      keys.slice(0, 10).forEach(function(k) {
-        info += '  ' + escapeHtml(k) + ' → ' + colorMap[k] + ' (' + values[k].length + ' 个)\n';
-      });
-      if (keys.length > 10) info += '  ... 还有 ' + (keys.length - 10) + ' 个类别';
-      window.GIS.chat.addMessage(info, 'system');
-    }
+    // 符号化信息由 _showLegend 生成可视化图例卡片展示，无需向聊天区倾倒未格式化的十六进制色码
   }
 
   /** 分级色彩渲染 */
@@ -1553,14 +1664,7 @@ window.GIS = window.GIS || {};
         return arr;
       })(),
     };
-
-    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
-      var info = '已应用分级色彩: ' + field + '（' + classes + ' 级）\n';
-      for (var j = 0; j < classes && j < 10; j++) {
-        info += '  ' + breaks[j].toFixed(2) + ' - ' + breaks[j + 1].toFixed(2) + ' → ' + scheme[Math.min(j, scheme.length - 1)] + '\n';
-      }
-      window.GIS.chat.addMessage(info, 'system');
-    }
+    // 符号化信息由 _showLegend 生成可视化图例卡片展示，无需向聊天区倾倒未格式化的十六进制色码
   }
 
   /** 分级符号渲染（点图层用不同半径，线图层用不同粗细） */
@@ -1733,14 +1837,34 @@ window.GIS = window.GIS || {};
       if (isNaN(idx) || idx >= features.length) return;
       var inputs = row.querySelectorAll('.attr-cell');
       var allEmpty = true;
+      var newLng = null, newLat = null;
       inputs.forEach(function(inp) {
-        if (inp.readOnly) return; // 跳过只读列（坐标/几何信息）
         var field = inp.dataset.field;
-        var val = inp.value;
+        var val = inp.value.trim();
+        if (field === '_经度') {
+          var numLng = parseFloat(val);
+          if (!isNaN(numLng)) newLng = numLng;
+          return;
+        }
+        if (field === '_纬度') {
+          var numLat = parseFloat(val);
+          if (!isNaN(numLat)) newLat = numLat;
+          return;
+        }
+        if (inp.readOnly) return; // 跳过只读几何列
         if (fillVal && val === '') val = fillVal;
         features[idx].properties[field] = val;
         if (val !== '') allEmpty = false;
       });
+      // 更新单点几何坐标
+      if (newLng !== null && newLat !== null) {
+        if (!features[idx].geometry) {
+          features[idx].geometry = { type: 'Point', coordinates: [newLng, newLat] };
+        } else if (features[idx].geometry.type === 'Point') {
+          features[idx].geometry.coordinates = [newLng, newLat];
+        }
+        allEmpty = false;
+      }
       if (allEmpty) emptyRowNums.push(idx + 1);
     });
 
@@ -1778,7 +1902,7 @@ window.GIS = window.GIS || {};
 
     var newFeat = { type: 'Feature', geometry: null, properties: props };
 
-    // 新行默认取第一个要素的几何（让新行能显示在地图上）
+    // 新行默认取第一个要素的几何（让新行能显示在地图上）；若原图层为空点集，则默认当前地图中心
     if (features.length > 0 && features[0].geometry) {
       var src = features[0].geometry;
       if (src.type === 'Point') {
@@ -1786,6 +1910,16 @@ window.GIS = window.GIS || {};
       } else {
         newFeat.geometry = JSON.parse(JSON.stringify(src));
       }
+    } else {
+      var centerLng = 112.9388, centerLat = 28.2282; // 默认长沙/中心
+      if (window.GIS && window.GIS.map && window.GIS.map.getMap) {
+        try {
+          var c = window.GIS.map.getMap().getCenter();
+          centerLng = parseFloat(c.lng.toFixed(6));
+          centerLat = parseFloat(c.lat.toFixed(6));
+        } catch(_) {}
+      }
+      newFeat.geometry = { type: 'Point', coordinates: [centerLng, centerLat] };
     }
 
     features.push(newFeat);
@@ -2013,10 +2147,10 @@ window.GIS = window.GIS || {};
   }
 
   /** 显示图例 */
-  function _showLegend(layerId) {
+  function _showLegend(layerId, silent) {
     var config = _symbologyConfig[layerId];
     if (!config || !config.legendData) {
-      if (window.GIS.chat) window.GIS.chat.addMessage('该图层没有图例数据，请先应用分级设色或唯一值渲染', 'system');
+      if (!silent && window.GIS.chat) window.GIS.chat.addMessage('该图层没有图例数据，请先应用分级设色或唯一值渲染', 'system');
       return;
     }
     var data = config.legendData;
@@ -2037,9 +2171,18 @@ window.GIS = window.GIS || {};
     }
   }
 
+  function _findLayerByNameOrFuzzy(name) {
+    if (!name) return null;
+    return layerData.find(function(l) {
+      return l.filename === name || l._rawName === name || l.layer_id === name
+        || (l.filename && (l.filename.indexOf(name) === 0 || name.indexOf(l.filename) === 0))
+        || (l._rawName && (l._rawName.indexOf(name) === 0 || name.indexOf(l._rawName) === 0));
+    }) || null;
+  }
+
   /** 按照AI layer_op 'symbology' 应用分级色彩 */
   function _applyGraduatedFromAI(name, field, classes, scheme) {
-    var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+    var layer = _findLayerByNameOrFuzzy(name);
     if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
     var gj = getLayerGeoJSON(layer.layer_id);
     if (!gj) { if (window.GIS.chat) window.GIS.chat.addMessage('图层「' + name + '」无数据', 'system'); return; }
@@ -2056,7 +2199,7 @@ window.GIS = window.GIS || {};
 
   /** 按照AI layer_op 'symbology' 应用唯一值渲染 */
   function _applyUniqueFromAI(name, field, scheme) {
-    var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+    var layer = _findLayerByNameOrFuzzy(name);
     if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
     var gj = getLayerGeoJSON(layer.layer_id);
     if (!gj) { if (window.GIS.chat) window.GIS.chat.addMessage('图层「' + name + '」无数据', 'system'); return; }
@@ -2073,7 +2216,7 @@ window.GIS = window.GIS || {};
   }
 
   GIS.layers = {
-    init, renderList, addLayer, removeLayer, clearAll, toggleVisibility, downloadLayer,
+    init, renderList, addLayer, removeLayer, clearAll, toggleVisibility, showAll, hideAll, setAllVisibility, downloadLayer,
     analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
     syncLayerOrder: _syncLayerOrder,
     getLayers: () => [...layerData],
@@ -2098,21 +2241,24 @@ window.GIS = window.GIS || {};
     applyUniqueValues: _applyUniqueFromAI,
     /** AI 自然语言调用：对图层添加属性标注 */
     addLabels: function(name, field) {
-      var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+      var layer = _findLayerByNameOrFuzzy(name);
       if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
       if (GIS.map && GIS.map.setLabels) GIS.map.setLabels(layer._rawName || layer.layer_id, field);
     },
     /** 清除图层标注 */
     clearLabels: function(name) {
-      var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+      var layer = _findLayerByNameOrFuzzy(name);
       if (!layer) return;
       if (GIS.map && GIS.map.clearLabels) GIS.map.clearLabels(layer._rawName || name);
     },
     /** AI 自然语言调用：显示图例 */
     addLegend: function(name) {
-      var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
-      if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
-      _showLegend(layer.layer_id);
+      var layer = _findLayerByNameOrFuzzy(name);
+      if (!layer) return;
+      var config = _symbologyConfig[layer.layer_id];
+      if (config && config.legendData) {
+        _showLegend(layer.layer_id, true);
+      }
     },
     /** AI 自然语言调用：显示指北针 */
     addNorthArrow: function() {
@@ -2123,7 +2269,7 @@ window.GIS = window.GIS || {};
     },
     /** 折点编辑：进入顶点拖拽编辑模式 */
     editVertices: function(name) {
-      var layer = layerData.find(function(l) { return l.filename === name || l._rawName === name || l.layer_id === name; });
+      var layer = _findLayerByNameOrFuzzy(name);
       if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
       if (GIS.map && GIS.map.enterEditMode) {
         GIS.map.enterEditMode(layer._rawName || layer.filename || layer.layer_id);
@@ -2136,6 +2282,8 @@ window.GIS = window.GIS || {};
         GIS.chat.addMessage('请在编辑栏点击「保存」按钮完成编辑', 'system');
       }
     },
+    startAddingToLayer: startAddingToLayer,
+    showCreateLayerModal: _showCreateLayerModal,
   };
 
 
@@ -2176,6 +2324,7 @@ window.GIS = window.GIS || {};
     var menu = document.getElementById('layerContextMenu');
     menu.innerHTML =
       '<div class="context-menu-item" data-action="inspect" title="查看要素信息和属性">检查</div>' +
+      '<div class="context-menu-item" data-action="add-feature" title="向此图层连续添加要素（点/线）">＋ 添加要素</div>' +
       '<div class="context-menu-item" data-action="toggle">' + (layer.visible !== false ? '隐藏' : '显示') + '</div>' +
       '<div class="context-menu-divider"></div>' +
       '<div class="context-menu-item" data-action="color" title="更改图层颜色">更改颜色</div>' +
@@ -2255,15 +2404,122 @@ window.GIS = window.GIS || {};
         if (GIS.workspace) GIS.workspace.toggleAI(true);
         analyzeLayer(layerId);
         break;
+      case 'add-feature':
+        startAddingToLayer(layerId);
+        break;
       case 'swipe':
         if (_handleSwipeAction) _handleSwipeAction(layerId, tbody.querySelector('.layer-more-btn[data-id="' + CSS.escape(layerId) + '"]'));
         break;
       case 'delete':
-        if (confirm('确定删除图层「' + (layer.filename || '图层') + '」？')) {
-          removeLayer(layerId);
-        }
+        removeLayer(layerId);
         break;
     }
+  }
+
+  /** 向指定图层连续添加要素 */
+  function startAddingToLayer(layerId) {
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer) return;
+    var rawType = layer.geometry_type || _detectGeomType(layer.geojson);
+    var tool = 'marker';
+    if (rawType.includes('Line')) tool = 'polyline';
+    else if (rawType.includes('Polygon')) tool = 'polygon';
+
+    if (window.GIS.map && typeof window.GIS.map.setTargetLayerForDrawing === 'function') {
+      window.GIS.map.setTargetLayerForDrawing(layerId);
+    }
+    // 触发对应绘制按钮激活连续绘制
+    var drawBtn = document.querySelector('.map-draw-btn[data-tool="' + tool + '"]');
+    if (drawBtn) drawBtn.click();
+    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      window.GIS.chat.addMessage('已开启「' + (layer.filename || '图层') + '」的连续落点/绘制模式，在地图上点击即可添加要素', 'system', { pill: true });
+    }
+  }
+
+  /** 弹出新建点集/线集/几何集合图层模态框 */
+  function _showCreateLayerModal() {
+    var overlay = document.createElement('div');
+    overlay.className = 'workspace-modal-overlay';
+    overlay.innerHTML =
+      '<div class="workspace-modal-dialog" role="dialog" aria-modal="true" style="max-width:440px;">' +
+        '<div class="workspace-modal-title">新建要素集合图层</div>' +
+        '<div class="workspace-modal-desc">创建一个空的几何集合图层，随后可直接在地图上连续打点、画线或在属性表中批量录入。</div>' +
+        '<div style="margin-bottom:12px;">' +
+          '<label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;color:var(--on-surface);">图层名称</label>' +
+          '<input type="text" id="newLayerNameInput" class="workspace-modal-input" value="点集_' + new Date().toLocaleDateString().replace(/\\//g, '') + '" style="margin-bottom:0;" />' +
+        '</div>' +
+        '<div style="margin-bottom:18px;">' +
+          '<label style="display:block;font-size:12px;font-weight:600;margin-bottom:6px;color:var(--on-surface);">几何类型</label>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">' +
+            '<label style="display:flex;align-items:center;gap:6px;padding:8px 10px;border:1px solid var(--outline-variant);border-radius:6px;cursor:pointer;font-size:12px;background:var(--surface-container-low);">' +
+              '<input type="radio" name="newLayerType" value="Point" checked style="accent-color:var(--primary,#000);" />' +
+              '<span><strong>点集合</strong> (MultiPoint/Point)</span>' +
+            '</label>' +
+            '<label style="display:flex;align-items:center;gap:6px;padding:8px 10px;border:1px solid var(--outline-variant);border-radius:6px;cursor:pointer;font-size:12px;background:var(--surface-container-low);">' +
+              '<input type="radio" name="newLayerType" value="LineString" style="accent-color:var(--primary,#000);" />' +
+              '<span><strong>线集合</strong> (LineString)</span>' +
+            '</label>' +
+            '<label style="display:flex;align-items:center;gap:6px;padding:8px 10px;border:1px solid var(--outline-variant);border-radius:6px;cursor:pointer;font-size:12px;background:var(--surface-container-low);">' +
+              '<input type="radio" name="newLayerType" value="Polygon" style="accent-color:var(--primary,#000);" />' +
+              '<span><strong>面集合</strong> (Polygon)</span>' +
+            '</label>' +
+            '<label style="display:flex;align-items:center;gap:6px;padding:8px 10px;border:1px solid var(--outline-variant);border-radius:6px;cursor:pointer;font-size:12px;background:var(--surface-container-low);">' +
+              '<input type="radio" name="newLayerType" value="GeometryCollection" style="accent-color:var(--primary,#000);" />' +
+              '<span><strong>几何集合</strong> (点/线混合)</span>' +
+            '</label>' +
+          '</div>' +
+        '</div>' +
+        '<div class="workspace-modal-actions">' +
+          '<button type="button" class="workspace-modal-btn cancel" id="cancelNewLayerBtn">取消</button>' +
+          '<button type="button" class="workspace-modal-btn primary" id="confirmNewLayerBtn">立即创建</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+
+    function close() { overlay.remove(); }
+    overlay.querySelector('#cancelNewLayerBtn').onclick = close;
+    overlay.onclick = function(e) { if (e.target === overlay) close(); };
+
+    var nameInput = overlay.querySelector('#newLayerNameInput');
+    nameInput.focus();
+    nameInput.select();
+
+    overlay.querySelectorAll('input[name="newLayerType"]').forEach(function(r) {
+      r.addEventListener('change', function() {
+        var base = this.value === 'Point' ? '点集' : (this.value === 'LineString' ? '线集' : (this.value === 'Polygon' ? '面集' : '复合几何集'));
+        nameInput.value = base + '_' + new Date().toLocaleDateString().replace(/\\//g, '');
+      });
+    });
+
+    overlay.querySelector('#confirmNewLayerBtn').onclick = function() {
+      var name = nameInput.value.trim() || '未命名集合';
+      var checkedRadio = overlay.querySelector('input[name="newLayerType"]:checked');
+      var geomType = checkedRadio ? checkedRadio.value : 'Point';
+      close();
+
+      var newGj = {
+        type: 'FeatureCollection',
+        features: []
+      };
+
+      var layerId = 'col_' + Date.now().toString(36);
+      addLayer({
+        layer_id: layerId,
+        filename: name,
+        _rawName: name,
+        geometry_type: geomType,
+        geojson: newGj,
+        source: '手动创建',
+        color: nextColor()
+      });
+
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+        window.GIS.chat.addMessage('已创建图层「' + name + '」，已自动开启连续绘制模式，直接在地图上点击即可添加要素', 'system', { pill: true });
+      }
+
+      // 自动绑定并启动地图连续绘制
+      startAddingToLayer(layerId);
+    };
   }
 
   /** 触发颜色选择器（复用已有逻辑） */

@@ -18,6 +18,75 @@ window.GIS.utils = {
     return d.innerHTML;
   }
 };
+
+// 全局 Toast 提示组件（轻量浮动在工作区顶部，带淡入淡出动画，支持 success/error/warn/info）
+window.GIS.toast = (function() {
+  var _container = null;
+  function getContainer() {
+    if (!_container || !document.body.contains(_container)) {
+      _container = document.createElement('div');
+      _container.className = 'gis-toast-container';
+      document.body.appendChild(_container);
+    }
+    return _container;
+  }
+
+  var ICONS = {
+    success: '✓',
+    error: '✕',
+    warn: '⚠',
+    info: 'ℹ'
+  };
+
+  function show(msg, type, duration) {
+    if (!msg) return null;
+    type = type || 'info';
+    duration = typeof duration === 'number' ? duration : 2800;
+
+    var container = getContainer();
+    var item = document.createElement('div');
+    item.className = 'gis-toast-item gis-toast-' + type;
+
+    var iconSpan = document.createElement('span');
+    iconSpan.className = 'gis-toast-icon';
+    iconSpan.textContent = ICONS[type] || 'ℹ';
+
+    var textSpan = document.createElement('span');
+    textSpan.className = 'gis-toast-text';
+    // 自动清洗可能夹杂的 Markdown 粗体标记
+    textSpan.textContent = String(msg).replace(/\*\*/g, '');
+
+    item.appendChild(iconSpan);
+    item.appendChild(textSpan);
+    container.appendChild(item);
+
+    requestAnimationFrame(function() {
+      item.classList.add('gis-toast-show');
+    });
+
+    var dismissTimer = setTimeout(dismiss, duration);
+
+    function dismiss() {
+      clearTimeout(dismissTimer);
+      item.classList.remove('gis-toast-show');
+      item.classList.add('gis-toast-hide');
+      setTimeout(function() {
+        if (item.parentNode) item.parentNode.removeChild(item);
+      }, 260);
+    }
+
+    item.addEventListener('click', dismiss);
+    return dismiss;
+  }
+
+  return {
+    show: show,
+    success: function(msg, dur) { return show(msg, 'success', dur); },
+    error: function(msg, dur) { return show(msg, 'error', dur || 4000); },
+    warn: function(msg, dur) { return show(msg, 'warn', dur || 3500); },
+    info: function(msg, dur) { return show(msg, 'info', dur); }
+  };
+})();
 window.GIS.api = (() => {
   const BASE_URL = (function() {
     try {
@@ -94,6 +163,13 @@ window.GIS.api = (() => {
 
   function _saveProviders(list) {
     _lsSet(PROVIDERS_STORAGE_KEY, JSON.stringify(list));
+    try {
+      fetch(BASE_URL + '/api/user-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providers: list }),
+      }).catch(function() {});
+    } catch(e) {}
   }
 
   /** 读取 Provider 列表（首次自动种子 + 迁移旧 key） */
@@ -202,6 +278,13 @@ window.GIS.api = (() => {
   }
   function setAmapKey(key) {
     if (key) { _lsSet(AMAP_STORAGE_KEY, key); } else { _lsRemove(AMAP_STORAGE_KEY); }
+    try {
+      fetch(BASE_URL + '/api/user-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amap_key: key || '' }),
+      }).catch(function() {});
+    } catch(e) {}
   }
 
   /** 读取数据下载服务账号凭据（Copernicus / USGS / GSCloud），不存在返回空对象 */
@@ -234,9 +317,87 @@ window.GIS.api = (() => {
 
   /** 保存当前选中的 Provider id */
   function setSelectedModel(model) {
-    if (model && getProvider(model)) _lsSet(MODEL_STORAGE_KEY, model);
+    if (model && getProvider(model)) {
+      _lsSet(MODEL_STORAGE_KEY, model);
+      try {
+        fetch(BASE_URL + '/api/user-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ selected_provider: model }),
+        }).catch(function() {});
+      } catch(e) {}
+    }
   }
   function setSelectedProvider(id) { setSelectedModel(id); }
+
+  /** 从后端同步并保活用户的 Provider/API Key 配置（跨浏览器、跨重启、跨域名） */
+  async function syncUserSettingsFromBackend() {
+    try {
+      var res = await fetch(BASE_URL + '/api/user-settings');
+      if (!res.ok) return null;
+      var data = await res.json();
+      if (!data || typeof data !== 'object') return null;
+
+      var updated = false;
+
+      // 1. 同步 Provider 与 API Key
+      if (Array.isArray(data.providers) && data.providers.length > 0) {
+        var localList = getProviders();
+        var hasLocalKeys = localList.some(function(p) { return !!p.api_key; });
+        var hasBackendKeys = data.providers.some(function(p) { return !!p.api_key; });
+
+        if (hasBackendKeys || !hasLocalKeys) {
+          data.providers.forEach(function(bp) {
+            var lp = localList.find(function(x) { return x.id === bp.id; });
+            if (lp) {
+              if (bp.api_key && !lp.api_key) { lp.api_key = bp.api_key; updated = true; }
+              if (bp.base_url && !lp.base_url) { lp.base_url = bp.base_url; updated = true; }
+              if (bp.model && !lp.model) { lp.model = bp.model; updated = true; }
+            } else {
+              localList.push(bp);
+              updated = true;
+            }
+          });
+        } else if (hasLocalKeys && !hasBackendKeys) {
+          _saveProviders(localList);
+        }
+
+        if (updated) {
+          _lsSet(PROVIDERS_STORAGE_KEY, JSON.stringify(localList));
+        }
+      } else {
+        var curList = getProviders();
+        if (curList.some(function(p) { return !!p.api_key; })) {
+          _saveProviders(curList);
+        }
+      }
+
+      // 2. 同步高德 Key
+      if (data.amap_key) {
+        var localAmap = _lsGet(AMAP_STORAGE_KEY);
+        if (!localAmap) {
+          _lsSet(AMAP_STORAGE_KEY, data.amap_key);
+          updated = true;
+        }
+      } else {
+        var curAmap = _lsGet(AMAP_STORAGE_KEY);
+        if (curAmap) setAmapKey(curAmap);
+      }
+
+      // 3. 同步选中模型
+      if (data.selected_provider) {
+        var localSel = _lsGet(MODEL_STORAGE_KEY);
+        if (!localSel && getProvider(data.selected_provider)) {
+          _lsSet(MODEL_STORAGE_KEY, data.selected_provider);
+          updated = true;
+        }
+      }
+
+      return { updated: updated, data: data };
+    } catch(e) {
+      return null;
+    }
+  }
 
   /** 取当前选中的 Provider 对象（深拷贝，避免外部误改） */
   function currentProvider() {
@@ -523,13 +684,27 @@ window.GIS.api = (() => {
     if (!res.ok) throw new Error(`导出工程失败: ${res.status}`);
     return res.blob();
   }
+  async function importProject(file) {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch(`${BASE_URL}/api/projects/import`, {
+      method: 'POST',
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`导入工程失败: ${res.status}`);
+    return res.json();
+  }
   async function deleteAllProjects() {
     const res = await fetch(`${BASE_URL}/api/projects`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`删除全部工程失败: ${res.status}`);
     return res.json();
   }
-  async function autoSaveProject() {
-    const res = await fetch(`${BASE_URL}/api/projects/auto-save`, {
+  async function autoSaveProject(sessionId, projectId) {
+    const sid = sessionId || (window.GIS.project && window.GIS.project.getCurrentSessionId ? window.GIS.project.getCurrentSessionId() : 'default');
+    const pid = projectId || (window.GIS.project && window.GIS.project.getCurrentProjectId ? window.GIS.project.getCurrentProjectId() : null);
+    let url = `${BASE_URL}/api/projects/auto-save?session_id=${encodeURIComponent(sid)}`;
+    if (pid) url += `&project_id=${encodeURIComponent(pid)}`;
+    const res = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
     });
@@ -538,8 +713,9 @@ window.GIS.api = (() => {
   }
 
   // ===== 清除记忆 =====
-  async function clearMemory(sessionId = 'default') {
-    const res = await fetch(`${BASE_URL}/api/chat/memory?session_id=${sessionId}`, {
+  async function clearMemory(sessionId) {
+    const sid = sessionId || (window.GIS.project && window.GIS.project.getCurrentSessionId ? window.GIS.project.getCurrentSessionId() : 'default');
+    const res = await fetch(`${BASE_URL}/api/chat/memory?session_id=${encodeURIComponent(sid)}`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error(`清除记忆失败: ${res.status}`);
@@ -621,7 +797,7 @@ window.GIS.api = (() => {
     request, upload, chat, clearMemory, healthCheck,
     getBoundary,
     saveProject, loadProject, listProjects,
-    deleteProject, deleteAllProjects, renameProject, exportProject, autoSaveProject,
+    deleteProject, deleteAllProjects, renameProject, exportProject, importProject, autoSaveProject,
     healthCheck, testApiKey, testGLMApiKey, testAgnesApiKey, testProvider,
     getApiKey, setApiKey, getGLMApiKey, setGLMApiKey,
     getAgnesApiKey, setAgnesApiKey,
@@ -636,6 +812,7 @@ window.GIS.api = (() => {
     exportShp,
     invokeTool,
     geosourceStats, geosourceSearch, geosourceDetail, geosourceQuerySql,
+    syncUserSettingsFromBackend,
     BASE_URL, PROVIDERS_STORAGE_KEY,
     DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
   };

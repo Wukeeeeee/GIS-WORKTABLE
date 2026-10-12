@@ -139,10 +139,17 @@ def test_build_guard_note_lists_issues_and_caps_them():
 
 def test_apply_guard_appends_note_to_failed_reply():
     text = "已生成专题图 output/missing_9527.png"
-    out, check = RG.apply_guard(text, {})
+    out, check = RG.apply_guard(text, {}, append_note=True)
     assert check["ok"] is False
     assert out.startswith(text)          # 原话保留
     assert "结果真实性自检" in out         # 并附上明确不通过说明
+
+
+def test_apply_guard_does_not_append_note_by_default():
+    text = "已生成专题图 output/missing_9527.png"
+    out, check = RG.apply_guard(text, {})
+    assert check["ok"] is False
+    assert out == text                    # 默认不污染用户对话文本
 
 
 def test_apply_guard_keeps_text_intact_when_passed():

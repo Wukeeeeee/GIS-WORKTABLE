@@ -182,7 +182,7 @@
               <button class="icon-btn" id="uploadTrigger" title="上传文件">
                 <span class="ui-icon ui-icon" aria-hidden="true" style="color:var(--ui-gray-400);--ui-icon-image:url('/assets/ui-icons/icon-b2a7871663cc.png')"></span>
               </button>
-              <button class="icon-btn" id="stopBtn" title="停止" style="display:none;color:#e53935;">
+              <button class="icon-btn" id="stopBtn" title="停止 (无运行中任务)" disabled>
                 <span class="ui-icon" aria-hidden="true" style=";width:20px;height:20px;--ui-icon-image:url('/assets/ui-icons/icon-a290deadae03.png')"></span>
               </button>
               <button class="icon-btn" id="sendBtn" title="发送">
@@ -190,9 +190,7 @@
               </button>
             </div>
           </div>
-          <div id="modelWarning" class="model-warning" style="display:none;margin:0 12px 6px;padding:4px 8px;font-size:11px;color:#b71c1c;background:#ffebee;border-radius:4px;text-align:center;">
-            <span></span>
-          </div>
+          <div id="modelWarning" class="model-warning" style="display:none;"></div>
           <!-- 连接器浮层面板（定位相对 .chat-input-area） -->
           <div class="connector-panel" id="connectorPanel" style="display:none;">
             <div class="connector-panel-header">
@@ -450,7 +448,9 @@
                   <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-01bac4c88eb4.png')"></span>
                   操作手册
                 </span>
-                <button class="manual-close" id="manualClose">&times;</button>
+                <button class="manual-close workspace-icon-btn" id="manualClose" title="关闭操作手册" aria-label="关闭操作手册">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
               </div>
               <div class="manual-body">
                 <nav class="manual-nav" id="manualNav">
@@ -822,6 +822,22 @@
                 <span id="workspaceLayerCount">0 个图层</span>
               </span>
               <div class="map-layer-header-actions">
+                <button class="map-layer-btn" id="showAllLayersBtn" title="全部打开 (全部显示)">
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-251357cedc55.png')"></span>
+                  全开
+                </button>
+                <button class="map-layer-btn" id="hideAllLayersBtn" title="全部关闭 (全部隐藏)">
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-d87541636149.png')"></span>
+                  全关
+                </button>
+                <button class="map-layer-btn" id="clearAllLayersBtn" title="清空全部图层">
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-cac4fc89d2be.png')"></span>
+                  清空
+                </button>
+                <button class="map-layer-btn" id="newLayerBtn" title="新建点集/线集/集合图层">
+                  <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-da4032db3d0e.png')"></span>
+                  新建
+                </button>
                 <button class="map-layer-btn" id="newGroupBtn" title="新建分组">
                   <span class="ui-icon" aria-hidden="true" style=";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-1bc78eefed8c.png')"></span>
                   分组
@@ -864,7 +880,7 @@
               <span>处理历史</span>
               <span class="toolhist-title-spacer"></span>
               <button class="toolhist-clear" id="toolHistClearBtn" title="清空历史记录">清空</button>
-              <button class="workspace-icon-btn" id="toolHistCloseBtn" type="button" title="关闭处理历史" aria-label="关闭处理历史"><span class="ui-icon" aria-hidden="true" style=";width:17px;height:17px;--ui-icon-image:url('/assets/ui-icons/icon-4518b8fcf719.png')"></span></button>
+              <button class="workspace-icon-btn" id="toolHistCloseBtn" type="button" title="关闭处理历史" aria-label="关闭处理历史"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
             </div>
             <div class="toolhist-body custom-scrollbar" id="historyBody">
               <div class="toolhist-empty">暂无记录：执行任意工具后在此查看</div>
@@ -906,8 +922,8 @@
   <div class="inspector-panel" id="layerInspector" style="display:none;">
     <div class="inspector-header" id="inspectorHeader">
       <span class="inspector-title" id="inspectorTitle">图层检查</span>
-      <button class="inspector-close" id="inspectorClose" title="关闭">
-        <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
+      <button class="inspector-close workspace-icon-btn" id="inspectorClose" title="关闭图层检查" aria-label="关闭图层检查">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
       </button>
     </div>
     <div class="inspector-body custom-scrollbar" id="inspectorBody">
@@ -968,8 +984,8 @@
 
       <!-- ===== 右侧内容面板 ===== -->
       <div class="modal-panels">
-        <button class="modal-close-top" id="modalCloseBtn" title="关闭">
-          <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
+        <button class="modal-close-top workspace-icon-btn" id="modalCloseBtn" title="关闭" aria-label="关闭设置">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
 
         <!-- === 面板1：界面设置 === -->
@@ -1475,8 +1491,8 @@
             <span class="ui-icon" aria-hidden="true" style=";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-5f556805c8b8.png')"></span>
             打开全球数据地图
           </a>
-          <button class="modal-close-top" id="geosourceCloseBtn" title="关闭" style="position:static;">
-            <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
+          <button class="modal-close-top workspace-icon-btn" id="geosourceCloseBtn" title="关闭" aria-label="关闭检索中心" style="position:static;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
         </div>
       </div>
@@ -1603,8 +1619,21 @@
 
       // ---- 清会话（调用 chat.js 的 clearSession） ----
       document.getElementById('clearMemoryBtn').addEventListener('click', async function() {
-        if (window.GIS.chat && typeof window.GIS.chat.clearSession === 'function') {
+        if (!window.GIS.chat || typeof window.GIS.chat.clearSession !== 'function') return;
+        var hasLayers = window.GIS.layers && window.GIS.layers.getLayers && window.GIS.layers.getLayers().length > 0;
+        var hasMessages = document.querySelectorAll('.message').length > 0;
+        // 如果当前既没有聊天记录也没有图层，则直接清空无需打扰
+        if (!hasLayers && !hasMessages) {
           await window.GIS.chat.clearSession();
+          return;
+        }
+        var doClear = async function() {
+          await window.GIS.chat.clearSession();
+        };
+        if (window.GIS.workspace && typeof window.GIS.workspace.confirmModal === 'function') {
+          window.GIS.workspace.confirmModal('新建会话确认', '新建会话将清空当前对话记录与图层，确定要继续吗？', doClear, true);
+        } else if (confirm('新建会话将清空当前对话记录与图层，确定要继续吗？')) {
+          await doClear();
         }
       });
 

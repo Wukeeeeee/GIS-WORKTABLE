@@ -209,6 +209,27 @@ def _promise_without_action(text, msgs) -> bool:
     return not any(isinstance(m, ToolMessage) for m in (msgs or []))
 
 
+_CODE_DUMP_PATTERNS = re.compile(
+    r"(没法在这边|无法直接生成|不能直接生成|无法直接跑出|没法直接出图|复制到本地|在\s*(Jupyter|本地|VSCode|终端)\s*里?(直接)?(出图|运行|执行)|代码复制到|把下面代码存成)",
+    re.IGNORECASE
+)
+
+
+def _is_unexecuted_code_or_disclaimer(text, msgs) -> bool:
+    """识别 AI 宣称自己无法出图、或把制图代码甩给用户让用户本地运行但自己未调工具的情况。"""
+    if not text:
+        return False
+    if any(isinstance(m, ToolMessage) for m in (msgs or [])):
+        return False
+    # 情况 1：明确出现“无法在这边生成图片/复制到本地/Jupyter运行”这类卸责话术
+    if bool(_CODE_DUMP_PATTERNS.search(text)):
+        return True
+    # 情况 2：输出了带有 plt.savefig / fig.savefig / plt.show 的 Python 代码块，但本轮未调用任何工具
+    if ("plt.savefig" in text or "fig.savefig" in text or "plt.show" in text) and ("```python" in text or "```" in text):
+        return True
+    return False
+
+
 def _count_tool_calls(msgs: list) -> int:
     """统计消息列表中实际的工具调用次数"""
     count = 0
@@ -270,6 +291,13 @@ def run_agent(
     # 重置共享状态（tools.py 中的全局变量）
     reset_state(amap_key)
     _tools_mod.set_last_user_message(original_message or "")
+    # 提取最近多轮上下文（供工具层消歧与实体复用）
+    _ctx_texts = []
+    for _m in (messages or [])[-10:]:
+        _c = getattr(_m, "content", "")
+        if isinstance(_c, str) and _c.strip():
+            _ctx_texts.append(_c.strip())
+    _tools_mod.set_conversation_context("\n".join(_ctx_texts))
     # === P1-1: Agent 运行状态 ===
     _run_id = uuid.uuid4().hex[:12]
     _run_status = "planning"
@@ -431,13 +459,19 @@ def run_agent(
     _initial_has_tools = _has_tool_messages(final_messages)
     print(f"[GIS DEBUG] 初始工具调用: {_initial_tool_calls} 次, 有工具消息: {_initial_has_tools}", flush=True)
     
-    if _promise_without_action(final_text, final_messages):
+    _need_force_exec = _promise_without_action(final_text, final_messages) or _is_unexecuted_code_or_disclaimer(final_text, final_messages)
+    if _need_force_exec:
         try:
-            print("[GIS] 只承诺未执行，强制补一轮真实工具执行", flush=True)
+            print("[GIS] 检测到未执行承诺或未执行制图代码，强制补一轮真实工具执行", flush=True)
+            _prompt_text = (
+                "系统提示：平台完全具备直接执行 Python 并渲染图件的能力，严禁向用户声称“无法直接出图”或让用户复制代码去本地/Jupyter运行！"
+                "请你现在就直接调用 execute_python 工具执行你编写的 Python 制图代码，将成果保存为图片（例如 plt.savefig('output/xxx.png')），平台会自动渲染展示图片卡片！"
+            ) if _is_unexecuted_code_or_disclaimer(final_text, final_messages) else (
+                "你刚才只是说“开始执行”，但实际没有调用任何工具。"
+                "请现在就调用合适工具真正完成你承诺的任务，不要再只做口头承诺。"
+            )
             _forced = agent.invoke(
-                {"messages": list(final_messages) + [HumanMessage(
-                    content="你刚才只是说“开始执行”，但实际没有调用任何工具。"
-                            "请现在就调用合适工具真正完成你承诺的任务，不要再只做口头承诺。")]},
+                {"messages": list(final_messages) + [HumanMessage(content=_prompt_text)]},
                 {"recursion_limit": 60},
             )
             _fm = _forced.get("messages", [])
@@ -472,9 +506,8 @@ def run_agent(
     #     ...
 
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
-    # Agent 常说"已生成 xxx.png"但文件并不存在。这里把明确不成立的说法挑出来，
-    # 直接追加到回复末尾，避免把未生成的结果当作成功交付给用户。
-    final_text, _guard = result_guard.apply_guard(final_text, pending, task_id=_task_id)
+    # 仅在后台自检并记录日志，默认不向用户端追加内部检查说明（避免误报和干扰用户）
+    final_text, _guard = result_guard.apply_guard(final_text, pending, task_id=_task_id, append_note=False)
     if not _guard["ok"]:
         print(f"[GIS] 结果真实性自检未通过: {_guard['issues'][:3]}", flush=True)
 
@@ -528,6 +561,13 @@ def run_agent_stream(
     """
     reset_state(amap_key)
     _tools_mod.set_last_user_message(original_message or "")
+    # 提取最近多轮上下文（供工具层消歧与实体复用）
+    _ctx_texts = []
+    for _m in (messages or [])[-10:]:
+        _c = getattr(_m, "content", "")
+        if isinstance(_c, str) and _c.strip():
+            _ctx_texts.append(_c.strip())
+    _tools_mod.set_conversation_context("\n".join(_ctx_texts))
     pending_action.set_active_session(session_id or "default")
     _start_registered = set(getattr(_tools_mod, "_registered_layers", {}).keys())
     # 重置取消标志（每次新请求开始）
@@ -679,14 +719,20 @@ def run_agent_stream(
     _initial_has_tools = _has_tool_messages(msgs)
     print(f"[GIS DEBUG] 流式初始工具调用: {_initial_tool_calls} 次, 有工具消息: {_initial_has_tools}", flush=True)
     
-    if _promise_without_action(final_text, msgs):
+    _need_force_exec = _promise_without_action(final_text, msgs) or _is_unexecuted_code_or_disclaimer(final_text, msgs)
+    if _need_force_exec:
         try:
-            print("[GIS] 流式：只承诺未执行，强制补一轮真实工具执行", flush=True)
+            print("[GIS] 流式：检测到未执行承诺或未执行制图代码，强制补一轮真实工具执行", flush=True)
             yield "data: {\"type\":\"thinking\"}\n\n"
+            _prompt_text = (
+                "系统提示：平台完全具备直接执行 Python 并渲染图件的能力，严禁向用户声称“无法直接出图”或让用户复制代码去本地/Jupyter运行！"
+                "请你现在就直接调用 execute_python 工具执行你编写的 Python 制图代码，将成果保存为图片（例如 plt.savefig('output/xxx.png')），平台会自动渲染展示图片卡片！"
+            ) if _is_unexecuted_code_or_disclaimer(final_text, msgs) else (
+                "你刚才只是说“开始执行”，但实际没有调用任何工具。"
+                "请现在就调用合适工具真正完成你承诺的任务，不要再只做口头承诺。"
+            )
             _forced = agent.invoke(
-                {"messages": list(msgs) + [HumanMessage(
-                    content="你刚才只是说“开始执行”，但实际没有调用任何工具。"
-                            "请现在就调用合适工具真正完成你承诺的任务，不要再只做口头承诺。")]},
+                {"messages": list(msgs) + [HumanMessage(content=_prompt_text)]},
                 {"recursion_limit": 60},
             )
             _fm = _forced.get("messages", [])
@@ -717,7 +763,8 @@ def run_agent_stream(
     # yield "data: {\"type\":\"verifying\"}\n\n" 行已一并移除。
 
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
-    final_text, _guard = result_guard.apply_guard(final_text, pending, task_id=_task_id)
+    # 仅在后台自检并记录日志，默认不向用户端追加内部检查说明（避免误报和干扰用户）
+    final_text, _guard = result_guard.apply_guard(final_text, pending, task_id=_task_id, append_note=False)
     if not _guard["ok"]:
         print(f"[GIS] 流式结果真实性自检未通过: {_guard['issues'][:3]}", flush=True)
 

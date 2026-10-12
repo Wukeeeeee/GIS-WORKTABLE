@@ -1,4 +1,42 @@
-import os, json, hashlib, gzip, shutil, uuid, datetime, time, zipfile, io
+import os, json, hashlib, gzip, shutil, uuid, datetime, time, zipfile, io, re
+
+def extract_clean_title(content: str, max_len: int = 30) -> str:
+    """从可能包含引用回复、图层注入等系统前缀的用户消息中，提取真实提问作为工程名/摘要"""
+    if not content:
+        return "未命名工程"
+    text = str(content).strip()
+
+    # 1. 如果包含 [当前问题]，真实问题在后面
+    if "[当前问题]" in text:
+        parts = text.split("[当前问题]", 1)
+        if len(parts) > 1 and parts[1].strip():
+            text = parts[1].strip()
+
+    # 2. 剥离 [用户引用了上一条回复...]
+    text = re.sub(r"^\[用户引用了上一条回复.*?\]\s*", "", text, flags=re.DOTALL).strip()
+
+    # 3. 剥离 [附图层: ...] 以及 GeoJSON 代码块
+    if text.startswith("[附图层:"):
+        parts = text.split("```")
+        if len(parts) >= 3 and parts[-1].strip():
+            text = parts[-1].strip()
+        else:
+            m_name = re.search(r"\[附图层:\s*([^\]]+)\]", text)
+            text = m_name.group(1).strip() if m_name else "图层工程"
+
+    # 4. 再次清理开头的提示词注入块
+    text = re.sub(r"^\[.*?\]\s*", "", text).strip()
+
+    # 5. 清理多余换行与空白
+    text = re.sub(r"[\r\n\t]+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        return "未命名工程"
+
+    if len(text) > max_len:
+        return text[:max_len].strip() + "…"
+    return text
 
 _PROJECT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "cache", "projects")
 _BLOB_DIR = os.path.join(_PROJECT_DIR, "blobs")
@@ -153,10 +191,13 @@ def save_project(
             "crs": layer.get("crs") or "WGS-84",
         })
 
+    # 规范化并清洗工程名
+    sanitized_name = extract_clean_title(name, max_len=30) if name and ("[" in name or len(name) > 30) else (name or f"工程 {pid[:4]}")
+
     # 构造工程数据
     proj_data = {
         "id": pid,
-        "name": name or f"工程 {pid[:4]}",
+        "name": sanitized_name,
         "createdAt": created,
         "updatedAt": now,
         "sessionId": session_id,
@@ -172,12 +213,12 @@ def save_project(
     preview = ""
     for msg in messages:
         if msg.get("role") == "user" and msg.get("content"):
-            preview = msg["content"][:60]
+            preview = extract_clean_title(msg["content"], max_len=60)
             break
     index = _load_index()
     index["projects"][pid] = {
         "id": pid,
-        "name": name or f"工程 {pid[:4]}",
+        "name": sanitized_name,
         "createdAt": created,
         "updatedAt": now,
         "msgPreview": preview,
@@ -232,6 +273,25 @@ def load_project(pid: str) -> dict | None:
         })
     result = {**proj, "layers": resolved_layers}
     return result
+
+def activate_project(pid: str, session_id: str = None) -> dict | None:
+    """激活指定工程：加载工程并将其历史消息和图层恢复到后端，实现工程隔离与上下文精准记忆"""
+    data = load_project(pid)
+    if not data:
+        return None
+    sid = session_id or data.get("sessionId") or f"proj_{pid}"
+    try:
+        from backend.services.ai_service import conversation_history
+        from backend.services.tools import reset_registered_layers
+
+        # 1. 恢复消息历史
+        conversation_history[sid] = list(data.get("messages", []))
+        # 2. 恢复图层到 tools._registered_layers
+        layers = data.get("layers", [])
+        reset_registered_layers(layers)
+    except Exception:
+        pass
+    return {"sessionId": sid, "layerCount": len(data.get("layers", []))}
 
 def list_projects() -> list:
     index = _load_index()
@@ -335,10 +395,9 @@ def import_project(zip_bytes: bytes) -> dict:
     _rebuild_refcount()
     return {"id": pid, "name": proj_data.get("name", "导入工程")}
 
-def auto_save(session_id: str = "default", provider: str = "", map_state: dict = None):
-    """由 ai_service 在每轮对话后调用，自动保存当前会话"""
-    # 延迟导入，避免循环依赖
-    from backend.services.ai_service import conversation_history, _get_or_create_history, _history_path
+def auto_save(session_id: str = "default", provider: str = "", map_state: dict = None, project_id: str = None):
+    """由 ai_service 或前端在每轮对话后调用，自动保存当前会话"""
+    from backend.services.ai_service import conversation_history
     from backend.services.tools import _registered_layers
 
     messages = conversation_history.get(session_id, [])
@@ -355,24 +414,27 @@ def auto_save(session_id: str = "default", provider: str = "", map_state: dict =
             "source": "ai",
         })
 
-    # 从 index 找这个 session 对应的工程
+    # 从 index 找这个 session 对应的工程（优先匹配显式 project_id，其次 session_id）
     index = _load_index()
-    existing_pid = None
-    for pid, info in index.get("projects", {}).items():
-        if info.get("id") == pid:
+    existing_pid = project_id if (project_id and _project_exists(project_id)) else None
+    if not existing_pid:
+        for pid, info in index.get("projects", {}).items():
             proj = _load_project_data(pid)
             if proj and proj.get("sessionId") == session_id:
                 existing_pid = pid
                 break
 
-    # 取工程名：用第一条用户消息的前 30 字
+    # 取工程名：如果已有工程名则保留已有名称；否则用第一条用户消息的真实提问文本
     name = "未命名工程"
-    for msg in messages:
-        if msg.get("role") == "user" and msg.get("content"):
-            name = msg["content"][:30].strip()
-            if len(msg["content"]) > 30:
-                name += "…"
-            break
+    if existing_pid:
+        existing_proj = _load_project_data(existing_pid)
+        if existing_proj and existing_proj.get("name"):
+            name = existing_proj["name"]
+    if name == "未命名工程":
+        for msg in messages:
+            if msg.get("role") == "user" and msg.get("content"):
+                name = extract_clean_title(msg["content"], max_len=24)
+                break
 
     return save_project(
         project_id=existing_pid,

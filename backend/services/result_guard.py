@@ -100,7 +100,22 @@ def resolve_artifact_path(path: str):
     rest = normalized[len(first):].lstrip("/")
     if not rest:
         return None
-    return os.path.normpath(os.path.join(base, rest))
+    abs_path = os.path.normpath(os.path.join(base, rest))
+    if os.path.exists(abs_path):
+        return abs_path
+    # 兼容自动重命名前缀：检查同目录下是否存在形如 {timestamp}_{basename} 的真实文件
+    parent_dir = os.path.dirname(abs_path)
+    base_name = os.path.basename(abs_path)
+    if os.path.isdir(parent_dir):
+        try:
+            for fname in os.listdir(parent_dir):
+                if fname.endswith("_" + base_name):
+                    candidate = os.path.join(parent_dir, fname)
+                    if os.path.isfile(candidate):
+                        return candidate
+        except OSError:
+            pass
+    return abs_path
 
 
 def extract_output_paths(text: str) -> list:
@@ -211,7 +226,8 @@ def verify_result(final_text: str = "", pending: dict = None, task_id: str = Non
             elif st == ST_EMPTY:
                 result["issues"].append(f"产物 `{rel}` 文件存在但为 0 字节，等于未生成")
             elif st == ST_UNREGISTERED:
-                result["issues"].append(f"产物 `{rel}` 磁盘存在但未在 registry 登记（执行链路可能不完整）")
+                # 磁盘实际存在且非空，仅未在 registry 显式登记（例如脚本直接写盘），属真实生成产物，不作为错误拦截
+                pass
             elif st == ST_CLAIM_MISMATCH:
                 result["issues"].append(f"回复声称的产物 `{rel}` 与 registry 实际登记的产物不一致（LLM 可能张冠李戴）")
             elif st == ST_PATH_MISMATCH:
@@ -313,17 +329,20 @@ def _three_way_check(final_text: str, task_id: str) -> tuple:
     return checks, len(registry)
 
 
-def apply_guard(final_text: str, pending: dict = None, task_id: str = None):
-    """校验一轮结果，并把校验提示追加到回复末尾。
+def apply_guard(final_text: str, pending: dict = None, task_id: str = None, append_note: bool = False):
+    """校验一轮结果。
 
-    返回 `(最终文本, 校验详情)`。通过校验时文本原样返回。
-    graph.py 的流式与非流式入口统一走这里，保证两条路径行为一致。
+    返回 `(最终文本, 校验详情)`。
+    默认 append_note=False，仅进行内部校验与指标记录，不向用户端追加「结果真实性自检」免责说明，
+    避免暴露内部断言信息与误导用户。需要时可传 append_note=True。
     task_id 传入时启用三方核对（Claim ↔ Registry ↔ Filesystem）。
     """
+    final_text = final_text or ""
     check = verify_result(final_text, pending, task_id=task_id)
-    note = build_guard_note(check)
-    if note:
-        final_text = (final_text or "") + note
+    if append_note:
+        note = build_guard_note(check)
+        if note:
+            final_text = final_text + note
     return final_text, check
 
 

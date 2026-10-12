@@ -186,7 +186,13 @@ if (typeof marked !== 'undefined') {
 
     const stopBtn = document.getElementById('stopBtn');
     if (stopBtn) {
+      stopBtn.disabled = true;
+      stopBtn.classList.remove('is-running');
+      stopBtn.title = '停止 (无运行中任务)';
       stopBtn.addEventListener('click', function() {
+        if (!window._aiRunning || stopBtn.disabled) {
+          return;
+        }
         window._aiRunning = false;
         // 先发取消请求到后端（keepalive 确保页面卸载时也能发送），再中断 SSE 连接
         fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST', keepalive: true }).catch(function(){});
@@ -216,6 +222,8 @@ if (typeof marked !== 'undefined') {
     if (quoteClose) {
       quoteClose.addEventListener('click', _hideQuoteBar);
     }
+    // 确保启动时停止按钮与状态正确复位
+    _resetUIAfterStop();
   }
 
   // 初始化 AI 运行状态
@@ -473,7 +481,11 @@ if (typeof marked !== 'undefined') {
     inputEl.disabled = false;
     if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = '1'; }
     const stopBtn = document.getElementById('stopBtn');
-    if (stopBtn) stopBtn.style.display = 'none';
+    if (stopBtn) {
+      stopBtn.disabled = true;
+      stopBtn.classList.remove('is-running');
+      stopBtn.title = '停止 (无运行中任务)';
+    }
     const modelBar = document.querySelector('.chat-input-model-bar');
     if (modelBar) modelBar.classList.remove('is-disabled');
     // 恢复右键菜单
@@ -504,7 +516,17 @@ if (typeof marked !== 'undefined') {
     }
     _resetUIAfterStop();
 
-    // 2. 清 UI
+    // 2. 清除图层（静默清除，避免图层删除提示回灌进空会话）
+    if (window.GIS.layers && typeof window.GIS.layers.clearAll === 'function') {
+      window.GIS.layers.clearAll(true);
+    } else if (window.GIS.layers) {
+      var allLayers = window.GIS.layers.getLayers();
+      allLayers.forEach(function(l) {
+        if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id, false, true);
+      });
+    }
+
+    // 3. 清 UI
     if (messagesContainer) {
       messagesContainer.innerHTML = '<div class="chat-messages-empty"></div>';
       messagesContainer.style.display = '';
@@ -515,16 +537,6 @@ if (typeof marked !== 'undefined') {
 
     // 清除引用预览条
     _hideQuoteBar();
-
-    // 3. 清除图层（clearAll 会处理无 layer_id 的工程恢复图层）
-    if (window.GIS.layers && typeof window.GIS.layers.clearAll === 'function') {
-      window.GIS.layers.clearAll();
-    } else if (window.GIS.layers) {
-      var allLayers = window.GIS.layers.getLayers();
-      allLayers.forEach(function(l) {
-        if (l.layer_id) window.GIS.layers.removeLayer(l.layer_id);
-      });
-    }
 
     // 4. 清除未保存的任务
     if (window.GIS.task && typeof window.GIS.task.clearUnsaved === 'function') {
@@ -537,12 +549,19 @@ if (typeof marked !== 'undefined') {
     }
 
     // 6. 异步调 API（等待清除完成，避免用户发消息时看到旧历史）
+    var oldSessionId = (window.GIS.project && window.GIS.project.getCurrentSessionId)
+      ? window.GIS.project.getCurrentSessionId()
+      : 'default';
     if (window.GIS.project) {
       window.GIS.project.save().catch(function() {});
-      window.GIS.project.setCurrentProjectId(null);
+      if (window.GIS.project.resetSession) {
+        window.GIS.project.resetSession();
+      } else {
+        window.GIS.project.setCurrentProjectId(null);
+      }
     }
     try {
-      await window.GIS.api.clearMemory();
+      await window.GIS.api.clearMemory(oldSessionId);
     } catch (e) {
       console.warn('清除记忆失败:', e);
     }
@@ -626,10 +645,14 @@ if (typeof marked !== 'undefined') {
     // 禁用模型选择器（请求中不允许换模型）
     const modelBar = document.querySelector('.chat-input-model-bar');
     if (modelBar) modelBar.classList.add('is-disabled');
-    // 标记AI运行状态，显示停止按钮，禁用右键
+    // 标记AI运行状态，点亮停止按钮，禁用右键
     window._aiRunning = true;
     const stopBtn = document.getElementById('stopBtn');
-    if (stopBtn) stopBtn.style.display = '';
+    if (stopBtn) {
+      stopBtn.disabled = false;
+      stopBtn.classList.add('is-running');
+      stopBtn.title = '停止当前任务';
+    }
     document.querySelectorAll('.context-menu-item').forEach(function(el) {
       if (el.getAttribute('data-action') !== 'copy-coords') el.classList.add('is-disabled');
     });
@@ -749,13 +772,17 @@ if (typeof marked !== 'undefined') {
           }
         } catch(e) { console.warn('图层同步失败:', e); }
 
+        var currentSessionId = (window.GIS.project && window.GIS.project.getCurrentSessionId)
+          ? window.GIS.project.getCurrentSessionId()
+          : 'default';
+
         const streamRes = await fetch(streamUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: window._aiAbortController.signal,
           body: JSON.stringify({
             message: text,
-            session_id: 'default',
+            session_id: currentSessionId,
             mode: window.GIS.chat.getMode(),
             api_key: sendProv.api_key || undefined,
             provider: sendProv.id || provider,
@@ -882,7 +909,7 @@ if (typeof marked !== 'undefined') {
         // 其他流式错误：降级到普通 API（仅当未收到任何有效结果时）
         if (!result) {
           console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
-          result = await GIS.api.chat(text, 'default', sendProv, forceSkills, window.GIS.chat.getMode());
+          result = await GIS.api.chat(text, currentSessionId, sendProv, forceSkills, window.GIS.chat.getMode());
         }
       }
 
@@ -1062,13 +1089,13 @@ if (typeof marked !== 'undefined') {
             htmlWrap.appendChild(toolBar);
             imgContainer.appendChild(htmlWrap);
           } else {
-            // 图片文件
+            // 图片文件：自适应消息气泡宽度，不截断、不缩成小窄条
             const wrapper = document.createElement('div');
-            wrapper.style.cssText = 'position:relative;display:inline-block;';
+            wrapper.style.cssText = 'position:relative;display:block;width:100%;max-width:100%;box-sizing:border-box;margin-top:8px;border-radius:6px;overflow:hidden;border:1px solid var(--outline-variant);background:var(--surface-container-lowest);';
             const img = document.createElement('img');
             img.src = fullUrl;
-            img.style.cssText = 'max-width:100%;max-height:300px;border-radius:4px;border:1px solid var(--ui-gray-200);cursor:pointer;display:block;';
-            img.title = '点击放大';
+            img.style.cssText = 'width:100%;max-width:100%;height:auto;max-height:520px;object-fit:contain;cursor:pointer;display:block;margin:0 auto;';
+            img.title = '点击放大查看高清图';
             img.addEventListener('click', function() { window.open(fullUrl); });
             wrapper.appendChild(img);
             // 下载按钮（右上角悬浮，用 fetch+blob）
@@ -1106,13 +1133,94 @@ if (typeof marked !== 'undefined') {
         addMessage('已清空所有图层', 'system');
       }
 
-      // 如果 AI 返回了图层操作指令（移除/显隐/改色/重命名/缩放），逐个执行
+      // 必须先加载新图层，再执行 layer_ops（分级设色/标注/图例等），避免找不到图层
+      if (result.layers && result.layers.length > 0) {
+        console.log('[GIS Chat] 收到多个 GeoJSON 图层:', result.layers.length);
+        result.layers.forEach(function(layer, idx) {
+          const layerId = layer.layer_id || ('ai_' + Date.now() + '_' + idx);
+          const layerName = layer.name || ('图层' + (idx + 1));
+          const geojson = layer.geojson || layer;
+          if (window.GIS.state) {
+            window.GIS.state.addLayer({
+              layer_id: layerId,
+              name: layerName,
+              geojson: geojson,
+              style: layer.style || null,
+              source: 'ai',
+            });
+            return;
+          }
+          if (GIS.map && GIS.map.loadGeoJSON) {
+            GIS.map.loadGeoJSON(geojson, layerName, layer.style || {});
+          }
+          if (GIS.layers && GIS.layers.addLayer) {
+            GIS.layers.addLayer({
+              layer_id: layerId,
+              filename: layerName,
+              _rawName: layerName,
+              geometry_type: geojson.type === 'FeatureCollection'
+                ? ((geojson.features && geojson.features[0] && geojson.features[0].geometry && geojson.features[0].geometry.type) || '未知')
+                : (geojson.geometry && geojson.geometry.type || '未知'),
+              crs: 'WGS-84',
+              geojson: geojson,
+              visible: true,
+              source: 'ai',
+            });
+          }
+        });
+      } else if (result.geojson && result.layerName) {
+        const layerId = 'ai_' + Date.now();
+        const layerName = result.layerName;
+        const geoType = result.geojson.type === 'FeatureCollection'
+          ? ((result.geojson.features && result.geojson.features[0] && result.geojson.features[0].geometry && result.geojson.features[0].geometry.type) || '未知')
+          : (result.geojson.geometry && result.geojson.geometry.type || '未知');
+        if (window.GIS.state) {
+          window.GIS.state.addLayer({
+            layer_id: layerId,
+            name: layerName,
+            geojson: result.geojson,
+            source: 'ai',
+          });
+        } else {
+          if (GIS.map && GIS.map.loadGeoJSON) GIS.map.loadGeoJSON(result.geojson, layerName);
+          if (GIS.layers && GIS.layers.addLayer) {
+            GIS.layers.addLayer({
+              layer_id: layerId,
+              filename: layerName,
+              _rawName: layerName,
+              geometry_type: geoType,
+              crs: 'WGS-84',
+              geojson: result.geojson,
+              visible: true,
+              source: 'ai',
+            });
+          }
+        }
+      }
+
+      // 如果 AI 返回了图层操作指令（移除/显隐/改色/重命名/缩放/分级设色/图例），优化时序并逐个执行
       if (result.layer_ops && result.layer_ops.length > 0) {
         console.log('[GIS Chat] 收到图层操作指令:', result.layer_ops.length, '条');
-        result.layer_ops.forEach(function(op) {
+        // 关键时序优化：symbology（分级渲染）必须优先于 legend（图例卡片）执行，确保图例计算已有数据
+        var opOrder = { 'remove': 1, 'rename': 2, 'set_color': 3, 'set_style': 4, 'symbology': 5, 'legend': 6, 'labels': 7, 'fit': 8, 'center': 9, 'drill': 10 };
+        var sortedOps = [...result.layer_ops].sort(function(a, b) {
+          return (opOrder[a.action] || 99) - (opOrder[b.action] || 99);
+        });
+        // 若同一图层在同一批次中已经执行了 symbology（symbology 内部已包含图例卡片渲染），则跳过冗余的 legend 指令
+        var symbologyApplied = new Set();
+        sortedOps.forEach(function(op) {
+          if (op.action === 'symbology' && op.name) symbologyApplied.add(op.name);
+        });
+
+        sortedOps.forEach(function(op) {
+          if (op.action === 'legend' && op.name && symbologyApplied.has(op.name)) {
+            return;
+          }
           var allLayers = window.GIS.layers && window.GIS.layers.getLayers ? window.GIS.layers.getLayers() : [];
           var target = allLayers.find(function(l) {
-            return l._rawName === op.name || l.filename === op.name || l.layer_id === op.name;
+            return l._rawName === op.name || l.filename === op.name || l.layer_id === op.name
+              || (l.filename && l.filename.indexOf(op.name) === 0)
+              || (l._rawName && l._rawName.indexOf(op.name) === 0);
           });
           switch (op.action) {
             case 'remove':
@@ -1308,92 +1416,6 @@ if (typeof marked !== 'undefined') {
         }, 200);
       }
 
-      // 如果 AI 生成了多个 GeoJSON 图层，逐个加载到地图
-      if (result.layers && result.layers.length > 0) {
-        console.log('[GIS Chat] 收到多个 GeoJSON 图层:', result.layers.length);
-
-        (function loadMultiLayers(attempt) {
-          if (!GIS.map || !GIS.map.loadGeoJSON || !GIS.layers || !GIS.layers.addLayer) {
-            if (attempt < 10) {
-              setTimeout(function() { loadMultiLayers(attempt + 1); }, 300);
-              return;
-            }
-            console.warn('[GIS Chat] 地图模块未就绪，无法加载多个图层');
-            return;
-          }
-
-          result.layers.forEach(function(layer, idx) {
-            const layerId = 'ai_' + Date.now() + '_' + idx;
-            const layerName = layer.name || '图层' + (idx + 1);
-            const uniqueName = layerName + '_' + Date.now() + '_' + idx;
-            const geojson = layer.geojson || layer;
-
-            // 统一走共享状态入口（内部驱动 2D 渲染 + 图层面板 + 3D 同步）
-            if (window.GIS.state) {
-              window.GIS.state.addLayer({
-                layer_id: layerId,
-                name: uniqueName,
-                geojson: geojson,
-                style: layer.style || null,
-                source: 'ai',
-              });
-              return;
-            }
-            // 兼容：状态模块缺失时退回旧路径
-            GIS.map.loadGeoJSON(geojson, uniqueName, layer.style || {});
-            GIS.layers.addLayer({
-              layer_id: layerId,
-              filename: uniqueName,
-              geometry_type: geojson.type === 'FeatureCollection'
-                ? ((geojson.features && geojson.features[0] && geojson.features[0].geometry && geojson.features[0].geometry.type) || '未知')
-                : (geojson.geometry && geojson.geometry.type || '未知'),
-              crs: 'WGS-84',
-              geojson: geojson,
-              visible: true,
-              source: 'ai',
-            });
-          });
-        })(0);
-      }
-
-      // 如果 AI 生成了单个 GeoJSON 数据，自动加载到地图和图层（兼容旧格式）
-      else if (result.geojson && result.layerName) {
-        console.log('[GIS Chat] 收到 GeoJSON 图层:', result.layerName,
-          '要素数:', result.geojson.type === 'FeatureCollection'
-            ? (result.geojson.features || []).length : 1);
-
-        // 等待地图和图层模块就绪（有时模块初始化有延迟）
-        (function loadGeoJSONWithRetry(attempt) {
-          if (!GIS.map || !GIS.map.loadGeoJSON || !GIS.layers || !GIS.layers.addLayer) {
-            if (attempt < 10) {
-              setTimeout(function() { loadGeoJSONWithRetry(attempt + 1); }, 300);
-              return;
-            }
-            console.warn('[GIS Chat] 地图模块未就绪，无法加载图层:', result.layerName);
-            return;
-          }
-
-          const layerId = 'ai_' + Date.now();
-          const uniqueName = result.layerName + '_' + Date.now();
-          const geoType = result.geojson.type === 'FeatureCollection'
-            ? ((result.geojson.features && result.geojson.features[0] && result.geojson.features[0].geometry && result.geojson.features[0].geometry.type) || '未知')
-            : (result.geojson.geometry && result.geojson.geometry.type || '未知');
-
-          // 1. 加载到地图
-          GIS.map.loadGeoJSON(result.geojson, uniqueName);
-
-          // 2. 添加到图层面板
-          GIS.layers.addLayer({
-            layer_id: layerId,
-            filename: uniqueName,
-            geometry_type: geoType,
-            crs: 'WGS-84',
-            geojson: result.geojson,
-            visible: true,
-            source: 'ai',
-          });
-        })(0);
-      }
 
       // 处理历史面板：打开状态下随每轮结果自动刷新（新工具执行记录到达）
       if (window.GIS.history && typeof window.GIS.history.refresh === 'function') {
@@ -1504,48 +1526,127 @@ if (typeof marked !== 'undefined') {
    * 自动追加「打开 / 下载」按钮，方便用户直接跳转定位文件。
    */
   function _attachOutputButtons(contentEl) {
-    if (!contentEl || contentEl._outputBtnsAttached) return;
+    if (!contentEl || contentEl._outputBtnsAttached) return false;
     contentEl._outputBtnsAttached = true;
 
     var baseUrl = (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || 'http://localhost:8000';
-    // 匹配输出目录下的文件路径（含中文文件名）
     var pathRe = /(?:\/?)(?:output|cache|uploads|downloads)\/[A-Za-z0-9_\-\u4e00-\u9fa5.\/()（）]+?\.(?:geojson|json|csv|shp|zip|png|jpe?g|html?|tiff?|kml|kmz|gpkg|gpx|dxf)/g;
-    var nodes = contentEl.querySelectorAll('p, li, div, code, pre, span');
-    var appended = false;
+
+    // 1. 查找是否存在「结果真实性自检」免责声明块，自检段落内的探针或不存在路径必须排除
+    var guardNode = null;
+    var allElements = contentEl.querySelectorAll('*');
+    for (var g = 0; g < allElements.length; g++) {
+      if ((allElements[g].textContent || '').indexOf('【结果真实性自检】') >= 0) {
+        guardNode = allElements[g];
+        break;
+      }
+    }
+
+    var nodes = contentEl.querySelectorAll('p, li, div, code, pre, span, td');
+    var seenPaths = new Set();
+    var validCards = [];
+
+    // 检查气泡中是否已经渲染了同名图片（比如 live stream 中由 result.images 渲染的 <img>）
+    var parentBubble = contentEl.closest('.message-bubble') || contentEl;
+    var existingImgs = parentBubble.querySelectorAll('img');
+    var existingImgSrcs = new Set();
+    existingImgs.forEach(function(img) {
+      if (img.src) {
+        var srcName = decodeURIComponent(img.src.split('/').pop());
+        existingImgSrcs.add(srcName);
+        existingImgSrcs.add(srcName.replace(/^\d{14}_/, ''));
+      }
+    });
 
     for (var i = 0; i < nodes.length; i++) {
       var node = nodes[i];
-      // 只处理叶子文本块，避免在父容器里重复扫描
+      // 如果属于自检段落内部或其后代，直接跳过
+      if (guardNode && (guardNode.contains(node) || node.contains(guardNode))) continue;
+      // 避免父节点与子节点重复检查
       if (node.querySelector('p, li, pre')) continue;
-      var text = node.textContent || '';
-      var m = text.match(pathRe);
-      if (!m) continue;
-      var filePath = m[0];
-      if (filePath.indexOf('/') !== 0) filePath = '/' + filePath;
-      var fileName = filePath.split('/').pop();
-      var fullUrl = baseUrl + filePath;
 
-      var btnRow = document.createElement('div');
-      btnRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:6px;';
-      var nameSpan = document.createElement('span');
-      nameSpan.style.cssText = 'font-size:12px;color:var(--ui-gray-400);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px;';
-      nameSpan.textContent = fileName;
-      var openBtn = document.createElement('button');
-      openBtn.textContent = '打开';
-      openBtn.style.cssText = 'padding:3px 10px;background:var(--accent,#6366f1);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;';
-      openBtn.addEventListener('click', function(url) { return function() { window.open(url, '_blank'); }; }(fullUrl));
-      var dlBtn = document.createElement('button');
-      dlBtn.textContent = '下载';
-      dlBtn.style.cssText = 'padding:3px 10px;background:var(--ui-gray-900);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;';
-      dlBtn.addEventListener('click', function(url, name) { return function() { downloadFile(url, name); }; }(fullUrl, fileName));
-      btnRow.appendChild(nameSpan);
-      btnRow.appendChild(openBtn);
-      btnRow.appendChild(dlBtn);
-      // 插到该文本节点所在容器之后
-      node.parentNode.insertBefore(btnRow, node.nextSibling);
-      appended = true;
+      var text = node.textContent || '';
+      // 如果包含否定语义，表示文件未生成或不存在，不生成打开/下载按钮
+      if (/不存在|未生成|未通过|失败|probe|探针|404|请勿认为/.test(text)) continue;
+
+      var matches = text.match(pathRe);
+      if (!matches) continue;
+
+      for (var mIdx = 0; mIdx < matches.length; mIdx++) {
+        var filePath = matches[mIdx];
+        if (filePath.indexOf('/') !== 0) filePath = '/' + filePath;
+        var fileName = filePath.split('/').pop();
+        if (seenPaths.has(filePath)) continue;
+        seenPaths.add(filePath);
+
+        // 如果文件名包含 probe、未生成等测试特征，过滤掉
+        if (/probe|tiny_probe/i.test(fileName)) continue;
+
+        var fullUrl = baseUrl + filePath;
+        var isImg = /\.(png|jpe?g|webp|svg)$/i.test(fileName);
+        var bareFileName = fileName.replace(/^\d{14}_/, '');
+        var alreadyRendered = isImg && (existingImgSrcs.has(fileName) || existingImgSrcs.has(bareFileName));
+
+        // 如果该图片已经在气泡里以大图形式呈现，不要再重复插入卡片
+        if (alreadyRendered) continue;
+
+        var card = document.createElement('div');
+        card.className = 'chat-file-output-card';
+        card.style.cssText = 'border:1px solid var(--outline-variant);border-radius:6px;background:var(--surface-container-low);overflow:hidden;width:100%;max-width:100%;box-sizing:border-box;margin-top:6px;';
+
+        if (isImg) {
+          var imgBox = document.createElement('div');
+          imgBox.style.cssText = 'position:relative;background:var(--surface-container-lowest);cursor:pointer;display:flex;align-items:center;justify-content:center;max-height:480px;overflow:hidden;';
+          var imgEl = document.createElement('img');
+          imgEl.src = fullUrl;
+          imgEl.alt = fileName;
+          imgEl.style.cssText = 'display:block;width:100%;max-width:100%;height:auto;max-height:480px;object-fit:contain;transition:transform 0.2s;';
+          imgEl.title = '在新标签页查看高清原图';
+          imgEl.onerror = function() {
+            // 加载失败（如文件缺失）时隐藏图片框，避免丑陋的破图图标
+            imgBox.style.display = 'none';
+          };
+          imgEl.addEventListener('mouseenter', function() { imgEl.style.transform = 'scale(1.01)'; });
+          imgEl.addEventListener('mouseleave', function() { imgEl.style.transform = 'scale(1)'; });
+          imgEl.addEventListener('click', (function(url) { return function() { window.open(url, '_blank'); }; })(fullUrl));
+          imgBox.appendChild(imgEl);
+          card.appendChild(imgBox);
+        }
+
+        var btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;' + (isImg && !alreadyRendered ? 'border-top:1px solid var(--outline-variant);' : '');
+        var nameSpan = document.createElement('span');
+        nameSpan.style.cssText = 'font-size:12px;color:var(--on-surface-variant);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-weight:500;';
+        nameSpan.textContent = fileName;
+        var openBtn = document.createElement('button');
+        openBtn.textContent = isImg ? '查看大图' : '打开';
+        openBtn.style.cssText = 'padding:3px 10px;background:var(--accent,#6366f1);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;flex-shrink:0;';
+        openBtn.addEventListener('click', (function(url) { return function() { window.open(url, '_blank'); }; })(fullUrl));
+        var dlBtn = document.createElement('button');
+        dlBtn.textContent = '下载';
+        dlBtn.style.cssText = 'padding:3px 10px;background:var(--ui-gray-900);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;flex-shrink:0;';
+        dlBtn.addEventListener('click', (function(url, name) { return function() { downloadFile(url, name); }; })(fullUrl, fileName));
+        btnRow.appendChild(nameSpan);
+        btnRow.appendChild(openBtn);
+        btnRow.appendChild(dlBtn);
+        card.appendChild(btnRow);
+
+        validCards.push(card);
+      }
     }
-    return appended;
+
+    if (validCards.length > 0) {
+      // 统一收敛在消息末尾的附件货架中，避免插入到 <ul> / <li> 中断裂排版
+      var shelf = document.createElement('div');
+      shelf.className = 'chat-outputs-shelf';
+      shelf.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin-top:10px;padding-top:8px;border-top:1px dashed var(--outline-variant);';
+      for (var c = 0; c < validCards.length; c++) {
+        shelf.appendChild(validCards[c]);
+      }
+      contentEl.appendChild(shelf);
+      return true;
+    }
+    return false;
   }
 
   function addMessage(text, type, options) {
@@ -1553,29 +1654,40 @@ if (typeof marked !== 'undefined') {
     type = type || 'ai';
     options = options || {};
 
-    // 系统消息：支持 Markdown 渲染与优雅提示卡片
+    // 系统消息：支持 Markdown 渲染与优雅居中提示卡片/胶囊
     if (type === 'system') {
       const row = document.createElement('div');
+      row._rawText = text;
       const isHidden = options && options.hidden;
       row.className = 'message message-system';
       row.style.cssText = isHidden
         ? 'display:none;'
-        : 'display:flex;justify-content:center;width:100%;padding:4px 0;box-sizing:border-box;';
+        : 'display:flex;justify-content:center;align-items:center;width:100%;margin:4px 0;box-sizing:border-box;';
       const bubble = document.createElement('div');
 
-      const isLongOrRich = text.length > 40 || text.indexOf('\n') >= 0 || text.indexOf('**') >= 0 || text.indexOf('`') >= 0 || text.indexOf('<') >= 0;
-      if (isLongOrRich) {
+      // 只要是显式 pill 选项、或单行超短状态通知（<50字且无换行无Markdown），采用居中胶囊展现；
+      // 只要包含换行符（\n）、带有 markdown 标记、或字符数较长，自动作为系统卡片（换行、Markdown 解析、左对齐）展现，彻底解决被挤成单行截断的问题！
+      const hasNewline = text.indexOf('\n') >= 0;
+      const hasMarkdown = /[*`#\[\]\-_]/.test(text);
+      const isStatusEvent = !options.card && (options.pill || (!hasNewline && !hasMarkdown && text.length < 50 && /^(已恢复工程|已保存|已清理|已重置|清空|加载工程|删除|保存|操作|未找到|捕捉|连接失败|请求失败)/.test(text)));
+      const isRichCard = !isStatusEvent && (options.card || hasNewline || hasMarkdown || text.length > 50);
+
+      if (isRichCard) {
         bubble.className = 'system-card';
-        bubble.style.cssText = 'max-width:96%;width:100%;font-size:12px;color:var(--on-surface-variant);background:var(--surface-container-low);border:1px solid var(--outline-variant);border-radius:6px;padding:8px 12px;line-height:1.5;word-break:break-all;text-align:left;';
+        bubble.style.cssText = 'max-width:92%;font-size:12px;color:var(--on-surface-variant);background:var(--surface-container-low);border:1px solid var(--outline-variant);border-radius:8px;padding:10px 14px;line-height:1.6;word-break:break-word;text-align:left;white-space:normal;margin:4px auto;box-sizing:border-box;box-shadow:0 1px 3px rgba(0,0,0,0.05);';
         if (typeof marked !== 'undefined' && text.indexOf('<') === -1) {
           bubble.innerHTML = marked.parse(text, { breaks: true, gfm: true, renderer: _linkRenderer });
         } else {
-          bubble.innerHTML = text;
+          bubble.innerHTML = text.replace(/\n/g, '<br/>');
         }
       } else {
         bubble.className = 'system-pill';
-        bubble.style.cssText = 'font-size:11px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:2px 10px;text-align:center;line-height:1.4;';
-        bubble.innerHTML = text;
+        bubble.style.cssText = 'font-size:11.5px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:4px 14px;text-align:center;line-height:1.45;max-width:90%;white-space:normal;word-break:break-word;margin:0 auto;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;';
+        if (typeof marked !== 'undefined') {
+          bubble.innerHTML = typeof marked.parseInline === 'function' ? marked.parseInline(text) : marked.parse(text);
+        } else {
+          bubble.innerHTML = text;
+        }
       }
       row.appendChild(bubble);
       messagesContainer.appendChild(row);
@@ -1584,6 +1696,7 @@ if (typeof marked !== 'undefined') {
     }
 
     const row = document.createElement('div');
+    row._rawText = text;
     row.className = 'message' + (type === 'user' ? ' message-user' : '');
     row.style.opacity = '0';
     row.style.transition = 'opacity 0.2s';

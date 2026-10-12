@@ -143,3 +143,149 @@
    - 移除副标题描述文案（“用自然语言完成空间任务”等），面板采用极简风格。
    - 增加未配置检测：当检测到未填 API Key 时，面板居中呈现未配置说明并提供一键“去配置”按钮直达设置弹窗。
 
+---
+
+## 2026-10-12: GIS AI 助手过度追问、上下文复用与专题图生成流程深度修复
+
+### 1. 检查结果与真实根因分析
+
+针对“用户先查鼓楼区 GDP，随后输入'需要专题图'，AI 没有直接出图而是抛出 3 个维度的问卷式多选题并命令用户特定格式回复”的问题，进行了全链路深度排查，定位到以下真实根因：
+
+1. **根因一：提示词硬性规定所有“专题图”必须调用 `spatial_graduated_colors`，与单要素图层产生冲突**
+   - 原 `SYSTEM_PROMPT` 强制要求：“当用户要求制作'专题图'时...必须将矢量面边界加载为地图图层，并调用 `spatial_graduated_colors` 工具应用分级色彩渲染”。
+   - 但 `spatial_graduated_colors` 在工具层逻辑严格要求要素具备数值差异（`if vmin == vmax: return "字段所有值相同，无法分级"`）。
+   - 单个行政区（如南京市鼓楼区）在 DataV 中仅有 1 个多边形要素，必然导致 `vmin == vmax`。模型在提示词的“强制分级设色”死命令与单要素“无法分级”的技术约束之间陷入冲突，从而自行衍生出“方案A：拉取全国 4 个鼓楼区对比（凑多个要素）”或“方案B：单区看板”，并向用户抛出选择题。
+
+2. **根因二：系统提示词缺乏“多轮上下文继承”与“零追问行动优先”规范**
+   - 提示词中未明确规定：当上一轮对话已确定具体地理实体（如南京市鼓楼区）、统计年份（2025）和经济指标（GDP）后，下一轮简短指令（如“需要专题图”、“做成图”）必须完全继承前序实体，严禁退化为模糊泛指名称，严禁擅自将单区问题膨胀为跨区域对比。
+   - 提示词中缺少对参数默认值的硬性规定，导致 AI 把可选参数（图型选择、色带、内置底图还是指定 SHP/GeoJSON）当作必填项反复盘问用户。
+
+3. **根因三：工具层 `datav_boundary` 跨轮消歧与上下文复用能力薄弱**
+   - 原 `datav_boundary` 消歧候选匹配只检查了 `_last_user_message`（当前轮用户原始输入）。
+   - 当第 2 轮用户仅发送“需要专题图”时，输入中不包含“南京”，若模型调用 `datav_boundary("鼓楼区")`，原代码无法识别上一轮上下文，导致再次触发 `ask_user_choice` 重复追问。
+
+4. **根因四：画布中心点坐标问题核实**
+   - 日志中地图中心坐标为 `(91.53458, 23.41912)`，并非定位逻辑 Bug，而是因为 AI 在前两轮只进行了口头承诺和文本盘问，从未调用 `datav_boundary` 或图层注册工具，导致前端地图始终维持用户初始或平移视图，未触发 `mapInstance.fitBounds`。
+
+---
+
+### 2. 修改文件清单与改动说明
+
+1. **`backend/services/ai_service.py`**
+   - **重构专题图与空间可视化规范**：严格区分“单区域专题图”与“多区域专题图”。
+     - **单区域专题图**：明确单个要素无法分级设色，默认调用 `datav_boundary` 加载边界并在地图居中，结合统计数据调用 `create_chart` 生成结构图表或通过 `execute_python` 绘制“行政区轮廓+指标信息看板”，直接交付成果，严禁追问；
+     - **多区域专题图**：要素数 $\ge 2$ 时，调用 `spatial_graduated_colors` 渲染分级色彩；
+     - **默认参数规范**：底图默认且必须使用系统内置行政区划（`datav_boundary`），严禁盘问用户是否提供 SHP/GeoJSON；符号化与配色采用专业默认值，严禁询问图型选择。
+   - **新增多轮上下文继承与零追问默认执行准则**：
+     - 准则 1：简短需求必须严格继承上一轮已确认的地理实体全称、年份、指标数值，严禁退化为模糊名称；
+     - 准则 2：行动优先，默认直接出图交付，严禁抛出问卷式选项，严禁要求用户手动打字回复固定格式指令；
+     - 准则 3：严禁自我加戏，用户未要求时严禁主动推荐跨区域横向对比。
+   - 同步升级免费模型提示词 `SYSTEM_PROMPT_GLM`，保持策略一致。
+
+2. **`backend/services/tools.py`**
+   - 新增 `_conversation_context` 全局状态及其存取方法 `set_conversation_context()` / `get_conversation_context()`。
+   - 增强 `datav_boundary` 的重名区县消歧逻辑：当区县重名时，多级匹配 `_last_user_message`（本轮指令）、`_conversation_context`（多轮上下文记录）以及 `_registered_layers`（当前地图已加载图层名）。在多轮对话中自动消歧为已确认城市，彻底杜绝重复弹窗。
+   - 优化 `spatial_graduated_colors`：更新工具 docstring，并在 `vmin == vmax` 或单要素时返回建设性指引（提示单要素已在地图展示，建议结合指标面板或图表交付），避免引发模型困惑。
+
+3. **`backend/services/graph.py`**
+   - 在 `run_agent` 与 `run_agent_stream` 启动时，自动提取最近 10 条消息作为上下文摘要注入 `_tools_mod.set_conversation_context()`，使工具层在整个 Agent 执行周期内均具备准确的历史实体感知能力。
+
+4. **`backend/tests/test_thematic_context.py`**
+   - 新建覆盖四大关键场景的自动化测试用例，全方位验证上下文继承、零追问规则、消歧机制与真实错误提示。
+
+5. **根治交付推脱与假边界借口（新增交付红线）**：
+   - 严禁 AI 声称“我这边不能直接生成 PNG/PDF 图片文件”（系统支持 `execute_python`/matplotlib 产出 PNG 成果图，前端可直接查看下载）；
+   - 严禁在正文中吐出裸 `<svg>` XML 代码让用户手动保存；
+   - 严禁向用户索要本地 SHP/GeoJSON 路径（国内边界一律直接调用 `datav_boundary` 获取真实矢量并加载到交互地图，不可借口“没有真底图”推诿）。
+
+---
+
+### 3. 测试用例与执行结果
+
+执行命令：
+`python -m pytest backend/tests/test_thematic_context.py backend/tests/test_choose_option.py backend/tests/test_result_guard.py backend/tests/test_multi_turn_state.py -v`
+
+测试结果：
+- **35 项测试全部通过（35 passed in 2.60s）**：
+  1. `test_multi_turn_context_inheritance_in_boundary`：验证先查询南京鼓楼区后要求专题图时，工具层自动消歧并复用前序实体，不重复弹窗（PASSED）。
+  2. `test_topic_relevance_preserves_short_thematic_command`：验证短指令“需要专题图”、“做成图”不会被历史检测误删（PASSED）。
+  3. `test_system_prompt_rules_forbid_interrogation`：验证系统提示词中包含行动优先、禁止格式命令、默认内置边界与单区规范（PASSED）。
+  4. `test_spatial_graduated_colors_single_polygon_graceful_guidance`：验证单要素分级色彩优雅降级与指标看板指引（PASSED）。
+  5. `test_ambiguous_district_first_turn_requires_choice`：验证首轮无上下文输入重名区县时，正确唤起 `ask_user_choice` 交互选项（PASSED）。
+  6. `test_unambiguous_when_city_specified_in_query`：验证输入指明城市时直接执行，不弹出多余选项，不强推跨区域对比（PASSED）。
+  7. `test_missing_boundary_returns_truthful_failure`：验证边界缺失时返回真实错误提示，严禁捏造几何（PASSED）。
+  8. `test_spatial_graduated_colors_missing_field_reports_available_fields`：验证缺少属性字段时如实返回可用字段列表（PASSED）。
+
+---
+
+### 5. 系统通知单行截断与操作反馈 UI/Toast 体验重构
+
+#### 根因剖析
+1. **单行省略号挤压截断**：
+   - 在 `frontend/css/workspace.css` 与 `frontend/js/chat.js` 中，系统通知元素 `.system-pill` 均被强制声明了：
+     ```css
+     overflow: hidden !important;
+     text-overflow: ellipsis !important;
+     white-space: nowrap !important;
+     max-width: 82% !important;
+     ```
+   - 导致如“数据源接入指引”、“代理获取失败 (HTTP 502)”以及图层名称较长的通知（如 `ACS_Highlights_Population_Housing_Basics_Boundaries - County`）被生硬截断成半截字，用户必须 hover 才能通过浏览器原生粗糙的黑色 `title` 浮窗查看，视觉极差且无法阅读。
+2. **Markdown 格式未解析与原生 tooltip 污染**：
+   - 胶囊内直接插入带 `**` 的原始文本，未调用内联 Markdown 解析；
+   - 赋值 `bubble.title = text` 导致鼠标滑过时系统弹窗黑色矩形，破坏界面质感。
+3. **缺少轻量级操作级反馈（Toast）机制**：
+   - 空间数据源“加载图层”、“复制 URL”、“上传文件”等高频动作直接以聊天行插入左侧对话框，既污染了 AI 与用户的多轮问答流，又因聊天窗口狭窄显得拥挤杂乱。
+
+#### 落地修复方案
+1. **全局轻量 Toast 组件上线 (`window.GIS.toast`)**：
+   - 在 `frontend/js/api.js` 与 `frontend/css/workspace.css` 中实现并挂载全局 `window.GIS.toast`（支持 `success`, `error`, `warn`, `info`）。
+   - 顶部居中悬浮、高质感毛玻璃圆角卡片、平滑滑入淡出（2.8s 自动销毁），点击即关。
+   - 数据源加载成功、文件上传成功、URL 复制等交互一律唤起 Toast 即时提示，用户无需分心扫视左侧聊天框。
+2. **彻底解决提示被截断与排版难看问题**：
+   - 在 `frontend/css/workspace.css` 中将 `.system-pill` 改造为 `white-space: normal !important; word-break: break-word !important; overflow: visible !important;`，自适应折行完整展示所有文字与图层名；
+   - 胶囊内容支持 `marked.parseInline()` 解析，将 `**名称**` 正确渲染为加粗字体，移除原始 `**` 符号；
+   - 移除 `bubble.title` 属性，彻底消除鼠标悬浮时的黑色系统原生黑框；
+   - `.system-card` 统一左对齐 (`text-align: left !important;`) 与优化行高间距，保证 502/排查指引/多行警告结构清晰整齐。
+
+---
+
+### 6. AI 与 GIS 深度融合的分层测试体系搭建
+
+#### 核心原则：不割裂系统，真实链路验证
+本项目的 AI Agent 依赖 GIS 空间分析工具、图层注册机制与前后端协议接口。严禁将 AI Core 孤立为不具备 GIS 运行环境的玩具模块。分层测试旨在既保留 GIS 真实运行链路，又能逐层精准定位问题：
+
+1. **Layer 1: 单元测试 (`test_layer1_unit.py`)**：
+   - 验证 Prompt 规则、多轮上下文继承指令、单区规范、禁止方案A/B过度追问；
+   - 验证未执行制图代码（"我无法直接出图/请复制到 Jupyter"）探测函数；
+   - 验证参数提取与结果守护，纯内存极速验证（<1s）。
+2. **Layer 2: Agent 测试 (`test_layer2_agent.py`)**：
+   - 复用真实生产 `LangGraph Agent` 与 `tools.py` 上下文机制；
+   - 验证第二轮短需求（"需要专题图"）自动复用首轮实体消歧，不重复弹窗；
+   - 验证拦截到未执行代码时，自动触发强制执行机制。
+3. **Layer 3: GIS 工具集成测试 (`test_layer3_gis_tools.py`)**：
+   - 使用真实生产工具与真实/受控地理数据；
+   - 验证 `datav_boundary` 产出合规 WGS-84 矢量边界；
+   - 验证 `execute_python` 实际调用 matplotlib 在磁盘生成有效且非空的 PNG 图像文件（校验 PNG 文件头签名）；
+   - 验证单要素分级设色优雅降级。
+4. **Layer 4: 地图集成测试 (`test_layer4_map_integration.py`)**：
+   - 验证工具产物真实传递至 `_register_layer` 并更新 `get_registered_layers()` 与 `get_pending_state()`；
+   - 验证后端 `/api/layer/register` 与 `/api/layer/list` 前后端数据通道畅通；
+   - 验证 GeoJSON 结构完全契合 Leaflet / VectorGrid 渲染引擎规范。
+5. **Layer 5: 端到端测试 (`test_layer5_e2e.py`)**：
+   - 验证从用户请求出发，贯穿 Agent 调度、工具执行、图层注册、产物落盘到流式 SSE 事件输出全流程。
+
+#### 运行模式与配套工具
+- **`scripts/run_layered_tests.py`**：统一运行脚本，提供 `--mode fast` (Layer 1+2)、`--mode integration` (Layer 3+4)、`--mode regression` (全量 5 层) 及 `--layer N` 指定单层测试。
+- **`backend/pytest.ini`**：注册 `unit`, `agent`, `gis_tools`, `map_integration`, `e2e`, `fast`, `integration`, `regression` 专属 markers。
+- **`docs/layered-testing-guide.md`**：产出全套设计原则与操作指南。
+
+---
+
+### 7. 仍存在的潜在局限与待优化项
+
+1. **行政区下辖多街道精细矢量覆盖**：
+   - 当前阿里云 DataV 官方接口支持省、市、区（县）三级矢量边界。对于区县下辖的各街道/乡镇边界，DataV 尚未提供标准化接口。若用户明确要求“鼓楼区各街道分级设色图”，仍需依赖 OSM 或第三方高精矢量数据源。
+2. **极短对话历史的话题切换精细度**：
+   - 当前针对小于 12 个有效字符的短消息一律视为上下文延续以防止历史丢失。如果用户在同一会话中突然提出完全无关的短指令（如“查查西瓜”），系统仍会携带前置 GIS 上下文，需在后续版本中结合语义意图分类做进一步精细化分流。
+
+

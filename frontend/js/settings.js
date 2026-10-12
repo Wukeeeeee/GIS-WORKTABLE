@@ -28,6 +28,18 @@ window.GIS = window.GIS || {};
     try { initModelSelector(); } catch (e) { console.warn('[GIS settings] model selector', e); }
     try { autoDetectModelStatus(); } catch (e) {}
     try { bindButtonFeedback(); } catch (e) {}
+    try {
+      if (window.GIS.api && window.GIS.api.syncUserSettingsFromBackend) {
+        window.GIS.api.syncUserSettingsFromBackend().then(function(res) {
+          if (res && res.updated) {
+            try { populateAmapInput(); } catch(_) {}
+            try { renderProviderList(); } catch(_) {}
+            try { syncModelUI(); } catch(_) {}
+            try { updateModelStatusDot(); } catch(_) {}
+          }
+        });
+      }
+    } catch (e) { console.warn('[GIS settings] syncUserSettingsFromBackend', e); }
   }
 
   // ============================================================
@@ -642,9 +654,20 @@ window.GIS = window.GIS || {};
     var providers = GIS.api.getProviders();
     var anyKey = providers.some(function(p) { return !!p.api_key; });
     var cur = GIS.api.currentProvider();
+    
+    // 如果聊天区域当前处于初始空状态（即中央已渲染“尚未配置 AI 模型”空状态卡片），
+    // 则不在底部重复展示黄色/红色警示条，避免视觉冗余与错位
+    var emptyEl = document.querySelector('.chat-messages-empty');
+    var isChatEmpty = emptyEl && emptyEl.style.display !== 'none' && (!document.querySelector('.message') || document.querySelectorAll('.message').length === 0);
+
     if (!anyKey) {
-      warn.style.display = 'flex';
-      warn.innerHTML = '<span>尚未配置 API Key</span> <button type="button" class="warn-config-link" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11px;padding:0 2px;">去配置</button>';
+      if (isChatEmpty) {
+        warn.style.display = 'none';
+        warn.innerHTML = '';
+      } else {
+        warn.style.display = 'flex';
+        warn.innerHTML = '<span>尚未配置 API Key</span> <button type="button" class="warn-config-link" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11px;padding:0 2px;">去配置</button>';
+      }
     } else if (cur && !cur.api_key) {
       warn.style.display = 'flex';
       warn.innerHTML = '<span>当前模型未填 Key</span> <button type="button" class="warn-config-link" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11px;padding:0 2px;">去配置</button>';
@@ -653,6 +676,7 @@ window.GIS = window.GIS || {};
       warn.innerHTML = '<span>当前模型连接失败</span> <button type="button" class="warn-config-link" style="background:none;border:0;color:inherit;text-decoration:underline;cursor:pointer;font-size:11px;padding:0 2px;">检查设置</button>';
     } else {
       warn.style.display = 'none';
+      warn.innerHTML = '';
     }
     var link = warn.querySelector('.warn-config-link');
     if (link) {

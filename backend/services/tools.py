@@ -228,6 +228,21 @@ def set_last_user_message(msg: str):
     _last_user_message = (msg or "")[:500]
 
 
+_conversation_context: str = ""
+
+
+def set_conversation_context(ctx: str):
+    """记录多轮上下文文本摘要（由 graph.py 在每轮开始时调用）。
+    供行政区划消歧、地理对象推断等工具在后续轮次中复用已确认的实体信息。"""
+    global _conversation_context
+    _conversation_context = (ctx or "")[:3000]
+
+
+def get_conversation_context() -> str:
+    """获取当前多轮上下文文本摘要"""
+    return _conversation_context
+
+
 def get_current_task_id() -> str:
     """获取当前任务 ID"""
     return _current_task_id
@@ -406,6 +421,22 @@ def get_registered_layers_snapshot() -> list:
     return result
 
 
+def reset_registered_layers(layers: list = None):
+    """重置/替换当前注册的图层字典（切换工程或清空工程时调用，实现工程间严格图层隔离）"""
+    with _state_lock:
+        _registered_layers.clear()
+        _pending_layers.clear()
+        _pending_layer_ops.clear()
+        if layers:
+            for l in layers:
+                if not isinstance(l, dict):
+                    continue
+                name = l.get("name") or l.get("filename")
+                geojson = l.get("geojson") or l.get("geojson_data")
+                if name and geojson:
+                    _register_layer(name, geojson)
+
+
 def _add_pending_item(url: str, file_path: str = None):
     """添加到待发送的图片/HTML 列表"""
     init_temp_dir()
@@ -418,7 +449,7 @@ def _add_pending_item(url: str, file_path: str = None):
         except Exception:
             _pending_images.append({"url": url, "type": "html"})
     else:
-        _pending_images.append({"url": url, "type": "png"})
+        _pending_images.append({"url": url, "type": "png" if (url or "").lower().endswith(".png") else "image"})
 
 
 # ============================================================
@@ -820,9 +851,10 @@ def _ast_sandbox_check(code: str) -> str | None:
 # 辅助函数 —— 图片/HTML 重命名 & chart 清理
 # ============================================================
 
-def _rename_output_files(new_files: set, suffix: str, temp_dir: str):
+def _rename_output_files(new_files: set, suffix: str, temp_dir: str) -> list:
     """为输出目录中新生成的文件加时间戳前缀，避免文件名冲突。"""
     ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+    renamed = []
     for fname in sorted(new_files):
         if not fname.lower().endswith(suffix):
             continue
@@ -838,6 +870,8 @@ def _rename_output_files(new_files: set, suffix: str, temp_dir: str):
             except Exception:
                 pass
         _add_pending_item(f'/output/{dest_name}', dest)
+        renamed.append(dest_name)
+    return renamed
 
 
 def _cleanup_charts(temp_dir: str, max_charts: int = 20):
@@ -868,9 +902,10 @@ def _extract_geojson(name: str, data: dict):
 
 @tool
 def execute_python(code: str) -> str:
-    """【最后选择】执行自定义 Python GIS 代码（沙箱隔离）。仅当所有专用工具都不满足需求时才用本工具。
+    """执行自定义 Python GIS 分析与数据可视化代码（沙箱隔离）。
+    当需要生成自定义专题图、指标看板、多子图图表（matplotlib / pyecharts）或专用工具不覆盖的复杂分析时，必须使用本工具直接执行代码并生成图片交付，严禁把代码甩给用户让用户去本地/Jupyter运行！
 
-    ❌ 以下操作已有专用工具，禁止使用 execute_python：
+    ❌ 以下操作已有专用工具，禁止使用 execute_python 代替：
         - 地理编码/地址转坐标 → 必须用 amap_geocode
         - 反向地理编码/坐标转地址 → 必须用 reverse_geocode
         - 批量地理编码 → 必须用 batch_geocode
@@ -1076,14 +1111,10 @@ _os.makedirs('output', exist_ok=True)
             after_files = set(os.listdir(_temp_output_dir))
             new_files = after_files - before_files
 
-            _rename_output_files(new_files, '.png', _temp_output_dir)
+            for ext in ('.png', '.jpg', '.jpeg', '.webp', '.svg'):
+                new_images.extend(_rename_output_files(new_files, ext, _temp_output_dir))
             _rename_output_files(new_files, '.html', _temp_output_dir)
             _cleanup_charts(_temp_output_dir)
-            
-            # 收集新生成的图片文件
-            for f in new_files:
-                if f.lower().endswith('.png'):
-                    new_images.append(f)
         except Exception:
             pass
 
@@ -1459,7 +1490,47 @@ def get_layer_detail(layer_name: str) -> str:
 def datav_boundary(name: str) -> str:
     """从阿里云 DataV 获取中国省/市/区三级行政边界，自动转 WGS-84 加载到地图。国外边界用 execute_python 调 osmnx。查不到时尝试上级行政区划。"""
     try:
-        from backend.services.datav_service import fetch_boundary
+        from backend.services.datav_service import fetch_boundary, get_ambiguous_candidates
+        # 1. 检查是否属于全国多地重名区县（如鼓楼区、朝阳区、西湖区等）且用户未指明所属地级市
+        candidates = get_ambiguous_candidates(name)
+        if candidates and len(candidates) > 1:
+            matched_candidate = None
+            for cand in candidates:
+                city_short = cand["city"].rstrip("市")
+                prov_short = cand["province"].rstrip("省").rstrip("市").rstrip("自治区")
+                cand_label = cand.get("label", "")
+                # 检查1：当前用户请求
+                in_msg = bool(_last_user_message and (city_short in _last_user_message or prov_short in _last_user_message or cand_label in _last_user_message))
+                # 检查2：多轮上下文记录
+                in_ctx = bool(_conversation_context and (city_short in _conversation_context or prov_short in _conversation_context or cand_label in _conversation_context))
+                # 检查3：已加载/已注册图层名
+                in_layers = any(city_short in lyr_name or cand_label in lyr_name for lyr_name in _registered_layers)
+                if in_msg or in_ctx or in_layers:
+                    matched_candidate = cand
+                    break
+            if matched_candidate:
+                name = matched_candidate["label"]
+            else:
+                # 弹出选项供用户点击选择（与遥感数据源选择一致的交互体验）
+                options = [
+                    {
+                        "label": cand["label"],
+                        "value": cand["label"],
+                        "desc": cand.get("desc", ""),
+                        "configured": True,
+                    }
+                    for cand in candidates
+                ]
+                return ask_user_choice.invoke({
+                    "prompt": f"全国有多处「{name}」，请选择您需要分析的具体城市：",
+                    "options": options,
+                    "choice_key": "region_disambiguation",
+                }) if hasattr(ask_user_choice, "invoke") else ask_user_choice(
+                    prompt=f"全国有多处「{name}」，请选择您需要分析的具体城市：",
+                    options=options,
+                    choice_key="region_disambiguation",
+                )
+
         data = fetch_boundary(name)
         if data is None:
             return f"获取失败：DataV 未找到«{name}»的数据，请检查名称是否正确"
@@ -2357,31 +2428,20 @@ def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
                         vals.append(str(v))
             return Counter(vals)
 
-        # 生成 ECharts HTML
-        echarts_html = ""
+        # 生成高质感自适应 ECharts HTML
         if chart_type == "histogram":
-            # 直方图：统计数值字段分布
             f = field or prop_keys[0]
             counter = _value_counts(f)
             items = sorted([(k, v) for k, v in counter.items() if isinstance(k, (int, float))])
             if not items:
-                # 尝试作为分类数据
                 items = list(counter.items())
             if not items:
                 return f"字段「{f}」无有效数值数据"
-            values = [v for _, v in items]
             labels = [str(k) for k, _ in items]
-            echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
-var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
-chart.setOption({{
-    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
-    tooltip: {{trigger:'axis'}},
-    xAxis: {{type:'category', data:{json.dumps(labels)}, axisLabel:{{rotate:45,fontSize:11}}}},
-    yAxis: {{type:'value'}},
-    series: [{{type:'bar', data:{json.dumps(values)}, itemStyle:{{color:'#1c1b1b'}}}}]
-}});
-window.addEventListener('resize', function(){{chart.resize();}});
-</script></body></html>"""
+            values = [v for _, v in items]
+            series_cfg = json.dumps([{"type": "bar", "data": values, "name": f}], ensure_ascii=False)
+            x_data_cfg = json.dumps(labels, ensure_ascii=False)
+            y_name_cfg = "频数"
 
         elif chart_type == "pie":
             f = field or prop_keys[0]
@@ -2391,19 +2451,14 @@ window.addEventListener('resize', function(){{chart.resize();}});
                 return f"字段「{f}」无有效数据"
             items = sorted(items, key=lambda x: x[1], reverse=True)[:20]
             pie_data = [{"name": str(k), "value": v} for k, v in items]
-            echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
-var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
-chart.setOption({{
-    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
-    tooltip: {{trigger:'item', formatter:'{{b}}: {{c}} ({{d}}%)'}},
-    series: [{{type:'pie', radius:'60%', center:['50%','55%'],
-        data:{json.dumps(pie_data, ensure_ascii=False)},
-        label:{{fontSize:11}},
-        itemStyle:{{borderRadius:4}}
-    }}]
-}});
-window.addEventListener('resize', function(){{chart.resize();}});
-</script></body></html>"""
+            series_cfg = json.dumps([{
+                "type": "pie", "radius": ["35%", "65%"], "center": ["50%", "56%"],
+                "data": pie_data,
+                "label": {"fontSize": 11, "color": "auto"},
+                "itemStyle": {"borderRadius": 5}
+            }], ensure_ascii=False)
+            x_data_cfg = "[]"
+            y_name_cfg = ""
 
         elif chart_type == "scatter":
             xf = x_field or prop_keys[0]
@@ -2418,24 +2473,15 @@ window.addEventListener('resize', function(){{chart.resize();}});
                     pass
             if not scatter_data:
                 return f"字段「{xf}」和「{yf}」无有效数值数据"
-            echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
-var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
-chart.setOption({{
-    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
-    tooltip: {{trigger:'item', formatter:'[{xf}]: {{c[0]}}<br/>[{yf}]: {{c[1]}}'}},
-    xAxis: {{type:'value', name:'{xf}'}},
-    yAxis: {{type:'value', name:'{yf}'}},
-    series: [{{type:'scatter', data:{json.dumps(scatter_data)},
-        symbolSize:8, itemStyle:{{color:'#1c1b1b',opacity:0.7}}}}]
-}});
-window.addEventListener('resize', function(){{chart.resize();}});
-</script></body></html>"""
+            series_cfg = json.dumps([{"type": "scatter", "data": scatter_data, "symbolSize": 8}], ensure_ascii=False)
+            x_data_cfg = "[]"
+            y_name_cfg = yf
 
         else:
-            # bar / line：默认柱状图或折线图
+            # bar / line：柱状图或折线图
             f = field or prop_keys[0]
+            series_type = "line" if chart_type == "line" else "bar"
             if x_field and y_field:
-                # 双字段
                 xf, yf = x_field, y_field
                 bar_data = []
                 bar_labels = []
@@ -2445,59 +2491,238 @@ window.addEventListener('resize', function(){{chart.resize();}});
                         bar_data.append(float(p.get(yf, 0)))
                     except (ValueError, TypeError):
                         pass
-                series_type = "line" if chart_type == "line" else "bar"
-                echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
-var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
-chart.setOption({{
-    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
-    tooltip: {{trigger:'axis'}},
-    xAxis: {{type:'category', data:{json.dumps(bar_labels)}, axisLabel:{{rotate:45,fontSize:11}}}},
-    yAxis: {{type:'value', name:'{yf}'}},
-    series: [{{type:'{series_type}', data:{json.dumps(bar_data)}, itemStyle:{{color:'#1c1b1b'}}}}]
-}});
-window.addEventListener('resize', function(){{chart.resize();}});
-</script></body></html>"""
+                series_cfg = json.dumps([{"type": series_type, "data": bar_data, "name": yf}], ensure_ascii=False)
+                x_data_cfg = json.dumps(bar_labels, ensure_ascii=False)
+                y_name_cfg = yf
             else:
-                # 单字段统计
                 counter = _value_counts(f)
                 items = sorted(counter.items(), key=lambda x: x[1], reverse=True)[:30]
                 if not items:
                     return f"字段「{f}」无有效数据"
                 labels = [str(k) for k, _ in items]
                 values = [v for _, v in items]
-                series_type = "line" if chart_type == "line" else "bar"
-                echarts_html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script></head><body><div id="chart" style="width:100%;height:400px;"></div><script>
-var chart = echarts.init(document.getElementById('chart'), null, {{renderer:'svg'}});
-chart.setOption({{
-    title: {{text:'{chart_title}', left:'center', textStyle:{{fontSize:14}}}},
-    tooltip: {{trigger:'axis'}},
-    xAxis: {{type:'category', data:{json.dumps(labels)}, axisLabel:{{rotate:45,fontSize:11}}}},
-    yAxis: {{type:'value'}},
-    series: [{{type:'{series_type}', data:{json.dumps(values)}, itemStyle:{{color:'#1c1b1b'}}}}]
-}});
-window.addEventListener('resize', function(){{chart.resize();}});
-</script></body></html>"""
+                series_cfg = json.dumps([{"type": series_type, "data": values, "name": f}], ensure_ascii=False)
+                x_data_cfg = json.dumps(labels, ensure_ascii=False)
+                y_name_cfg = "数值"
 
-        if not echarts_html:
-            return "图表生成失败"
-
-        # 注入 SVG 导出按钮
-        svg_export_script = """
+        echarts_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{chart_title}</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
-.chart-toolbar{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:100}
-.chart-toolbar button{padding:4px 10px;font-size:12px;background:rgba(0,0,0,0.7);border:none;border-radius:4px;cursor:pointer;color:#fff}
-.chart-toolbar button:hover{background:rgba(0,0,0,0.9)}
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  html, body {{
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    transition: background-color 0.2s, color 0.2s;
+  }}
+  #chart {{
+    width: 100%;
+    height: 100%;
+  }}
+  .chart-toolbar {{
+    position: fixed;
+    top: 10px;
+    right: 14px;
+    display: flex;
+    gap: 6px;
+    z-index: 100;
+  }}
+  .chart-toolbar button {{
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }}
 </style>
+</head>
+<body>
 <div class="chart-toolbar">
-<button onclick="downloadSVG()">导出 SVG</button>
+  <button id="btnSvg" onclick="downloadSVG()">导出 SVG</button>
+  <button id="btnPng" onclick="downloadPNG()">导出 PNG</button>
 </div>
+<div id="chart"></div>
 <script>
-function downloadSVG(){var svg=document.querySelector('#chart svg');if(!svg){alert('SVG not found');return}
-var s=new XMLSerializer();var str='<?xml version="1.0" encoding="utf-8"?>'+s.serializeToString(svg)
-var blob=new Blob([str],{type:'image/svg+xml;charset=utf-8'})
-var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='chart.svg';a.click();URL.revokeObjectURL(url)}
-</script>"""
-        echarts_html = echarts_html.replace("</body></html>", svg_export_script + "</body></html>")
+  // 主题自适应侦测（暗色 / 亮色）
+  var isDark = true;
+  try {{
+    if (window.parent && window.parent.document && window.parent.document.documentElement) {{
+      var pDoc = window.parent.document.documentElement;
+      isDark = pDoc.classList.contains('theme-dark') || !pDoc.classList.contains('theme-light');
+    }} else {{
+      isDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }}
+  }} catch(e) {{
+    isDark = true;
+  }}
+
+  var colors = {{
+    bg: isDark ? '#18181b' : '#ffffff',
+    text: isDark ? '#f8fafc' : '#0f172a',
+    subText: isDark ? '#94a3b8' : '#64748b',
+    axisLine: isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(0, 0, 0, 0.15)',
+    splitLine: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)',
+    btnBg: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)',
+    btnBorder: isDark ? 'rgba(255, 255, 255, 0.15)' : 'rgba(0, 0, 0, 0.12)',
+    btnText: isDark ? '#cbd5e1' : '#475569',
+    palette: ['#38bdf8', '#818cf8', '#34d399', '#fbbf24', '#f87171', '#c084fc', '#2dd4bf', '#fb923c']
+  }};
+
+  document.body.style.backgroundColor = colors.bg;
+  document.body.style.color = colors.text;
+
+  var btnSvg = document.getElementById('btnSvg');
+  var btnPng = document.getElementById('btnPng');
+  [btnSvg, btnPng].forEach(function(b) {{
+    if (!b) return;
+    b.style.backgroundColor = colors.btnBg;
+    b.style.border = '1px solid ' + colors.btnBorder;
+    b.style.color = colors.btnText;
+  }});
+
+  var chart = echarts.init(document.getElementById('chart'), null, {{ renderer: 'svg' }});
+  var seriesRaw = {series_cfg};
+  var xData = {x_data_cfg};
+  var chartType = '{chart_type}';
+  var yAxisName = '{y_name_cfg}';
+
+  // 系列美化与渐变
+  seriesRaw.forEach(function(s) {{
+    if (s.type === 'bar') {{
+      s.barWidth = '40%';
+      s.itemStyle = {{
+        borderRadius: [4, 4, 0, 0],
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          {{ offset: 0, color: '#38bdf8' }},
+          {{ offset: 1, color: '#0284c7' }}
+        ])
+      }};
+      s.emphasis = {{
+        itemStyle: {{
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            {{ offset: 0, color: '#7dd3fc' }},
+            {{ offset: 1, color: '#0369a1' }}
+          ])
+        }}
+      }};
+    }} else if (s.type === 'line') {{
+      s.smooth = true;
+      s.symbolSize = 6;
+      s.lineStyle = {{ width: 2.5, color: '#38bdf8' }};
+      s.itemStyle = {{ color: '#38bdf8' }};
+      s.areaStyle = {{
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          {{ offset: 0, color: isDark ? 'rgba(56, 189, 248, 0.28)' : 'rgba(2, 132, 199, 0.2)' }},
+          {{ offset: 1, color: isDark ? 'rgba(56, 189, 248, 0.02)' : 'rgba(2, 132, 199, 0.01)' }}
+        ])
+      }};
+    }} else if (s.type === 'scatter') {{
+      s.symbolSize = 8;
+      s.itemStyle = {{
+        color: '#38bdf8',
+        borderColor: isDark ? '#18181b' : '#ffffff',
+        borderWidth: 1.2
+      }};
+    }}
+  }});
+
+  var option = {{
+    backgroundColor: 'transparent',
+    color: colors.palette,
+    title: {{
+      text: '{chart_title}',
+      left: 10,
+      top: 8,
+      textStyle: {{
+        color: colors.text,
+        fontSize: 14,
+        fontWeight: 600
+      }}
+    }},
+    tooltip: {{
+      trigger: chartType === 'pie' ? 'item' : 'axis',
+      backgroundColor: isDark ? 'rgba(24, 24, 27, 0.94)' : 'rgba(255, 255, 255, 0.96)',
+      borderColor: colors.btnBorder,
+      borderWidth: 1,
+      padding: [8, 12],
+      textStyle: {{ color: colors.text, fontSize: 12 }},
+      extraCssText: 'box-shadow: 0 8px 24px rgba(0,0,0,0.35); backdrop-filter: blur(8px); border-radius: 6px;',
+      axisPointer: {{
+        type: 'shadow',
+        shadowStyle: {{ color: isDark ? 'rgba(255, 255, 255, 0.05)' : 'rgba(0, 0, 0, 0.04)' }}
+      }}
+    }},
+    grid: chartType === 'pie' ? undefined : {{
+      left: 10,
+      right: 14,
+      top: 64,
+      bottom: 16,
+      containLabel: true
+    }},
+    xAxis: chartType === 'pie' ? undefined : {{
+      type: chartType === 'scatter' ? 'value' : 'category',
+      data: chartType === 'scatter' ? undefined : xData,
+      axisLine: {{ lineStyle: {{ color: colors.axisLine }} }},
+      axisTick: {{ alignWithLabel: true, lineStyle: {{ color: colors.axisLine }} }},
+      axisLabel: {{
+        color: colors.subText,
+        fontSize: 11,
+        rotate: 35,
+        margin: 10
+      }},
+      splitLine: chartType === 'scatter' ? {{ lineStyle: {{ color: colors.splitLine, type: 'dashed' }} }} : undefined
+    }},
+    yAxis: chartType === 'pie' ? undefined : {{
+      type: 'value',
+      name: yAxisName,
+      nameTextStyle: {{
+        color: colors.subText,
+        fontSize: 11,
+        align: 'left',
+        padding: [0, 0, 8, 0]
+      }},
+      axisLine: {{ show: false }},
+      axisTick: {{ show: false }},
+      axisLabel: {{ color: colors.subText, fontSize: 11 }},
+      splitLine: {{
+        lineStyle: {{
+          color: colors.splitLine,
+          type: 'dashed'
+        }}
+      }}
+    }},
+    series: seriesRaw
+  }};
+
+  chart.setOption(option);
+  window.addEventListener('resize', function() {{ chart.resize(); }});
+
+  function downloadSVG() {{
+    var svg = document.querySelector('#chart svg');
+    if (!svg) {{ alert('SVG not found'); return; }}
+    var s = new XMLSerializer();
+    var str = '<?xml version="1.0" encoding="utf-8"?>' + s.serializeToString(svg);
+    var blob = new Blob([str], {{ type: 'image/svg+xml;charset=utf-8' }});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a'); a.href = url; a.download = 'chart.svg'; a.click();
+    URL.revokeObjectURL(url);
+  }}
+  function downloadPNG() {{
+    var url = chart.getDataURL({{ type: 'png', pixelRatio: 2, backgroundColor: colors.bg }});
+    var a = document.createElement('a'); a.href = url; a.download = 'chart.png'; a.click();
+  }}
+</script>
+</body>
+</html>"""
 
         # 保存 HTML 并推送到前端
         init_temp_dir()
@@ -3774,6 +3999,7 @@ def add_labels(layer_name: str, field: str, font_size: int = 12, color: str = "#
 @tool
 def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, color_scheme: str = "blues") -> str:
     """对图层应用分级色彩渲染（Choropleth），按数值字段将要素分为N个等级，每级用不同颜色显示。
+    注意：要求图层包含至少2个要素且数值存在差异。如果是单要素图层（如单个行政区边界），无法分级，请使用 datav_boundary 默认边界在地图展示，并结合指标面板或图表交付。
     layer_name: 图层名；field: 数值字段名；n_classes: 分级数（2-20，默认5）；
     color_scheme: 色带 scheme(默认)/blues(蓝)/reds(红)/greens(绿)/purples(紫)/oranges(橙)。"""
     try:
@@ -3795,7 +4021,7 @@ def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, co
 
         vmin, vmax = float(values.min()), float(values.max())
         if vmin == vmax:
-            return f"字段「{field}」所有值相同（{vmin}），无法分级"
+            return f"字段「{field}」所有值相同（{vmin}）或仅有单个要素，无法进行分级设色。单行政区要素已在地图上展示，建议结合指标面板或统计图表交付专题成果。"
 
         step = (vmax - vmin) / n_classes
         breaks = [vmin + i * step for i in range(n_classes + 1)]

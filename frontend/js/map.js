@@ -237,22 +237,49 @@ var _undoSkip = false;
           });
         }
         drawnItems.addLayer(layer);
-        var name = '绘制_' + Date.now().toString(36);
-        layer._name = name;
         var geojson = layer.toGeoJSON();
-        if (window.GIS && window.GIS.layers && window.GIS.layers.addLayer) {
-          window.GIS.layers.addLayer({
-            layer_id: name, name: name, filename: name, checked: true,
-            geojson: geojson, source: '绘制'
-          });
-        }
-        // 同步注册到后端，让 AI 能看到这个图层（否则 AI 会说"找不到图层"）
-        if (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) {
-          fetch(window.GIS.api.BASE_URL + '/api/layer/register', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name, geojson: geojson }),
-          }).catch(function(e) { console.warn('图层注册到后端失败:', e); });
+        if (window._drawingTargetLayerId && window.GIS && window.GIS.layers) {
+          var targetLayerObj = window.GIS.layers.getLayers().find(function(l) { return l.layer_id === window._drawingTargetLayerId; });
+          if (targetLayerObj && targetLayerObj.geojson) {
+            var targetGj = targetLayerObj.geojson;
+            if (targetGj.type !== 'FeatureCollection') {
+              targetGj = { type: 'FeatureCollection', features: [targetGj] };
+              targetLayerObj.geojson = targetGj;
+            }
+            if (!targetGj.features) targetGj.features = [];
+            geojson.properties = geojson.properties || {};
+            if (!geojson.properties.name && !geojson.properties.名称) {
+              geojson.properties.name = '要素_' + (targetGj.features.length + 1);
+            }
+            targetGj.features.push(geojson);
+            var layerName = targetLayerObj._rawName || targetLayerObj.layer_id;
+            if (GIS.map && GIS.map.loadGeoJSON) {
+              GIS.map.loadGeoJSON(targetGj, layerName, { color: targetLayerObj.color });
+            }
+            window.GIS.layers.renderList();
+            if (window.GIS.api && window.GIS.api.registerLayer) {
+              window.GIS.api.registerLayer(targetLayerObj.filename || layerName, targetGj);
+            }
+            if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+              window.GIS.chat.addMessage('已向图层「' + (targetLayerObj.filename || '集合') + '」添加第 ' + targetGj.features.length + ' 个要素', 'system', { pill: true });
+            }
+          }
+        } else {
+          var name = '绘制_' + Date.now().toString(36);
+          layer._name = name;
+          if (window.GIS && window.GIS.layers && window.GIS.layers.addLayer) {
+            window.GIS.layers.addLayer({
+              layer_id: name, name: name, filename: name, checked: true,
+              geojson: geojson, source: '绘制'
+            });
+          }
+          if (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) {
+            fetch(window.GIS.api.BASE_URL + '/api/layer/register', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: name, geojson: geojson }),
+            }).catch(function(e) { console.warn('图层注册到后端失败:', e); });
+          }
         }
         // 连续绘制：如果绘制按钮仍高亮，自动重新启用同款工具
         var activeBtn = document.querySelector('.map-draw-btn.active:not([data-tool="delete"])');
@@ -608,6 +635,26 @@ var _undoSkip = false;
       });
       toRemove.forEach(function(l) { drawnItems.removeLayer(l); });
     }
+  }
+
+  /** 清空地图上所有业务图层与绘制要素（底图除外） */
+  function clearAll() {
+    if (_swipe) stopSwipeSilent();
+    if (drawnItems) {
+      try { drawnItems.clearLayers(); } catch(_) {}
+    }
+    Object.keys(_rasterLayers).forEach(function(name) {
+      try { mapInstance.removeLayer(_rasterLayers[name]); } catch(_) {}
+    });
+    _rasterLayers = {};
+    Object.keys(layers).forEach(function(name) {
+      try { mapInstance.removeLayer(layers[name]); } catch(_) {}
+    });
+    layers = {};
+    geoStore = {};
+    _featureMap = {};
+    window._drawingTargetLayerId = null;
+    clearHighlight();
   }
 
   /** 切换图层显隐 */
@@ -1259,15 +1306,20 @@ var _undoSkip = false;
         if (window.downloadGeoJSON) window.downloadGeoJSON();
         break;
       case 'save-project':
-        var saveBtn = document.querySelector('[data-action="save"]');
-        if (saveBtn) { saveBtn.click(); } else {
-          var projectSave = document.getElementById('projectSave');
-          if (projectSave) projectSave.click();
+        if (GIS.workspace && GIS.workspace.openSaveProject) {
+          GIS.workspace.openSaveProject();
+        } else if (GIS.project && GIS.project.save) {
+          GIS.project.save();
         }
         break;
       case 'load-project':
-        var historyBtn = document.getElementById('historyBtn');
-        if (historyBtn) historyBtn.click();
+        if (GIS.workspace && GIS.workspace.openLoadProject) {
+          GIS.workspace.openLoadProject();
+        } else {
+          if (GIS.workspace && GIS.workspace.toggleAI) GIS.workspace.toggleAI(true);
+          var historyBtn = document.getElementById('historyBtn');
+          if (historyBtn) historyBtn.click();
+        }
         break;
       case 'shortcut-draw':
         _toggleShortcutGroup('draw');
@@ -2119,6 +2171,7 @@ var _undoSkip = false;
     switchBaseMap: switchBaseMap,
     applySymbology: applySymbology,
     removeLayer: removeLayer,
+    clearAll: clearAll,
     setLayerVisible: setLayerVisible,
     setLayerColor: setLayerColor,
     setLayerOpacity: setLayerOpacity,
@@ -2205,5 +2258,11 @@ var _undoSkip = false;
     addTileLayer: addTileLayer,
     addWmsLayer: addWmsLayer,
     _openManual: function() { _openManual(); },
+    setTargetLayerForDrawing: function(layerId) {
+      window._drawingTargetLayerId = layerId;
+    },
+    clearTargetLayerForDrawing: function() {
+      window._drawingTargetLayerId = null;
+    },
   };
 })();

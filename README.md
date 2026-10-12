@@ -32,8 +32,8 @@ GIS WorkTable 将数据加载、空间分析、地图展示和结果导出放在
 | 能力 | 内容 | 使用条件 |
 | --- | --- | --- |
 | 手动 GIS 操作 | 图层管理、绘制、测量、缓冲、叠置、符号化、属性编辑、处理历史与重跑 | 本地分析无需模型 API Key |
-| AI Agent | 自然语言任务规划、工具调用、流式回复、结果产物核对 | 配置兼容 OpenAI 接口的模型服务 |
-| 2D/3D 地图 | Leaflet / CesiumJS 共享图层状态，行政区下钻、面要素拉伸展示 | 底图和在线边界服务需要网络 |
+| AI Agent | 自然语言任务规划、多轮实体继承、行动优先（免问卷式过度追问）、单区指标看板与多区分级设色自适应、未执行代码推脱拦截 | 配置兼容 OpenAI 接口的模型服务（如 DeepSeek、GLM、Agnes 等） |
+| 2D/3D 地图 | Leaflet / CesiumJS 共享图层状态，行政区下钻、面要素拉伸展示，轻量全局 Toast 操作反馈 | 底图和在线边界服务需要网络 |
 | 栅格与空间统计 | 地形分析、遥感指数、插值、自相关、热点与网络分析 | 对应输入数据；部分工具需要在线数据 |
 | 数据接入 | 文件导入、GeoSource 目录检索、OGC/ArcGIS 服务、云原生格式 | 数据库快照、服务可用性及授权因来源而异 |
 | 工程与互通 | 工程保存与恢复（.giswork）、图层导出（Shapefile/GeoJSON 兼容 QGIS 与 ArcGIS）、地图及报告导出、DAG 工作流、stdio MCP Server | MCP 接入见专门文档 |
@@ -128,9 +128,24 @@ docs/          功能、架构、协作规范与发布文档
 
 前端使用 `frontend/js/gis_state.js` 统一管理图层、选中要素和下钻状态；手动工具与 AI 调用复用后端 GIS 工具及图层产物通道。详见 [架构与模块](docs/architecture.md)。
 
-## 开发与贡献
+## 开发与分层测试体系
 
-在仓库根目录运行：
+项目构建了不与 GIS 主系统割裂的 **五层分层测试体系**（覆盖单元、Agent 决策、GIS 工具集成、地图图层与 E2E 业务），详情见 [分层测试指南](docs/layered-testing-guide.md)。
+
+可使用统一测试脚本 `scripts/run_layered_tests.py` 按需分组执行：
+
+```bash
+# 1. 快速模式（~2s）：Layer 1 (单元) + Layer 2 (Agent)，适合 Prompt 或逻辑微调
+python scripts/run_layered_tests.py --mode fast
+
+# 2. 集成模式（~6s）：Layer 3 (GIS 工具) + Layer 4 (地图图层通道)，适合空间处理修改
+python scripts/run_layered_tests.py --mode integration
+
+# 3. 全量回归（Layer 1~5 全链路，合并前执行）：
+python scripts/run_layered_tests.py --mode regression
+```
+
+也可在仓库根目录直接运行 pytest：
 
 ```bash
 python -m pytest backend/tests/ -q
@@ -138,6 +153,7 @@ python -m pytest backend/tests/ -q
 
 部分测试依赖外部网络或服务，跳过与失败原因应按实际输出记录。测试数量和通过率应附执行环境、命令及提交号，不在 README 中固定写入容易过期的数字。
 
+- [分层测试指南](docs/layered-testing-guide.md)：测试架构、模块边界依赖与分层触发规范。
 - [贡献指南](CONTRIBUTING.md)：开发流程、工具扩展、验证与 PR 要求。
 - [命名与描述规范](docs/repository-standards.md)：项目名、文件名、分支、提交、Issue/PR、仓库 Description。
 - [界面与面板规范](docs/ui-guidelines.md)：黑白灰风格、左侧 AI、数据入口及面板折叠与关闭行为。
@@ -147,6 +163,7 @@ python -m pytest backend/tests/ -q
 
 ## 更多文档
 
+- [分层测试指南](docs/layered-testing-guide.md)
 - [AI 对话与工具延迟检查](docs/performance-audit.md)
 - [项目路线图](docs/ROADMAP.md)
 - [仓库盘点与参赛方向评估](docs/repository-audit.md)

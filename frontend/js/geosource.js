@@ -393,7 +393,8 @@
       var proto = (s.protocol || '通用').trim();
       var isWms = /WMS/i.test(proto);
       var isXyz = /XYZ/i.test(proto) || /\{[xyz]\}/i.test(s.service_url || '');
-      var isRest = /REST/i.test(proto);
+      var isRest = /ArcGIS/i.test(proto) || /\/(?:FeatureServer|MapServer)(?:\/|$)/i.test(s.service_url || '') || /\/rest\/services(?:\/|$)/i.test(s.service_url || '');
+      var isGeoJson = (s.format && /geojson/i.test(s.format)) || /\.geojson(?:\?|$)/i.test(s.service_url || '');
       var isStac = /STAC/i.test(proto);
       var isWmts = /WMTS/i.test(proto);
 
@@ -403,7 +404,7 @@
       else if (isRest) protoClass = 'badge-rest';
       else if (isStac) protoClass = 'badge-stac';
 
-      var canLoad = isWms || isXyz || isRest || (s.format && /geojson|json/i.test(s.format));
+      var canLoad = isWms || isXyz || isRest || isGeoJson;
 
       html += '<div class="geosource-card" data-idx="' + index + '">';
       html += '  <div class="geosource-card-header">';
@@ -525,6 +526,9 @@
     var url = decodeURIComponent(encodedUrl);
     if (!url) return;
     navigator.clipboard.writeText(url).then(function () {
+      if (window.GIS.toast && typeof window.GIS.toast.success === 'function') {
+        window.GIS.toast.success('服务 URL 已复制到剪贴板');
+      }
       btn.classList.add('copied');
       var span = btn.querySelector('span');
       if (span) span.textContent = '已复制';
@@ -732,14 +736,18 @@
   }
 
   function fallbackNotifyUrl(serviceObj, name, reason) {
+    var cleanName = (name || '').replace(/\*\*/g, '');
+    if (window.GIS.toast && typeof window.GIS.toast.error === 'function') {
+      window.GIS.toast.error('数据源接入失败，请在对话框查看排查指引');
+    }
     var url = serviceObj.service_url || serviceObj.official_url || '';
     var reasonText = reason ? ('\n\n**具体原因**：' + reason) : '';
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       var proto = serviceObj.protocol || 'REST';
-      var msg = '**数据源接入指引** · ' + name + reasonText + '\n\n' +
+      var msg = '**数据源接入指引** · ' + cleanName + reasonText + '\n\n' +
         '此端点尚不能直接作为地图图层自动渲染，可能需要子图层、认证或指定格式。请在数据源详情中查看服务说明：\n\n' +
         '`' + url + '`';
-      window.GIS.chat.addMessage(msg, 'system');
+      window.GIS.chat.addMessage(msg, 'system', { card: true });
     } else {
       alert('无法直接上图：' + (reason || '该端点不支持直接矢量渲染') + '\n\n' + url);
     }
@@ -747,8 +755,12 @@
 
   function notifySuccess(name) {
     hide();
+    var cleanName = (name || '').replace(/\*\*/g, '');
+    if (window.GIS.toast && typeof window.GIS.toast.success === 'function') {
+      window.GIS.toast.success('已将空间数据源图层「' + cleanName + '」加载到地图工作区！');
+    }
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
-      window.GIS.chat.addMessage('已将空间数据源图层 **' + name + '** 加载到地图工作区！', 'system');
+      window.GIS.chat.addMessage('已将空间数据源图层 **' + cleanName + '** 加载到地图工作区！', 'system');
     }
   }
 

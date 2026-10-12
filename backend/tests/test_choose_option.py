@@ -98,3 +98,20 @@ def test_build_choice_backfill_returns_none_when_context_empty():
         assert pa.build_choice_backfill("test_backfill4", "某个选项") is None
     finally:
         pa.clear_pending_action("test_backfill4")
+
+
+def test_datav_boundary_disambiguation():
+    """datav_boundary 遇到多地重名区县（如鼓楼区）时应自动调用 ask_user_choice 并设置 pending"""
+    pa.clear_pending_action("test_disambig")
+    pa.set_active_session("test_disambig")
+    tools.set_last_user_message("帮我分析鼓楼区")
+    res = tools.datav_boundary.invoke({"name": "鼓楼区"})
+    assert "选项" in res or "选择" in res
+    action = pa.get_pending_action("test_disambig")
+    assert action is not None
+    assert action["action"] == "choose_option"
+    assert action["choice_key"] == "region_disambiguation"
+    labels = [o["label"] for o in action["options"]]
+    assert any("南京" in l for l in labels)
+    assert any("福州" in l for l in labels)
+    pa.clear_pending_action("test_disambig")

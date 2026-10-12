@@ -9,6 +9,8 @@ if os.name == 'nt':
 # 这里在导入任何 GIS 库之前删除这两个变量，让 rasterio/pyproj 回退到各自捆绑的 proj 数据。
 os.environ.pop("PROJ_LIB", None)
 os.environ.pop("PROJ_DATA", None)
+# 关闭 langchain-openai 的底层 TCP Keepalive 注入，恢复标准 httpx 代理自动检测，避免终端弹出代理警告
+os.environ.setdefault("LANGCHAIN_OPENAI_TCP_KEEPALIVE", "0")
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Response, Query
 from fastapi.responses import StreamingResponse
@@ -54,16 +56,17 @@ app = FastAPI()
 # 启动 banner
 print("")
 print(r"""
-   ____ ___ ____
+   ____ ___ ____ 
   / ___|_ _/ ___|
  | |  _ | |\___ \
  | |_| || | ___) |
-  \____|___|____/
- __        ____ _   _ ____  _____ _     ___
- \ \      / /| | | |  _ \|_   _| |   |_ _|
-  \ \ /\ / / | | | | |_) | | | | |    | |
-   \ V  V /  | |_| |  _ <  | | | |___ | |
-    \_/\_/    \___/|_| \_\ |_| |_____|___|
+  \____|___|____/ 
+
+ __        _____  ____  _  _______  _    ____  _     _____ 
+ \ \      / / _ \|  _ \| |/ /_   _|/ \  | __ )| |   | ____|
+  \ \ /\ / / | | | |_) | ' /  | | / _ \ |  _ \| |   |  _|  
+   \ V  V /| |_| |  _ <| . \  | |/ ___ \| |_) | |___| |___ 
+    \_/\_/  \___/|_| \_\_|\_\ |_/_/   \_\____/|_____|_____|
 """)
 print("  ========================================================")
 print("    GIS-WORKTABLE  -  智能 GIS 工作平台")
@@ -440,6 +443,45 @@ async def save_proxy_config(req: dict):
     proxy = req.get("proxy", "")
     result = set_proxy_config(proxy)
     return {"status": "ok", "message": result, "proxy": proxy}
+
+
+_USER_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache", "user_settings.json")
+
+
+def _load_user_settings() -> dict:
+    if os.path.exists(_USER_SETTINGS_PATH):
+        try:
+            with open(_USER_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _save_user_settings(data: dict) -> bool:
+    os.makedirs(os.path.dirname(_USER_SETTINGS_PATH), exist_ok=True)
+    try:
+        with open(_USER_SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"[GIS] 保存 user_settings 失败: {e}", flush=True)
+        return False
+
+
+@app.get("/api/user-settings")
+async def get_user_settings():
+    """获取用户持久化配置（跨浏览器/跨会话保活 API Key、模型与系统设置）"""
+    return _load_user_settings()
+
+
+@app.post("/api/user-settings")
+async def save_user_settings(req: dict):
+    """保存用户持久化配置（增量合并更新）"""
+    current = _load_user_settings()
+    current.update(req)
+    ok = _save_user_settings(current)
+    return {"status": "ok" if ok else "error"}
 
 
 @app.get("/api/health")
@@ -854,13 +896,11 @@ class ProjectRenameRequest(BaseModel):
     name: str
 
 @app.post("/api/projects/auto-save")
-async def auto_save_project():
+async def auto_save_project(session_id: str = "default", project_id: str = None):
     """由前端在对话完成后调用，自动保存当前工程"""
-    from backend.services.ai_service import get_session_state, conversation_history
-    session_id = "default"
-    state = get_session_state(session_id)
     result = project_service.auto_save(
         session_id=session_id,
+        project_id=project_id,
     )
     if result is None:
         return {"id": None, "note": "无消息，跳过保存"}
@@ -889,6 +929,8 @@ async def load_project(project_id: str):
     result = project_service.load_project(project_id)
     if result is None:
         raise HTTPException(status_code=404, detail="工程不存在")
+    session_id = result.get("sessionId") or f"proj_{project_id}"
+    project_service.activate_project(project_id, session_id=session_id)
     return result
 
 @app.delete("/api/projects/{project_id}")

@@ -276,14 +276,14 @@ window.GIS = window.GIS || {};
     if (status === 'importing') {
       _currentFileName = msg || '文件';
       var row = document.createElement('div');
-      row.style.cssText = 'display:flex;justify-content:center;max-width:100%;opacity:0;transition:opacity 0.2s;';
+      row.style.cssText = 'display:flex;justify-content:center;width:100%;padding:4px 0;box-sizing:border-box;opacity:0;transition:opacity 0.2s;';
 
       var bubble = document.createElement('div');
-      bubble.style.cssText = 'font-size:12px;color:var(--ui-gray-900);background:var(--message-bg-ai, var(--surface-container-low));padding:8px 14px;border-radius:10px;text-align:left;max-width:90%;';
+      bubble.className = 'system-pill';
+      bubble.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:3px 12px;line-height:1.4;';
       bubble.innerHTML =
-        "<div style=\"display:flex;align-items:center;gap:8px;flex-wrap:wrap;\"><span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span style=\"font-weight:500;\">导入中: " + escapeHtml(_currentFileName) + '</span>' +
-          '<button class="upload-cancel-btn" id="uploadCancelBtn" style="margin-left:auto;font-size:11px;padding:2px 10px;border:1px solid var(--ui-gray-300);border-radius:4px;background:none;cursor:pointer;color:var(--ui-gray-600);white-space:nowrap;">取消导入</button>' +
-        '</div>';
+        "<span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span style=\"font-weight:500;\">导入中: " + escapeHtml(_currentFileName) + '</span>' +
+        '<button class="upload-cancel-btn" id="uploadCancelBtn" style="margin-left:6px;font-size:10px;padding:1px 6px;border:1px solid var(--outline-variant);border-radius:3px;background:none;cursor:pointer;color:var(--on-surface-variant);white-space:nowrap;">取消</button>';
       row.appendChild(bubble);
       container.appendChild(row);
       requestAnimationFrame(function() { row.style.opacity = '1'; });
@@ -300,9 +300,9 @@ window.GIS = window.GIS || {};
           var ctrl = _uploadAbortControllers.get(_currentFileName);
           if (ctrl) ctrl.abort();
           _uploadAbortControllers.delete(_currentFileName);
-          var bubbleDiv = cancelBtn.closest('div[style]');
+          var bubbleDiv = cancelBtn.closest('div');
           if (bubbleDiv) {
-            bubbleDiv.innerHTML = '<span style="color:var(--ui-gray-400);font-size:12px;">导入已取消</span>';
+            bubbleDiv.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">导入已取消</span>';
           }
           _uploadMsgEl = null;
         });
@@ -312,9 +312,10 @@ window.GIS = window.GIS || {};
       var targetRow = _uploadMsgEl;
       if (!targetRow) {
         targetRow = document.createElement('div');
-        targetRow.style.cssText = 'display:flex;justify-content:center;max-width:100%;opacity:0;transition:opacity 0.2s;';
+        targetRow.style.cssText = 'display:flex;justify-content:center;width:100%;padding:4px 0;box-sizing:border-box;opacity:0;transition:opacity 0.2s;';
         var bub = document.createElement('div');
-        bub.style.cssText = 'font-size:12px;color:var(--ui-gray-900);background:var(--message-bg-ai, var(--surface-container-low));padding:8px 14px;border-radius:10px;text-align:left;max-width:90%;';
+        bub.className = 'system-pill';
+        bub.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:3px 12px;line-height:1.4;';
         targetRow.appendChild(bub);
         container.appendChild(targetRow);
         requestAnimationFrame(function() { targetRow.style.opacity = '1'; });
@@ -322,20 +323,24 @@ window.GIS = window.GIS || {};
         _uploadMsgEl = targetRow;
       }
 
-      var contentDiv = targetRow.querySelector('div:last-child');
+      var contentDiv = targetRow.querySelector('.system-pill') || targetRow.querySelector('div:last-child');
       if (!contentDiv) return;
 
       if (status === 'success') {
+        if (window.GIS.toast && typeof window.GIS.toast.success === 'function') {
+          window.GIS.toast.success('上传成功' + (msg ? ': ' + msg : ''));
+        }
         contentDiv.innerHTML =
-          "<span style=\"display:inline-flex;align-items:center;gap:6px;\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-ae6516c4f98b.png')\"></span><span style=\"color:#2e7d32;\">上传成功" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>' +
-          '</span>';
+          "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-ae6516c4f98b.png')\"></span><span style=\"color:#2e7d32;font-weight:500;\">上传成功" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>';
         _uploadStatusTimer = setTimeout(function() {
           if (_uploadMsgEl) { _uploadMsgEl.remove(); _uploadMsgEl = null; }
         }, 3000);
       } else if (status === 'error') {
+        if (window.GIS.toast && typeof window.GIS.toast.error === 'function') {
+          window.GIS.toast.error('上传失败' + (msg ? ': ' + msg : ''));
+        }
         contentDiv.innerHTML =
-          "<span style=\"display:inline-flex;align-items:center;gap:6px;\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-22ff8b401bb5.png')\"></span><span style=\"color:#d32f2f;\">上传失败" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>' +
-          '</span>';
+          "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-22ff8b401bb5.png')\"></span><span style=\"color:#d32f2f;font-weight:500;\">上传失败" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>';
         _uploadStatusTimer = setTimeout(function() {
           if (_uploadMsgEl) { _uploadMsgEl.remove(); _uploadMsgEl = null; }
         }, 5000);

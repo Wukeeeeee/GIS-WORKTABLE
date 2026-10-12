@@ -91,30 +91,123 @@ def _load_city_adcodes():
     return city_map
 
 
-def _find_adcode(name):
+# 常见多地重名区县字典（全国重名区县消歧）
+_AMBIGUOUS_DISTRICTS = {
+    "鼓楼区": [
+        {"label": "江苏省南京市鼓楼区", "city": "南京市", "province": "江苏省", "adcode": 320106, "desc": "江苏省省会核心区"},
+        {"label": "福建省福州市鼓楼区", "city": "福州市", "province": "福建省", "adcode": 350102, "desc": "福建省省会核心区，三坊七巷所在地"},
+        {"label": "江苏省徐州市鼓楼区", "city": "徐州市", "province": "江苏省", "adcode": 320302, "desc": "徐州市主城区"},
+        {"label": "河南省开封市鼓楼区", "city": "开封市", "province": "河南省", "adcode": 410204, "desc": "开封市古城区，大相国寺所在地"},
+    ],
+    "朝阳区": [
+        {"label": "北京市朝阳区", "city": "北京市", "province": "北京市", "adcode": 110105, "desc": "北京市中心城区，CBD / 奥运公园所在地"},
+        {"label": "吉林省长春市朝阳区", "city": "长春市", "province": "吉林省", "adcode": 220104, "desc": "长春市核心主城区，南湖公园所在地"},
+    ],
+    "和平区": [
+        {"label": "天津市和平区", "city": "天津市", "province": "天津市", "adcode": 120101, "desc": "天津市核心中心区，五大道所在地"},
+        {"label": "辽宁省沈阳市和平区", "city": "沈阳市", "province": "辽宁省", "adcode": 210102, "desc": "沈阳市主城区，太原街商圈所在地"},
+    ],
+    "普陀区": [
+        {"label": "上海市普陀区", "city": "上海市", "province": "上海市", "adcode": 310107, "desc": "上海市中心城区，苏州河沿岸"},
+        {"label": "浙江省舟山市普陀区", "city": "舟山市", "province": "浙江省", "adcode": 330903, "desc": "舟山市辖区，普陀山风景名胜区所在地"},
+    ],
+    "西湖区": [
+        {"label": "浙江省杭州市西湖区", "city": "杭州市", "province": "浙江省", "adcode": 330106, "desc": "杭州市主城区，西湖风景名胜区所在地"},
+        {"label": "江西省南昌市西湖区", "city": "南昌市", "province": "江西省", "adcode": 360103, "desc": "南昌市中心城区，滕王阁所在地"},
+    ],
+    "白云区": [
+        {"label": "广东省广州市白云区", "city": "广州市", "province": "广东省", "adcode": 440111, "desc": "广州市辖区，白云山 / 白云机场所在地"},
+        {"label": "贵州省贵阳市白云区", "city": "贵阳市", "province": "贵州省", "adcode": 520113, "desc": "贵阳市辖区，铝工业与大数据发展区"},
+    ],
+    "城关区": [
+        {"label": "甘肃省兰州市城关区", "city": "兰州市", "province": "甘肃省", "adcode": 620102, "desc": "兰州市主城区，甘肃省委省政府所在地"},
+        {"label": "西藏自治区拉萨市城关区", "city": "拉萨市", "province": "西藏自治区", "adcode": 540102, "desc": "拉萨市核心区，布达拉宫 / 大昭寺所在地"},
+    ],
+    "龙华区": [
+        {"label": "广东省深圳市龙华区", "city": "深圳市", "province": "广东省", "adcode": 440309, "desc": "深圳市辖区，深圳北站枢纽所在地"},
+        {"label": "海南省海口市龙华区", "city": "海口市", "province": "海南省", "adcode": 460106, "desc": "海口市核心城区，骑楼老街所在地"},
+    ],
+    "宝山区": [
+        {"label": "上海市宝山区", "city": "上海市", "province": "上海市", "adcode": 310113, "desc": "上海市辖区，吴淞口国际邮轮港所在地"},
+        {"label": "黑龙江省双鸭山市宝山区", "city": "双鸭山市", "province": "黑龙江省", "adcode": 230506, "desc": "双鸭山市辖区"},
+    ],
+    "新华区": [
+        {"label": "河北省石家庄市新华区", "city": "石家庄市", "province": "河北省", "adcode": 130105, "desc": "石家庄市主城区"},
+        {"label": "河北省沧州市新华区", "city": "沧州市", "province": "河北省", "adcode": 130903, "desc": "沧州市主城区"},
+        {"label": "河南省平顶山市新华区", "city": "平顶山市", "province": "河南省", "adcode": 410402, "desc": "平顶山市核心区"},
+    ],
+    "桥西区": [
+        {"label": "河北省石家庄市桥西区", "city": "石家庄市", "province": "河北省", "adcode": 130104, "desc": "石家庄市主城区"},
+        {"label": "河北省张家口市桥西区", "city": "张家口市", "province": "河北省", "adcode": 130703, "desc": "张家口市主城区"},
+    ],
+}
+
+
+def get_ambiguous_candidates(name: str) -> list[dict] | None:
+    """检查输入地名是否存在多地重名。如果已包含地级市名（如“南京鼓楼区”），则不视作歧义"""
+    clean_name = (name or "").strip()
+    if not clean_name:
+        return None
+    target_key = None
+    for k in _AMBIGUOUS_DISTRICTS:
+        if clean_name == k or clean_name == k.rstrip("区"):
+            target_key = k
+            break
+    if not target_key:
+        return None
+    candidates = _AMBIGUOUS_DISTRICTS[target_key]
+    # 检查 clean_name 是否已经明确指定了具体城市或省份
+    for cand in candidates:
+        city_short = cand["city"].rstrip("市")
+        prov_short = cand["province"].rstrip("省").rstrip("市").rstrip("自治区")
+        if (city_short in clean_name or prov_short in clean_name):
+            return None
+    return candidates
+
+
+def _find_adcode(name: str) -> int:
     """
     根据名称查找 adcode，支持省/市/区三级。
-    优先用本地省份字典，找不到则从 DataV 省份 GeoJSON 中提取城市 adcode 并缓存。
+    优先精确匹配消歧全称（如 江苏省南京市鼓楼区），其次省份字典，最后城市/区县字典。
     """
-    # 先在省份字典里查
-    if name in _ADCODES:
-        return _ADCODES[name]
+    clean_name = (name or "").strip()
+    if not clean_name:
+        return 0
+
+    # 1. 优先从消歧列表中精确匹配组合全称（如 "江苏省南京市鼓楼区", "南京市鼓楼区", "南京鼓楼区", "福州鼓楼"）
+    for base_district, candidates in _AMBIGUOUS_DISTRICTS.items():
+        for cand in candidates:
+            label = cand["label"]
+            city = cand["city"]
+            prov = cand["province"]
+            city_short = city.rstrip("市")
+            prov_short = prov.rstrip("省").rstrip("市").rstrip("自治区")
+            base_short = base_district.rstrip("区")
+            if clean_name in (label, f"{city}{base_district}", f"{prov}{city}{base_district}", f"{city_short}{base_district}", f"{city_short}{base_short}"):
+                return cand["adcode"]
+            if (city_short in clean_name or city in clean_name) and (base_district in clean_name or base_short in clean_name):
+                return cand["adcode"]
+
+    # 2. 先在省份字典里查
+    if clean_name in _ADCODES:
+        return _ADCODES[clean_name]
     for suffix in ['省', '市', '区', '县', '自治州', '自治区', '特别行政区']:
-        if name.endswith(suffix):
-            bare = name[:-len(suffix)]
+        if clean_name.endswith(suffix):
+            bare = clean_name[:-len(suffix)]
             for k, v in _ADCODES.items():
                 if bare in k:
                     return v
-    # 不是省份，从城市 adcode 字典查
+
+    # 3. 不是省份，从城市 adcode 字典查
     city_map = _load_city_adcodes()
     if city_map:
-        if name in city_map:
-            return city_map[name]
+        if clean_name in city_map:
+            return city_map[clean_name]
         for sfx in ['市', '区', '县']:
-            if name.endswith(sfx) and name[:-len(sfx)] in city_map:
-                return city_map[name[:-len(sfx)]]
-            if name + sfx in city_map:
-                return city_map[name + sfx]
+            if clean_name.endswith(sfx) and clean_name[:-len(sfx)] in city_map:
+                return city_map[clean_name[:-len(sfx)]]
+            if clean_name + sfx in city_map:
+                return city_map[clean_name + sfx]
     return 0
 
 

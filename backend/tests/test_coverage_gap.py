@@ -213,3 +213,42 @@ class TestCreateChart:
         assert "图表" in r or "生成" in r
 
 
+# ============================================================
+# project_service — extract_clean_title
+# ============================================================
+
+class TestProjectService:
+    def test_extract_clean_title_quoted(self):
+        from backend.services.project_service import extract_clean_title
+        raw = "[用户引用了上一条回复，请围绕其内容理解下面的问题]\n回复内容\n\n[当前问题]\n帮我把湖南各市GDP做成专题图"
+        assert extract_clean_title(raw) == "帮我把湖南各市GDP做成专题图"
+
+    def test_extract_clean_title_attached_layer(self):
+        from backend.services.project_service import extract_clean_title
+        raw = "[附图层: 广东省各市]\n类型: 面\n\nGeoJSON:\n```json\n{}\n```\n\n请分析广东省"
+        assert extract_clean_title(raw) == "请分析广东省"
+
+    def test_extract_clean_title_layer_only(self):
+        from backend.services.project_service import extract_clean_title
+        raw = "[附图层: 广东省各市]\n类型: 面\n\nGeoJSON:\n```json\n{}\n```"
+        assert extract_clean_title(raw) == "广东省各市"
+
+    def test_extract_clean_title_plain(self):
+        from backend.services.project_service import extract_clean_title
+        raw = "普通提问测试"
+        assert extract_clean_title(raw) == "普通提问测试"
+
+    def test_layer_reset_and_isolation(self):
+        from backend.services.tools import _register_layer, _registered_layers, reset_registered_layers
+        _register_layer("old_layer_1", _POINTS)
+        _register_layer("old_layer_2", _SQUARE)
+        assert "old_layer_1" in _registered_layers
+        assert "old_layer_2" in _registered_layers
+
+        # 重置并载入新工程专属图层
+        reset_registered_layers([{"name": "new_proj_layer", "geojson": _POINTS}])
+        assert "old_layer_1" not in _registered_layers
+        assert "old_layer_2" not in _registered_layers
+        assert "new_proj_layer" in _registered_layers
+
+
