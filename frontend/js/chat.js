@@ -1794,9 +1794,13 @@ if (typeof marked !== 'undefined') {
           var imgBox = document.createElement('div');
           imgBox.className = 'chat-file-card-img-box';
           var imgEl = document.createElement('img');
-          // 关键：在设置 src 之前绑定 onerror，破图时隐藏容器
+          // 关键：在设置 src 之前绑定 onerror，破图时彻底移除图片容器，不留破图方框
           imgEl.onerror = function() {
+            imgEl.style.display = 'none';
             imgBox.style.display = 'none';
+            if (imgBox.parentNode) {
+              imgBox.parentNode.removeChild(imgBox);
+            }
           };
           imgEl.src = fullUrl;
           imgEl.alt = fileName;

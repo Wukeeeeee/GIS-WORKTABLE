@@ -13,7 +13,7 @@ os.environ.pop("PROJ_DATA", None)
 os.environ.setdefault("LANGCHAIN_OPENAI_TCP_KEEPALIVE", "0")
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Response, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -82,7 +82,28 @@ app.add_middleware(
 )
 app.add_middleware(GZipMiddleware, minimum_size=10000)  # 10KB 以上自动 gzip 压缩
 
-# 挂载临时输出目录为静态文件（不触发 Live Server 刷新）
+# 动态支持 /output 产物文件访问（支持时间戳前缀自动解析与子目录查找，防止 404）
+@app.get("/output/{filename:path}")
+async def serve_output_file(filename: str):
+    import glob
+    direct_path = os.path.join(_TEMP_OUTPUT_DIR, filename)
+    if os.path.isfile(direct_path):
+        return FileResponse(direct_path)
+    
+    base_name = os.path.basename(filename)
+    matches = glob.glob(os.path.join(_TEMP_OUTPUT_DIR, f"*_{base_name}"))
+    if not matches:
+        for root, _, files in os.walk(_TEMP_OUTPUT_DIR):
+            for f in files:
+                if f == base_name or f.endswith(f"_{base_name}"):
+                    matches.append(os.path.join(root, f))
+    if matches:
+        matches.sort(key=os.path.getmtime, reverse=True)
+        return FileResponse(matches[0])
+    
+    raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
+
+# 挂载临时输出目录为静态文件兜底
 app.mount("/output", StaticFiles(directory=_TEMP_OUTPUT_DIR), name="output")
 
 # ---- 请求体数据结构 ----

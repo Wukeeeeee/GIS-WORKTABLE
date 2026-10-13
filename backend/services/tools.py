@@ -897,7 +897,7 @@ def _ast_sandbox_check(code: str) -> str | None:
 # ============================================================
 
 def _rename_output_files(new_files: set, suffix: str, temp_dir: str) -> list:
-    """为输出目录中新生成的文件加时间戳前缀，避免文件名冲突。"""
+    """为输出目录中新生成的文件加时间戳版本，避免文件名冲突，同时保留原文件名供直连访问。"""
     ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
     renamed = []
     for fname in sorted(new_files):
@@ -907,13 +907,9 @@ def _rename_output_files(new_files: set, suffix: str, temp_dir: str) -> list:
         dest_name = f'{ts}_{fname}'
         dest = os.path.join(temp_dir, dest_name)
         try:
-            os.rename(src, dest)
-        except Exception:
             shutil.copy2(src, dest)
-            try:
-                os.remove(src)
-            except Exception:
-                pass
+        except Exception:
+            pass
         _add_pending_item(f'/output/{dest_name}', dest)
         renamed.append(dest_name)
     return renamed
