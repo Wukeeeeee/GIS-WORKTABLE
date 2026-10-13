@@ -922,7 +922,8 @@ class ProjectRenameRequest(BaseModel):
 @app.post("/api/projects/auto-save")
 async def auto_save_project(session_id: str = "default", project_id: str = None):
     """由前端在对话完成后调用，自动保存当前工程"""
-    result = project_service.auto_save(
+    result = await asyncio.to_thread(
+        project_service.auto_save,
         session_id=session_id,
         project_id=project_id,
     )
@@ -932,12 +933,13 @@ async def auto_save_project(session_id: str = "default", project_id: str = None)
 
 @app.get("/api/projects")
 async def list_projects():
-    projs = project_service.list_projects()
+    projs = await asyncio.to_thread(project_service.list_projects)
     return {"projects": projs}
 
 @app.post("/api/projects")
 async def save_project(req: ProjectSaveRequest):
-    result = project_service.save_project(
+    result = await asyncio.to_thread(
+        project_service.save_project,
         project_id=req.project_id,
         name=req.name or "未命名工程",
         session_id=req.session_id,
@@ -950,33 +952,35 @@ async def save_project(req: ProjectSaveRequest):
 
 @app.get("/api/projects/{project_id}")
 async def load_project(project_id: str):
-    result = project_service.load_project(project_id)
+    # activate_project 内部会做图层注册/边界计算等重活（含锁操作），
+    # 必须挪出事件循环，否则大工程会卡死健康检查/取消等所有请求
+    result = await asyncio.to_thread(project_service.load_project, project_id)
     if result is None:
         raise HTTPException(status_code=404, detail="工程不存在")
     session_id = result.get("sessionId") or f"proj_{project_id}"
-    project_service.activate_project(project_id, session_id=session_id)
+    await asyncio.to_thread(project_service.activate_project, project_id, session_id=session_id)
     return result
 
 @app.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str):
-    project_service.delete_project(project_id)
+    await asyncio.to_thread(project_service.delete_project, project_id)
     return {"success": True}
 
 @app.delete("/api/projects")
 async def delete_all_projects():
-    project_service.delete_all_projects()
+    await asyncio.to_thread(project_service.delete_all_projects)
     return {"success": True}
 
 @app.post("/api/projects/{project_id}/rename")
 async def rename_project(project_id: str, req: ProjectRenameRequest):
-    result = project_service.rename_project(project_id, req.name)
+    result = await asyncio.to_thread(project_service.rename_project, project_id, req.name)
     if result is None:
         raise HTTPException(status_code=404, detail="工程不存在")
     return result
 
 @app.get("/api/projects/{project_id}/export")
 async def export_project(project_id: str):
-    data = project_service.export_project(project_id)
+    data = await asyncio.to_thread(project_service.export_project, project_id)
     if data is None:
         raise HTTPException(status_code=404, detail="工程不存在")
     return StreamingResponse(
@@ -989,7 +993,7 @@ async def export_project(project_id: str):
 async def import_project(file: UploadFile = File(...)):
     content = await file.read()
     try:
-        result = project_service.import_project(content)
+        result = await asyncio.to_thread(project_service.import_project, content)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1100,16 +1104,19 @@ async def solve_network(request: NetworkRequest):
         return {"error": f"网络分析失败: {str(e)[:300]}"}
 
 
-@app.post("/api/layer/export-shp")
-async def export_shp(request: ExportShpRequest):
-    """将 GeoJSON 导出为 Shapefile (zip 包)，包含 .shp .shx .dbf .prj .cpg"""
+def _export_shp_sync(geojson: dict, crs: str, name: str):
+    """同步实现：GeoJSON → Shapefile → zip。返回 (BytesIO, None) 或 (None, 错误信息)。
+
+    geopandas 转换 + zip 打包是纯 CPU/IO 重活，大图层可达数十秒，
+    必须经 asyncio.to_thread 调用，不能占着事件循环。
+    """
     import tempfile, zipfile, shutil
     import geopandas as gpd
 
     try:
-        gdf = gpd.GeoDataFrame.from_features(request.geojson["features"], crs=request.crs)
+        gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs=crs)
         if gdf.empty:
-            return {"error": "没有可导出的要素"}
+            return None, "没有可导出的要素"
 
         # 字段名截断（Shapefile 限制 10 字符）
         rename_map = {}
@@ -1126,7 +1133,7 @@ async def export_shp(request: ExportShpRequest):
 
         # 写入临时目录
         tmp_dir = tempfile.mkdtemp(prefix="shp_export_")
-        shp_base = os.path.join(tmp_dir, request.name)
+        shp_base = os.path.join(tmp_dir, name)
         gdf.to_file(shp_base + ".shp", driver="ESRI Shapefile", encoding="utf-8")
 
         # 打包 zip
@@ -1138,16 +1145,25 @@ async def export_shp(request: ExportShpRequest):
                     zf.write(fpath, fname)
 
         shutil.rmtree(tmp_dir, ignore_errors=True)
-
         zip_buf.seek(0)
-        safe_name = request.name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-        return StreamingResponse(
-            zip_buf,
-            media_type="application/zip",
-            headers={"Content-Disposition": f"attachment; filename={safe_name}.zip"},
-        )
+        return zip_buf, None
     except Exception as e:
-        return {"error": f"SHP 导出失败: {str(e)[:200]}"}
+        return None, f"SHP 导出失败: {str(e)[:200]}"
+
+
+@app.post("/api/layer/export-shp")
+async def export_shp(request: ExportShpRequest):
+    """将 GeoJSON 导出为 Shapefile (zip 包)，包含 .shp .shx .dbf .prj .cpg"""
+    zip_buf, err = await asyncio.to_thread(
+        _export_shp_sync, request.geojson, request.crs, request.name)
+    if err:
+        return {"error": err}
+    safe_name = request.name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+    return StreamingResponse(
+        zip_buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={safe_name}.zip"},
+    )
 
 
 # ============================================================
@@ -1336,9 +1352,12 @@ async def api_geosource_query_sql(request: GeoSourceSQLRequest):
     return await loop.run_in_executor(None, lambda: geosource_service.query_sql(request.query))
 
 
-@app.get("/api/geo/reverse-geocode")
-async def api_reverse_geocode(lng: float = Query(...), lat: float = Query(...)):
-    """秒级逆地理编码：将 (lng, lat) 经纬度快速反解为行政区划地址与地理特征"""
+def _reverse_geocode_sync(lng: float, lat: float) -> dict:
+    """逆地理编码同步实现：高德（国内高精度）→ Nominatim（免费回退）。
+
+    内含同步 requests 网络调用（各 4~5s 超时），必须经由 asyncio.to_thread 调用，
+    不能直接在事件循环上跑，否则每次点图都会卡住健康检查/取消等所有请求。
+    """
     from backend.services.tools import _current_amap_key
     from backend.services.cloud_native import get_effective_proxies
     import requests
@@ -1410,6 +1429,13 @@ async def api_reverse_geocode(lng: float = Query(...), lat: float = Query(...)):
         pass
 
     return result
+
+
+@app.get("/api/geo/reverse-geocode")
+async def api_reverse_geocode(lng: float = Query(...), lat: float = Query(...)):
+    """秒级逆地理编码：将 (lng, lat) 经纬度快速反解为行政区划地址与地理特征"""
+    # 同步网络调用挪出事件循环（见 _reverse_geocode_sync 注释）
+    return await asyncio.to_thread(_reverse_geocode_sync, lng, lat)
 
 
 # ===== 处理历史（前端「历史」面板） =====

@@ -187,7 +187,9 @@ _last_user_message: str = ""        # 本轮用户原始请求（由 graph.py �
 
 # 这些列表会被主模块读取，所以要导出
 # 线程锁，保证 get_pending_state 的"读取+清空"操作原子性
-_state_lock = threading.Lock()
+# RLock（可重入）：reset_registered_layers 持锁状态下会调用 _register_layer（内部再次抢锁），
+# 用非重入 Lock 会同线程自死锁（2026-10-13 E2E 实测：加载工程即挂死整个后端）
+_state_lock = threading.RLock()
 
 def get_pending_state():
     """获取当前所有待发送状态并消费（清空），防止跨请求污染和校验器重复收集"""
@@ -289,6 +291,7 @@ def record_tool_artifact(filename: str, filepath: str, artifact_type: str = "ima
 def reset_state(amap_key: str = "", task_id: str = ""):
     """每次请求开始时调用，清空所有共享状态"""
     global _current_amap_key, _clear_layers_flag, _search_call_count, _exec_call_count, _exec_log, _current_task_id
+    global _last_user_message, _conversation_context, _current_run_id
     # 保证输出目录在本轮任何工具用到之前就已就绪。
     # 此前只有 execute_python / _add_pending_item 等少数入口会初始化它，
     # 如果一轮里最先执行的工具是 spatial_interpolate 这类直接写 _temp_output_dir 的，
@@ -307,6 +310,13 @@ def reset_state(amap_key: str = "", task_id: str = ""):
         _exec_call_count = 0
         _exec_log.clear()
         _current_task_id = task_id or ""
+        # 会话级上下文同样要清：否则上一轮聊天留下的「用户原话/多轮上下文」会被
+        # 手动工具调用（/api/tools/invoke、MCP）继承，导致实体消歧选错地名
+        # （tools.py 内 _last_user_message / _conversation_context 参与城市候选判定）。
+        # 聊天流程在 reset_state() 之后会由 graph.py 重新 set_*，所以清空是安全的。
+        _last_user_message = ""
+        _conversation_context = ""
+        _current_run_id = ""
 
 
 def init_temp_dir():

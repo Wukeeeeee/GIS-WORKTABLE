@@ -54,6 +54,8 @@ uploads/
 _test/
 test/data/
 test/reports/
+# 运行期生成的分析报告（产物，不进仓库）
+reports/
 
 # 开发阶段跟踪（本地，不提交）
 CURRENT
