@@ -180,21 +180,37 @@ window.GIS = window.GIS || {};
         // outline 在部分 GPU 上不可靠；面要素用填充色即可辨识
         if (e.polygon) e.polygon.outline = false;
         // 点要素：Cesium 默认给 GeoJSON Point 生成 Pin 气球图标 (billboard)，将其去除并强制渲染为实心圆点 + 细白边
-        const ptColor = Cesium.Color.fromCssColorString((rec.style && (rec.style.fillColor || rec.style.color)) || '#3498db');
-        const ptSize = Math.max(9, ((rec.style && rec.style.weight) || 2) * 4);
-        if (e.billboard) {
+        const ptColor = Cesium.Color.fromCssColorString((rec.style && (rec.style.fillColor || rec.style.color)) || '#e74c3c');
+        const ptSize = Math.max(10, ((rec.style && rec.style.weight) || 2) * 4);
+        if (e.billboard || (e.position && !e.polygon && !e.polyline && !e.point)) {
           e.billboard = undefined;
           e.point = new Cesium.PointGraphics({
             pixelSize: ptSize,
             color: ptColor.withAlpha(opScale),
             outlineColor: Cesium.Color.WHITE.withAlpha(0.95),
             outlineWidth: 2,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
           });
         } else if (e.point) {
           e.point.pixelSize = ptSize;
           e.point.color = ptColor.withAlpha(opScale);
           e.point.outlineColor = Cesium.Color.WHITE.withAlpha(0.95);
           e.point.outlineWidth = 2;
+          e.point.heightReference = Cesium.HeightReference.CLAMP_TO_GROUND;
+          e.point.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+        }
+        // 文字标注提升防遮挡，并贴地常开深度测试穿透
+        if (e.label) {
+          e.label.heightReference = Cesium.HeightReference.CLAMP_TO_GROUND;
+          e.label.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+          e.label.pixelOffset = new Cesium.Cartesian2(0, -20);
+          e.label.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+          e.label.showBackground = true;
+          e.label.backgroundColor = new Cesium.Color(0.1, 0.1, 0.1, 0.75);
+          e.label.backgroundPadding = new Cesium.Cartesian2(6, 4);
+          e.label.fillColor = Cesium.Color.WHITE;
+          e.label.style = Cesium.LabelStyle.FILL;
         }
       });
       viewer.dataSources.add(ds);
@@ -430,10 +446,12 @@ window.GIS = window.GIS || {};
     if (!document.getElementById('featurePanel')) {
       const panel = document.createElement('div');
       panel.id = 'featurePanel';
-      panel.style.cssText = 'position:absolute;top:52px;right:68px;z-index:500;display:none;' +
-        'width:260px;max-height:55%;overflow:auto;padding:10px 12px;' +
-        'background:rgba(15,18,25,0.88);border:1px solid rgba(255,255,255,0.12);' +
-        'border-radius:0;color:#e8e8e8;font-size:12px;backdrop-filter:blur(6px);';
+      panel.style.cssText = 'position:fixed;top:52px;right:68px;z-index:1200;display:none;' +
+        'width:360px;min-width:280px;max-width:calc(100vw - 24px);max-height:65vh;' +
+        'background:rgba(15,18,25,0.92);border:1px solid rgba(255,255,255,0.15);' +
+        'border-radius:10px;color:#e8e8e8;font-size:12px;backdrop-filter:blur(8px);' +
+        'box-shadow:0 8px 32px rgba(0,0,0,0.35);box-sizing:border-box;' +
+        'flex-direction:column;overflow:hidden;';
       const mapEl = document.getElementById('map');
       if (mapEl && mapEl.parentNode) mapEl.parentNode.insertBefore(panel, mapEl);
     }
@@ -486,38 +504,40 @@ window.GIS = window.GIS || {};
     if (!panel) return;
     const sel = GIS.state.getSelection();
     if (!sel || !sel.props) { panel.style.display = 'none'; return; }
-    let html = '<div id="featurePanelHeader" class="workspace-panel-heading"><strong>' + escapeHtml(String(sel.name)) + '</strong>' +
+    let html = '<div id="featurePanelHeader" class="workspace-panel-heading">' +
+      '<strong style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px;font-size:13px;" title="' + escapeHtml(String(sel.name || '要素属性')) + '">' + escapeHtml(String(sel.name || '要素属性')) + '</strong>' +
       "<button id=\"featurePanelClose\" class=\"workspace-icon-btn\" title=\"关闭要素属性\" aria-label=\"关闭要素属性\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:17px;height:17px;--ui-icon-image:url('/assets/ui-icons/icon-4518b8fcf719.png')\"></span></button></div>";
-    const keys = Object.keys(sel.props).filter(function(k) { return k !== '_fid'; }).slice(0, 12);
+
+    html += '<div class="feature-panel-body" style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:10px 14px;box-sizing:border-box;">';
+    const keys = Object.keys(sel.props).filter(function(k) { return k !== '_fid'; }).slice(0, 30);
     if (keys.length) {
-      html += '<table style="width:100%;border-collapse:collapse;">';
+      html += '<table style="width:100%;table-layout:fixed;border-collapse:collapse;">';
       keys.forEach(function(k) {
-        const v = sel.props[k];
-        html += '<tr><td style="opacity:0.6;padding:2px 4px;">' + escapeHtml(k) +
-          '</td><td style="padding:2px 4px;text-align:right;">' +
-          escapeHtml(v === null || v === undefined ? '' : String(v)) + '</td></tr>';
+        var v = sel.props[k];
+        var valStr = '';
+        if (v === null || v === undefined) {
+          valStr = '-';
+        } else if (typeof v === 'object') {
+          try { valStr = JSON.stringify(v); } catch(e) { valStr = String(v); }
+        } else {
+          valStr = String(v);
+        }
+        html += '<tr style="border-bottom:1px solid rgba(255,255,255,0.06);">' +
+          '<td style="width:36%;opacity:0.65;padding:5px 6px 5px 0;vertical-align:top;word-break:break-all;font-size:12px;">' + escapeHtml(k) + '</td>' +
+          '<td style="width:64%;padding:5px 0 5px 6px;text-align:right;word-break:break-all;overflow-wrap:anywhere;font-size:12px;font-family:var(--font-mono, monospace);">' + escapeHtml(valStr) + '</td>' +
+          '</tr>';
       });
       html += '</table>';
+    } else {
+      html += '<div style="opacity:0.6;padding:12px 0;text-align:center;">暂无要素属性</div>';
     }
-    if (sel.adcode !== null && sel.adcode !== undefined) {
-      html += '<button id="fpDrillBtn" style="margin-top:8px;width:100%;padding:5px 0;' +
-        'background:var(--on-surface);color:var(--surface-container-lowest);border:none;border-radius:6px;cursor:pointer;font-size:12px;">' +
-        '下钻到下一级政区</button>';
-    }
+    html += '</div>';
+
     panel.innerHTML = html;
-    panel.style.display = 'block';
+    panel.style.display = 'flex';
+    panel.style.flexDirection = 'column';
     document.getElementById('featurePanelClose').onclick = function() { panel.style.display = 'none'; };
     if (GIS.workspace) GIS.workspace.preparePanel('featurePanel', 'featurePanelHeader', 'featurePanelClose', '要素属性');
-    const drillBtn = document.getElementById('fpDrillBtn');
-    if (drillBtn) {
-      drillBtn.addEventListener('click', function() {
-        GIS.state.drillDown(sel.adcode, sel.name).catch(function(e) {
-          if (GIS.chat && GIS.chat.addMessage) {
-            GIS.chat.addMessage('下钻失败：' + (e.message || e), 'system');
-          }
-        });
-      });
-    }
   }
 
   function escapeHtml(s) {

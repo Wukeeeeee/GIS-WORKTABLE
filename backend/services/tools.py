@@ -24,6 +24,8 @@ import hashlib
 import ast
 import shutil
 import urllib.request
+import uuid
+from typing import Optional, Dict, Any, List
 
 from langchain.tools import tool
 
@@ -260,6 +262,28 @@ def get_conversation_context() -> str:
 def get_current_task_id() -> str:
     """获取当前任务 ID"""
     return _current_task_id
+
+
+def record_tool_artifact(filename: str, filepath: str, artifact_type: str = "image", step: int = 0) -> Optional[dict]:
+    """统一记录工具生成的产物到 TaskManager (任务台账) 与 StorageService (SQLite事实台账)。"""
+    global _current_task_id, _current_run_id
+    art = None
+    if _current_task_id:
+        try:
+            art = register_artifact(_current_task_id, filename, filepath,
+                                    artifact_type=artifact_type, created_by_step=step)
+        except Exception as e:
+            print(f"[Tools] register_artifact 出错: {e}", flush=True)
+    if _current_run_id:
+        try:
+            from backend.services import storage_service
+            art_id = (art.get("artifact_id") if art else "") or uuid.uuid4().hex[:10]
+            storage_service.register_run_artifact(
+                _current_run_id, art_id, filename, filepath, file_type=artifact_type
+            )
+        except Exception as e:
+            print(f"[Tools] register_run_artifact 出错: {e}", flush=True)
+    return art
 
 
 def reset_state(amap_key: str = "", task_id: str = ""):
@@ -1093,9 +1117,10 @@ _os.makedirs('output', exist_ok=True)
         # 扫描 exec_dir 根目录和 output/ 子目录
         try:
             _dirs_to_scan = [exec_dir]
-            _output_subdir = os.path.join(exec_dir, 'output')
-            if os.path.isdir(_output_subdir):
-                _dirs_to_scan.append(_output_subdir)
+            for _sub in ('output', 'cache', os.path.join('cache', 'charts'), 'reports'):
+                _sd = os.path.join(exec_dir, _sub)
+                if os.path.isdir(_sd):
+                    _dirs_to_scan.append(_sd)
             for _scan_dir in _dirs_to_scan:
                 for fname in os.listdir(_scan_dir):
                     if fname == '_user_code_.py':
@@ -1140,19 +1165,16 @@ _os.makedirs('output', exist_ok=True)
         if not output:
             # 即使无输出，如果有图片也要报告
             if new_images:
-                # Task Manager: 注册图片 Artifact
+                # Task Manager + Storage Service: 注册图片 Artifact
                 _registered_artifacts = []
+                for img_name in new_images:
+                    img_path = os.path.join(_temp_output_dir, img_name)
+                    art = record_tool_artifact(img_name, img_path, artifact_type="image", step=_task_step or 0)
+                    if art:
+                        _registered_artifacts.append(art.get("artifact_id", ""))
                 if _current_task_id:
-                    for img_name in new_images:
-                        img_path = os.path.join(_temp_output_dir, img_name)
-                        try:
-                            art = register_artifact(_current_task_id, img_name, img_path,
-                                                    artifact_type="image", created_by_step=_task_step)
-                            _registered_artifacts.append(art.get("artifact_id", ""))
-                        except Exception:
-                            pass
                     try:
-                        log_execution(_current_task_id, _task_step, code, "",
+                        log_execution(_current_task_id, _task_step or 0, code, "",
                                       "success", stdout=f"生成了 {len(new_images)} 张图片",
                                       output_artifacts=_registered_artifacts)
                     except Exception:
@@ -1209,19 +1231,16 @@ _os.makedirs('output', exist_ok=True)
 
         # 返回执行结果，包含图片信息
         image_info = f'，生成了 {len(new_images)} 张图片' if new_images else ''
-        # Task Manager: 注册图片 Artifact + 记录执行
+        # Task Manager + Storage Service: 注册图片 Artifact + 记录执行
         _registered_artifacts = []
-        if _current_task_id and _task_step:
-            for img_name in new_images:
-                img_path = os.path.join(_temp_output_dir, img_name)
-                try:
-                    art = register_artifact(_current_task_id, img_name, img_path,
-                                            artifact_type="image", created_by_step=_task_step)
-                    _registered_artifacts.append(art.get("artifact_id", ""))
-                except Exception:
-                    pass
+        for img_name in new_images:
+            img_path = os.path.join(_temp_output_dir, img_name)
+            art = record_tool_artifact(img_name, img_path, artifact_type="image", step=_task_step or 0)
+            if art:
+                _registered_artifacts.append(art.get("artifact_id", ""))
+        if _current_task_id:
             try:
-                log_execution(_current_task_id, _task_step, code, "",
+                log_execution(_current_task_id, _task_step or 0, code, "",
                               "success", stdout=output[:2000],
                               output_artifacts=_registered_artifacts)
             except Exception:
@@ -5362,7 +5381,10 @@ animate();
         fpath = os.path.join(output_dir, fname)
         with open(fpath, 'w', encoding='utf-8') as f:
             f.write(html)
+        record_tool_artifact(fname, fpath, artifact_type="html")
         _pending_images.append({
+            "name": fname,
+            "path": fpath,
             "type": "html",
             "url": f"/output/{fname}"
         })
@@ -5523,8 +5545,11 @@ def terrain_profile(layer_name: str, line_coords: str) -> str:
         fpath = os.path.join(output_dir, fname)
         with open(fpath, 'wb') as f:
             f.write(buf.getvalue())
+        record_tool_artifact(fname, fpath, artifact_type="image")
         _pending_images.append({
-            "type": "image",
+            "name": fname,
+            "path": fpath,
+            "type": "png",
             "url": f"/output/{fname}",
             "caption": f"{layer_name} 高程剖面 | 距离 {total_len:.4f}° | 高程 {vmin:.1f}–{vmax:.1f}"
         })
@@ -6893,8 +6918,11 @@ def generate_analysis_report(layer_name: str, analysis_summary: str = "",
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             with _io.open(out_path, "w", encoding="utf-8") as f:
                 f.write(report)
+            record_tool_artifact(fname, out_path, artifact_type="document")
             _pending_images.append({
+                "name": fname,
                 "filename": fname,
+                "path": out_path,
                 "url": f"/output/reports/{fname}",
                 "description": f"分析报告：{name}",
             })
@@ -7219,7 +7247,9 @@ def fetch_weather_data(latitude: float, longitude: float,
             fpath = os.path.join("cache/charts", fname)
             plt.savefig(fpath, dpi=120)
             plt.close()
-            _pending_images.append({"url": f"/cache/charts/{fname}", "type": "png"})
+            abs_fpath = os.path.abspath(fpath)
+            record_tool_artifact(fname, abs_fpath, artifact_type="image")
+            _pending_images.append({"name": fname, "path": abs_fpath, "url": f"/cache/charts/{fname}", "type": "png"})
         except Exception as e:
             pass
 
@@ -7372,7 +7402,9 @@ def fetch_earthquake_data(start_time: str = "", end_time: str = "",
             fpath = os.path.join("cache/charts", fname)
             plt.savefig(fpath, dpi=120)
             plt.close()
-            _pending_images.append({"url": f"/cache/charts/{fname}", "type": "png"})
+            abs_fpath = os.path.abspath(fpath)
+            record_tool_artifact(fname, abs_fpath, artifact_type="image")
+            _pending_images.append({"name": fname, "path": abs_fpath, "url": f"/cache/charts/{fname}", "type": "png"})
         except Exception:
             pass
 
@@ -7935,7 +7967,9 @@ def inspect_satellite_image(
         _combined.close()
         _overlay_img.close()
         _overlay_url = f"/cache/charts/{_fname}"
-        _pending_images.append({"url": _overlay_url, "type": "png"})
+        _abs_fpath = _os.path.abspath(_fpath)
+        record_tool_artifact(_fname, _abs_fpath, artifact_type="image")
+        _pending_images.append({"name": _fname, "path": _abs_fpath, "url": _overlay_url, "type": "png"})
     except Exception as _e:
         pass  # overlay 生成失败不影响主流程
 
@@ -8100,14 +8134,18 @@ def generate_static_map(
 
         out_dir = os.path.join(os.getcwd(), "cache", "charts")
         os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"{output_name}.png")
+        fname = f"{output_name}.png"
+        out_path = os.path.join(out_dir, fname)
         fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor="white")
         plt.close(fig)
 
+        record_tool_artifact(fname, out_path, artifact_type="image")
+
         _pending_images.append({
-            "name": f"{output_name}.png",
+            "name": fname,
             "path": out_path,
-            "type": "static_map",
+            "url": f"/cache/charts/{fname}",
+            "type": "png",
         })
 
         return f"静态地图已生成：{out_path}（{dpi} DPI，含{len(layers_to_draw)}个图层）"

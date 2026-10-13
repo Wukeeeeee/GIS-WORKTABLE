@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" width="240" height="240" fill="none">
+  <!-- GeoSource Mark Icon - GIS WorkTable Unified Design Language -->
+  <defs>
+    <style>
+      :root { color: #1c1b1b; }
+      @media (prefers-color-scheme: dark) {
+        :root { color: #f7f3f2; }
+      }
+      .geosource-stroke { stroke: currentColor; }
+      .geosource-fill { fill: currentColor; }
+    </style>
+  </defs>
+
+  <g class="geosource-mark">
+    <!-- Squircle Border -->
+    <rect x="35" y="35" width="170" height="170" rx="34" ry="34" 
+          class="geosource-stroke" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Calibrated Coordinate Dashed Axes -->
+    <line x1="35" y1="120" x2="72" y2="120" class="geosource-stroke" stroke-width="7" stroke-dasharray="7 6" stroke-linecap="round"/>
+    <line x1="168" y1="120" x2="205" y2="120" class="geosource-stroke" stroke-width="7" stroke-dasharray="7 6" stroke-linecap="round"/>
+    <line x1="120" y1="35" x2="120" y2="72" class="geosource-stroke" stroke-width="7" stroke-dasharray="7 6" stroke-linecap="round"/>
+    <line x1="120" y1="168" x2="120" y2="205" class="geosource-stroke" stroke-width="7" stroke-dasharray="7 6" stroke-linecap="round"/>
+
+    <!-- Globe Sphere (Geo) -->
+    <circle cx="120" cy="120" r="48" class="geosource-stroke" stroke-width="8" fill="none"/>
+
+    <!-- Longitudinal Meridian Ellipse -->
+    <ellipse cx="120" cy="120" rx="22" ry="48" class="geosource-stroke" stroke-width="6.5" fill="none"/>
+
+    <!-- Equator Axis -->
+    <line x1="72" y1="120" x2="168" y2="120" class="geosource-stroke" stroke-width="6" stroke-linecap="round"/>
+
+    <!-- Latitude Parallel Graticules -->
+    <path d="M 83 94 Q 120 106 157 94" class="geosource-stroke" stroke-width="4" stroke-dasharray="4 4" fill="none" stroke-linecap="round"/>
+    <path d="M 83 146 Q 120 134 157 146" class="geosource-stroke" stroke-width="4" stroke-dasharray="4 4" fill="none" stroke-linecap="round"/>
+
+    <!-- Spatial Source Benchmark Node -->
+    <circle cx="120" cy="120" r="12" class="geosource-fill"/>
+
+    <!-- Radiating Data Source Pulse Ring -->
+    <circle cx="120" cy="120" r="26" class="geosource-stroke" stroke-width="4" stroke-dasharray="3.5 4" fill="none" opacity="0.75"/>
+  </g>
+</svg>

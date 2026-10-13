@@ -97,7 +97,7 @@ Python 解释器依次选择 `GIS_PYTHON`、项目 `.venv`、PATH 中的 Python�
 
 - **模型服务**：设置 → AI 模型，填写 Provider、Base URL、模型名和 API Key。配置保存在浏览器 localStorage；调用 AI 时，密钥随请求发送到本地后端，由后端访问所选模型服务。
 - **外部数据源**：按需在连接器中配置账号或密钥；无需为本地手动分析配置所有数据源。
-- **GeoSource**：默认使用 `data/gis_services.db`；也可能优先读取更新时间更晚的同级 `GeoSource/gis_services.db`。可通过环境变量 `GEOSOURCE_DB_PATH` 指定已有数据库文件。目录条目不代表服务始终可用。
+- **GeoSource**：默认使用 `data/gis_services.db`；也可能优先读取更新时间更晚的同级 `GeoSource/gis_services.db`。可通过环境变量 `GEOSOURCE_DB_PATH` 指定已有数据库文件。目录条目不代表服务始终可用。服务目录关联项目与 MCP 集成见 [GeoSource-MCP](https://github.com/Wukeeeeee/GeoSource-MCP.git)。
 - **本地状态**：会话、任务和处理历史位于 `cache/`，生成产物位于 `output/`；清理前请保存需要保留的工程和结果。
 
 ### Windows 脚本与桌面版
@@ -195,4 +195,4 @@ GIS 结果仅供研究和辅助分析，不替代专业判断。软件许可证�
 
 项目采用 [MIT License](LICENSE)。Leaflet、CesiumJS、FastAPI、LangGraph、GeoPandas、Shapely、Rasterio 等依赖及第三方数据仍适用各自许可证和使用条款。
 
-卫星影像巡检的算法思路参考 [GeoHarness](https://github.com/Star-Learning/GeoHarness)；空间服务目录关联项目为 [GeoSource](https://github.com/Wukeeeeee/geosource)。
+卫星影像巡检的算法思路参考 [GeoHarness](https://github.com/Star-Learning/GeoHarness)；空间服务目录关联项目为 [GeoSource-MCP](https://github.com/Wukeeeeee/GeoSource-MCP.git)。

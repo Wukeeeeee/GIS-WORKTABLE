@@ -1600,10 +1600,12 @@ var _undoSkip = false;
       var props = features[idx].properties || {};
       var txt = String(props[cfg.field] || '');
       if (!txt) return;
+      var isPt = leaf && (typeof leaf.getRadius === 'function' || leaf instanceof L.CircleMarker);
       leaf.bindTooltip(txt, {
-        permanent: true, direction: 'center',
+        permanent: true,
+        direction: isPt ? 'top' : 'center',
+        offset: isPt ? [0, -8] : [0, 0],
         className: 'layer-label',
-        offset: [0, 0],
       });
     });
   }

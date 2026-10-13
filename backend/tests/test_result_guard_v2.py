@@ -3,7 +3,7 @@
 
 覆盖：Claim ↔ Registry ↔ Filesystem 的所有组合
 """
-import sys, os, tempfile, shutil
+import sys, os, tempfile, shutil, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backend.services import result_guard as RG
@@ -282,3 +282,46 @@ def test_backward_compat_missing_file_no_task_id():
     res = RG.verify_result(text, {}, task_id=None)
     assert res["ok"] is False
     assert "output/v2_ghost_nonexist.png" in res["missing_paths"]
+
+
+def test_fresh_unregistered_file_auto_heals_with_run_start_time():
+    """如果文件在本次运行窗口内生成，但因工具未打点未登记，传入 run_start_time 时自动补录为 VERIFIED"""
+    task_id = _make_task()
+    fn = "v2_fresh_autoheal.png"
+    start_time = time.time()
+    try:
+        path = _create_file(fn, "fresh-image-data")
+        text = f"已生成 output/{fn}"
+        # 传入 run_start_time
+        res = RG.verify_result(text, {}, task_id=task_id, run_start_time=start_time)
+        assert res["ok"] is True
+        checks = res["artifact_checks"]
+        assert len(checks) == 1
+        assert checks[0]["status"] == RG.ST_VERIFIED
+        assert checks[0]["registered"] is True
+        # 且已成功登记到 task_manager
+        artifacts = task_manager.get_artifacts(task_id)
+        assert any(a["filename"] == fn for a in artifacts)
+    finally:
+        _cleanup_file(fn)
+
+
+def test_three_way_check_with_storage_service_run_id():
+    """支持通过 storage_service 的 run_id 进行三方核验"""
+    from backend.services import storage_service
+    run_id = f"test_run_{int(time.time())}"
+    fn = "v2_sqlite_check.png"
+    try:
+        path = _create_file(fn, "sqlite-image-data")
+        storage_service.record_run_start(run_id, "default", "测试")
+        storage_service.register_run_artifact(run_id, "art_test_1", fn, path, file_type="image")
+        text = f"已生成 output/{fn}"
+        res = RG.verify_result(text, {}, run_id=run_id)
+        assert res["ok"] is True
+        checks = res["artifact_checks"]
+        assert len(checks) == 1
+        assert checks[0]["status"] == RG.ST_VERIFIED
+        assert checks[0]["registered"] is True
+    finally:
+        _cleanup_file(fn)
+

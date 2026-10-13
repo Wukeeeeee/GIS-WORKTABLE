@@ -1657,8 +1657,9 @@ class _NoCacheStaticFiles(StaticFiles):
 
 # ===== cache 静态文件（图表/导出文件，必须在 / 之前挂载）=====
 _cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache")
-if os.path.isdir(_cache_dir):
-    app.mount("/cache", StaticFiles(directory=_cache_dir), name="cache")
+os.makedirs(_cache_dir, exist_ok=True)
+os.makedirs(os.path.join(_cache_dir, "charts"), exist_ok=True)
+app.mount("/cache", StaticFiles(directory=_cache_dir), name="cache")
 
 _frontend_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 app.mount("/", _NoCacheStaticFiles(directory=_frontend_dir, html=True), name="frontend")

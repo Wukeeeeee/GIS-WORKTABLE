@@ -91,6 +91,9 @@
   /* Transitions */
   --transition-fast: 150ms ease;
   --transition-normal: 250ms ease;
+
+  /* Links & Accents */
+  --link-color: #2563eb;
 }
 
 /* ══════════════════════════════════════════
@@ -117,6 +120,29 @@ html, body {
   color: var(--on-surface);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* ========== 超链接与外链通用样式 (含暗色高对比度优化) ========== */
+a {
+  color: var(--link-color, #2563eb);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.15s ease;
+}
+a:hover {
+  color: #1d4ed8;
+}
+html.theme-dark a,
+html.gis-workspace.theme-dark a {
+  color: var(--link-color, #60a5fa);
+}
+html.theme-dark a:hover,
+html.gis-workspace.theme-dark a:hover {
+  color: #93c5fd;
+}
+html.theme-dark a:visited,
+html.gis-workspace.theme-dark a:visited {
+  color: #a78bfa;
 }
 
 /* ========== App Layout ========== */
@@ -2057,6 +2083,219 @@ html.theme-dark .step-running { color:var(--on-surface); }
   line-height: 1.5;
 }
 
+.message-bubble-ai a,
+.message-bubble a,
+.message-bubble-user a,
+.chat-markdown-link {
+  color: var(--link-color, #2563eb);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+.message-bubble-ai a:hover,
+.message-bubble a:hover,
+.message-bubble-user a:hover,
+.chat-markdown-link:hover {
+  color: #1d4ed8;
+}
+
+html.theme-dark .message-bubble-ai a,
+html.theme-dark .message-bubble a,
+html.theme-dark .message-bubble-user a,
+html.theme-dark .chat-markdown-link,
+html.gis-workspace.theme-dark .message-bubble-ai a,
+html.gis-workspace.theme-dark .message-bubble a,
+html.gis-workspace.theme-dark .message-bubble-user a,
+html.gis-workspace.theme-dark .chat-markdown-link {
+  color: #60a5fa !important;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+html.theme-dark .message-bubble-ai a:hover,
+html.theme-dark .message-bubble a:hover,
+html.theme-dark .message-bubble-user a:hover,
+html.theme-dark .chat-markdown-link:hover,
+html.gis-workspace.theme-dark .message-bubble-ai a:hover,
+html.gis-workspace.theme-dark .message-bubble a:hover,
+html.gis-workspace.theme-dark .message-bubble-user a:hover,
+html.gis-workspace.theme-dark .chat-markdown-link:hover {
+  color: #93c5fd !important;
+}
+html.theme-dark .message-bubble-ai a:visited,
+html.theme-dark .chat-markdown-link:visited,
+html.gis-workspace.theme-dark .message-bubble-ai a:visited,
+html.gis-workspace.theme-dark .chat-markdown-link:visited {
+  color: #a78bfa !important;
+}
+
+/* ========== 聊天产物卡片与操作按钮 ========== */
+.chat-file-output-card {
+  border: 1px solid var(--outline-variant);
+  border-radius: 8px;
+  background: var(--surface-container-low);
+  overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin-top: 8px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.chat-file-output-card:hover {
+  border-color: var(--outline, #555);
+}
+
+.chat-file-card-img-box {
+  position: relative;
+  background: var(--surface-container-lowest);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-height: 480px;
+  overflow: hidden;
+}
+
+.chat-file-card-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  background: var(--surface-container, #252525);
+  box-sizing: border-box;
+}
+
+.chat-file-card-name {
+  font-size: 12px;
+  color: var(--on-surface-variant, #aaa);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  font-weight: 500;
+  min-width: 0;
+}
+
+/* 主操作按钮（查看大图 / 打开 / 新标签打开） */
+.chat-file-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  background: #2563eb;
+  color: #ffffff !important;
+  border: 1px solid #1d4ed8;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+  text-decoration: none !important;
+}
+.chat-file-btn-primary:hover {
+  background: #1d4ed8;
+  border-color: #1e40af;
+  color: #ffffff !important;
+}
+
+/* 次操作按钮（下载 / 另存为） */
+.chat-file-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  background: #ffffff;
+  color: #1e293b !important;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+  text-decoration: none !important;
+}
+.chat-file-btn-secondary:hover {
+  background: #f1f5f9;
+  color: #0f172a !important;
+  border-color: #94a3b8;
+}
+
+/* 浮动下载按钮 */
+.chat-img-floating-dl-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #1e293b;
+  opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease;
+  cursor: pointer;
+  padding: 0;
+  z-index: 2;
+}
+.chat-img-floating-dl-btn:hover {
+  background: #ffffff;
+  color: #0f172a;
+}
+
+/* 暗色模式适配 */
+html.theme-dark .chat-file-card-bar,
+html.gis-workspace.theme-dark .chat-file-card-bar {
+  background: var(--surface-container, #252525);
+  border-top-color: var(--outline-variant, #3a3a3a);
+}
+
+html.theme-dark .chat-file-btn-primary,
+html.gis-workspace.theme-dark .chat-file-btn-primary {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  border: 1px solid #3b82f6 !important;
+}
+html.theme-dark .chat-file-btn-primary:hover,
+html.gis-workspace.theme-dark .chat-file-btn-primary:hover {
+  background: #3b82f6 !important;
+  border-color: #60a5fa !important;
+  color: #ffffff !important;
+}
+
+html.theme-dark .chat-file-btn-secondary,
+html.gis-workspace.theme-dark .chat-file-btn-secondary {
+  background: #2d2d2d !important;
+  color: #e2e8f0 !important;
+  border: 1px solid #4a4a4a !important;
+}
+html.theme-dark .chat-file-btn-secondary:hover,
+html.gis-workspace.theme-dark .chat-file-btn-secondary:hover {
+  background: #3a3a3a !important;
+  color: #ffffff !important;
+  border-color: #666666 !important;
+}
+
+html.theme-dark .chat-img-floating-dl-btn,
+html.gis-workspace.theme-dark .chat-img-floating-dl-btn {
+  background: rgba(30, 30, 30, 0.85);
+  border-color: #4a4a4a;
+  color: #e2e8f0;
+}
+html.theme-dark .chat-img-floating-dl-btn:hover,
+html.gis-workspace.theme-dark .chat-img-floating-dl-btn:hover {
+  background: rgba(45, 45, 45, 0.95);
+  color: #ffffff;
+  border-color: #666666;
+}
+
 .message-bubble-ai strong {
   font-weight: 700;
 }
@@ -2816,6 +3055,7 @@ html.theme-dark {
   --ui-gray-900:              #e0e0e0;
   --outline:                  #555555;
   --outline-variant:          #3a3a3a;
+  --link-color:               #60a5fa;
   --shadow-sm:                0 1px 2px rgba(0,0,0,0.3);
   --shadow-md:                0 2px 8px rgba(0,0,0,0.4);
 }
@@ -3861,6 +4101,25 @@ html.theme-dark .attr-locate-btn { color: var(--on-surface-variant); border-colo
 html.theme-dark .attr-locate-btn:hover { color: #ef9a9a; background: #3a1b1b; border-color: #ef5350; }
 html.theme-dark .inspector-data-table tbody tr.feat-row-active { background: #3a2a00 !important; }
 html.theme-dark .inspector-data-table tbody tr.feat-row-active td { background: transparent; }
+
+/* ---- 图层标注样式（半透明徽标，不阻挡鼠标事件） ---- */
+.leaflet-tooltip.layer-label {
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--on-surface, #1c1b1b);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  pointer-events: none;
+}
+html.theme-dark .leaflet-tooltip.layer-label,
+.theme-dark .leaflet-tooltip.layer-label {
+  background: rgba(30, 29, 29, 0.92);
+  color: var(--on-surface, #f7f3f2);
+  border-color: rgba(255, 255, 255, 0.2);
+}
 
 /* ============================================================
    下载格式弹窗
@@ -6023,8 +6282,93 @@ body.gis-mode-3d .map-coords {
 .arcgis-progress-desc {
   font-size: 12px;
   color: var(--on-surface-variant, #444748);
-  line-height: 1.4;
+  line-height: 1.45;
   word-break: break-all;
+}
+
+/* 亮色模式状态文字高对比度映射 */
+.arcgis-progress-container.is-error .arcgis-progress-title { color: #991b1b; }
+.arcgis-progress-container.is-error .arcgis-progress-desc { color: #b91c1c; font-weight: 500; }
+.arcgis-progress-container.is-error .arcgis-progress-percent { color: #dc2626; font-weight: 600; }
+
+.arcgis-progress-container.is-success .arcgis-progress-title { color: #166534; }
+.arcgis-progress-container.is-success .arcgis-progress-desc { color: #15803d; font-weight: 500; }
+.arcgis-progress-container.is-success .arcgis-progress-percent { color: #16a34a; font-weight: 600; }
+
+.arcgis-progress-container.is-loading .arcgis-progress-title { color: #1e3a8a; }
+.arcgis-progress-container.is-loading .arcgis-progress-desc { color: #1d4ed8; }
+.arcgis-progress-container.is-loading .arcgis-progress-percent { color: #2563eb; }
+
+/* 暗色模式完整自适应（彻底解决深色背景下白底刺眼与浅灰文字看不清问题） */
+html.theme-dark .arcgis-progress-container.is-error,
+.theme-dark .arcgis-progress-container.is-error {
+  background: #2d1414 !important;
+  border-color: #7f1d1d !important;
+}
+html.theme-dark .arcgis-progress-container.is-error .arcgis-progress-title,
+.theme-dark .arcgis-progress-container.is-error .arcgis-progress-title {
+  color: #fca5a5 !important;
+}
+html.theme-dark .arcgis-progress-container.is-error .arcgis-progress-desc,
+.theme-dark .arcgis-progress-container.is-error .arcgis-progress-desc {
+  color: #fecaca !important;
+  font-weight: 500 !important;
+}
+html.theme-dark .arcgis-progress-container.is-error .arcgis-progress-percent,
+.theme-dark .arcgis-progress-container.is-error .arcgis-progress-percent {
+  color: #f87171 !important;
+}
+html.theme-dark .arcgis-progress-icon-badge.error,
+.theme-dark .arcgis-progress-icon-badge.error {
+  background: rgba(239, 68, 68, 0.22) !important;
+  color: #f87171 !important;
+}
+
+html.theme-dark .arcgis-progress-container.is-success,
+.theme-dark .arcgis-progress-container.is-success {
+  background: #11261a !important;
+  border-color: #166534 !important;
+}
+html.theme-dark .arcgis-progress-container.is-success .arcgis-progress-title,
+.theme-dark .arcgis-progress-container.is-success .arcgis-progress-title {
+  color: #86efac !important;
+}
+html.theme-dark .arcgis-progress-container.is-success .arcgis-progress-desc,
+.theme-dark .arcgis-progress-container.is-success .arcgis-progress-desc {
+  color: #bbf7d0 !important;
+  font-weight: 500 !important;
+}
+html.theme-dark .arcgis-progress-container.is-success .arcgis-progress-percent,
+.theme-dark .arcgis-progress-container.is-success .arcgis-progress-percent {
+  color: #86efac !important;
+}
+html.theme-dark .arcgis-progress-icon-badge.success,
+.theme-dark .arcgis-progress-icon-badge.success {
+  background: rgba(34, 197, 94, 0.22) !important;
+  color: #4ade80 !important;
+}
+
+html.theme-dark .arcgis-progress-container.is-loading,
+.theme-dark .arcgis-progress-container.is-loading {
+  background: #112035 !important;
+  border-color: #1e40af !important;
+}
+html.theme-dark .arcgis-progress-container.is-loading .arcgis-progress-title,
+.theme-dark .arcgis-progress-container.is-loading .arcgis-progress-title {
+  color: #93c5fd !important;
+}
+html.theme-dark .arcgis-progress-container.is-loading .arcgis-progress-desc,
+.theme-dark .arcgis-progress-container.is-loading .arcgis-progress-desc {
+  color: #bfdbfe !important;
+}
+html.theme-dark .arcgis-progress-container.is-loading .arcgis-progress-percent,
+.theme-dark .arcgis-progress-container.is-loading .arcgis-progress-percent {
+  color: #93c5fd !important;
+}
+html.theme-dark .arcgis-progress-icon-badge.loading,
+.theme-dark .arcgis-progress-icon-badge.loading {
+  background: rgba(59, 130, 246, 0.22) !important;
+  color: #60a5fa !important;
 }
 
 .arcgis-progress-actions {

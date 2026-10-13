@@ -339,11 +339,13 @@
     function resize(width, height) {
       const r = panel.getBoundingClientRect();
       const status = document.querySelector('.workspace-statusbar');
-      const maxWidth = Math.max(160, window.innerWidth-r.left-12);
-      const maxHeight = Math.max(120, (status ? status.getBoundingClientRect().top : window.innerHeight)-r.top-12);
+      const maxWidth = Math.max(200, window.innerWidth-r.left-12);
+      const maxHeight = Math.max(140, (status ? status.getBoundingClientRect().top : window.innerHeight)-r.top-12);
       const isTool = panel.matches('.spatial-panel, .network-panel');
-      panel.style.width = Math.min(maxWidth, Math.max(Math.min(isTool ? 320 : 220,maxWidth),width))+'px';
-      panel.style.height = Math.min(maxHeight, Math.max(Math.min(isTool ? 320 : 160,maxHeight),height))+'px';
+      const minW = isTool ? 320 : 260;
+      const minH = isTool ? 260 : 160;
+      panel.style.setProperty('width', Math.min(maxWidth, Math.max(minW, width)) + 'px', 'important');
+      panel.style.setProperty('height', Math.min(maxHeight, Math.max(minH, height)) + 'px', 'important');
     }
     handle.addEventListener('pointerdown', function(e) {
       if (e.button !== 0) return;
@@ -379,13 +381,14 @@
   }
 
   function makeDraggable(panel, handleEl) {
-    if (!panel || !handleEl || panel._hasDragInit) return;
-    panel._hasDragInit = true;
+    if (!panel || !handleEl) return;
+    if (handleEl._hasDragInit) return;
+    handleEl._hasDragInit = true;
     handleEl.style.cursor = 'move';
     let drag = null;
     handleEl.addEventListener('pointerdown', function(e) {
       if (e.button !== 0) return;
-      if (e.target.closest('button, input, select, textarea, a')) return;
+      if (e.target.closest('button, input, select, textarea, a, .workspace-icon-btn, .workspace-panel-actions')) return;
       e.preventDefault();
       const r = panel.getBoundingClientRect();
       drag = {
@@ -403,12 +406,13 @@
       const dx = e.clientX - drag.startX;
       const dy = e.clientY - drag.startY;
       const pos = clampPanel(panel, drag.startLeft + dx, drag.startTop + dy, panel.offsetWidth);
-      panel.style.position = 'fixed';
-      panel.style.left = pos[0] + 'px';
-      panel.style.top = pos[1] + 'px';
-      panel.style.right = 'auto';
-      panel.style.bottom = 'auto';
-      panel.style.transform = 'none';
+      panel.style.setProperty('position', 'fixed', 'important');
+      panel.style.setProperty('left', pos[0] + 'px', 'important');
+      panel.style.setProperty('top', pos[1] + 'px', 'important');
+      panel.style.setProperty('right', 'auto', 'important');
+      panel.style.setProperty('bottom', 'auto', 'important');
+      panel.style.setProperty('transform', 'none', 'important');
+      panel.style.zIndex = '1200';
     });
     function end(e) {
       if (!drag || drag.id !== e.pointerId) return;

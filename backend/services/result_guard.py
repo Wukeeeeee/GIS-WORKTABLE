@@ -130,7 +130,7 @@ def extract_output_paths(text: str) -> list:
     return found
 
 
-def verify_result(final_text: str = "", pending: dict = None, task_id: str = None) -> dict:
+def verify_result(final_text: str = "", pending: dict = None, task_id: str = None, run_id: str = None, run_start_time: float = None) -> dict:
     """对一轮 Agent 的产物做确定性事实核对。
 
     Args:
@@ -138,6 +138,8 @@ def verify_result(final_text: str = "", pending: dict = None, task_id: str = Non
         pending: get_pending_state() 的结果（layers / images / ...）
         task_id: 当前任务 ID。传入后启用三方核对（Claim ↔ Registry ↔ Filesystem）；
                  不传则只做原"文本声称 vs 磁盘"两核对（向后兼容）。
+        run_id: 当前执行轮次 ID。与 SQLite 事实台账核对。
+        run_start_time: 本轮执行启动时间戳，用于自愈判定是否为本轮新产物。
 
     Returns:
         {
@@ -208,9 +210,9 @@ def verify_result(final_text: str = "", pending: dict = None, task_id: str = Non
             result["issues"].append(f"图层「{name}」没有矢量数据，无法在地图上显示")
 
     # 4) 三方核对：Claim ↔ Registry ↔ Filesystem（v2）
-    #    仅在传入 task_id 时启用；否则保持原两核对行为（向后兼容）
-    if task_id:
-        checks, reg_count = _three_way_check(final_text, task_id)
+    #    传入 task_id 或 run_id 时启用；否则保持原两核对行为（向后兼容）
+    if task_id or run_id:
+        checks, reg_count = _three_way_check(final_text, task_id=task_id, run_id=run_id, run_start_time=run_start_time)
         result["artifact_checks"] = checks
         result["registry_count"] = reg_count
         # 把非 VERIFIED 的三方问题补进 issues
@@ -236,18 +238,33 @@ def verify_result(final_text: str = "", pending: dict = None, task_id: str = Non
     return result
 
 
-def _three_way_check(final_text: str, task_id: str) -> tuple:
+def _three_way_check(final_text: str, task_id: str = None, run_id: str = None, run_start_time: float = None) -> tuple:
     """三方一致性核对：LLM Claim ↔ Artifact Registry ↔ Filesystem。
 
     返回 (checks, registry_count)：
       checks: list[dict]，每个声称产物的状态明细
       registry_count: registry 中登记的产物总数
     """
-    try:
-        from backend.services import task_manager
-        registry = task_manager.get_artifacts(task_id) or []
-    except Exception:
-        registry = []
+    registry = []
+    if task_id:
+        try:
+            from backend.services import task_manager
+            registry.extend(task_manager.get_artifacts(task_id) or [])
+        except Exception:
+            pass
+    if run_id:
+        try:
+            from backend.services import storage_service
+            for art in storage_service.get_run_artifacts(run_id) or []:
+                registry.append({
+                    "artifact_id": art.get("artifact_id"),
+                    "task_id": task_id,
+                    "filename": art.get("filename"),
+                    "path": art.get("rel_path"),
+                    "status": "success" if art.get("exists") else "pending",
+                })
+        except Exception:
+            pass
 
     claimed_paths = extract_output_paths(final_text)
     checks = []
@@ -271,21 +288,55 @@ def _three_way_check(final_text: str, task_id: str) -> tuple:
         matched = None
         registry_path_matches = False
         for art in registry:
-            art_path = art.get("path", "")
-            art_basename = os.path.basename(art_path)
+            art_path = art.get("path") or art.get("rel_path") or ""
+            art_basename = os.path.basename(art_path) if art_path else (art.get("filename") or "")
             if art_basename == claim_basename:
                 matched = art
                 # 路径一致性：规范化后比较
                 if resolved and art_path:
+                    norm_art = os.path.normpath(art_path).replace("\\", "/")
+                    norm_res = os.path.normpath(resolved).replace("\\", "/")
                     registry_path_matches = (
-                        os.path.normpath(art_path) == os.path.normpath(resolved)
+                        norm_art == norm_res
+                        or norm_res.endswith(norm_art)
+                        or norm_art.endswith(norm_res)
                     )
+                else:
+                    registry_path_matches = True
                 break
 
         registered = matched is not None
         artifact_id = matched.get("artifact_id") if matched else None
         art_task_id = matched.get("task_id") if matched else None
-        belongs_to_current_task = (art_task_id == task_id) if matched else False
+        belongs_to_current_task = (art_task_id == task_id) if matched else (matched is not None)
+
+        # 自愈与补录：如果未登记，但文件确实存在于磁盘且非空，且其修改时间在当前执行窗口内（mtime >= run_start_time - 5.0）
+        # 说明该文件是本轮执行真实生成的合法受控产物，非历史残留！自动补录到 registry 并标记为 VERIFIED。
+        if not registered and exists and non_empty and run_start_time and resolved:
+            try:
+                mtime = os.path.getmtime(resolved)
+                if mtime >= (run_start_time - 5.0):
+                    registered = True
+                    registry_path_matches = True
+                    belongs_to_current_task = True
+                    if task_id:
+                        try:
+                            from backend.services import task_manager
+                            art = task_manager.register_artifact(task_id, claim_basename, resolved, artifact_type="image")
+                            if art:
+                                artifact_id = art.get("artifact_id")
+                        except Exception:
+                            pass
+                    if run_id:
+                        try:
+                            import uuid
+                            from backend.services import storage_service
+                            art_id = artifact_id or uuid.uuid4().hex[:10]
+                            storage_service.register_run_artifact(run_id, art_id, claim_basename, resolved)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
 
         # 状态机
         if not registered:
@@ -306,7 +357,7 @@ def _three_way_check(final_text: str, task_id: str) -> tuple:
                 # 检查是否有"registry 里有其他文件但不是这个"
                 # （即 LLM 声称了 a.png，registry 登记了 b.png）
                 if registry and not any(
-                    os.path.basename(a.get("path", "")) == claim_basename
+                    os.path.basename(a.get("path") or a.get("rel_path") or a.get("filename") or "") == claim_basename
                     for a in registry
                 ):
                     status = ST_CLAIM_MISMATCH
@@ -328,16 +379,16 @@ def _three_way_check(final_text: str, task_id: str) -> tuple:
     return checks, len(registry)
 
 
-def apply_guard(final_text: str, pending: dict = None, task_id: str = None, append_note: bool = False):
+def apply_guard(final_text: str, pending: dict = None, task_id: str = None, run_id: str = None, run_start_time: float = None, append_note: bool = False):
     """校验一轮结果。
 
     返回 `(最终文本, 校验详情)`。
     默认 append_note=False，仅进行内部校验与指标记录，不向用户端追加「结果真实性自检」免责说明，
     避免暴露内部断言信息与误导用户。需要时可传 append_note=True。
-    task_id 传入时启用三方核对（Claim ↔ Registry ↔ Filesystem）。
+    task_id 或 run_id 传入时启用三方核对（Claim ↔ Registry ↔ Filesystem）。
     """
     final_text = final_text or ""
-    check = verify_result(final_text, pending, task_id=task_id)
+    check = verify_result(final_text, pending, task_id=task_id, run_id=run_id, run_start_time=run_start_time)
     if append_note:
         note = build_guard_note(check)
         if note:

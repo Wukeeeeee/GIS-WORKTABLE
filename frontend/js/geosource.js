@@ -86,7 +86,7 @@
     if (state === 'loading') {
       badge.innerHTML = '<svg class="arcgis-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg>';
       title.textContent = opts.title || '正在加载中…';
-      title.style.color = 'var(--on-surface, #1c1b1b)';
+      title.style.color = '';
       desc.textContent = opts.desc || '正在请求数据，请稍候…';
 
       var currentPct = typeof opts.initialPct === 'number' ? opts.initialPct : 15;
@@ -113,9 +113,9 @@
       bar.style.width = '100%';
       percent.style.display = 'block';
       percent.textContent = '100%';
-      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
       title.textContent = opts.title || '✓ 导入成功';
-      title.style.color = '#166534';
+      title.style.color = '';
       desc.textContent = opts.desc || '已成功将图层要素加载并渲染至地图工作区！';
 
       var viewBtn = document.createElement('button');
@@ -139,9 +139,9 @@
       bar.style.width = '100%';
       percent.style.display = 'block';
       percent.textContent = '失败';
-      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
       title.textContent = opts.title || '✕ 导入失败';
-      title.style.color = '#991b1b';
+      title.style.color = '';
       desc.textContent = opts.desc || '网络连接或服务解析错误，请查看提示。';
 
       if (typeof opts.retryFn === 'function') {
@@ -157,9 +157,9 @@
       // idle 就绪状态
       bar.style.width = '0%';
       percent.style.display = 'none';
-      badge.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#747878" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
+      badge.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
       title.textContent = opts.title || '准备就绪';
-      title.style.color = 'var(--on-surface, #1c1b1b)';
+      title.style.color = '';
       desc.textContent = opts.desc || '请点击上方目录中的图层或服务进行导入';
     }
   }

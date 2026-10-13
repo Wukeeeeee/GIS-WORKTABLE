@@ -15,7 +15,7 @@ var _linkRenderer = null;
 if (typeof marked !== 'undefined') {
   _linkRenderer = new marked.Renderer();
   _linkRenderer.link = function(token) {
-    return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer">' + token.text + '</a>';
+    return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer" class="chat-markdown-link">' + token.text + '</a>';
   };
 }
 
@@ -1002,10 +1002,16 @@ if (typeof marked !== 'undefined') {
               b.style.cssText =
                 'border-radius:14px;padding:6px 16px;font-size:12px;cursor:pointer;transition:all 0.15s;' +
                 (isConfigured === true
-                  ? 'background:#e3f2fd;color:#1565c0;border:1px solid #90caf9;'
+                  ? (document.documentElement.classList.contains('theme-dark')
+                      ? 'background:rgba(59,130,246,0.18);color:#93c5fd;border:1px solid rgba(59,130,246,0.38);'
+                      : 'background:#e3f2fd;color:#1565c0;border:1px solid #90caf9;')
                   : isConfigured === false
-                    ? 'background:#fafafa;color:#999;border:1px dashed #ddd;'
-                    : 'background:#fff;color:#333;border:1px solid var(--ui-gray-300,#ddd);');
+                    ? (document.documentElement.classList.contains('theme-dark')
+                        ? 'background:var(--surface-container-high);color:var(--on-surface-variant);border:1px dashed var(--outline-variant);'
+                        : 'background:#fafafa;color:#999;border:1px dashed #ddd;')
+                    : (document.documentElement.classList.contains('theme-dark')
+                        ? 'background:var(--surface-container-high);color:var(--on-surface);border:1px solid var(--outline-variant);'
+                        : 'background:#fff;color:#333;border:1px solid var(--ui-gray-300,#ddd);'));
               b.onmouseenter = function() { this.style.transform = 'translateY(-1px)'; this.style.boxShadow = '0 2px 6px rgba(0,0,0,0.1)'; };
               b.onmouseleave = function() { this.style.transform = ''; this.style.boxShadow = ''; };
               b.onclick = function() {
@@ -1032,9 +1038,11 @@ if (typeof marked !== 'undefined') {
               var b = document.createElement('button');
               b.type = 'button';
               b.textContent = label;
-              b.style.cssText =
-                'border:none;border-radius:14px;padding:5px 14px;font-size:12px;cursor:pointer;' +
-                (primary ? 'background:#2f7bf6;color:#fff;' : 'background:transparent;color:var(--ui-gray-500,#666);border:1px solid var(--ui-gray-300,#ddd);');
+              b.className = primary ? 'chat-file-btn-primary' : 'chat-file-btn-secondary';
+              b.style.borderRadius = '14px';
+              b.style.padding = '5px 14px';
+              b.style.fontSize = '12px';
+              b.style.cursor = 'pointer';
               b.onclick = function() {
                 bar.remove();
                 window.GIS.chat.sendMessage(word);
@@ -1051,75 +1059,172 @@ if (typeof marked !== 'undefined') {
         // 如果有 AI 生成的图表图片，追加到最后一条回复下方
         // （下载工具函数 downloadFile 已提升到模块作用域，供图片按钮与文件路径按钮共用）
         if (result.images && result.images.length > 0) {
-          // 如果上一步有返回 msgEl 就用它，否则新建容器
+          const bubble = msgEl ? msgEl.querySelector('.message-bubble') : null;
           const imgContainer = document.createElement('div');
-        result.images.forEach(function(item) {
-          // 兼容新旧格式：item 可能是字符串（旧）或对象（新）
-          const imgUrl = typeof item === 'string' ? item : (item.url || '');
-          const imgType = typeof item === 'string' ? (imgUrl.match(/\.html?$/i) ? 'html' : 'png') : (item.type || 'png');
-          const htmlContent = typeof item === 'string' ? null : (item.content || null);
-          const fileName = imgUrl.split('/').pop() || 'file';
-          const baseUrl = (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || 'http://localhost:8000';
-          const fullUrl = baseUrl + imgUrl;
+          let appendedCount = 0;
 
-          if (imgType === 'html') {
-            const htmlWrap = document.createElement('div');
-            htmlWrap.style.cssText = 'border:1px solid var(--ui-gray-200);border-radius:4px;overflow:hidden;width:100%;';
-            const iframe = document.createElement('iframe');
-            iframe.style.cssText = 'width:100%;height:420px;border:none;display:block;';
-            iframe.title = '交互式地图';
-            // 优先用 srcdoc（内联 HTML，不落磁盘），其次用 src
-            if (htmlContent) {
-              iframe.srcdoc = htmlContent;
-            } else {
-              iframe.src = fullUrl;
+          result.images.forEach(function(item) {
+            // 兼容新旧格式：item 可能是字符串（旧）或对象（新）
+            let imgUrl = typeof item === 'string' ? item : (item.url || '');
+            // 智能容错：如果 item 缺少 url，尝试从 item.path 或 item.name 自动推导可访问 URL
+            if (!imgUrl && item && typeof item === 'object') {
+              if (item.path) {
+                const normPath = item.path.replace(/\\/g, '/');
+                if (normPath.indexOf('cache/') >= 0) {
+                  imgUrl = '/' + normPath.substring(normPath.indexOf('cache/'));
+                } else if (normPath.indexOf('output/') >= 0) {
+                  imgUrl = '/' + normPath.substring(normPath.indexOf('output/'));
+                }
+              } else if (item.name) {
+                imgUrl = '/cache/charts/' + item.name;
+              }
             }
-            htmlWrap.appendChild(iframe);
-            const toolBar = document.createElement('div');
-            toolBar.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;border-top:1px solid var(--ui-gray-200);background:var(--surface-container-low);font-size:12px;';
-            toolBar.innerHTML =
-              '<span style="flex:1;color:var(--ui-gray-400);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + fileName + '</span>' +
-              '<a href="' + fullUrl + '" target="_blank" style="padding:3px 8px;border:1px solid var(--ui-gray-200);border-radius:3px;text-decoration:none;color:var(--ui-gray-900);">新标签打开</a>';
-            // 下载按钮（用 fetch+blob，不会跳转）
-            const dlHtmlBtn = document.createElement('button');
-            dlHtmlBtn.textContent = '下载';
-            dlHtmlBtn.style.cssText = 'padding:3px 8px;background:var(--ui-gray-900);color:var(--ui-white);border:none;border-radius:3px;cursor:pointer;font-size:12px;';
-            dlHtmlBtn.addEventListener('click', function() { downloadFile(fullUrl, fileName); });
-            toolBar.appendChild(dlHtmlBtn);
-            htmlWrap.appendChild(toolBar);
-            imgContainer.appendChild(htmlWrap);
-          } else {
-            // 图片文件：自适应消息气泡宽度，不截断、不缩成小窄条
-            const wrapper = document.createElement('div');
-            wrapper.style.cssText = 'position:relative;display:block;width:100%;max-width:100%;box-sizing:border-box;margin-top:8px;border-radius:6px;overflow:hidden;border:1px solid var(--outline-variant);background:var(--surface-container-lowest);';
-            const img = document.createElement('img');
-            img.src = fullUrl;
-            img.style.cssText = 'width:100%;max-width:100%;height:auto;max-height:520px;object-fit:contain;cursor:pointer;display:block;margin:0 auto;';
-            img.title = '点击放大查看高清图';
-            img.addEventListener('click', function() { window.open(fullUrl); });
-            wrapper.appendChild(img);
-            // 下载按钮（右上角悬浮，用 fetch+blob）
-            const dlImgBtn = document.createElement('button');
-            dlImgBtn.title = '下载图片';
-            dlImgBtn.innerHTML =
-              "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9a58c1268267.png')\"></span>";
-            dlImgBtn.style.cssText = 'position:absolute;top:4px;right:4px;width:28px;height:28px;background:rgba(255,255,255,0.9);border:1px solid var(--ui-gray-200);border-radius:4px;display:flex;align-items:center;justify-content:center;color:var(--ui-gray-900);opacity:0;transition:opacity 0.15s;cursor:pointer;padding:0;';
-            dlImgBtn.addEventListener('click', function(e) { e.stopPropagation(); downloadFile(fullUrl, fileName); });
-            wrapper.addEventListener('mouseenter', function() { dlImgBtn.style.opacity = '1'; });
-            wrapper.addEventListener('mouseleave', function() { dlImgBtn.style.opacity = '0'; });
-            wrapper.appendChild(dlImgBtn);
-            imgContainer.appendChild(wrapper);
+            if (imgUrl && imgUrl.indexOf('/') !== 0 && !imgUrl.startsWith('http')) {
+              imgUrl = '/' + imgUrl;
+            }
+            if (!imgUrl) {
+              console.warn('[GIS Chat] 无法推导图片 URL，跳过渲染:', item);
+              return;
+            }
+
+            const imgType = typeof item === 'string' ? (imgUrl.match(/\.html?$/i) ? 'html' : 'png') : (item.type || 'png');
+            const htmlContent = typeof item === 'string' ? null : (item.content || null);
+            const fileName = (item && item.name) || imgUrl.split('/').pop() || 'file';
+            const baseUrl = (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || 'http://localhost:8000';
+            const fullUrl = imgUrl.startsWith('http') ? imgUrl : (baseUrl + imgUrl);
+
+            // 【防重机制】：如果气泡内已经存在该产物卡片或同名图片，不重复创建
+            if (bubble) {
+              const existingItems = bubble.querySelectorAll('.chat-file-output-card, img, a');
+              let alreadyInBubble = false;
+              const bareName = fileName.replace(/^\d{14}_/, '');
+              existingItems.forEach(function(el) {
+                const s = el.src || el.href || (el.querySelector && el.querySelector('img') ? el.querySelector('img').src : '') || '';
+                const t = el.textContent || '';
+                if (s && (s.indexOf(fileName) >= 0 || s.indexOf(encodeURIComponent(fileName)) >= 0 || (bareName && s.indexOf(bareName) >= 0))) {
+                  alreadyInBubble = true;
+                }
+                if (t && (t.indexOf(fileName) >= 0 || (bareName && t.indexOf(bareName) >= 0))) {
+                  alreadyInBubble = true;
+                }
+              });
+              if (alreadyInBubble) {
+                return;
+              }
+            }
+
+            if (imgType === 'html') {
+              const htmlWrap = document.createElement('div');
+              htmlWrap.className = 'chat-file-output-card';
+              htmlWrap.style.cssText = 'overflow:hidden;width:100%;';
+              const iframe = document.createElement('iframe');
+              iframe.style.cssText = 'width:100%;height:420px;border:none;display:block;';
+              iframe.title = '交互式地图';
+              // 优先用 srcdoc（内联 HTML，不落磁盘），其次用 src
+              if (htmlContent) {
+                iframe.srcdoc = htmlContent;
+              } else {
+                iframe.src = fullUrl;
+              }
+              htmlWrap.appendChild(iframe);
+
+              const toolBar = document.createElement('div');
+              toolBar.className = 'chat-file-card-bar';
+              toolBar.style.borderTop = '1px solid var(--outline-variant)';
+
+              const nameSpan = document.createElement('span');
+              nameSpan.className = 'chat-file-card-name';
+              nameSpan.textContent = fileName;
+
+              const openLink = document.createElement('a');
+              openLink.className = 'chat-file-btn-primary';
+              openLink.href = fullUrl;
+              openLink.target = '_blank';
+              openLink.rel = 'noopener noreferrer';
+              openLink.textContent = '新标签打开';
+
+              const dlHtmlBtn = document.createElement('button');
+              dlHtmlBtn.className = 'chat-file-btn-secondary';
+              dlHtmlBtn.type = 'button';
+              dlHtmlBtn.textContent = '下载';
+              dlHtmlBtn.addEventListener('click', function() { downloadFile(fullUrl, fileName); });
+
+              toolBar.appendChild(nameSpan);
+              toolBar.appendChild(openLink);
+              toolBar.appendChild(dlHtmlBtn);
+              htmlWrap.appendChild(toolBar);
+              imgContainer.appendChild(htmlWrap);
+              appendedCount++;
+            } else {
+              // 图片文件：采用统一的 chat-file-output-card 风格
+              const wrapper = document.createElement('div');
+              wrapper.className = 'chat-file-output-card';
+              wrapper.style.cssText = 'position:relative;display:block;width:100%;max-width:100%;box-sizing:border-box;margin-top:8px;overflow:hidden;';
+
+              const img = document.createElement('img');
+              // 关键：在设置 src 之前绑定 onerror，破图时直接从 DOM 移除整块 wrapper，杜绝浏览器自带破图方框
+              img.onerror = function() {
+                if (wrapper.parentNode) wrapper.parentNode.removeChild(wrapper);
+              };
+              img.src = fullUrl;
+              img.alt = fileName;
+              img.style.cssText = 'width:100%;max-width:100%;height:auto;max-height:520px;object-fit:contain;cursor:pointer;display:block;margin:0 auto;';
+              img.title = '在新标签页查看高清原图';
+              img.addEventListener('click', function() { window.open(fullUrl, '_blank'); });
+              wrapper.appendChild(img);
+
+              // 底部工具条，使用统一的高对比度按钮样式
+              const bar = document.createElement('div');
+              bar.className = 'chat-file-card-bar';
+              bar.style.borderTop = '1px solid var(--outline-variant)';
+
+              const nameSpan = document.createElement('span');
+              nameSpan.className = 'chat-file-card-name';
+              nameSpan.textContent = fileName;
+
+              const openBtn = document.createElement('button');
+              openBtn.className = 'chat-file-btn-primary';
+              openBtn.type = 'button';
+              openBtn.textContent = '查看大图';
+              openBtn.addEventListener('click', function() { window.open(fullUrl, '_blank'); });
+
+              const dlBtn = document.createElement('button');
+              dlBtn.className = 'chat-file-btn-secondary';
+              dlBtn.type = 'button';
+              dlBtn.textContent = '下载';
+              dlBtn.addEventListener('click', function() { downloadFile(fullUrl, fileName); });
+
+              bar.appendChild(nameSpan);
+              bar.appendChild(openBtn);
+              bar.appendChild(dlBtn);
+              wrapper.appendChild(bar);
+
+              // 悬浮右上角快捷下载按钮
+              const dlImgBtn = document.createElement('button');
+              dlImgBtn.className = 'chat-img-floating-dl-btn';
+              dlImgBtn.type = 'button';
+              dlImgBtn.title = '下载图片';
+              dlImgBtn.innerHTML =
+                '<span class="ui-icon" aria-hidden="true" style="width:14px;height:14px;--ui-icon-image:url(\'/assets/ui-icons/icon-9a58c1268267.png\')"></span>';
+              dlImgBtn.addEventListener('click', function(e) { e.stopPropagation(); downloadFile(fullUrl, fileName); });
+              wrapper.addEventListener('mouseenter', function() { dlImgBtn.style.opacity = '1'; });
+              wrapper.addEventListener('mouseleave', function() { dlImgBtn.style.opacity = '0'; });
+              wrapper.appendChild(dlImgBtn);
+
+              imgContainer.appendChild(wrapper);
+              appendedCount++;
+            }
+          });
+
+          // 如果成功追加了非重复产物，挂载到容器中
+          if (appendedCount > 0) {
+            if (bubble) {
+              bubble.appendChild(imgContainer);
+            } else {
+              document.getElementById('chatMessages').appendChild(imgContainer);
+            }
           }
-        });
-        // 如果 msgEl 存在，追加到它的气泡里
-        if (msgEl) {
-          const bubble = msgEl.querySelector('.message-bubble');
-          if (bubble) bubble.appendChild(imgContainer);
-        } else {
-          // 否则单独插到聊天容器
-          document.getElementById('chatMessages').appendChild(imgContainer);
         }
-      }
 
       // 如果 AI 清空了图层，同步清空前端地图和面板
       if (result.clear_layers) {
@@ -1681,20 +1786,19 @@ if (typeof marked !== 'undefined') {
 
         var card = document.createElement('div');
         card.className = 'chat-file-output-card';
-        card.style.cssText = 'border:1px solid var(--outline-variant);border-radius:6px;background:var(--surface-container-low);overflow:hidden;width:100%;max-width:100%;box-sizing:border-box;margin-top:6px;';
 
         if (isImg) {
           var imgBox = document.createElement('div');
-          imgBox.style.cssText = 'position:relative;background:var(--surface-container-lowest);cursor:pointer;display:flex;align-items:center;justify-content:center;max-height:480px;overflow:hidden;';
+          imgBox.className = 'chat-file-card-img-box';
           var imgEl = document.createElement('img');
+          // 关键：在设置 src 之前绑定 onerror，破图时隐藏容器
+          imgEl.onerror = function() {
+            imgBox.style.display = 'none';
+          };
           imgEl.src = fullUrl;
           imgEl.alt = fileName;
           imgEl.style.cssText = 'display:block;width:100%;max-width:100%;height:auto;max-height:480px;object-fit:contain;transition:transform 0.2s;';
           imgEl.title = '在新标签页查看高清原图';
-          imgEl.onerror = function() {
-            // 加载失败（如文件缺失）时隐藏图片框，避免丑陋的破图图标
-            imgBox.style.display = 'none';
-          };
           imgEl.addEventListener('mouseenter', function() { imgEl.style.transform = 'scale(1.01)'; });
           imgEl.addEventListener('mouseleave', function() { imgEl.style.transform = 'scale(1)'; });
           imgEl.addEventListener('click', (function(url) { return function() { window.open(url, '_blank'); }; })(fullUrl));
@@ -1703,18 +1807,26 @@ if (typeof marked !== 'undefined') {
         }
 
         var btnRow = document.createElement('div');
-        btnRow.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12px;' + (isImg && !alreadyRendered ? 'border-top:1px solid var(--outline-variant);' : '');
+        btnRow.className = 'chat-file-card-bar';
+        if (isImg && !alreadyRendered) {
+          btnRow.style.borderTop = '1px solid var(--outline-variant)';
+        }
         var nameSpan = document.createElement('span');
-        nameSpan.style.cssText = 'font-size:12px;color:var(--on-surface-variant);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-weight:500;';
+        nameSpan.className = 'chat-file-card-name';
         nameSpan.textContent = fileName;
+
         var openBtn = document.createElement('button');
+        openBtn.className = 'chat-file-btn-primary';
+        openBtn.type = 'button';
         openBtn.textContent = isImg ? '查看大图' : '打开';
-        openBtn.style.cssText = 'padding:3px 10px;background:var(--accent,#6366f1);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;flex-shrink:0;';
         openBtn.addEventListener('click', (function(url) { return function() { window.open(url, '_blank'); }; })(fullUrl));
+
         var dlBtn = document.createElement('button');
+        dlBtn.className = 'chat-file-btn-secondary';
+        dlBtn.type = 'button';
         dlBtn.textContent = '下载';
-        dlBtn.style.cssText = 'padding:3px 10px;background:var(--ui-gray-900);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:12px;flex-shrink:0;';
         dlBtn.addEventListener('click', (function(url, name) { return function() { downloadFile(url, name); }; })(fullUrl, fileName));
+
         btnRow.appendChild(nameSpan);
         btnRow.appendChild(openBtn);
         btnRow.appendChild(dlBtn);

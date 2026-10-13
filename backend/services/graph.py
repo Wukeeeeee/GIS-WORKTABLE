@@ -150,11 +150,17 @@ def _clean_ai_text(text: str) -> str:
     if not text:
         return text
     cleaned = text
-    # 移除 GLM DSML 格式的工具调用：<｜｜DSML｜｜tool_calls>...</｜｜DSML｜｜tool_calls>
-    cleaned = re.sub(r'<｜｜DSML｜｜tool_calls>.*?</｜｜DSML｜｜tool_calls>', '', cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r'<\|DSML\|tool_calls>.*?</\|DSML\|tool_calls>', '', cleaned, flags=re.DOTALL)
+    # 移除各类变体 DSML 格式工具调用标记：
+    # 如 <｜｜DSML｜｜tool_calls>...</｜｜DSML｜｜tool_calls>
+    # 或 < | | DSML | | calls> ... < / | | DSML | | calls>
+    # 以及 < | | DSML | | invoke name="..."> ... </ | | DSML | | invoke>
+    cleaned = re.sub(r'<[\s\S]*?DSML[\s\S]*?>[\s\S]*?</[\s\S]*?DSML[\s\S]*?>', '', cleaned)
+    cleaned = re.sub(r'<[|\s｜]*DSML[|\s｜]*(?:calls|tool_calls|invoke)[^>]*>[\s\S]*?</[|\s｜]*DSML[|\s｜]*(?:calls|tool_calls|invoke)>', '', cleaned)
+    # 单独闭合或未闭合的残余 DSML 标签清理
+    cleaned = re.sub(r'</?[|\s｜]*DSML[|\s｜]*[^>]*>', '', cleaned)
     # 移除常见的工具调用标记
     cleaned = re.sub(r'<tool_call>.*?</tool_call>', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'</?tool_call>', '', cleaned)
     cleaned = re.sub(r'```tool_call.*?```', '', cleaned, flags=re.DOTALL)
     # 移除残留的空行（最多保留一个空行）
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
@@ -177,27 +183,30 @@ def _tool_not_callable(e: Exception) -> bool:
 
 
 _PROMISE_PREFIXES = (
-    "好的", "好", "行", "可以", "没问题", "稍等", "马上",
+    "好的", "好", "行", "可以", "没问题", "稍等", "请稍等", "马上",
     "我这就", "我现在", "我先", "让我", "我来", "这就去",
-    "现在开始", "好嘞",
+    "现在开始", "好嘞", "我先确认", "我来确认", "正在查询", "正在查找",
 )
 _PROMISE_VERBS = re.compile(
-    r"(获取|下载|加载|搜索|查找|抓取|截取|提取|分析|计算|生成|绘制|采集|整理|统计|构建|创建|调用|做一下|找一下)"
+    r"(获取|下载|加载|搜索|查找|抓取|截取|提取|分析|计算|生成|绘制|采集|整理|统计|构建|创建|调用|做一下|找一下|确认|查询|核对|测量|测算)"
 )
 
 
 def _looks_like_incomplete_promise(text) -> bool:
     """识别「AI 说开始做但实际没做」的结尾：以应允/开场白开头、带动作词、且文本很短。
 
-    这类结尾典型形态：“好的，我现在开始获取法国边界数据”。若本轮没执行任何工具，
-    说明它只承诺未交付（常见于低价模型只叙事不调工具）。
+    这类结尾典型形态：“好的，我现在开始获取法国边界数据”、“我先确认一下这个图层的存在...请稍等，我来调用工具”。若本轮没执行任何工具，
+    说明它只承诺未交付（常见于部分模型只叙事不调工具）。
     """
     if not text:
         return False
     t = (text or "").strip()
     if len(t) > 600:
         return False
-    if not t.startswith(_PROMISE_PREFIXES):
+    # 只要命中口头承接前缀或者文本中明显包含"请稍等/我来调用工具/正在查询"
+    has_prefix = t.startswith(_PROMISE_PREFIXES)
+    has_monologue = bool(re.search(r"(请稍等.*调用工具|正在查询|我来调用工具|确认一下.*再计算)", t))
+    if not (has_prefix or has_monologue):
         return False
     return bool(_PROMISE_VERBS.search(t))
 
@@ -341,7 +350,7 @@ def run_agent(
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
         _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
-        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方']
+        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线']
         _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
         if _need_tools or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
             _simple = False
@@ -518,7 +527,9 @@ def run_agent(
 
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
     # 仅在后台自检并记录日志，默认不向用户端追加内部检查说明（避免误报和干扰用户）
-    final_text, _guard = result_guard.apply_guard(final_text, pending, task_id=_task_id, append_note=False)
+    final_text, _guard = result_guard.apply_guard(
+        final_text, pending, task_id=_task_id, run_id=_run_id, run_start_time=_run_started_at, append_note=False
+    )
     if not _guard["ok"]:
         print(f"[GIS] 结果真实性自检未通过: {_guard['issues'][:3]}", flush=True)
 
@@ -546,6 +557,7 @@ def run_agent(
         "pending_suggestions": (pending["aoi_suggestions"] or {}).get("suggestions"),
         "result_check": _guard,
         "task_id": _task_id,
+        "run_id": _run_id,
     }
 
 
@@ -612,7 +624,7 @@ def run_agent_stream(
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
         _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
-        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方']
+        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线']
         _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
         if _need_tools or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
             _simple = False
@@ -783,7 +795,9 @@ def run_agent_stream(
 
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
     # 仅在后台自检并记录日志，默认不向用户端追加内部检查说明（避免误报和干扰用户）
-    final_text, _guard = result_guard.apply_guard(final_text, pending, task_id=_task_id, append_note=False)
+    final_text, _guard = result_guard.apply_guard(
+        final_text, pending, task_id=_task_id, run_id=_run_id, run_start_time=_run_started_at, append_note=False
+    )
     if not _guard["ok"]:
         print(f"[GIS] 流式结果真实性自检未通过: {_guard['issues'][:3]}", flush=True)
 
