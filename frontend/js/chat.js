@@ -957,7 +957,10 @@ if (typeof marked !== 'undefined') {
         return;
       }
       removePendingActionBars();   // 新一轮结果出来，清掉旧按钮
-      const msgEl = addMessage(result.response || '(空响应)', 'ai', { mode: result.mode || 'full' });
+      const msgEl = addMessage(result.response || '(空响应)', 'ai', {
+        mode: result.mode || 'full',
+        tokenUsage: result.token_usage || null,
+      });
 
       // 折叠「思考过程」块：reasoning 开启时后端在 done 事件带 reasoning（不进正文）
       if (result.reasoning && msgEl) {
@@ -1967,6 +1970,23 @@ if (typeof marked !== 'undefined') {
       codeBlock.className = 'message-code-block';
       codeBlock.textContent = options.code;
       bubble.appendChild(codeBlock);
+    }
+
+    // AI 消息：展示 Token 计量角标（带 tooltip）
+    if (type === 'ai' && !options.noMarkdown && options.tokenUsage) {
+      const u = options.tokenUsage;
+      const isEst = u.type === 'estimate';
+      const badge = document.createElement('div');
+      badge.className = 'token-usage-badge' + (isEst ? ' estimate' : '');
+      const inStr = u.input_tokens >= 1000 ? (u.input_tokens / 1000).toFixed(1) + 'k' : u.input_tokens;
+      const outStr = u.output_tokens >= 1000 ? (u.output_tokens / 1000).toFixed(1) + 'k' : u.output_tokens;
+      badge.textContent = (isEst ? '≈' : '⚡') + ' ↑' + inStr + ' ↓' + outStr + ' tok';
+      badge.title = (isEst ? '【估算 Token (字符÷3.0)】' : '【真实 API Token】') +
+        '\n• 输入 (Prompt): ' + u.input_tokens + ' tok' +
+        '\n• 输出 (Completion): ' + u.output_tokens + ' tok' +
+        '\n• 绑定工具: ' + (u.tool_count || 0) + ' 个 (Schema ' + (u.schema_chars || 0) + ' 字符)' +
+        '\n• 来源: ' + (isEst ? '模型未回传 usage，本地校准估算' : '接口官方回传 usage_metadata');
+      bubble.appendChild(badge);
     }
 
     // AI 消息右下角引用按钮（复制按钮左侧，跳过加载气泡）

@@ -2,12 +2,8 @@
   <!-- GeoSource Vector Logo - GIS WorkTable Unified Design Language -->
   <defs>
     <style>
-      :root { color: #1c1b1b; }
-      @media (prefers-color-scheme: dark) {
-        :root { color: #f7f3f2; }
-      }
-      .geosource-stroke { stroke: currentColor; }
-      .geosource-fill { fill: currentColor; }
+      .geosource-stroke { stroke: #1c1b1b; }
+      .geosource-fill { fill: #1c1b1b; }
     </style>
   </defs>
 

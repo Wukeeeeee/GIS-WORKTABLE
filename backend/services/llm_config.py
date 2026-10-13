@@ -252,6 +252,7 @@ def build_llm(cfg: LLMConfig) -> ChatOpenAI:
         "model": cfg.model,
         "api_key": cfg.api_key,
         "base_url": cfg.base_url,
+        "stream_usage": True,
         "http_client": httpx.Client(proxy=proxy, trust_env=False),
         "http_async_client": httpx.AsyncClient(proxy=proxy, trust_env=False),
     }

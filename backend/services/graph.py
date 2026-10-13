@@ -58,6 +58,8 @@ from backend.services import result_guard
 import backend.services.tools as _tools_mod
 import backend.services.ai_service as _ai_svc
 from backend.services import task_manager
+from backend.services.token_usage_service import extract_and_record_token_usage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 
 # ============================================================
@@ -546,6 +548,18 @@ def run_agent(
     except Exception:
         pass
 
+    # === Token 计量基建：提取与持久化 ===
+    _dur_ms = int((time.time() - _run_started_at) * 1000)
+    _schema_chars = len(json.dumps([convert_to_openai_tool(t) for t in tools], ensure_ascii=False))
+    _token_usage = extract_and_record_token_usage(
+        messages=final_messages,
+        model_name=cfg.model,
+        task_id=_task_id,
+        tool_count=len(tools),
+        schema_chars=_schema_chars,
+        duration_ms=_dur_ms,
+    )
+
     return {
         "response": final_text,
         "reasoning": final_reasoning,
@@ -558,6 +572,7 @@ def run_agent(
         "result_check": _guard,
         "task_id": _task_id,
         "run_id": _run_id,
+        "token_usage": _token_usage,
     }
 
 
@@ -813,6 +828,18 @@ def run_agent_stream(
     except Exception:
         pass
 
+    # === Token 计量基建：提取与持久化 ===
+    _dur_ms = int((time.time() - _run_started_at) * 1000)
+    _schema_chars = len(json.dumps([convert_to_openai_tool(t) for t in tools], ensure_ascii=False))
+    _token_usage = extract_and_record_token_usage(
+        messages=final_messages,
+        model_name=cfg.model,
+        task_id=_task_id,
+        tool_count=len(tools),
+        schema_chars=_schema_chars,
+        duration_ms=_dur_ms,
+    )
+
     result = {
         "response": final_text,
         "reasoning": final_reasoning,
@@ -830,5 +857,6 @@ def run_agent_stream(
         "task_id": _task_id,
         "run_id": _run_id,
         "mode": "full",
+        "token_usage": _token_usage,
     }
     yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"

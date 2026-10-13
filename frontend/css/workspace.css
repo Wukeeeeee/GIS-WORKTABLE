@@ -124,10 +124,13 @@ html.gis-workspace #featurePanel {
   min-width: 280px !important;
   max-width: calc(100vw - 24px) !important;
   max-height: 65vh !important;
-  display: flex !important;
   flex-direction: column !important;
   overflow: hidden !important;
   position: fixed !important;
+}
+html.gis-workspace #featurePanel[hidden],
+html.gis-workspace #featurePanel.is-hidden {
+  display: none !important;
 }
 html.gis-workspace #featurePanel .feature-panel-body,
 html.gis-workspace #featurePanel > :not(.workspace-panel-heading):not(.workspace-window-resize) {

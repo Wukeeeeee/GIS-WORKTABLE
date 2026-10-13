@@ -1864,6 +1864,27 @@ window.GIS = window.GIS || {};
 
   /** 获取色带颜色数组 */
   function _getColorScheme(name, count) {
+    name = (name || '').toLowerCase().trim();
+    if (name === 'ylorrd' || name === 'yellow_orange_red' || name === 'warm' || name === '黄橙红' || name === '黄到橙到红' || name === '暖色' || name.indexOf('黄') >= 0) {
+      name = 'ylorrd';
+    } else if (name === 'ylgnbu' || name === '黄绿蓝') {
+      name = 'ylgnbu';
+    } else if (name === 'spectral' || name === '彩虹' || name === '光谱') {
+      name = 'spectral';
+    } else if (name === 'viridis' || name === '翠绿') {
+      name = 'viridis';
+    } else if (name === 'blue' || name === '蓝' || name === '蓝色') {
+      name = 'blues';
+    } else if (name === 'red' || name === '红' || name === '红色') {
+      name = 'reds';
+    } else if (name === 'green' || name === '绿' || name === '绿色') {
+      name = 'greens';
+    } else if (name === 'orange' || name === '橙' || name === '橙色') {
+      name = 'oranges';
+    } else if (name === 'purple' || name === '紫' || name === '紫色') {
+      name = 'purples';
+    }
+
     var palettes = {
       scheme: ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e','#16a085',
                '#c0392b','#27ae60','#2980b9','#8e44ad','#2c3e50','#d35400','#7f8c8d','#f1c40f','#00bcd4','#ff5722'],
@@ -1872,12 +1893,20 @@ window.GIS = window.GIS || {};
       greens:  ['#f7fcf5','#e5f5e0','#c7e9c0','#a1d99b','#74c476','#41ab5d','#238b45','#006d2c','#00441b'],
       purples: ['#fcfbfd','#efedf5','#dadaeb','#bcbddc','#9e9ac8','#807dba','#6a51a3','#54278f','#3f007d'],
       oranges: ['#fff5eb','#fee6ce','#fdd0a2','#fdae6b','#fd8d3c','#f16913','#d94801','#a63603','#7f2704'],
+      ylorrd:  ['#ffffcc','#ffeda0','#fed976','#feb24c','#fd8d3c','#fc4e2a','#e31a1c','#bd0026','#800026'],
+      ylgnbu:  ['#ffffd9','#edf8b1','#c7e9b4','#7fcdbb','#41b6c4','#1d91c0','#225ea8','#253494','#081d58'],
+      viridis: ['#440154','#482777','#3f4a8a','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'],
+      spectral:['#9e0142','#d53e4f','#f46d43','#fdae61','#fee08b','#ffffbf','#e6f598','#abdda4','#66c2a5','#3288bd','#5e4fa2'],
     };
     var colors = palettes[name] || palettes.scheme;
-    if (count <= colors.length) return colors.slice(0, count);
-    // 不够就重复
+    if (!count || count <= 1) return [colors[colors.length - 1]];
+    if (count === colors.length) return colors.slice();
+    // 均匀跨度采样：确保第 1 阶取到最浅色，第 K 阶取到最深色，呈现最佳渐变对比度
     var result = [];
-    for (var i = 0; i < count; i++) result.push(colors[i % colors.length]);
+    for (var i = 0; i < count; i++) {
+      var idx = Math.round(i * (colors.length - 1) / (count - 1));
+      result.push(colors[idx]);
+    }
     return result;
   }
 
@@ -2744,6 +2773,43 @@ window.GIS = window.GIS || {};
     }
   }
 
+  /** 显示地图浮动图例 */
+  function _renderFloatingLegend(layerName, data) {
+    var panel = document.getElementById('mapFloatingLegend');
+    if (!panel) return;
+    var titleEl = document.getElementById('mapLegendTitle');
+    var fieldEl = document.getElementById('mapLegendField');
+    var itemsEl = document.getElementById('mapLegendItems');
+    var closeBtn = document.getElementById('mapLegendClose');
+
+    if (titleEl) titleEl.textContent = '图例 — ' + layerName;
+    if (fieldEl) fieldEl.textContent = '字段：' + data.field + ' (' + (data.type === 'graduated' ? '分级设色' : '唯一值') + ')';
+    if (itemsEl) {
+      itemsEl.innerHTML = '';
+      (data.items || []).forEach(function(item) {
+        var row = document.createElement('div');
+        row.className = 'map-legend-row';
+        var swatch = document.createElement('span');
+        swatch.className = 'map-legend-swatch';
+        swatch.style.background = item.color;
+        var label = document.createElement('span');
+        label.className = 'map-legend-label';
+        label.textContent = item.label + (item.count !== undefined ? ' (' + item.count + ')' : '');
+        row.appendChild(swatch);
+        row.appendChild(label);
+        itemsEl.appendChild(row);
+      });
+    }
+    panel.style.display = 'flex';
+
+    if (closeBtn && !closeBtn._bound) {
+      closeBtn._bound = true;
+      closeBtn.addEventListener('click', function() {
+        panel.style.display = 'none';
+      });
+    }
+  }
+
   /** 显示图例 */
   function _showLegend(layerId, silent) {
     var config = _symbologyConfig[layerId];
@@ -2754,18 +2820,12 @@ window.GIS = window.GIS || {};
     var data = config.legendData;
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     var layerName = layer ? (layer._rawName || layer.filename || layerId) : layerId;
-    var html = '<div style="background:#fff;border:1px solid #ddd;border-radius:6px;padding:10px;margin:4px 0;font-size:13px">';
-    html += '<div style="font-weight:600;margin-bottom:6px;color:#333">图例 — ' + escapeHtml(layerName) + '</div>';
-    html += '<div style="font-size:12px;color:#666;margin-bottom:6px">字段：' + escapeHtml(data.field) + '（' + (data.type === 'graduated' ? '分级设色' : '唯一值') + '）</div>';
-    data.items.forEach(function(item) {
-      html += '<div style="display:flex;align-items:center;margin:2px 0">';
-      html += '<span style="display:inline-block;width:14px;height:14px;background:' + item.color + ';border:1px solid #ccc;margin-right:6px;border-radius:2px;flex-shrink:0"></span>';
-      html += '<span style="color:#444">' + escapeHtml(item.label) + (item.count !== undefined ? ' <span style="color:#999">(' + item.count + ')</span>' : '') + '</span>';
-      html += '</div>';
-    });
-    html += '</div>';
-    if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
-      window.GIS.chat.addMessage(html, 'system');
+
+    // 核心：呈现在地图右下角浮动图例控件中
+    _renderFloatingLegend(layerName, data);
+
+    if (!silent && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+      window.GIS.chat.addMessage('已在地图右下角展示「' + escapeHtml(layerName) + '」图例', 'system');
     }
   }
 

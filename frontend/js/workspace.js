@@ -90,6 +90,22 @@
       actions.appendChild(fold);
     }
 
+    if (!close._hasCloseHandler) {
+      close._hasCloseHandler = true;
+      close.addEventListener('click', function(e) {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        panel.style.setProperty('display', 'none', 'important');
+        panel.classList.add('is-hidden');
+        panel.setAttribute('hidden', '');
+        if (panel.id === 'featurePanel' && window.GIS && window.GIS.state && typeof window.GIS.state.clearSelection === 'function') {
+          window.GIS.state.clearSelection();
+        }
+      });
+    }
+
     actions.appendChild(close);
   }
   function promptModal(title, desc, defaultValue, onConfirm) {

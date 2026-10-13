@@ -1275,6 +1275,98 @@ html.gis-workspace.theme-dark a:visited {
   overflow: hidden;
 }
 
+/* ========== 地图浮动图例（右下角） ========== */
+.map-floating-legend {
+  position: absolute;
+  bottom: 34px;
+  right: 14px;
+  min-width: 170px;
+  max-width: 260px;
+  max-height: 280px;
+  background: var(--surface-container-lowest, #ffffff);
+  border: 1px solid var(--outline-variant, rgba(0, 0, 0, 0.15));
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 550;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  backdrop-filter: blur(8px);
+  transition: opacity 0.2s, transform 0.2s;
+}
+.map-legend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.map-legend-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--on-surface, #1e293b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map-legend-close {
+  background: none;
+  border: none;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--on-surface-variant, #64748b);
+  cursor: pointer;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+.map-legend-close:hover {
+  background: var(--surface-container-high, rgba(0,0,0,0.06));
+  color: var(--on-surface, #0f172a);
+}
+.map-legend-field {
+  font-size: 11px;
+  color: var(--on-surface-variant, #64748b);
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.map-legend-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  max-height: 200px;
+}
+.map-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--on-surface, #334155);
+}
+.map-legend-swatch {
+  width: 16px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  flex-shrink: 0;
+}
+.map-legend-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dark .map-floating-legend {
+  background: rgba(30, 30, 36, 0.92);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+.dark .map-legend-title { color: #f1f5f9; }
+.dark .map-legend-field { color: #94a3b8; }
+.dark .map-legend-row { color: #cbd5e1; }
+.dark .map-legend-close { color: #94a3b8; }
+.dark .map-legend-close:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
 /* ========== 浮动图层面板（地图右上角，紧贴缩放控件左侧） ========== */
 .map-layer-panel {
   position: absolute;
@@ -2436,6 +2528,50 @@ html.gis-workspace.theme-dark .chat-img-floating-dl-btn:hover {
   height: 14px !important;
   display: block !important;
 }
+/* ========== Token 计量角标（右下角） ========== */
+.token-usage-badge {
+  position: absolute;
+  right: 66px;
+  bottom: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: var(--on-surface-variant, #71717a);
+  background: var(--surface-container-high, rgba(120, 120, 120, 0.08));
+  border: 1px solid var(--outline-variant, rgba(120, 120, 120, 0.18));
+  cursor: help;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  opacity: 0.65;
+  transition: opacity 0.2s, background 0.2s, color 0.2s;
+  z-index: 4;
+  user-select: none;
+  font-family: var(--font-mono, monospace, sans-serif);
+}
+.token-usage-badge.estimate {
+  border-style: dashed;
+  opacity: 0.55;
+}
+.message-bubble-ai:hover .token-usage-badge {
+  opacity: 0.95;
+}
+.token-usage-badge:hover {
+  opacity: 1 !important;
+  background: var(--surface-container-highest, rgba(120, 120, 120, 0.16));
+  color: var(--on-surface, #18181b);
+}
+.dark .token-usage-badge {
+  color: #a1a1aa;
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+.dark .token-usage-badge:hover {
+  color: #f4f4f5;
+  background: rgba(255, 255, 255, 0.12);
+}
+
 /* ========== 模型标记徽章（右上角圆角矩形） ========== */
 .msg-badge {
   display: inline-block;

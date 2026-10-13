@@ -27,9 +27,9 @@ window.GIS = window.GIS || {};
   const CESIUM_VERSION = '1.119';
   const CESIUM_SOURCES = [
     { base: 'vendor/cesium/', js: 'vendor/cesium/Cesium.js', css: 'vendor/cesium/Widgets/widgets.css' },
-    { base: 'https://cdn.bootcdn.net/ajax/libs/cesium/' + CESIUM_VERSION + '/',
-      js: 'https://cdn.bootcdn.net/ajax/libs/cesium/' + CESIUM_VERSION + '/Cesium.js',
-      css: 'https://cdn.bootcdn.net/ajax/libs/cesium/' + CESIUM_VERSION + '/Widgets/widgets.css' },
+    { base: 'https://cdnjs.cloudflare.com/ajax/libs/cesium/' + CESIUM_VERSION + '.0/',
+      js: 'https://cdnjs.cloudflare.com/ajax/libs/cesium/' + CESIUM_VERSION + '.0/Cesium.js',
+      css: 'https://cdnjs.cloudflare.com/ajax/libs/cesium/' + CESIUM_VERSION + '.0/Widgets/widgets.css' },
     { base: 'https://unpkg.com/cesium@' + CESIUM_VERSION + '/Build/Cesium/',
       js: 'https://unpkg.com/cesium@' + CESIUM_VERSION + '/Build/Cesium/Cesium.js',
       css: 'https://unpkg.com/cesium@' + CESIUM_VERSION + '/Build/Cesium/Widgets/widgets.css' },
@@ -503,7 +503,12 @@ window.GIS = window.GIS || {};
     const panel = document.getElementById('featurePanel');
     if (!panel) return;
     const sel = GIS.state.getSelection();
-    if (!sel || !sel.props) { panel.style.display = 'none'; return; }
+    if (!sel || !sel.props) {
+      panel.style.setProperty('display', 'none', 'important');
+      panel.classList.add('is-hidden');
+      panel.setAttribute('hidden', '');
+      return;
+    }
     let html = '<div id="featurePanelHeader" class="workspace-panel-heading">' +
       '<strong style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-right:8px;font-size:13px;" title="' + escapeHtml(String(sel.name || '要素属性')) + '">' + escapeHtml(String(sel.name || '要素属性')) + '</strong>' +
       "<button id=\"featurePanelClose\" class=\"workspace-icon-btn\" title=\"关闭要素属性\" aria-label=\"关闭要素属性\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:17px;height:17px;--ui-icon-image:url('/assets/ui-icons/icon-4518b8fcf719.png')\"></span></button></div>";
@@ -534,9 +539,28 @@ window.GIS = window.GIS || {};
     html += '</div>';
 
     panel.innerHTML = html;
-    panel.style.display = 'flex';
+    panel.classList.remove('is-hidden');
+    panel.removeAttribute('hidden');
+    panel.style.setProperty('display', 'flex', 'important');
     panel.style.flexDirection = 'column';
-    document.getElementById('featurePanelClose').onclick = function() { panel.style.display = 'none'; };
+
+    function closePanel(e) {
+      if (e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      panel.style.setProperty('display', 'none', 'important');
+      panel.classList.add('is-hidden');
+      panel.setAttribute('hidden', '');
+      if (GIS.state && typeof GIS.state.clearSelection === 'function') {
+        GIS.state.clearSelection();
+      }
+    }
+
+    var closeBtn = document.getElementById('featurePanelClose');
+    if (closeBtn) {
+      closeBtn.onclick = closePanel;
+    }
     if (GIS.workspace) GIS.workspace.preparePanel('featurePanel', 'featurePanelHeader', 'featurePanelClose', '要素属性');
   }
 

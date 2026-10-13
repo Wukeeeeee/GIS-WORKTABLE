@@ -322,13 +322,20 @@ def init_temp_dir():
 
 
 def _push_layer(name: str, geojson: dict, style: dict = None):
-    """将图层加入待发送列表（出口做地理质量自检，警告不阻塞出图）"""
+    """将图层加入待发送列表（同名图层就地覆盖最新数据，防止单轮多次更新累加出重复图层）"""
     try:
         layer = {"geojson": geojson, "name": name}
         if style:
             layer["style"] = style
         with _state_lock:
-            _pending_layers.append(layer)
+            replaced = False
+            for i, existing in enumerate(_pending_layers):
+                if existing.get("name") == name:
+                    _pending_layers[i] = layer
+                    replaced = True
+                    break
+            if not replaced:
+                _pending_layers.append(layer)
             for w in _geo_qa(geojson):
                 _pending_qa_warnings.append({"layer": name, "warning": w})
     except Exception:
@@ -1568,7 +1575,7 @@ def datav_boundary(name: str) -> str:
 # ============================================================
 
 _LEVEL_NAMES = {"country": "国家", "province": "省级", "city": "地级市",
-                "county": "区县", "street": "街道"}
+                "county": "区县", "district": "各区", "street": "街道"}
 
 
 @tool
@@ -3985,7 +3992,7 @@ def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, co
     """对图层应用分级色彩渲染（Choropleth），按数值字段将要素分为N个等级，每级用不同颜色显示。
     注意：要求图层包含至少2个要素且数值存在差异。如果是单要素图层（如单个行政区边界），无法分级，请使用 datav_boundary 默认边界在地图展示，并结合指标面板或图表交付。
     layer_name: 图层名；field: 数值字段名；n_classes: 分级数（2-20，默认5）；
-    color_scheme: 色带 scheme(默认)/blues(蓝)/reds(红)/greens(绿)/purples(紫)/oranges(橙)。"""
+    color_scheme: 色带 ylorrd(黄橙红/暖色)/blues(蓝)/reds(红)/greens(绿)/oranges(橙)/purples(紫)/ylgnbu(黄绿蓝)/spectral(光谱)。"""
     try:
         import geopandas as gpd
         gdf, name = _layer_to_gdf(layer_name)
@@ -4010,7 +4017,21 @@ def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, co
         step = (vmax - vmin) / n_classes
         breaks = [vmin + i * step for i in range(n_classes + 1)]
 
-        color_scheme = color_scheme if color_scheme in ("scheme","blues","reds","greens","purples","oranges") else "blues"
+        cs_norm = str(color_scheme or "").strip().lower()
+        _scheme_map = {
+            "ylorrd": "ylorrd", "yellow_orange_red": "ylorrd", "warm": "ylorrd",
+            "黄橙红": "ylorrd", "黄到橙到红": "ylorrd", "黄红": "ylorrd", "暖色": "ylorrd",
+            "blues": "blues", "蓝": "blues", "蓝色": "blues",
+            "reds": "reds", "红": "reds", "红色": "reds",
+            "greens": "greens", "绿": "greens", "绿色": "greens",
+            "oranges": "oranges", "橙": "oranges", "橙色": "oranges",
+            "purples": "purples", "紫": "purples", "紫色": "purples",
+            "ylgnbu": "ylgnbu", "黄绿蓝": "ylgnbu",
+            "spectral": "spectral", "彩虹": "spectral", "光谱": "spectral",
+            "viridis": "viridis", "翠绿": "viridis",
+            "scheme": "scheme"
+        }
+        color_scheme = _scheme_map.get(cs_norm, "blues")
 
         _pending_layer_ops.append({
             "action": "symbology",
