@@ -2776,6 +2776,8 @@ window.GIS = window.GIS || {};
   /** 显示地图浮动图例 */
   function _renderFloatingLegend(layerName, data) {
     var panel = document.getElementById('mapFloatingLegend');
+    var pill = document.getElementById('mapLegendTogglePill');
+    var pillText = document.getElementById('mapLegendToggleText');
     if (!panel) return;
     var titleEl = document.getElementById('mapLegendTitle');
     var fieldEl = document.getElementById('mapLegendField');
@@ -2784,6 +2786,7 @@ window.GIS = window.GIS || {};
 
     if (titleEl) titleEl.textContent = '图例 — ' + layerName;
     if (fieldEl) fieldEl.textContent = '字段：' + data.field + ' (' + (data.type === 'graduated' ? '分级设色' : '唯一值') + ')';
+    if (pillText) pillText.textContent = '图例 — ' + layerName;
     if (itemsEl) {
       itemsEl.innerHTML = '';
       (data.items || []).forEach(function(item) {
@@ -2801,11 +2804,21 @@ window.GIS = window.GIS || {};
       });
     }
     panel.style.display = 'flex';
+    if (pill) pill.style.display = 'none';
 
     if (closeBtn && !closeBtn._bound) {
       closeBtn._bound = true;
       closeBtn.addEventListener('click', function() {
         panel.style.display = 'none';
+        if (pill) pill.style.display = 'inline-flex';
+      });
+    }
+
+    if (pill && !pill._bound) {
+      pill._bound = true;
+      pill.addEventListener('click', function() {
+        panel.style.display = 'flex';
+        pill.style.display = 'none';
       });
     }
   }
@@ -2989,8 +3002,14 @@ window.GIS = window.GIS || {};
       groupItemHtml = '<div class="context-menu-item" data-action="move-to-group" title="移动到分组">移动到分组…</div>';
     }
 
+    var legendItemHtml = '';
+    if (_symbologyConfig[layerId] && _symbologyConfig[layerId].legendData) {
+      legendItemHtml = '<div class="context-menu-item" data-action="legend" title="在地图右下角重新显示此图层的图例">📊 显示图例</div>';
+    }
+
     var menu = document.getElementById('layerContextMenu');
     menu.innerHTML =
+      legendItemHtml +
       '<div class="context-menu-item" data-action="inspect" title="查看要素信息和属性">检查</div>' +
       '<div class="context-menu-item" data-action="add-feature" title="向此图层连续添加要素（点/线）">＋ 添加要素</div>' +
       '<div class="context-menu-item" data-action="toggle">' + (layer.visible !== false ? '隐藏' : '显示') + '</div>' +
@@ -3050,6 +3069,9 @@ window.GIS = window.GIS || {};
     if (!layer) return;
 
     switch (action) {
+      case 'legend':
+        _showLegend(layerId);
+        break;
       case 'inspect':
         showLayerInspector(layerId);
         break;

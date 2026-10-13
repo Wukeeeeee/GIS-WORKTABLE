@@ -1367,6 +1367,41 @@ html.gis-workspace.theme-dark a:visited {
 .dark .map-legend-close { color: #94a3b8; }
 .dark .map-legend-close:hover { background: rgba(255,255,255,0.1); color: #fff; }
 
+.map-legend-toggle-pill {
+  position: absolute;
+  bottom: 34px;
+  right: 14px;
+  z-index: 550;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--surface-container-lowest, #ffffff);
+  color: var(--on-surface, #1e293b);
+  border: 1px solid var(--outline-variant, rgba(0, 0, 0, 0.15));
+  border-radius: 20px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+}
+.map-legend-toggle-pill:hover {
+  background: var(--surface-container-high, #f1f5f9);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.16);
+}
+.dark .map-legend-toggle-pill {
+  background: rgba(30, 30, 36, 0.92);
+  color: #f1f5f9;
+  border-color: rgba(255, 255, 255, 0.15);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.dark .map-legend-toggle-pill:hover {
+  background: rgba(45, 45, 55, 0.95);
+}
+
 /* ========== 浮动图层面板（地图右上角，紧贴缩放控件左侧） ========== */
 .map-layer-panel {
   position: absolute;
