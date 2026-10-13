@@ -1311,12 +1311,16 @@ html.gis-workspace.theme-dark a:visited {
 .map-legend-close {
   background: none;
   border: none;
-  font-size: 16px;
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   color: var(--on-surface-variant, #64748b);
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0;
   border-radius: 4px;
+  transition: all 0.15s ease;
 }
 .map-legend-close:hover {
   background: var(--surface-container-high, rgba(0,0,0,0.06));

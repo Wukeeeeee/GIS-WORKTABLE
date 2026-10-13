@@ -2773,8 +2773,11 @@ window.GIS = window.GIS || {};
     }
   }
 
+  var _lastLegendData = null;
+
   /** 显示地图浮动图例 */
   function _renderFloatingLegend(layerName, data) {
+    _lastLegendData = { layerName: layerName, data: data };
     var panel = document.getElementById('mapFloatingLegend');
     var pill = document.getElementById('mapLegendTogglePill');
     var pillText = document.getElementById('mapLegendToggleText');
@@ -2817,24 +2820,54 @@ window.GIS = window.GIS || {};
     if (pill && !pill._bound) {
       pill._bound = true;
       pill.addEventListener('click', function() {
-        panel.style.display = 'flex';
-        pill.style.display = 'none';
+        if (_lastLegendData) {
+          _renderFloatingLegend(_lastLegendData.layerName, _lastLegendData.data);
+        } else {
+          panel.style.display = 'flex';
+          pill.style.display = 'none';
+        }
       });
     }
   }
 
   /** 显示图例 */
   function _showLegend(layerId, silent) {
-    var config = _symbologyConfig[layerId];
+    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
+    if (!layer && layerData.length > 0) layer = layerData[0];
+    if (!layer) return;
+
+    var config = _symbologyConfig[layer.layer_id];
     if (!config || !config.legendData) {
-      if (!silent && window.GIS.chat) window.GIS.chat.addMessage('该图层没有图例数据，请先应用分级设色或唯一值渲染', 'system');
+      // 智能探测：若图层未设色但包含数值字段（如人口_万人、人口等），自动为其应用分级设色并生成图例
+      var gj = getLayerGeoJSON(layer.layer_id);
+      var features = gj ? (gj.type === 'FeatureCollection' ? (gj.features || []) : [gj]) : [];
+      if (features.length && features[0].properties) {
+        var props = features[0].properties;
+        var numField = Object.keys(props).find(function(k) {
+          return /(人口|pop|gdp|val|count|数量|数值)/i.test(k) && typeof props[k] === 'number';
+        }) || Object.keys(props).find(function(k) {
+          return typeof props[k] === 'number' && !/adcode|code|id|fid|index/i.test(k);
+        });
+        if (numField) {
+          var colors = _getColorScheme('ylorrd', 5);
+          if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
+          _symbologyConfig[layer.layer_id].enabled = true;
+          _applyGraduatedColors(layer, gj, features, numField, 5, colors);
+          config = _symbologyConfig[layer.layer_id];
+        }
+      }
+    }
+
+    if (!config || !config.legendData) {
+      if (!silent && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+        window.GIS.chat.addMessage('该图层未找到可分级的数值指标，请先为图层应用分级设色', 'system');
+      }
       return;
     }
     var data = config.legendData;
-    var layer = layerData.find(function(l) { return l.layer_id === layerId; });
-    var layerName = layer ? (layer._rawName || layer.filename || layerId) : layerId;
+    var layerName = layer ? (layer._rawName || layer.filename || layer.layer_id) : layerId;
 
-    // 核心：呈现在地图右下角浮动图例控件中
+    // 呈现在地图右下角浮动图例控件中
     _renderFloatingLegend(layerName, data);
 
     if (!silent && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
@@ -2924,12 +2957,19 @@ window.GIS = window.GIS || {};
     },
     /** AI 自然语言调用：显示图例 */
     addLegend: function(name) {
-      var layer = _findLayerByNameOrFuzzy(name);
-      if (!layer) return;
-      var config = _symbologyConfig[layer.layer_id];
-      if (config && config.legendData) {
-        _showLegend(layer.layer_id, true);
+      var layer = null;
+      if (name) {
+        layer = _findLayerByNameOrFuzzy(name);
+      } else {
+        layer = layerData.find(function(l) { return _symbologyConfig[l.layer_id] && _symbologyConfig[l.layer_id].legendData; }) || layerData[0];
       }
+      if (!layer) {
+        if (_lastLegendData) {
+          _renderFloatingLegend(_lastLegendData.layerName, _lastLegendData.data);
+        }
+        return;
+      }
+      _showLegend(layer.layer_id, false);
     },
     /** AI 自然语言调用：显示指北针 */
     addNorthArrow: function() {
@@ -3002,10 +3042,10 @@ window.GIS = window.GIS || {};
       groupItemHtml = '<div class="context-menu-item" data-action="move-to-group" title="移动到分组">移动到分组…</div>';
     }
 
-    var legendItemHtml = '';
-    if (_symbologyConfig[layerId] && _symbologyConfig[layerId].legendData) {
-      legendItemHtml = '<div class="context-menu-item" data-action="legend" title="在地图右下角重新显示此图层的图例">📊 显示图例</div>';
-    }
+    var legendItemHtml =
+      '<div class="context-menu-item" data-action="legend" title="在地图右下角显示此图层的图例">' +
+      '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;" aria-hidden="true"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>' +
+      '显示图例</div>';
 
     var menu = document.getElementById('layerContextMenu');
     menu.innerHTML =
