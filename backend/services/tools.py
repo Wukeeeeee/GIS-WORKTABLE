@@ -25,7 +25,7 @@ import ast
 import shutil
 import urllib.request
 import uuid
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Literal
 
 from langchain.tools import tool
 
@@ -940,51 +940,10 @@ def _extract_geojson(name: str, data: dict):
 
 @tool
 def execute_python(code: str) -> str:
-    """执行自定义 Python GIS 分析与数据可视化代码（沙箱隔离）。
-    当需要生成自定义专题图、指标看板、多子图图表（matplotlib / pyecharts）或专用工具不覆盖的复杂分析时，必须使用本工具直接执行代码并生成图片交付，严禁把代码甩给用户让用户去本地/Jupyter运行！
-
-    ❌ 以下操作已有专用工具，禁止使用 execute_python 代替：
-        - 地理编码/地址转坐标 → 必须用 amap_geocode
-        - 反向地理编码/坐标转地址 → 必须用 reverse_geocode
-        - 批量地理编码 → 必须用 batch_geocode
-       - POI 搜索/查天气 → 必须用 amap_poi_search
-       - 行政边界获取 → 必须用 datav_boundary
-       - AOI 建筑轮廓提取 → 必须用 cn_aoi_search/extract
-       - 路网下载 → 必须用 download_road_network
-       - 网络分析（路径/服务区/最近设施） → 必须用 network_analysis
-       - 热力图生成 → 必须用 create_heatmap
-       - 图层属性统计图 → 必须用 create_chart
-       - 字段计算 → 必须用 field_calculate
-       - 缓冲区分析 → 必须用 spatial_buffer
-       - 空间相交分析 → 必须用 spatial_intersect
-       - 空间合并 → 必须用 spatial_union
-       - 空间差异 → 必须用 spatial_difference
-       - 图层裁剪 → 必须用 spatial_clip
-       - 质心提取 → 必须用 spatial_centroid
-       - 几何简化 → 必须用 spatial_simplify
-        - 属性融合 → 必须用 spatial_dissolve
-        - 按空间关系选择要素 → 必须用 spatial_select
-        - 随机采样 → 必须用 spatial_sample
-        - 查找附近要素 → 必须用 spatial_near
-        - 空间聚类 → 必须用 spatial_cluster
-        - 泰森多边形 → 必须用 spatial_voronoi
-        - 字段统计分析 → 必须用 spatial_field_stats
-        - 空间连接 → 必须用 spatial_join
-        - 图层合并 → 必须用 layer_merge
-        - 图层拆分 → 必须用 layer_split
-        - 从坐标列创建要素 → 必须用 layer_add_geometry
-
-    ✅ 本工具适合做的：
-       - 自定义 GIS 空间分析（矢量/栅格运算）
-       - 数据格式转换与清洗
-       - 国外边界数据获取（osmnx）
-       - 自定义 matplotlib/pyecharts 可视化
-
-    可用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, json, math, re, datetime, io, tempfile, requests, pyproj, rasterio, osmnx
-    print(GeoJSON) 自动加载到地图（加 name 字段做图层名）
-    plt.savefig('chart_xxx.png') 生成图表
-
-    安全：严禁在代码中硬编码 API Key（高德 Key 已自动注入 _AMAP_KEY 变量）"""
+    """执行自定义 Python GIS 分析与可视化代码（沙箱隔离）。
+    仅当需绘制多子图图表(matplotlib/pyecharts)、指标看板或无现有工具覆盖的高级矢量/栅格运算时使用。
+    常用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, rasterio, pyproj, requests。
+    输出规范：print(GeoJSON) 自动加载到地图（加 name 属性为图层名）；plt.savefig('chart_xxx.png') 自动注册图表。"""
     global _exec_call_count, _exec_log
     _exec_call_count += 1
     
@@ -2884,18 +2843,10 @@ def network_analysis(
     breaks: str = "",
     n: int = 3,
 ) -> str:
-    """从路网图层做网络分析。analysis_type: route(最短路径,双向Dijkstra) service_area(服务区) closest_facility(最近设施)。
-origin/destination/facility 用"经度,纬度"传坐标。events 传分号分隔坐标，breaks 传逗号分隔米数。
-
-完整工作流（按顺序）：
-1. 用户给地名（如"北京西站到天安门最短路径"）→ 先调 amap_geocode 把地名转成坐标
-2. 如果还没有路网图层 → 调 download_road_network 下载
-3. 如果不确定用哪个路网 → 调 get_registered_layers 查看各图层覆盖范围
-4. 用本工具（network_analysis）做分析
-5. 分析结果已自动加载到地图（图层），无需额外操作
-
-注意：坐标用"经度,纬度"格式（先经度后纬度）。
-重要：必须用本工具做网络分析，严禁用 execute_python 调高德 API 做路径规划。"""
+    """从路网图层执行网络分析（结果自动加载到地图）。
+    - analysis_type: 'route'(最短路径,双向Dijkstra) / 'service_area'(服务区) / 'closest_facility'(最近设施)。
+    - origin / destination / facility: 坐标，格式为 "经度,纬度"（WGS84）。地名需先经 amap_geocode 转坐标。
+    - events: 分号分隔坐标点；breaks: 逗号分隔阻抗米数；n: 最近设施数(默认 3)。"""
     from backend.services.network_service import (
         build_graph_from_geojson, shortest_route,
         service_area, closest_facilities,
@@ -3099,17 +3050,11 @@ def _gdf_area_km2(gdf, unique=False):
 
 @tool
 def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: bool = False) -> str:
-    """为指定图层创建缓冲区。
-
-【方法选择】
-- unit="m" 时内部自动投影到以数据质心为中心的球面等距方位投影，保证距离准确，WGS84 经纬度数据必须用 m/km。
-- dissolve=True 融合重叠缓冲区（适合分析总影响范围）；dissolve=False 保留各要素独立缓冲区（适合逐个统计）。
-- 多距离分级用 spatial_multi_ring_buffer。
-
-【常见坑】
-- 不要在经纬度坐标系下直接用 degree 做缓冲，会产生椭圆形变形。
-- 线/面要素的缓冲区是向外扩展的面，点要素是圆形。
-- 大数据量（>10000 要素）且 dissolve=True 时计算较慢。"""
+    """为矢量图层创建缓冲区并加载到地图（内部自动根据质心选用精确等距投影）。
+    - layer_name: 图层名。
+    - distance: 缓冲距离数值。
+    - unit: 'm'(米,默认) 或 'km'(千米)。
+    - dissolve: 是否融合重叠缓冲区多边形（默认 False，保留各要素独立缓冲区）。"""
     try:
         import geopandas as gpd
         gdf, name = _layer_to_gdf(layer_name)
@@ -3372,15 +3317,11 @@ def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) ->
 
 @tool
 def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> str:
-    """根据指定坐标创建新的点/线/面图层。
-    geometry_type: Point / LineString / Polygon / Rectangle / Circle。
-    coordinates 格式：
-      - Point: "lon,lat" 如 "116.4,39.9"
-      - LineString: "lon1,lat1;lon2,lat2;..." 如 "116.3,39.9;116.4,40.0;116.5,39.8"
-      - Polygon: "lon1,lat1;lon2,lat2;lon3,lat3;lon1,lat1"（首尾闭合）
-      - Rectangle: "lon1,lat1;lon2,lat2"（对角线，自动生成矩形）
-      - Circle: "lon,lat;radius_m"（圆心坐标 + 半径米数，自动 UTM 投影）
-    未指定 layer_name 时自动命名。"""
+    """根据坐标创建点/线/面几何图层并加载到地图。
+    - geometry_type: Point / LineString / Polygon / Rectangle / Circle。
+    - coordinates: Point("lon,lat")；LineString("lon1,lat1;lon2,lat2;...")；Polygon("lon1,lat1;...;lon1,lat1"闭合)；
+      Rectangle("lon1,lat1;lon2,lat2"对角线)；Circle("lon,lat;radius_m"圆心+半径米)。
+    - layer_name: 自定义图层名（空则自动命名）。"""
     try:
         import geopandas as gpd
         from shapely.geometry import Point, LineString, Polygon
@@ -3472,18 +3413,8 @@ def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> 
 
 @tool
 def spatial_intersect(layer_a: str, layer_b: str) -> str:
-    """两个图层的空间相交分析，返回两者重叠的部分，属性合并。
-
-【方法选择】
-- intersect：求共同区域，保留双方属性（适合找重叠范围）。
-- union：合并全部区域，重叠处分割（适合合并两个图层）。
-- difference(A, B)：从 A 中去掉 B 的部分（有方向）。
-- clip：用 B 范围截取 A（只保留 A 属性，比 intersect 轻量）。
-
-【常见坑】
-- 面叠置会产生碎片多边形，可用 spatial_simplify 或过滤小面积。
-- 几何无效时叠置失败，先用 topology_check 修复。
-- CRS 不一致时结果为空。"""
+    """两矢量图层的空间叠置求交分析，提取共同重叠部分并合并双方属性，生成新图层上图。
+    - layer_a / layer_b: 待求交的两图层名。"""
     try:
         import geopandas as gpd
         gdf_a, name_a = _layer_to_gdf(layer_a)
@@ -3911,19 +3842,10 @@ def batch_geocode(addresses: str) -> str:
 
 @tool
 def spatial_join(target_layer: str, join_layer: str, how: str = "left", predicate: str = "intersects") -> str:
-    """将 join_layer 的属性按空间关系连接到 target_layer 的要素上。
-
-【predicate 选择】
-- intersects（默认）：有任何空间接触即匹配，最常用，适合点在面内/线穿面等大多数场景。
-- within：目标要素完全在连接层内部（边界不接触），严格筛选时用。
-- contains：连接层要素完全在目标内部。
-- nearest：找最近的连接要素，适合无重叠的邻近匹配。
-- touches：仅边界接触，适合找相邻行政区。
-
-【常见坑】
-- 两个图层 CRS 不一致时结果为空，分析前用 get_layer_detail 确认 CRS。
-- how="left" 保留所有目标要素，未匹配的属性为 NaN；how="inner" 只保留匹配的。
-- 一对多连接会导致目标要素重复（一个目标匹配多个连接要素）。"""
+    """按空间拓扑关系将 join_layer 的属性连接到 target_layer。
+    - target_layer / join_layer: 待连接的目标图层与数据源图层。
+    - how: 'left'(保留所有目标要素，未匹配为 NaN) 或 'inner'(仅保留匹配成功的要素)。
+    - predicate: 空间拓扑谓词，'intersects'(默认相交) / 'within'(在内部) / 'contains'(包含) / 'nearest'(最近邻) / 'touches'(边界接触)。"""
     try:
         import geopandas as gpd
         gdf_t, name_t = _layer_to_gdf(target_layer)
@@ -4612,17 +4534,9 @@ def redo() -> str:
 
 @tool
 def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
-    """对DEM栅格图层进行地形分析。
-
-【analysis 选择】
-- slope：坡度（单位度，0-90），判断地形陡缓，建设用地通常要求 <15 度。
-- aspect：坡向（单位度，0=北,90=东,180=南,270=西，-1=平坦），北半球南坡日照好。
-- hillshade：山体阴影（灰度图），增强地形可视化，太阳方位角默认 315 度。
-
-【常见坑】
-- WGS84 经纬度 DEM 计算坡度时 x/y 分辨率是度不是米，工具内部已做转换；自定义代码需注意。
-- 坡度结果全为 0 通常是 CRS 或分辨率单位问题。
-- layer_name 是上传 DEM 时的图层名（如 dem.tif -> 图层名 dem），不是文件路径。"""
+    """对 DEM 栅格图层进行地形分析并生成可视化图层。
+    - layer_name: DEM 图层名（如已上传的 DEM 名称）。
+    - analysis: 分析类型，'slope'(坡度,度0-90) / 'aspect'(坡向,度0-360) / 'hillshade'(山体阴影灰度图)。"""
     try:
         upload_dir = os.path.join(_temp_output_dir, "uploads")
         if not os.path.isdir(upload_dir):
@@ -4736,21 +4650,11 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
 
 @tool
 def ndvi_analysis(layer_name: str, red_band: int = 3, nir_band: int = 4) -> str:
-    """从多光谱 GeoTIFF 计算归一化植被指数 NDVI = (NIR-Red)/(NIR+Red)。
-
-【波段编号（从 1 开始）】
-- Landsat 5/7：red_band=3, nir_band=4
-- Landsat 8/9：red_band=4, nir_band=5
-- Sentinel-2：red_band=4, nir_band=8
-- 默认 red=3, nir=4（canonical BGRN 顺序）；Sentinel-2 / Landsat 8/9 等需按传感器改设 red_band / nir_band
-
-【结果解读】
-- NDVI 范围 [-1, 1]，>0.3 有植被，>0.6 茂密植被，<0 通常是水体/云。
-- 其他指数（NDWI/NDBI/EVI）用 raster_calculator 或 execute_python 计算。
-
-【常见坑】
-- 波段编号错误导致结果全为 0 或 NaN，先 execute_python 打印各波段统计。
-- 应用地表反射率产品（SR），原始 DN 值会导致范围异常。"""
+    """计算归一化植被指数 NDVI = (NIR-Red)/(NIR+Red)。
+    - layer_name: GeoTIFF 图层名。
+    - red_band: 红光波段序号(从1开始，默认 3；Landsat 8/9为4，Sentinel-2为4)。
+    - nir_band: 近红外波段序号(从1开始，默认 4；Landsat 8/9为5，Sentinel-2为8)。
+    输出范围 [-1, 1] 的彩色渲染图层并上图。"""
     try:
         upload_dir = os.path.join(_temp_output_dir, "uploads")
         if not os.path.isdir(upload_dir):
@@ -5564,22 +5468,8 @@ def terrain_profile(layer_name: str, line_coords: str) -> str:
 
 @tool
 def topology_check(layer_name: str) -> str:
-    """对面要素图层进行拓扑检查和自动修复。
-
-【检测内容】
-- 无效几何（自相交、环开口、环方向错误）：自动用 make_valid 修复。
-- 要素间重叠：检测并报告，不自动合并。
-- 缝隙（gaps）：检测并报告。
-- 结果生成标注图层，标注错误位置和类型。
-
-【使用时机】
-- 空间分析（叠置/连接/缓冲区）前必须做，无效几何会导致分析失败。
-- 数据上传后建议先检查一次。
-- 只对面图层有意义。
-
-【常见坑】
-- make_valid 修复后要素数可能变化（自相交面拆为 MultiPolygon）。
-- 重叠和缝隙只报告不自动修复，需手动用 spatial_union/difference 处理。"""
+    """对面要素图层执行几何拓扑检查并自动修复（仅支持面图层）。
+    - layer_name: 待检查面图层名。自动用 make_valid 修复自相交与环方向，报告要素间重叠与缝隙。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -5772,19 +5662,9 @@ def enable_snapping(enabled: bool = True) -> str:
 
 @tool
 def convert_crs(layer_name: str, target_crs: str = "wgs84") -> str:
-    """将图层的坐标参考系转换为目标 CRS 并生成新图层，原图层不变。
-
-【target_crs 选项】
-- wgs84 / EPSG:4326：WGS84 经纬度，Web 地图数据标准。
-- web_mercator / EPSG:3857：Web 墨卡托，仅用于显示，不可用于面积/距离分析。
-- utm_auto：自动选择 UTM 分区（适合小范围精确分析）。
-- gcj02：高德/腾讯火星坐标（与 WGS84 有偏移，国内约 50-500 米）。
-- 也可直接传 EPSG 代号，如 "EPSG:32650"。
-
-【常见坑】
-- 算面积/距离前必须转到投影坐标系，WGS84 下算的是平方度。
-- 源 CRS 判断错误会导致数据飞到错误位置，先看 bbox 确认。
-- 中国全国分析推荐 Albers 等面积投影。"""
+    """转换矢量图层的坐标参考系并生成新图层（原图层保留）。
+    - layer_name: 待转换图层名。
+    - target_crs: 目标坐标系，可选 'wgs84'(EPSG:4326)、'web_mercator'(EPSG:3857)、'utm_auto'(自动UTM投影带) 或 'EPSG:xxxx'。进行长度/面积精确度量前需转为投影坐标系。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -6033,15 +5913,10 @@ def discover_gis_data(query: str = "", kind: str = "", area: str = "",
                       bbox: str = "", provider: str = "auto",
                       file_format: str = "", time_start: str = "",
                       time_end: str = "") -> str:
-    """发现/检索公开 GIS 数据的元信息（不下载）。数据源：OSM/Copernicus/USGS/地理空间数据云。
-参数说明：
-- kind: 数据类型（英文），road/道路/路网→roads，building/建筑→buildings，poi/兴趣点→pois，
-  water/水系/河流→waterways，landuse/土地利用→landuse，transport/铁路→transport，
-  imagery/影像/sentinel/landsat→imagery，dem/高程→dem。
-- area: 城市/区域名（中文也可，如 长沙、长沙市）；或用 bbox='minLng,minLat,maxLng,maxLat'。
-- provider: 数据源 osm/copernicus/usgs/gscloud，默认 auto 自动选。
-- time_start/time_end: 遥感数据可选时间范围（如 2024-01-01）。
-用法：用户想找开放 GIS 数据时先用本工具返回来源与可获取状态，再使用返回的句柄 handle 调用 download_gis_data 获取。"""
+    """检索开放 GIS 数据源元信息（OSM/Copernicus/USGS/地理空间数据云，返回句柄不下载）。
+    - kind: 数据类型（roads/buildings/pois/waterways/landuse/transport/imagery/dem）。
+    - area: 城市/区域名（如'长沙市'）或 bbox='minLng,minLat,maxLng,maxLat'。
+    - provider: osm/copernicus/usgs/gscloud，默认 auto。返回句柄 handle 供 download_gis_data 获取。"""
     from backend.services import data_discovery
     try:
         r = data_discovery.discover(
@@ -6075,17 +5950,10 @@ def download_gis_data(handle: str = "", query: str = "", kind: str = "", area: s
                       bbox: str = "", provider: str = "", file_format: str = "geojson",
                       time_start: str = "", time_end: str = "",
                       layer_name: str = "", max_items: int = 0) -> str:
-    """从开放 GIS 数据源获取数据 → 保存为标准 GIS 文件(GeoJSON/GPKG/SHP) → 完整性/CRS 校验 → 加载到地图。
-矢量数据源现支持 OpenStreetMap（provider=osm，公开免认证）。
-
-【推荐用法】
-若前一步已执行 discover_gis_data，可直接传入 handle（如 handle='dh_osm_roads_abc'），系统自动还原所有区域和数据源参数，无需再传其他参数！
-
-常规参数：
-- kind：roads/buildings/pois/waterways/landuse/transport 等。
-- area：城市/区域名（如 长沙市），或 bbox='minLng,minLat,maxLng,maxLat'。
-- file_format：geojson/gpkg/shp，默认 geojson。
-- layer_name：自定义图层名（可选）。"""
+    """从开放源下载 GIS 数据并自动加载到地图（OSM/Copernicus/USGS/GSCloud）。
+    - handle: 前置 discover_gis_data 返回的句柄（优先传此参数，自动还原所有筛选）。
+    - kind: roads/buildings/pois/waterways/landuse/transport 等；area: 城市名或 bbox。
+    - file_format: geojson(默认)/gpkg/shp；layer_name: 自定义图层名称。"""
     from backend.services import data_discovery
     try:
         asset = data_discovery.download(
@@ -6139,14 +6007,10 @@ def _human_size(n: int) -> str:
 def search_gis_services(query: str = "", country: str = "",
                         protocol: str = "", category: str = "",
                         limit: int = 10) -> str:
-    """搜索全球 2198+ 真实可用的 GIS 空间服务和数据源（WMS、WFS、WMTS、XYZ、ArcGIS REST、STAC 等）。
-参数说明：
-- query: 关键词（匹配服务名、描述、机构、备注，如 'DEM', '高程', 'satellite', '土地利用', '气象', '交通'）。
-- country: 国家或地区筛选（如 '中国', '美国', '全球', '德国', '日本'）。
-- protocol: 协议类型（如 'WMS', 'WFS', 'WMTS', 'XYZ', 'REST', 'STAC'）。
-- category: 类别（如 '高程/地形', '交通', '气象', '人口', '开放政府数据', '土地利用', '水利/海洋'）。
-- limit: 最大返回结果条数（默认 10，上限 30）。
-用法：当用户寻找外部在线地图服务、OGC 服务端点或公开空间图层时调用本工具检索。"""
+    """检索全球真实可用的 GIS 空间服务与公开端点（WMS/WFS/WMTS/XYZ/ArcGIS REST/STAC）。
+    - query: 关键词（如 'DEM', '高程', 'satellite', '土地利用', '气象', '交通'）。
+    - country: 地区筛选（如 '中国', '全球'）；protocol: 协议（WMS/WFS/XYZ/REST 等）。
+    - category: 分类（高程/地形、交通、气象、土地利用等）；limit: 最大条数(默认 10，上限 30)。"""
     from backend.services import geosource_service as _gs
     res = _gs.search_services(
         keyword=query or None,
@@ -6252,19 +6116,10 @@ def get_gis_services_stats() -> str:
 def hold_layer_for_confirm(name: str = "", geojson: str = "",
                            source: str = "", file_path: str = "",
                            summary: str = "") -> str:
-    """把已经获取/生成、但尚未展示到地图的图层“挂起”，等用户确认后再加载。
-
-    适用场景：数据已就绪（已下载/已生成 GeoJSON），但希望用户回复“继续/确认”后再显示到地图
-    （例如一次数据量较大、或流程上需要用户拍板）。调用本工具会登记一个待确认动作，不会立刻把
-    图层推到地图；用户回复“继续/确认/执行”时由系统确定性加载，“取消”则放弃。
-    参数：
-    - name: 图层名（必填）。若该名字已在“当前已注册图层”里，可不传 geojson 直接复用其数据；
-      否则必须用 geojson 传入图层数据。
-    - geojson: 图层 GeoJSON 的 JSON 字符串（FeatureCollection/Feature），可省略（当 name 已注册）。
-    - source: 数据来源描述，如 geoBoundaries / OpenStreetMap / 文件。
-    - file_path: 数据所在文件路径（若有）。
-    - summary: 给用户看的一句话说明（可选）。
-    调用后请在回复里告诉用户：“数据已准备好，回复‘继续’即可加载到地图；回复‘取消’可放弃。”"""
+    """将就绪图层数据挂起登记，等待用户在会话中确认后确定性加载到地图。
+    - name: 图层名（必填；已注册图层可直接复用）。
+    - geojson: 图层 GeoJSON 字符串（新数据必填，已注册图层可省）。
+    - source / file_path / summary: 数据来源、文件路径及一句话说明。"""
     import json as _json
     from backend.services import pending_action
 
@@ -6312,27 +6167,12 @@ def hold_layer_for_confirm(name: str = "", geojson: str = "",
 @tool
 def spatial_moran(layer_name: str, field: str, weight_type: str = "distance",
                   threshold: float = 0.01, k: int = 5, local: bool = True) -> str:
-    """全局 Moran's I 空间自相关 + 局部 LISA 聚类分析。
-
-【适用场景】
-- 判断某属性在空间上是聚集、离散还是随机分布（全局 I）。
-- 识别热点（HH）、冷点（LL）、空间异常值（HL/LH）的具体位置（局部 LISA）。
-- 适用于点数据或面数据的质心，字段必须是数值型。
-
-【方法选择】
-- weight_type="distance"：距离阈值权重，threshold 内的点互为邻居（单位：度，0.01 度约 1km）。
-- weight_type="knn"：K 近邻权重，每个点找最近的 k 个邻居，适合点密度不均的数据。
-- threshold 取点对平均距离的 1-1.5 倍；k 通常取 4-8。
-- local=True 时输出含 local_moran / cluster_type 字段的新图层。
-
-【输出】
-- 全局：I 值、z 分数、p 值、空间模式判断（聚集/离散/随机）。
-- 局部：新图层，cluster_type 取值 HH（高-高热点）/ LL（低-低冷点）/ HL（高-低异常）/ LH（低-高异常）。
-
-【常见坑】
-- 字段含空值会报错，先用 field_calculate 或 delete_features 清洗。
-- threshold 太小导致权重全零，需调大；太大会抹平局部差异。
-- 面数据用质心计算，面积差异大时建议用空间权重矩阵标准化（本工具已做行标准化思路）。"""
+    """全局 Moran's I 空间自相关 + 局部 LISA 聚类分析（仅支持点/质心数值字段）。
+    - layer_name: 图层名（点要素或质心）。
+    - field: 待分析的数值型属性字段。
+    - weight_type: 'distance'(默认距离阈值) 或 'knn'(K近邻)。
+    - threshold: 距离阈值（度，0.01 度约 1km）；k: 近邻数(默认 5)。
+    - local: 是否生成局部 LISA 聚类图层（包含 HH/LL/HL/LH 字段，默认 True）。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -6456,26 +6296,11 @@ def spatial_moran(layer_name: str, field: str, weight_type: str = "distance",
 
 @tool
 def spatial_hotspot(layer_name: str, field: str, threshold: float = 0.01, k: int = 5) -> str:
-    """Getis-Ord Gi* 热点分析，识别统计显著的高值聚集区（热点）和低值聚集区（冷点）。
-
-【适用场景】
-- 犯罪、疾病、交通事故、商业密度等事件的热点/冷点探测。
-- 与 Moran's I 的区别：Gi* 直接定位高值/低值聚集的具体位置，不区分空间异常值。
-- 适用于点数据，字段为事件计数或强度（必须非负）。
-
-【方法选择】
-- 默认距离阈值权重（threshold 内互为邻居，含自身）。
-- 点密度不均时可改用 K 近邻（本工具固定距离阈值，需要 KNN 可先用 spatial_moran）。
-- threshold 单位为度，0.01 度约 1km；取平均最近邻距离的 1.5-2 倍。
-
-【输出】
-- 新图层含 gi_z（Gi* z 分数）、gi_p（p 值）、hotspot_type（热点/冷点/不显著）。
-- z > 1.96 且 p < 0.05 为热点；z < -1.96 且 p < 0.05 为冷点。
-
-【常见坑】
-- 字段必须非负，Gi* 不适合有负值的属性。
-- 阈值太小会导致每个点只有自己，z 分数无意义。
-- 结果受空间尺度影响大，建议尝试多个 threshold 对比。"""
+    """Getis-Ord Gi* 热点分析，探测统计显著的高值聚集(热点)与低值聚集(冷点)。
+    - layer_name: 图层名（点要素或质心）。
+    - field: 待分析字段（必须为非负数值）。
+    - threshold: 距离阈值（度，0.01 度约 1km，默认 0.01）。
+    生成含 gi_z、gi_p 及 hotspot_type('热点'/'冷点'/'不显著') 的新图层并上图。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -6536,30 +6361,10 @@ def spatial_hotspot(layer_name: str, field: str, threshold: float = 0.01, k: int
 
 @tool
 def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50) -> str:
-    """核密度估计（KDE），将点事件转换为连续密度面。
-
-【适用场景】
-- 点数据的密度可视化：犯罪热点、设施分布、物种出现点、人口聚集等。
-- 输出为规则格网点图层，每个格点带密度值，可用分级设色或热力图展示。
-
-【参数】
-- layer_name：**必须是点图层**（Point / MultiPoint）。面/线图层请先用
-  spatial_centroid 取质心再分析，否则算出来的是顶点密度而不是要素密度。
-- bandwidth：高斯核带宽，**单位是度**（WGS84），0.01 度约 1km。
-  传 0 或省略时按 Scott 法则自动估算（推荐）。
-- grid_size：输出格网边长格数，默认 50x50=2500 个格点；越大越精细也越慢。
-
-【输出】
-- 新图层（格网点），含两个字段：
-  - density：密度，单位「点/平方度」（原始值）
-  - density_km2：密度，单位「点/平方千米」（按图层中心纬度换算，便于解读）
-- 自动过滤密度低于最大值 1% 的格点，减少冗余。
-
-【常见坑】
-- 带宽太小密度图会碎成孤立点，太大会糊成一片。拿不准就用自动带宽。
-- 高纬度地区 1 度经度对应的实际距离会缩短，可先 convert_crs 到投影坐标系再分析。
-- 点太少（<10）时 KDE 不稳定，结果仅供参考。
-- 密度是相对值，跨数据集比较必须统一带宽和网格。"""
+    """核密度估计（KDE），将点事件转化为连续密度面格网并上图。
+    - layer_name: 必须是点图层（Point/MultiPoint，面/线需先调 spatial_centroid 取质心）。
+    - bandwidth: 高斯核带宽（度，0.01 度约 1km；传 0 则自动按 Scott 法则估算）。
+    - grid_size: 输出格网边长（默认 50，即 50x50 格点）。生成含 density 与 density_km2 字段的图层。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -6716,21 +6521,10 @@ def _calc_spectral_index(layer_name: str, formula_name: str, calc_fn, cmap_name:
 
 @tool
 def ndwi_analysis(layer_name: str, green_band: int = 2, nir_band: int = 4) -> str:
-    """归一化水体指数 NDWI = (Green - NIR) / (Green + NIR)。
-
-【适用场景】
-- 水体提取与边界 delineation：湖泊、河流、水库、海岸线。
-- NDWI > 0 通常为水体，> 0.3 为明显水体；< 0 为植被/土壤。
-
-【波段编号（从 1 开始）】
-- Landsat 5/7：green=2, nir=4
-- Landsat 8/9：green=3, nir=5
-- Sentinel-2：green=3, nir=8
-
-【常见坑】
-- 与 MNDWI（用 SWIR 代替 NIR）区分：本工具是经典 NDWI（McFeeters 1996）。
-- 城市建成区在 NDWI 上也可能偏高，需结合 NDBI 交叉验证。
-- 必须使用地表反射率（SR）产品，原始 DN 值会导致范围异常。"""
+    """计算归一化水体指数 NDWI = (Green - NIR) / (Green + NIR)。
+    - layer_name: GeoTIFF 图层名。
+    - green_band: 绿光波段序号(从1开始，默认 2；Landsat 8/9为3，Sentinel-2为3)。
+    - nir_band: 近红外波段序号(从1开始，默认 4；Landsat 8/9为5，Sentinel-2为8)。"""
     def calc(bands):
         import numpy as np
         g = bands.get("green"); n = bands.get("nir")
@@ -6743,21 +6537,10 @@ def ndwi_analysis(layer_name: str, green_band: int = 2, nir_band: int = 4) -> st
 
 @tool
 def ndbi_analysis(layer_name: str, swir_band: int = 5, nir_band: int = 4) -> str:
-    """归一化建筑指数 NDBI = (SWIR - NIR) / (SWIR + NIR)。
-
-【适用场景】
-- 城市建成区提取、城镇化监测、建筑密度分析。
-- NDBI > 0 通常为建筑/裸地，> 0.2 为明显建成区；< 0 为植被/水体。
-
-【波段编号（从 1 开始）】
-- Landsat 5/7：swir=5, nir=4
-- Landsat 8/9：swir=6, nir=5
-- Sentinel-2：swir=11, nir=8
-
-【常见坑】
-- 裸土在 NDBI 上也偏高，需结合 NDVI（NDVI<0.2 且 NDBI>0 → 建筑）区分。
-- 本工具默认读取第 5 波段为 SWIR，Sentinel-2 用户必须手动设 swir_band=11。
-- 必须使用地表反射率（SR）产品。"""
+    """计算归一化建筑指数 NDBI = (SWIR - NIR) / (SWIR + NIR)。
+    - layer_name: GeoTIFF 图层名。
+    - swir_band: 短波红外序号(从1开始，默认 5；Landsat 8/9为6，Sentinel-2为11)。
+    - nir_band: 近红外波段序号(从1开始，默认 4；Landsat 8/9为5，Sentinel-2为8)。"""
     def calc(bands):
         import numpy as np
         s = bands.get("swir"); n = bands.get("nir")
@@ -6770,22 +6553,12 @@ def ndbi_analysis(layer_name: str, swir_band: int = 5, nir_band: int = 4) -> str
 
 @tool
 def evi_analysis(layer_name: str, nir_band: int = 4, red_band: int = 3, blue_band: int = 1) -> str:
-    """增强植被指数 EVI = 2.5 * (NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1)。
-
-【适用场景】
-- 高生物量地区的植被监测（NDVI 在茂密植被区会饱和，EVI 更敏感）。
-- 大气校正不完美时，EVI 的 Blue 通道能抵消大气气溶胶影响。
-- EVI 范围 [-1, 1]，>0.3 有植被，>0.6 茂密植被。
-
-【波段编号（从 1 开始）】
-- Landsat 5/7：nir=4, red=3, blue=1
-- Landsat 8/9：nir=5, red=4, blue=2
-- Sentinel-2：nir=8, red=4, blue=2
-
-【常见坑】
-- EVI 需要 Blue 波段，缺少 Blue 时会报错，可用 NDVI 替代。
-- 分母加 1 是为了避免除零，与标准公式一致。
-- 必须使用地表反射率（SR）产品。"""
+    """计算增强植被指数 EVI = 2.5 * (NIR - Red) / (NIR + 6*Red - 7.5*Blue + 1)。
+    - layer_name: GeoTIFF 图层名。
+    - nir_band: 近红外序号(从1开始，默认 4；Landsat 8/9为5，Sentinel-2为8)。
+    - red_band: 红光波段序号(从1开始，默认 3；Landsat 8/9为4，Sentinel-2为4)。
+    - blue_band: 蓝光波段序号(从1开始，默认 1；Landsat 8/9为2，Sentinel-2为2)。
+    输出截断到 [-1, 1] 后渲染（超出极值的像元压平到边界），有效植被区通常为 0~1。"""
     def calc(bands):
         import numpy as np
         n = bands.get("nir"); r = bands.get("red"); b = bands.get("blue")
@@ -6798,22 +6571,10 @@ def evi_analysis(layer_name: str, nir_band: int = 4, red_band: int = 3, blue_ban
 
 @tool
 def ndmi_analysis(layer_name: str, nir_band: int = 4, swir_band: int = 5) -> str:
-    """归一化水分指数 NDMI = (NIR - SWIR) / (NIR + SWIR)。
-
-【适用场景】
-- 植被含水量监测、干旱评估、作物水分胁迫诊断。
-- NDMI > 0 表示植被含水量较高，< 0 表示水分胁迫或非植被。
-- 与 NDWI 区别：NDMI 用 SWIR，反映植被冠层水分；NDWI 用 Green，反映水体。
-
-【波段编号（从 1 开始）】
-- Landsat 5/7：nir=4, swir=5
-- Landsat 8/9：nir=5, swir=6
-- Sentinel-2：nir=8, swir=11
-
-【常见坑】
-- Sentinel-2 用户必须手动设 swir_band=11（默认 5 是错误的）。
-- 土壤在 NDMI 上也可能有信号，需结合 NDVI 掩膜植被区。
-- 必须使用地表反射率（SR）产品。"""
+    """计算归一化水分指数 NDMI = (NIR - SWIR) / (NIR + SWIR)。
+    - layer_name: GeoTIFF 图层名。
+    - nir_band: 近红外波段序号(从1开始，默认 4；Landsat 8/9为5，Sentinel-2为8)。
+    - swir_band: 短波红外序号(从1开始，默认 5；Landsat 8/9为6，Sentinel-2为11)。"""
     def calc(bands):
         import numpy as np
         n = bands.get("nir"); s = bands.get("swir")
@@ -6824,6 +6585,35 @@ def ndmi_analysis(layer_name: str, nir_band: int = 4, swir_band: int = 5) -> str
                                  band_map={"nir": nir_band, "swir": swir_band})
 
 
+@tool
+def calc_spectral_index(
+    layer_name: str,
+    index: Literal["ndvi", "ndwi", "ndbi", "evi", "ndmi"],
+    red_band: int = 3,
+    nir_band: int = 4,
+    green_band: int = 2,
+    swir_band: int = 5,
+    blue_band: int = 1,
+) -> str:
+    """统一计算多光谱遥感指数（NDVI/NDWI/NDBI/EVI/NDMI）。
+    - layer_name: 多光谱 GeoTIFF 图层名。
+    - index: 必选指数类型，可选 'ndvi'(植被) / 'ndwi'(水体) / 'ndbi'(建筑) / 'evi'(增强植被) / 'ndmi'(地表水分)。
+    - red_band / nir_band / green_band / swir_band / blue_band: 传感器对应波段序号（默认适配常规RGBN传感器；Landsat/Sentinel按需配置）。"""
+    idx = (index or "ndvi").strip().lower()
+    if idx == "ndvi":
+        return ndvi_analysis.invoke({"layer_name": layer_name, "red_band": red_band, "nir_band": nir_band})
+    elif idx == "ndwi":
+        return ndwi_analysis.invoke({"layer_name": layer_name, "green_band": green_band, "nir_band": nir_band})
+    elif idx == "ndbi":
+        return ndbi_analysis.invoke({"layer_name": layer_name, "swir_band": swir_band, "nir_band": nir_band})
+    elif idx == "evi":
+        return evi_analysis.invoke({"layer_name": layer_name, "nir_band": nir_band, "red_band": red_band, "blue_band": blue_band})
+    elif idx == "ndmi":
+        return ndmi_analysis.invoke({"layer_name": layer_name, "nir_band": nir_band, "swir_band": swir_band})
+    else:
+        return f"不支持的遥感指数: {index}，支持: ndvi, ndwi, ndbi, evi, ndmi"
+
+
 
 # ============================================================
 # 工具: generate_analysis_report — GIS 分析报告生成
@@ -6832,24 +6622,10 @@ def ndmi_analysis(layer_name: str, nir_band: int = 4, swir_band: int = 5) -> str
 @tool
 def generate_analysis_report(layer_name: str, analysis_summary: str = "",
                              include_stats: bool = True, include_quality: bool = True) -> str:
-    """为指定图层生成结构化 Markdown 分析报告（方法、参数、结果统计、数据质量、结论）。
-
-【适用场景】
-- 一次空间分析完成后，把分析过程与结果沉淀为可交付的报告。
-- 汇报、存档、团队协作时快速生成标准化报告。
-
-【输入】
-- layer_name：图层名（自动提取图层信息与字段统计）。
-- analysis_summary：分析目的与方法简述（Agent 或用户填写，支持换行）。
-- include_stats：是否包含字段统计（数值字段的 min/max/mean/std/空值数）。
-- include_quality：是否包含数据质量检查（几何有效、重复要素）。
-
-【输出】
-- 报告以 Markdown 文本返回，同时通过 save_file 落盘到输出目录并返回文件路径。
-
-【常见坑】
-- analysis_summary 为空时报告只有数据概览部分，建议填写分析目的。
-- 大量字段时报告较长，Agent 应只汇总关键字段。"""
+    """为指定图层生成结构化 Markdown 分析报告并保存到输出目录。
+    - layer_name: 图层名（自动提取要素量、几何类型与字段统计）。
+    - analysis_summary: 分析目的与方法简述。
+    - include_stats: 是否包含字段数值统计(默认 True)；include_quality: 是否包含几何质量自检(默认 True)。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -6939,22 +6715,8 @@ def generate_analysis_report(layer_name: str, analysis_summary: str = "",
 
 @tool
 def spatial_fix_geometry(layer_name: str) -> str:
-    """批量修复图层中无效几何（自相交、环断裂等），生成修复后的新图层。
-
-【适用场景】
-- 数据源几何无效（自相交多边形、环方向错误、坐标异常）导致叠加/缓冲失败。
-- 分析前数据质量检查发现无效几何后的标准预处理步骤。
-
-【方法】
-- 用 shapely make_valid 逐个修复无效几何；修复后仍无效的要素保留原几何并计数。
-- 空几何要素会标记，不影响其他要素。
-
-【输出】
-- 新图层（{name}_修复），含 fix_status 字段：fixed（已修复）/ original（原本有效）/ failed（修复失败）。
-
-【常见坑】
-- make_valid 可能把自相交多边形拆成 MultiPolygon，几何类型会变化，属正常现象。
-- 修复后建议重新 spatial_field_stats 检查坐标范围是否合理。"""
+    """批量修复图层中的无效几何（自相交多边形、环断裂等），生成修复后的新图层。
+    - layer_name: 待修复的矢量图层名。生成含 fix_status('fixed'/'original'/'failed') 字段的新图层上图。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -7006,22 +6768,9 @@ def spatial_fix_geometry(layer_name: str) -> str:
 
 @tool
 def spatial_check_duplicates(layer_name: str, fields: str = "") -> str:
-    """检测图层中的重复要素（几何完全相同或指定字段值重复）。
-
-【适用场景】
-- 数据合并、多次导入后的去重检查。
-- 普查/登记数据按唯一标识字段查重。
-
-【方法】
-- 不指定 fields：按几何（WKB 完全相同）检测重复。
-- 指定 fields（逗号分隔）：按字段值组合检测重复（如 "id,name"）。
-
-【输出】
-- 返回重复组数、涉及要素数；若几何重复，生成标记图层 {name}_重复要素。
-
-【常见坑】
-- 几何"几乎相同"但坐标精度不同不算重复（如 shp 与 geojson 精度差异）。
-- 字段查重时空值不参与匹配。"""
+    """检测图层中的重复要素。
+    - layer_name: 图层名。
+    - fields: 逗号分隔的属性字段列表（如 'id,name'）；若为空则直接按几何完全一致查重。返回重复统计并标图。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -7065,34 +6814,10 @@ def spatial_check_duplicates(layer_name: str, fields: str = "") -> str:
 
 @tool
 def ask_user_choice(prompt: str, options: list, choice_key: str = "") -> str:
-    """向用户弹出一组选项，等待用户选择后继续执行。用于两阶段交互：
-第一次选数据源（地理空间数据云/Copernicus/USGS 等），第二次选具体影像。
-
-【适用场景】
-- 下载遥感数据前，让用户选择数据源（带配置状态提示）。
-- 搜索到多景影像后，让用户选择具体要下载哪一景。
-- 任何需要用户在多个选项中做决策的场景。
-
-【输入】
-- prompt：给用户看的提示文字，说明为什么要选、选什么。
-- options：选项列表，每个选项是 dict，必须含 label（显示文字），可选 desc（说明）、configured（bool，是否已配置）、value（实际值）。
-- choice_key：标识这是第几轮选择（如 "data_source" / "image"），用于 AI 区分上下文。
-
-【输出】
-- 设置 pending_action 为 choose_option，前端渲染选项按钮组。
-- 用户点击选项后，选择会作为下一条消息的上下文注入，AI 直接继续执行。
-
-【示例】
-ask_user_choice(
-  prompt="请选择遥感数据数据源",
-  options=[{"label":"地理空间数据云","configured":false},{"label":"Copernicus","configured":true}],
-  choice_key="data_source"
-)
-
-【常见坑】
-- options 不能为空，至少 2 个选项。
-- 不要在一次对话中连续弹多次选项而不给用户喘息时间。
-- 用户选择后，AI 应从消息上下文读取选择结果，不要再次询问。"""
+    """向用户弹出一组选项按钮组，等待用户交互选择后自动继续执行。
+    - prompt: 给用户的引导文案，说明选什么及决策原因。
+    - options: 选项列表，每项为 dict({"label": "显示文字", "value": "值", "desc": "可选说明"}) 或 str，至少 2 项。
+    - choice_key: 轮次标识（如 'data_source' / 'image_scene'），供下一轮识别上下文。"""
     try:
         if not options or len(options) < 2:
             return "错误：options 至少需要 2 个选项"
@@ -7150,32 +6875,11 @@ def fetch_weather_data(latitude: float, longitude: float,
                        variables: str = "",
                        start_date: str = "", end_date: str = "",
                        location_name: str = "") -> str:
-    """从 Open-Meteo 获取指定坐标的天气时序数据（免费，无需 API Key）。
-
-    【适用场景】
-    - 用户询问某地点的天气、降水、温度、风速等情况
-    - 需要过去 N 天的天气趋势分析
-    - 气象数据与 GIS 区域叠加分析
-
-    【输入】
-    - latitude / longitude：坐标（WGS84）。如果用户给的是地名，必须先调用 amap_geocode 获取坐标，然后立即在同一轮中调用本工具，不要停下来等用户。
-    - past_days：过去天数（默认 7，最大 90）
-    - forecast_days：未来预报天数（默认 0，最大 16）
-    - variables：变量列表，逗号分隔，可选 temperature_2m_max, temperature_2m_min,
-      precipitation_sum, windspeed_10m_max, relativehumidity_2m_mean, pressure_msl_mean。
-      留空默认 temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max
-    - start_date / end_date：自定义日期范围（YYYY-MM-DD），设置后忽略 past_days/forecast_days
-    - location_name：地点名称，用于图表标题和结果描述
-
-    【输出】
-    - 自动生成天气趋势折线图（温度双轴 + 降水柱状）
-    - 返回统计摘要（平均/最高/最低温度、总降水量、最大风速）
-    - 图表注册到待发送图片列表
-
-    【常见问题】
-    - 国内网络可直连 Open-Meteo，偶尔超时会返回错误提示
-    - 坐标用 WGS84，不要用 GCJ-02（高德坐标），否则位置偏移
-    - 过去数据最多 90 天，需要更早数据用 start_date/end_date 指定（Open-Meteo 历史数据有范围限制）"""
+    """从 Open-Meteo 获取指定坐标(WGS84)的历史/预报天气并绘制趋势图（免费免Key）。
+    - latitude / longitude: 坐标(WGS84经纬度)。地名需先经 amap_geocode 转坐标。
+    - past_days: 过去天数(默认 7，上限 90)；forecast_days: 预报天数(默认 0，上限 16)。
+    - variables: 逗号分隔指标，默认温度/降水/风速；start_date/end_date: 自定义日期范围(YYYY-MM-DD)。
+    - location_name: 地名标注，用于图表标题与统计展示。"""
     try:
         import requests
         import datetime
@@ -7285,28 +6989,9 @@ def fetch_earthquake_data(start_time: str = "", end_time: str = "",
                           min_lat: float = -90, max_lat: float = 90,
                           min_lon: float = -180, max_lon: float = 180,
                           limit: int = 500) -> str:
-    """从 USGS 获取地震数据并加载到地图（免费，无需 API Key）。
-
-    【适用场景】
-    - 用户询问近期地震分布、震中位置
-    - 地震灾害空间分析（热点、缓冲区、影响范围）
-    - 与人口/建筑数据叠加做灾害评估
-
-    【输入】
-    - start_time / end_time：时间范围（YYYY-MM-DD），默认过去 30 天
-    - min_magnitude：最小震级（默认 2.5）
-    - min_lat / max_lat / min_lon / max_lon：经纬度边界，默认全球
-    - limit：最大返回条数（默认 500）
-
-    【输出】
-    - 地震点 GeoJSON，自动注册并推送到地图（震级分级着色）
-    - 返回统计摘要（地震数量、震级分布、最强地震信息）
-    - 自动生成震级分布直方图
-
-    【常见问题】
-    - USGS 国内访问不稳定，超时会返回错误提示
-    - 数据为实时更新，过去 30 天内数据最完整
-    - 震级 >=5 的地震才有完整的震源深度和位置信息"""
+    """从 USGS 获取地震数据并生成点图层推送到地图（免费免Key）。
+    - start_time / end_time: 时间范围(YYYY-MM-DD，默认近 30 天)；min_magnitude: 最小震级(默认 2.5)。
+    - min_lat/max_lat/min_lon/max_lon: 空间范围；limit: 最大条数(默认 500)。输出分级着色图层与震级分布直方图。"""
     try:
         import requests
         import datetime
@@ -7734,41 +7419,11 @@ def inspect_satellite_image(
     inspection_type: str = "all",
     zoom: int = 14,
 ) -> str:
-    """卫星影像快速巡检工具（无需下载数据）。用户说"巡检卫星影像""快速查看卫星图""卫星影像分析""看看某区域的卫星图"时优先使用本工具。直接使用 Esri World Imagery 免费瓦片（无需 API Key），根据地名或 bbox 获取影像，进行水体/植被/裸地/建筑的 RGB 颜色规则启发式初筛，生成候选区域矢量图层并统计。
-
-    【何时使用本工具】
-    - 用户想快速了解某区域的地物分布，不需要专业遥感分类
-    - 用户说"巡检""快速查看""看看卫星图""卫星影像分析"
-    - 用户没有明确要求下载 Landsat/Sentinel 等原始遥感数据
-    - 不需要走地理空间数据云/USGS 下载流程时
-
-    【何时不要用本工具】
-    - 用户明确要求下载 Landsat/Sentinel 原始数据 -> 走下载流程
-    - 用户需要专业遥感分类/变化检测 -> 用 ndvi_analysis 等指数工具
-    - 用户需要多光谱波段分析 -> 用 raster_calculator
-
-    【重要声明】本工具是基于 RGB 颜色特征的启发式初筛，不等同于专业遥感分类、目标检测或实测面积计算，结果需要人工核验。面积为等面积投影下的候选区域估计值。
-
-    【参数】
-    - place_name: 地名，如"武汉市洪山区"。提供时自动查找已注册的行政边界图层并裁剪。
-
-    【强制防幻觉规则】
-    - place_name 必须严格使用用户明确指定的地名（含上一轮原始请求中的地名）。
-    - 若用户没有明确地名，必须直接回复请用户提供地名，严禁猜测、默认或编造城市。
-    - 严禁出现「用户要求上海、却执行北京/广州」之类的地名错乱；不确定时先问。
-    - bbox: 手动指定范围，格式"west,south,east,north"（WGS84 经纬度）。与 place_name 二选一。
-    - inspection_type: 巡检类型。all=全部，或 water/vegetation/bare_ground/built_up 逗号分隔。
-    - zoom: 瓦片缩放级别 10-18，默认 14。级别越高分辨率越高但瓦片越多。
-
-    【使用场景】
-    - 快速了解某区域的地物大致分布
-    - 水体/植被/建筑区域的初步筛查
-    - 变化检测的前期参考（非精确）
-
-    【输出】
-    - 生成"影像巡检_地名"矢量图层，含 category 属性
-    - 返回各类别像素数、占比、面积（等面积投影计算）
-    - 明确标注启发式初筛局限性"""
+    """卫星影像快速巡检（无需下载）。利用 Esri World Imagery 免费瓦片初筛水体/植被/裸地/建筑候选区并上图。
+    - place_name: 明确地名（如'武汉市洪山区'，禁止编造），优先裁剪已注册行政边界。
+    - bbox: 手动范围 'west,south,east,north'（WGS84），与 place_name 二选一。
+    - inspection_type: 巡检类别，'all'(默认) 或 'water,vegetation,bare_ground,built_up' 组合。
+    - zoom: 瓦片级别 10-18（默认 14）。生成影像巡检矢量图层及面积初筛统计。"""
     import numpy as np
 
     # --- 1. 解析研究范围 ---
@@ -8155,33 +7810,9 @@ def generate_static_map(
 
 @tool
 def execute_workflow(workflow_json: str) -> str:
-    """执行一个 GIS 分析工作流（Workflow）。适用于多步骤、有依赖关系的复杂 GIS 分析任务。
-
-    【适用场景】
-    - 需要按顺序执行多个 GIS 工具（如：加载数据 → 裁剪 → 计算指数 → 统计）
-    - 步骤之间有数据依赖（后一步的输入来自前一步的输出）
-    - 需要清晰展示分析流程和每一步的执行状态
-
-    【参数】
-    workflow_json: JSON 字符串，包含 name、description、nodes 数组。
-    每个 node 包含：id、name、tool（工具名）、inputs（参数）、depends_on（依赖的节点id列表）。
-    inputs 中可以使用 ${node_id.output_key} 引用上游节点的输出。
-
-    【示例】
-    {
-      "name": "广州NDVI分析",
-      "description": "计算广州区域NDVI",
-      "nodes": [
-        {"id": "n1", "name": "加载边界", "tool": "get_admin_boundary", "inputs": {"name": "广州"}, "depends_on": []},
-        {"id": "n2", "name": "裁剪影像", "tool": "clip_raster", "inputs": {"boundary": "${n1.geojson}"}, "depends_on": ["n1"]},
-        {"id": "n3", "name": "计算NDVI", "tool": "calculate_ndvi", "inputs": {"raster": "${n2.raster_path}"}, "depends_on": ["n2"]}
-      ]
-    }
-
-    【返回】
-    执行结果摘要，包括每个节点的状态、耗时、错误信息。
-    节点输出如果是 GeoJSON，会自动注册为地图图层。
-    """
+    """执行多步骤、有依赖关系的 GIS 分析工作流。
+    - workflow_json: JSON 格式定义，含 name、description 及 nodes 列表。
+      每个节点包含 id、name、tool(工具名)、inputs(参数字典，支持 ${node_id.output_key} 引用上游) 与 depends_on。"""
     try:
         import json
         from backend.services.workflow import (
@@ -8282,21 +7913,10 @@ def materialize_workflow(workflow_name: str = "") -> str:
 
 @tool
 def query_spatial_sql(sql: str, result_layer_name: str = "") -> str:
-    """【安全只读 SQL 查询与透视】使用标准 SQL 对当前已加载的图层属性或要素进行极速只读查询（SELECT/WITH）。
-
-    【核心能力】
-    1. 属性过滤与排序：例如 SELECT * FROM "南京市_学校" WHERE "type"='公立' ORDER BY "students" DESC LIMIT 10
-    2. 统计与透视：例如 SELECT "district", count(*) as 数量 FROM "南京市_学校" GROUP BY "district"
-    3. 自动空间上图 (Query to Layer)：若 SELECT 中包含 _geom_json，或使用了 SELECT *，系统会自动将过滤出的要素组装为高亮新图层并添加到地图上！
-    4. 严格只读安全：拒绝任何 UPDATE/DELETE/DROP/CREATE 破坏性操作。
-
-    【参数】
-    sql: 标准 SELECT 或 WITH 只读查询语句。表名即为图层名（可用双引号包裹）。
-    result_layer_name: 可选，若查询包含空间几何且需要上图，可指定生成的新图层名称。
-
-    【返回】
-    Markdown 格式的数据结果表格，若生成了新图层则一并说明。
-    """
+    """使用标准 SQL (SELECT/WITH) 对当前已加载图层属性与要素进行极速只读查询与透视。
+    表名为图层名。若包含几何或使用 SELECT *，自动将结果要素渲染为高亮新图层上图。
+    - sql: 标准只读 SQL 语句。
+    - result_layer_name: 可选，生成结果图层的自定义名称。"""
     try:
         from backend.services.sql_engine import execute_layer_sql
         res = execute_layer_sql(sql, _registered_layers, create_result_layer=True, result_layer_name=result_layer_name)
@@ -8337,46 +7957,11 @@ def get_elevation_data(
     output_format: str = "geotiff",
 ) -> str:
     """获取指定地理范围的真实地表高程 DEM 数据（按需下载 + 本地 tile 缓存）。
-
-【数据流】
-    bbox → tile 范围计算 → 检查本地 tile 缓存 → 缺失 tile 在线下载 →
-    拼接 → 裁剪到 bbox → 必要时重采样 → 写 GeoTIFF → 渲染地形预览 PNG → 返回 GIS 工具接力
-
-【数据源 Provider】
-- aws_terrain（默认）：AWS Terrain Tiles / Terrarium 格式（SRTM 派生）
-  · 全球覆盖（Web Mercator 极限 lat ≤ ±85.0511）
-  · 公开免 Key，无需账号
-  · z ∈ [0,14]，默认 z=12（赤道 ≈ 78 m/px）
-- 未来可加 USGS 3DEP / Open-Meteo Elevation / OpenTopography 等
-
-【输入】
-- bbox：边界框 [minLng, minLat, maxLng, maxLat] WGS84
-  支持 list / tuple（如 [112.93, 28.18, 112.97, 28.20]），
-  也接受逗号分隔字符串（"112.93,28.18,112.97,28.20"）。
-- resolution：目标分辨率（度/像素），0 = Provider 默认
-- provider：Provider id（默认 "aws_terrain"）
-- output_format：输出格式，"geotiff"（默认，落盘 GeoTIFF）/ "numpy"（仅内存 ndarray）
-
-【返回】（JSON 字符串，含）
-- ok：true/false
-- data：elevation_summary（shape/min/max/mean/std/nodata_pct）
-- crs / transform / bounds / width / height / resolution：空间参考
-- min_elevation / max_elevation：高程极值（米）
-- tile_count / tile_cache_hits / tile_cache_misses：下载统计
-- geotiff_path：落盘 GeoTIFF 绝对路径（dem_analysis / extract_contours / terrain_profile 用此文件）
-- preview_url / preview_name：地形预览 PNG（前端叠加到地图）
-- layer_name：后续 GIS 工具用此名复用本 DEM
-
-【常见坑】
-- bbox 经纬度反了（lng/lat 写反）→ 拿到地球另一侧的数据
-- 范围跨海（SRTM 海洋标记为无效）→ 部分 tile 返回 nodata
-- 范围在 lat > ±60（SRTM 覆盖边缘）→ 数据稀疏
-- z 选得太细（如 resolution=0.0001°）→ 单次下载几百 tile，慢且占空间
-
-【示例流程】
-    >>> get_elevation_data(bbox=[112.93, 28.18, 112.97, 28.20])
-    >>> dem_analysis(layer_name="dem_xxx", analysis="slope")
-    >>> extract_contours(layer_name="dem_xxx", interval=50)"""
+    - bbox: 边界框 [minLng, minLat, maxLng, maxLat]（WGS84，如 [112.93, 28.18, 112.97, 28.20]）或逗号分隔字符串。
+    - resolution: 目标分辨率（度/像素，默认 0 为自动）。
+    - provider: 数据源，默认 'aws_terrain'（全球免费免 Key）。
+    - output_format: 'geotiff'(默认落盘GeoTIFF供dem_analysis分析) 或 'numpy'。
+    返回包含 min/max_elevation、geotiff_path、preview_url 及可用图层名 layer_name 的 JSON。"""
     try:
         bb = _parse_dem_bbox(bbox)
         prov = dem_provider_by_id(provider)
@@ -9146,12 +8731,10 @@ def fetch_gis_data_url(
     output_filename: str = "",
     auto_render: bool = False,
 ) -> str:
-    """从 GIS URL 提取矢量数据、标准化坐标系为 WGS84 并落盘保存到本地会话目录。
-    支持 ArcGIS REST (MapServer/FeatureServer)、OGC WFS、GeoJSON URL、GeoParquet、FlatGeobuf、Shapefile ZIP、CSV 坐标表。
-    url: 数据/服务地址；layer_id: 针对多图层服务的子图层 ID 或名称；bbox: 空间范围过滤 'minx,miny,maxx,maxy'；
-    where: 属性过滤条件（如 'POP > 10000'）；limit: 最大抓取要素数（默认 1000）；
-    output_format: 保存格式（geojson/gpkg/csv）；output_filename: 指定文件名；auto_render: 是否同时渲染到地图（默认 False）。
-    用户提供数据 URL 要求"下载/查询数据/提取要素"时调用。"""
+    """从 GIS 在线 URL 提取矢量数据、标准化坐标系为 WGS84 并落盘（支持 ArcGIS REST/WFS/GeoJSON/GeoParquet/FlatGeobuf）。
+    - url: 在线服务或文件地址；layer_id: 子图层 ID/名称；bbox: 空间范围过滤 'minx,miny,maxx,maxy'。
+    - where: 属性过滤条件；limit: 最大要素数(默认 1000)；output_format: geojson(默认)/gpkg/csv。
+    - auto_render: 是否同时渲染上图(默认 False)。"""
     from backend.services import url_gis_service as ugs
     try:
         res = ugs.fetch_gis_data_url(
@@ -9384,6 +8967,7 @@ tools = [
     spatial_moran,
     spatial_hotspot,
     spatial_kde,
+    calc_spectral_index,
     ndwi_analysis,
     ndbi_analysis,
     evi_analysis,

@@ -105,6 +105,22 @@ class TestSpectralIndexValues:
         assert abs(val_param - val_def) > 0.5, "波段参数未改变结果，疑似仍被忽略"
 
 
+class TestCalcSpectralIndexFacade:
+    def test_facade_ndvi_dispatch(self, upload_dir):
+        """测试 calc_spectral_index 门面正确调度 NDVI"""
+        _make_tif(os.path.join(upload_dir, "facade_v.tif"), [0.1, 0.3, 0.2, 0.5, 0.05])
+        from backend.services.tools import calc_spectral_index
+        r = calc_spectral_index.invoke({"layer_name": "facade_v", "index": "ndvi"})
+        assert "已生成NDVI" in r or "平均NDVI=" in r
+
+    def test_facade_ndwi_dispatch(self, upload_dir):
+        """测试 calc_spectral_index 门面正确调度 NDWI"""
+        _make_tif(os.path.join(upload_dir, "facade_w.tif"), [0.3, 0.5, 0.2, 0.1, 0.05, 0.05])
+        from backend.services.tools import calc_spectral_index
+        r = calc_spectral_index.invoke({"layer_name": "facade_w", "index": "ndwi", "green_band": 2, "nir_band": 4})
+        assert "已生成NDWI" in r
+
+
 
 
 

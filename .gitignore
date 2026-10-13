@@ -16,6 +16,9 @@ build/
 
 # 对话历史缓存（自动生成）
 backend/chat_history.json
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 
 # IDE
 .vscode/
