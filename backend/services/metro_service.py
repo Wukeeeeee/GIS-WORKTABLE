@@ -98,9 +98,29 @@ def fetch_cn(city_norm):
         raise ValueError("暂不支持城市「%s」（国内已支持：%s）" % (city_norm, "、".join(sorted(CN_CITY_CODES))))
     code, py_ = info
     url = "https://map.amap.com/service/subway?_1700000000000&srhdata=%s_drw_%s.json" % (code, py_)
-    r = requests.get(url, timeout=15, headers=_UA)
-    r.raise_for_status()
-    d = r.json()
+    # 高德偶发 TLS 断连（SSL: UNEXPECTED_EOF_WHILE_READING），重试 + urllib 直连兜底，
+    # 避免一次网络抖动就让"地铁上地图"整条链路失败。
+    d = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            r = requests.get(url, timeout=15, headers=_UA)
+            r.raise_for_status()
+            d = r.json()
+            break
+        except Exception as e:
+            last_err = e
+        try:
+            import urllib.request as _ur
+            import json as _json
+            with _ur.urlopen(_ur.Request(url, headers=_UA), timeout=15) as resp:
+                d = _json.loads(resp.read().decode("utf-8"))
+            break
+        except Exception as e2:
+            last_err = e2
+            time.sleep(0.6 * (attempt + 1))
+    if d is None:
+        raise RuntimeError("高德地铁数据获取失败（网络波动，已重试 3 次）：%s" % str(last_err)[:200])
     if not isinstance(d, dict) or not d.get("l"):
         raise ValueError("城市「%s」暂无地铁数据" % city_norm)
     _cache[key] = (time.time(), d)
