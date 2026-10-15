@@ -329,6 +329,7 @@ def _pmtiles_open(source: str, want_handle: bool = False):
         raise CloudNativeError(f"缺少依赖: {e}，请安装 pmtiles")
 
     s = str(source).strip()
+    f = None  # URL 分支无文件句柄；本地分支持有 mmap 源的文件句柄
     try:
         if _is_http(s):
             reader = Reader(_HttpRangeSource(s).get_bytes)

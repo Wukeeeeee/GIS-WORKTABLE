@@ -715,21 +715,28 @@ async def get_boundary_api(place: str = "长沙市", adcode: str = ""):
 async def upload(file: UploadFile = File(...)):
     import os, tempfile, zipfile, orjson
     loop = asyncio.get_event_loop()
-    content = await file.read()
     filename = file.filename or ''
     ext = os.path.splitext(filename)[1].lower()
-
-    # GeoJSON 已有内存副本，跳过磁盘写；其余格式落地供 AI 后续处理
-    saved_path = None
-    if ext not in ('.geojson', '.json'):
-        upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-        saved_path = os.path.join(upload_dir, filename)
-        with open(saved_path, 'wb') as f:
-            f.write(content)
+    upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    saved_path = os.path.join(upload_dir, filename)
+    # 流式落盘（8MB 分块）：上传不再整读进内存，GB 级文件内存峰值 ~10MB
+    with open(saved_path, 'wb') as f:
+        while True:
+            chunk = await file.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+    file_size = os.path.getsize(saved_path)
+    content = None
+    if ext in ('.geojson', '.json') and file_size <= 64 * 1024 * 1024:
+        with open(saved_path, 'rb') as f:
+            content = f.read()
 
     # ===== GeoJSON =====
     if ext == '.geojson' or ext == '.json':
+        if content is None:
+            return {"error": f"GeoJSON 文件过大（{file_size/1024/1024:.0f}MB > 64MB），请先在桌面 GIS 中抽稀后再上传"}
         geojson_data = await loop.run_in_executor(None, orjson.loads, content)
         if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
             _register_layer(filename, geojson_data)
@@ -746,7 +753,7 @@ async def upload(file: UploadFile = File(...)):
     # ===== SHP (zip 包) =====
     if ext == '.zip':
         # 看看 zip 里有没有 .shp
-        with zipfile.ZipFile(BytesIO(content)) as zf:
+        with zipfile.ZipFile(saved_path) as zf:
             shp_files = [n for n in zf.namelist() if n.endswith('.shp')]
             if not shp_files:
                 return {"error": "ZIP 包中没有找到 .shp 文件"}
@@ -765,9 +772,7 @@ async def upload(file: UploadFile = File(...)):
     # ===== GPKG / KML / GPX 等（geopandas 支持的多图层格式） =====
     supported = {'.gpkg', '.kml', '.kmz', '.gpx', '.dxf'}
     if ext in supported:
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
+        tmp_path = saved_path
         try:
             import geopandas as gpd
             import pyogrio
@@ -803,9 +808,7 @@ async def upload(file: UploadFile = File(...)):
             import numpy as np
             from PIL import Image
 
-            with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
-                tmp.write(content)
-                tif_path = tmp.name
+            tif_path = saved_path
 
             with rasterio.open(tif_path) as src:
                 nodata = src.nodata
@@ -865,7 +868,10 @@ async def upload(file: UploadFile = File(...)):
     # ===== CSV（保存文件，让AI处理转换） =====
     if ext == '.csv':
         try:
-            content_str = content.decode('utf-8-sig')
+            if file_size > 64 * 1024 * 1024:
+                return {"error": f"CSV 文件过大（{file_size/1024/1024:.0f}MB > 64MB），请先拆分或抽稀"}
+            with open(saved_path, 'rb') as f:
+                content_str = f.read().decode('utf-8-sig')
             import pandas as pd
             from io import StringIO
             df = pd.read_csv(StringIO(content_str))

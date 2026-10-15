@@ -199,3 +199,23 @@ Value Table / SQL Expression / enum 约束）。ESRI 效果好的一半原因：
   负距离告警、field_of 动态字段校验、合法参数零警告、未知工具 noop
 - 全量：**763 passed / 5 failed**（失败均为已知遗留 + 环境性，零新增）
 - 端到端：HTTP 调用带错误图层名/单位  响应含 `param_warnings`
+
+
+---
+
+## 补充四（10-15 下午）：上传链路流式化 + pmtiles 句柄修复
+
+### 上传流式改造（backend/main.py /api/upload）
+- `await file.read()` 整读改为 **8MB 分块流式落盘**：GB 级文件上传内存峰值从 1GB+ 降到 ~10MB
+- GeoJSON：落盘后 64MB 才进内存解析，超限明确拒绝（提示先抽稀）；SHP zip 直接从磁盘读（去掉 BytesIO 整读）；
+  GPKG/KML/GPX/DXF 直接用落盘文件（去掉 tmp 拷贝）；GeoTIFF 直接用落盘文件（rasterio 本就是按需窗口读）；
+  CSV 超 64MB 拒绝整读
+- 实测：7.6MB GeoTIFF 与 100 要素 GeoJSON 上传均正常，服务内存 187172MB
+
+### pmtiles 句柄 bug 修复（cloud_native.py _pmtiles_open）
+- URL 分支不定义 f，`if f is not None` 触发 UnboundLocalError（此前所有 URL 方式加载 PMTiles 必失败）
+- 修复：`f = None` 初始化；顺带保留 345 行注释所述的句柄防泄漏语义
+
+### 测试
+- 全量 **764 passed / 4 failed**（4 个均为遗留/环境性：datav 消歧、协议清洗、satellite docstring、
+  pmtiles/flatgeobuf 远端拒连），零新增失败
