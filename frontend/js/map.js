@@ -1309,6 +1309,7 @@ var _undoSkip = false;
       if (item) {
         var action = item.getAttribute('data-action');
         if (action) {
+          window.GIS._lastMenuOp = item.getAttribute('data-op') || '';
           _handleMenuAction(action);
           menuBar.querySelectorAll('.map-menu-trigger.open').forEach(function(t) { t.classList.remove('open'); });
           e.stopPropagation();

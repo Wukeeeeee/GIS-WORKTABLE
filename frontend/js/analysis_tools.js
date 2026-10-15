@@ -365,6 +365,12 @@ window.GIS = window.GIS || {};
   }
 
   function toggle() {
+    if (window.GIS._lastMenuOp) {
+      var opid = window.GIS._lastMenuOp;
+      window.GIS._lastMenuOp = '';
+      openWith(opid);
+      return;
+    }
     if (_active) { deactivate(); } else { activate(); }
   }
 

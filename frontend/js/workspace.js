@@ -815,16 +815,6 @@
     dock.className = 'workspace-dock';
     dock.innerHTML = '<div class="workspace-dock-header"><strong id="workspaceDockTitle">首页</strong><button id="workspaceDockClose" class="workspace-icon-btn" title="收起首页面板">'+icon('close')+'</button></div>' +
       '<section data-dock-pane="home" class="workspace-home">' +
-        '<div class="workspace-new-tools" style="margin:2px 0 12px;padding:8px 10px;border:1px solid var(--outline-variant,#e2e2e2);border-radius:8px;background:var(--surface-container-low,#f7f7f7);">' +
-          '<p class="workspace-section-label" style="margin:0 0 4px;">本次更新（10-15）</p>' +
-          '<div style="font-size:12px;color:var(--on-surface-variant,#888);line-height:1.7;">' +
-            '新增 20 个分析工具（栅格 / 矢量 / 统计 / 转换）+ 无效几何自动修复 + 大数据自动分批。' +
-          '</div>' +
-          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">' +
-            '<button type="button" class="workspace-recent-btn" data-workspace-action="open-analysis-tools">打开分析工具</button>' +
-            '<button type="button" class="workspace-recent-btn" data-workspace-action="load-sample-newtools">加载示例图层试试</button>' +
-          '</div>' +
-        '</div>' +
         '<div class="workspace-recent-header" style="margin-top:4px;">' +
           '<p class="workspace-section-label" style="margin:0;">最近工程历史</p>' +
           '<div style="display:flex;gap:6px;">' +
@@ -900,15 +890,6 @@
       const tab = e.target.closest('[data-dock-tab]');
       if (tab) { setTab(tab.dataset.dockTab); return; }
       const action = e.target.closest('[data-workspace-action]');
-      if (action && action.dataset.workspaceAction === 'open-analysis-tools') {
-        if (GIS.analysisTools && GIS.analysisTools.activate) GIS.analysisTools.activate();
-        return;
-      }
-      if (action && action.dataset.workspaceAction === 'load-sample-newtools') {
-        loadSample('buffer');
-        if (GIS.analysisTools && GIS.analysisTools.activate) GIS.analysisTools.activate();
-        return;
-      }
       if (action) run(action.dataset.workspaceAction);
     });
 
