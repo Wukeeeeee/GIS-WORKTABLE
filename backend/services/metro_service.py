@@ -265,9 +265,13 @@ def build_metro_layers(city_norm, line_filter=""):
         layers.append({"name": "%s地铁站点" % city_norm,
                        "geojson": {"type": "FeatureCollection", "features": station_feats},
                        "style": {"radius": 5}})
+    _src_note = ("来源：高德地铁（官方商业数据，坐标已转 WGS-84）" if is_cn
+                 else "来源：OSM 开源数据（志愿者维护，国际城市完整度参差，建议仅作示意参考，"
+                      "权威线路请以当地交通机构 GTFS/官网为准）")
     summary = "%s 地铁：%s（共 %d 条线 %d 站）" % (
         city_norm, "、".join(seen_lines[:8]) + ("" if len(seen_lines) > 8 else ""),
         len(seen_lines), total_stations)
     if endpoints:
         summary += "；" + "；".join(endpoints[:3])
+    summary += "\n（" + _src_note + "）"
     return layers, summary
