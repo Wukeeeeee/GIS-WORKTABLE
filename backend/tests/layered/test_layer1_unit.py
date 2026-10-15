@@ -21,6 +21,7 @@ from backend.services.tools import (
 )
 from backend.services.graph import (
     _is_unexecuted_code_or_disclaimer,
+    _strip_executed_code_blocks,
     _RECOVERY_PROMPT_CODE_DUMP,
     _RECOVERY_PROMPT_NO_ACTION,
 )
@@ -104,3 +105,92 @@ def test_result_guard_apply_guard_normal_text():
     assert "ok" in check
     assert check["ok"] is True
     assert final_text == raw_response
+
+
+# ============================================================
+# 源码折叠：杜绝"已执行的 Python 代码块原样糊到用户脸上"
+# ============================================================
+
+_CODE_REPLY = """我来把复合图拆成两张独立的成果图：
+
+```python
+import geopandas as gpd
+import matplotlib.pyplot as plt
+plt.savefig('output/南京各区人口_分级设色图.png', dpi=150)
+```
+
+已拆分为两张独立成果图：
+
+图件1：南京市各区常住人口分级设色图
+
+数据说明：共 931.5 万人
+"""
+
+
+def _tools_ran():
+    return [ToolMessage(content="saved output/a.png", tool_call_id="call_1")]
+
+
+def test_strip_executed_code_blocks_folds_source():
+    """本轮真跑过工具 → 源码折叠，结论与正文必须原样保留"""
+    out = _strip_executed_code_blocks(_CODE_REPLY, _tools_ran(), "我希望你能拆成两个图片")
+    assert "import geopandas" not in out
+    assert "plt.savefig" not in out
+    assert "```python" not in out
+    # 交付物描述不能被误删
+    assert "图件1：南京市各区常住人口分级设色图" in out
+    assert "931.5 万人" in out
+
+
+def test_strip_executed_code_blocks_keeps_result_blocks():
+    """非 Python 代码块（JSON 数据/结论）必须保留"""
+    reply = "结果如下：\n\n```json\n{\"file\": \"a.png\"}\n```\n"
+    out = _strip_executed_code_blocks(reply, _tools_ran(), "查一下")
+    assert '"file": "a.png"' in out
+
+
+def test_strip_executed_code_blocks_skips_without_tool_call():
+    """本轮没有工具调用 → 代码可能正是交付物，禁止折叠"""
+    out = _strip_executed_code_blocks(_CODE_REPLY, [], "帮我出图")
+    assert "import geopandas" in out
+
+
+def test_strip_executed_code_blocks_skips_when_code_requested():
+    """用户明确索要代码 → 原样保留"""
+    out = _strip_executed_code_blocks(_CODE_REPLY, _tools_ran(), "把刚才那段代码给我看看")
+    assert "import geopandas" in out
+
+
+def test_prompt_forbids_echoing_executed_source():
+    """系统提示必须显式禁止复述已执行源码（防回归）"""
+    for p in (SYSTEM_PROMPT, SYSTEM_PROMPT_GLM):
+        assert "严禁在最终回复里粘贴你已经执行过的源码" in p
+
+
+# ============================================================
+# 跨会话上下文污染：新会话不得被注入旧会话的任务上下文
+# ============================================================
+
+def test_build_system_content_no_cross_session_task_leak():
+    """新会话构建 system prompt 时，全局 current_task_id 还残留着别的会话
+    （上一请求）的任务 → 不允许把那个任务的目标/源码/历史注入新会话。"""
+    import types
+    from backend.services import task_manager
+    from backend.services import tools as _tools
+    from backend.services.ai_service import _build_system_content
+
+    _tid = task_manager.create_task("广东各市GDP排名（旧会话任务）", "session_OLD")
+    try:
+        # 模拟真实时序：全局 current_task_id 停留在旧会话的任务上
+        _tools.set_current_task(_tid)
+
+        cfg = types.SimpleNamespace(glm_prompt=False, router=False, model="test-model")
+        # 新会话第一条消息构建 prompt
+        sys_new, _, _ = _build_system_content(cfg, "解析广州", session_id="session_NEW", force_skills=[])
+        assert "广东各市GDP排名" not in sys_new, "新会话 system prompt 泄漏了旧会话任务目标！"
+
+        # 旧会话自己的 prompt 仍应包含其活跃任务（原有能力不回退）
+        sys_old, _, _ = _build_system_content(cfg, "继续", session_id="session_OLD", force_skills=[])
+        assert "广东各市GDP排名" in sys_old
+    finally:
+        task_manager.delete_task(_tid)

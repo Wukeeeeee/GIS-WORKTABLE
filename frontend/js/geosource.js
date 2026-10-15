@@ -84,7 +84,7 @@
     actions.replaceChildren();
 
     if (state === 'loading') {
-      badge.innerHTML = '<svg class="arcgis-spin" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg>';
+      badge.innerHTML = '<svg class="arcgis-spin" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"></path></svg>';
       title.textContent = opts.title || '正在加载中…';
       title.style.color = '';
       desc.textContent = opts.desc || '正在请求数据，请稍候…';
@@ -113,8 +113,8 @@
       bar.style.width = '100%';
       percent.style.display = 'block';
       percent.textContent = '100%';
-      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
-      title.textContent = opts.title || '✓ 导入成功';
+      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>';
+      title.innerHTML = opts.title || '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg> 导入成功';
       title.style.color = '';
       desc.textContent = opts.desc || '已成功将图层要素加载并渲染至地图工作区！';
 
@@ -139,8 +139,8 @@
       bar.style.width = '100%';
       percent.style.display = 'block';
       percent.textContent = '失败';
-      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
-      title.textContent = opts.title || '✕ 导入失败';
+      badge.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+      title.innerHTML = opts.title || '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 导入失败';
       title.style.color = '';
       desc.textContent = opts.desc || '网络连接或服务解析错误，请查看提示。';
 
@@ -157,7 +157,7 @@
       // idle 就绪状态
       bar.style.width = '0%';
       percent.style.display = 'none';
-      badge.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
+      badge.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
       title.textContent = opts.title || '准备就绪';
       title.style.color = '';
       desc.textContent = opts.desc || '请点击上方目录中的图层或服务进行导入';
@@ -183,7 +183,7 @@
     title.textContent = name + ' · 选择服务或图层';
     var close = document.createElement('button');
     close.className = 'geosource-action-btn';
-    close.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg> <span>关闭</span>';
+    close.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg> <span>关闭</span>';
     close.onclick = function() {
       if (_arcgisProgressTimer) clearInterval(_arcgisProgressTimer);
       if (_arcgisCloseTimeout) clearTimeout(_arcgisCloseTimeout);
@@ -276,18 +276,18 @@
 
       var root = base.replace(/(\/rest\/services)(?:\/.*)?$/i, '$1');
       if (base.toLowerCase() !== root.toLowerCase()) {
-        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> 返回上一级目录</span>', function() { browseArcgis(root, 'ArcGIS'); });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> 返回上一级目录</span>', function() { browseArcgis(root, 'ArcGIS'); });
       }
       (data.folders || []).forEach(function(folder) {
-        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ' + window.GIS.utils.escapeHtml(folder) + '</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() { browseArcgis(root + '/' + folder.split('/').map(encodeURIComponent).join('/'), folder); });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ' + window.GIS.utils.escapeHtml(folder) + '</span><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() { browseArcgis(root + '/' + folder.split('/').map(encodeURIComponent).join('/'), folder); });
       });
       (data.services || []).forEach(function(service) {
-        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg> ' + window.GIS.utils.escapeHtml(service.name) + ' · ' + window.GIS.utils.escapeHtml(service.type) + '</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() {
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg> ' + window.GIS.utils.escapeHtml(service.name) + ' · ' + window.GIS.utils.escapeHtml(service.type) + '</span><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() {
           browseArcgis(root + '/' + service.name.split('/').map(encodeURIComponent).join('/') + '/' + service.type, service.name);
         });
       });
       if (data.tileInfo && /\/MapServer$/i.test(base)) {
-        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg> 加载缓存瓦片地图</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#1565c0;background:#e3f2fd;border:1px solid #bbdefb;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 上图</span>', function(btn) {
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg> 加载缓存瓦片地图</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#1565c0;background:#e3f2fd;border:1px solid #bbdefb;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 上图</span>', function(btn) {
           setArcgisProgress(panel, 'loading', {
             title: '正在加载瓦片服务…',
             desc: '正在接入 ArcGIS 缓存瓦片地图',
@@ -296,12 +296,12 @@
           try {
             loadXyzLayer(base + '/tile/{z}/{y}/{x}', name);
             setArcgisProgress(panel, 'success', {
-              title: '✓ 导入成功',
+              title: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg> 导入成功',
               desc: '已成功将「' + name + '」缓存瓦片地图图层添加到工作区！'
             });
           } catch (err) {
             setArcgisProgress(panel, 'error', {
-              title: '✕ 导入失败',
+              title: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 导入失败',
               desc: err.message || '加载瓦片图层失败'
             });
           }
@@ -309,12 +309,12 @@
       }
       (data.layers || []).forEach(function(layer) {
         if (layer.type === 'Group Layer') return;
-        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> 加载 ' + window.GIS.utils.escapeHtml(layer.name) + '</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 加载图层</span>', function(btn) {
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> 加载 ' + window.GIS.utils.escapeHtml(layer.name) + '</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 加载图层</span>', function(btn) {
           loadArcgisFeatures(base + '/' + layer.id, name + ' - ' + layer.name, panel, btn);
         });
       });
       if (data.type === 'Feature Layer' && /\/(FeatureServer|MapServer)\/\d+$/i.test(base)) {
-        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> 加载当前要素图层</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 加载图层</span>', function(btn) {
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> 加载当前要素图层</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 加载图层</span>', function(btn) {
           loadArcgisFeatures(base, name, panel, btn);
         });
       }
@@ -335,7 +335,7 @@
     } catch (error) {
       body.textContent = '读取服务失败：' + error.message;
       setArcgisProgress(panel, 'error', {
-        title: '✕ 目录读取失败',
+        title: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 目录读取失败',
         desc: '无法连接到服务或服务拒绝访问：' + error.message
       });
     } finally {
@@ -352,9 +352,9 @@
     bodyBtns.forEach(function (b) { b.disabled = true; });
 
     if (clickedBtn) {
-      origText = clickedBtn.textContent;
+      origText = clickedBtn.innerHTML;
       clickedBtn.classList.add('active-loading');
-      clickedBtn.textContent = '⏳ 正在请求数据…';
+      clickedBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="arcgis-spin" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> 正在请求数据…';
     }
 
     var selectedModeRadio = panel.querySelector('input[name="arcgisFetchMode"]:checked');
@@ -438,7 +438,7 @@
         }
 
         if (clickedBtn) {
-          clickedBtn.textContent = '⏳ 已获取 ' + allFeatures.length + ' 条…';
+          clickedBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="arcgis-spin" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg> 已获取 ' + allFeatures.length + ' 条…';
         }
       }
 
@@ -466,13 +466,13 @@
       }
 
       setArcgisProgress(panel, 'success', {
-        title: '✓ 导入成功',
+        title: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg> 导入成功',
         desc: '已成功加载「' + name + '」共 ' + finalCount + ' 个要素至地图工作区！' + note
       });
 
     } catch (error) {
       setArcgisProgress(panel, 'error', {
-        title: '✕ 导入失败',
+        title: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 导入失败',
         desc: '图层「' + name + '」加载失败：' + (error.message || '网络或格式错误') + '。可尝试选择其他模式或图层。',
         retryFn: function () {
           loadArcgisFeatures(url, name, panel, clickedBtn);
@@ -483,7 +483,7 @@
       bodyBtns.forEach(function (b) { b.disabled = false; });
       if (clickedBtn && origText) {
         clickedBtn.classList.remove('active-loading');
-        clickedBtn.textContent = origText;
+        clickedBtn.innerHTML = origText;
       }
     }
   }

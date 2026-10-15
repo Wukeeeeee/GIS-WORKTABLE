@@ -420,7 +420,7 @@ window.GIS = window.GIS || {};
         var el = document.getElementById('networkOriginCoord');
         if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
         var btn = document.getElementById('btnOrigin') || document.getElementById('btnEventOrigin');
-        if (btn) { btn.classList.add('done'); btn.querySelector('span').textContent = '已设置 ✓'; }
+        if (btn) { btn.classList.add('done'); btn.querySelector('span').innerHTML = '已设置 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg>'; }
         _clearMarkersByType('origin');
         _addMarker(snapLatLng, '#e74c3c', '起');
       } else if (_inputMode === 'destination') {
@@ -428,7 +428,7 @@ window.GIS = window.GIS || {};
         var el = document.getElementById('networkDestCoord');
         if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
         var btn = document.getElementById('btnDest');
-        if (btn) { btn.classList.add('done'); btn.querySelector('span').textContent = '已设置 ✓'; }
+        if (btn) { btn.classList.add('done'); btn.querySelector('span').innerHTML = '已设置 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg>'; }
         _clearMarkersByType('dest');
         _addMarker(snapLatLng, '#2ecc71', '终');
       } else if (_inputMode === 'facility') {
@@ -436,7 +436,7 @@ window.GIS = window.GIS || {};
         var el = document.getElementById('networkFacilityCoord');
         if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
         var btn = document.getElementById('btnFacility');
-        if (btn) { btn.classList.add('done'); btn.querySelector('span').textContent = '已设置 ✓'; }
+        if (btn) { btn.classList.add('done'); btn.querySelector('span').innerHTML = '已设置 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg>'; }
         _clearMarkersByType('facility');
         _addMarker(snapLatLng, '#3498db', '设');
       }
@@ -537,7 +537,7 @@ window.GIS = window.GIS || {};
       return '<div class="network-waypoint-item">' +
         '<span class="network-wp-num">' + (i + 1) + '</span>' +
         '<span class="network-wp-coord">' + wp[0].toFixed(4) + ', ' + wp[1].toFixed(4) + '</span>' +
-        '<button class="network-wp-del" data-idx="' + i + '">✕</button>' +
+        '<button class="network-wp-del" data-idx="' + i + '" title="删除点" aria-label="删除点"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>' +
       '</div>';
     }).join('');
     list.querySelectorAll('.network-wp-del').forEach(function(btn) {
@@ -575,7 +575,7 @@ window.GIS = window.GIS || {};
       return '<div class="network-waypoint-item">' +
         '<span class="network-wp-num">F' + (i + 1) + '</span>' +
         '<span class="network-wp-coord">' + f[0].toFixed(4) + ', ' + f[1].toFixed(4) + '</span>' +
-        '<button class="network-wp-del" data-idx="' + i + '">✕</button>' +
+        '<button class="network-wp-del" data-idx="' + i + '" title="删除点" aria-label="删除点"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>' +
       '</div>';
     }).join('');
     list.querySelectorAll('.network-wp-del').forEach(function(btn) {
@@ -796,7 +796,7 @@ window.GIS = window.GIS || {};
           _arrowMarker = L.marker([mid[1], mid[0]], {
             icon: L.divIcon({
               className: 'network-arrow-icon',
-              html: '▶',
+              html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3" fill="currentColor"/></svg>',
               iconSize: [16, 16],
               iconAnchor: [8, 8],
             })

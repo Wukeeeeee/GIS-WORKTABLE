@@ -458,7 +458,7 @@ window.GIS = window.GIS || {};
         var key = (document.getElementById('amapApiKeyInput') || {}).value || '';
         GIS.api.setAmapKey(key.trim());
         var msg = document.getElementById('amapTestResult');
-        if (msg) { msg.textContent = '已保存 ✓'; msg.className = 'modal-test-result modal-test-success'; }
+        if (msg) { msg.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg> 已保存'; msg.className = 'modal-test-result modal-test-success'; }
         setTimeout(function() { if (msg) { msg.textContent = ''; msg.className = 'modal-test-result'; } }, 2000);
         updateAmapStatus();
       });

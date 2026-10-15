@@ -62,20 +62,20 @@ window.GIS = window.GIS || {};
         '<td class="col-group-toggle" style="width:22px;display:flex;align-items:center;justify-content:center;padding:0;"><span class="group-toggle" data-group="' + escapeHtml(gid) + '" title="' + (collapsed ? '展开分组' : '折叠分组') + '" style="cursor:pointer;font-size:10px;">' + (collapsed ? '&#9654;' : '&#9660;') + '</span></td>' +
         '<td class="col-group-name" colspan="3" style="flex:1;min-width:0;display:flex;align-items:center;justify-content:space-between;padding:0;">' +
           '<div style="display:flex;align-items:center;gap:6px;min-width:0;overflow:hidden;">' +
-            '<span style="font-size:12px;">📁</span>' +
+            '<span style="display:inline-flex;align-items:center;flex-shrink:0;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span>' +
             '<span class="group-name-text" data-group="' + escapeHtml(gid) + '" title="点击重命名分组" style="font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;">' + escapeHtml(g.name) + '</span>' +
             '<span class="group-count" style="font-size:11px;color:var(--on-surface-variant,#888);flex-shrink:0;">(' + groupLayers.length + ')</span>' +
           '</div>' +
           '<div class="group-actions" style="display:flex;align-items:center;gap:4px;flex-shrink:0;">' +
-            '<button type="button" class="group-rename-btn" data-group="' + escapeHtml(gid) + '" title="重命名分组" style="background:transparent;border:none;cursor:pointer;font-size:12px;color:var(--on-surface-variant,#666);padding:2px 4px;border-radius:3px;">✎</button>' +
-            '<button type="button" class="group-delete-btn" data-group="' + escapeHtml(gid) + '" title="删除分组（保留图层）" style="background:transparent;border:none;cursor:pointer;font-size:12px;color:var(--on-surface-variant,#666);padding:2px 4px;border-radius:3px;">✕</button>' +
+            '<button type="button" class="group-rename-btn" data-group="' + escapeHtml(gid) + '" title="重命名分组" style="background:transparent;border:none;cursor:pointer;font-size:12px;color:var(--on-surface-variant,#666);padding:2px 4px;border-radius:3px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg></button>' +
+            '<button type="button" class="group-delete-btn" data-group="' + escapeHtml(gid) + '" title="删除分组（保留图层）" style="background:transparent;border:none;cursor:pointer;font-size:12px;color:var(--on-surface-variant,#666);padding:2px 4px;border-radius:3px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>' +
           '</div>' +
         '</td></tr>';
 
       if (!collapsed) {
         if (groupLayers.length === 0) {
           html += '<tr class="group-empty-placeholder" data-group="' + escapeHtml(gid) + '" style="display:flex;align-items:center;justify-content:center;padding:8px 10px;margin-block:2px 6px;border:1px dashed var(--outline-variant,#ddd);border-radius:4px;background:var(--surface-container-lowest,#faf8f7);">' +
-            '<td colspan="4" style="font-size:11px;color:var(--on-surface-variant,#888);text-align:center;border:none;padding:0;">📂 该分组暂无图层，可拖入或右键图层移动至此</td></tr>';
+            '<td colspan="4" style="font-size:11px;color:var(--on-surface-variant,#888);text-align:center;border:none;padding:0;"><span style="display:inline-flex;align-items:center;vertical-align:-2px;margin-right:4px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><polyline points="2 10 22 10"/></svg></span> 该分组暂无图层，可拖入或右键图层移动至此</td></tr>';
         } else {
           groupLayers.forEach(function(layer) {
             var originalIndex = layerData.indexOf(layer);
@@ -249,6 +249,13 @@ window.GIS = window.GIS || {};
     const mapName = target ? (target._rawName || target.layer_id) : null;
     layerData = layerData.filter(l => l.layer_id !== layerId);
     renderList();
+    // 图例归属图层被删除 → 图例一并撤下，防止孤儿图例残留
+    if (_lastLegendData && _lastLegendData.layerId === layerId) {
+      _hideFloatingLegend();
+    }
+    if (typeof _clearSymbology === 'function') {
+      try { _clearSymbology(layerId); } catch(_) {}
+    }
     if (mapName && GIS.map && GIS.map.removeLayer) {
       GIS.map.removeLayer(mapName);
     }
@@ -269,6 +276,7 @@ window.GIS = window.GIS || {};
     ids.forEach(function(id) { removeLayer(id, false, silent); });
     layerData = [];
     renderList();
+    _hideFloatingLegend();
     if (GIS.map && typeof GIS.map.clearAll === 'function') {
       try { GIS.map.clearAll(); } catch(_) {}
     }
@@ -689,13 +697,13 @@ window.GIS = window.GIS || {};
       var isCurrent = layer.groupId === gid;
       optionsHtml += '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--outline-variant,#ddd);border-radius:6px;cursor:pointer;font-size:12px;background:var(--surface-container-low,#f5f2f0);margin-bottom:6px;">' +
         '<input type="radio" name="targetGroupOption" value="' + escapeHtml(gid) + '"' + (isCurrent ? ' checked' : '') + ' style="accent-color:var(--primary,#000);" />' +
-        '<span>📁 <strong>' + escapeHtml(groups[gid].name) + '</strong>' + (isCurrent ? ' <em style="color:#888;font-size:11px;">(当前归属)</em>' : '') + '</span>' +
+        '<span><span style="display:inline-flex;align-items:center;vertical-align:-2px;margin-right:4px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></span> <strong>' + escapeHtml(groups[gid].name) + '</strong>' + (isCurrent ? ' <em style="color:#888;font-size:11px;">(当前归属)</em>' : '') + '</span>' +
       '</label>';
     });
 
     optionsHtml += '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--outline-variant,#ddd);border-radius:6px;cursor:pointer;font-size:12px;background:var(--surface-container-low,#f5f2f0);margin-bottom:6px;">' +
       '<input type="radio" name="targetGroupOption" value="__new__"' + (gKeys.length === 0 ? ' checked' : '') + ' style="accent-color:var(--primary,#000);" />' +
-      '<span>➕ <strong>新建分组并移入</strong></span>' +
+      '<span><span style="display:inline-flex;align-items:center;vertical-align:-2px;margin-right:6px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></span> <strong>新建分组并移入</strong></span>' +
     '</label>';
 
     overlay.innerHTML =
@@ -881,7 +889,7 @@ window.GIS = window.GIS || {};
 
     // ============================================================
     // 卷帘对比（手动入口）：点第一个图层的「卷帘」按钮选中为 A（按钮高亮），
-    // 再点另一个图层的「卷帘」按钮即开启 A|B 对比；再点 A 或点 ✕ 可关闭。
+    // 再点另一个图层的「卷帘」按钮即开启 A|B 对比；再点 A 或点关闭按钮可关闭。
     // ============================================================
     var _swipeSelId = null;
     _handleSwipeAction = handleSwipeAction;
@@ -1130,7 +1138,7 @@ window.GIS = window.GIS || {};
     var crsStr = remote.crs || '未知（仅前端检测）';
     var crsKnown = remote.crs_known !== false;
     var crsBadge = crsKnown
-      ? '<span style="color:#2e7d32;font-weight:600;">✓</span>'
+      ? '<span style="color:#2e7d32;font-weight:600;display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg></span>'
       : '<span style="color:#d32f2f;font-weight:600;">?</span>';
 
     var attrHtml = '';
@@ -1193,11 +1201,11 @@ window.GIS = window.GIS || {};
             '+ 行' +
           '</button>' +
           '<button class="attr-btn" data-action="add-col" data-layer="' + layerId + '" title="添加字段 (加列)">' +
-            '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>' +
+            '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>' +
             '+ 列' +
           '</button>' +
           '<button class="attr-btn" data-action="calc-field" data-layer="' + layerId + '" title="字段计算器 (类似ArcMap)">' +
-            '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="2" width="16" height="20" rx="2"></rect><line x1="8" y1="6" x2="16" y2="6"></line><line x1="16" y1="14" x2="16" y2="14.01"></line><line x1="12" y1="14" x2="12" y2="14.01"></line><line x1="8" y1="14" x2="8" y2="14.01"></line><line x1="16" y1="18" x2="16" y2="18.01"></line><line x1="12" y1="18" x2="12" y2="18.01"></line><line x1="8" y1="18" x2="8" y2="18.01"></line></svg>' +
+            '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="2" width="16" height="20" rx="2"></rect><line x1="8" y1="6" x2="16" y2="6"></line><line x1="16" y1="14" x2="16" y2="14.01"></line><line x1="12" y1="14" x2="12" y2="14.01"></line><line x1="8" y1="14" x2="8" y2="14.01"></line><line x1="16" y1="18" x2="16" y2="18.01"></line><line x1="12" y1="18" x2="12" y2="18.01"></line><line x1="8" y1="18" x2="8" y2="18.01"></line></svg>' +
             '计算器' +
           '</button>' +
           '<button class="attr-btn" data-action="toggle-filter" data-layer="' + layerId + '" title="筛选">' +
@@ -1305,13 +1313,13 @@ window.GIS = window.GIS || {};
               '<span class="info-label" style="flex-shrink:0;" title="小于此缩放级别时图层不显示（例如缩小到全国时隐藏详细点位）">最小缩放 (Out)</span>' +
               '<input type="number" id="layerMinZoom" min="1" max="22" placeholder="不限 (如 4)" value="' + curMinZ + '" style="width:70px;padding:3px 6px;border:1px solid var(--outline-variant);border-radius:4px;font-size:11px;" />' +
               '<button type="button" class="scale-range-cur-btn" id="setMinZoomCurBtn" style="font-size:10px;padding:2px 6px;border:1px solid var(--outline-variant);border-radius:3px;background:var(--surface-container-low);cursor:pointer;" title="使用地图当前缩放级别">当前级别</button>' +
-              '<button type="button" class="scale-range-clear-btn" id="clearMinZoomBtn" style="font-size:10px;padding:2px 5px;border:none;background:transparent;color:var(--on-surface-variant);cursor:pointer;" title="清除最小缩放限制">✕</button>' +
+              '<button type="button" class="scale-range-clear-btn" id="clearMinZoomBtn" style="font-size:10px;padding:2px 5px;border:none;background:transparent;color:var(--on-surface-variant);cursor:pointer;" title="清除最小缩放限制"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>' +
             '</div>' +
             '<div class="info-row" style="align-items:center;gap:8px;padding-top:4px;">' +
               '<span class="info-label" style="flex-shrink:0;" title="大于此缩放级别时图层不显示（例如放大到街道时隐藏大范围省界）">最大缩放 (In)</span>' +
               '<input type="number" id="layerMaxZoom" min="1" max="22" placeholder="不限 (如 16)" value="' + curMaxZ + '" style="width:70px;padding:3px 6px;border:1px solid var(--outline-variant);border-radius:4px;font-size:11px;" />' +
               '<button type="button" class="scale-range-cur-btn" id="setMaxZoomCurBtn" style="font-size:10px;padding:2px 6px;border:1px solid var(--outline-variant);border-radius:3px;background:var(--surface-container-low);cursor:pointer;" title="使用地图当前缩放级别">当前级别</button>' +
-              '<button type="button" class="scale-range-clear-btn" id="clearMaxZoomBtn" style="font-size:10px;padding:2px 5px;border:none;background:transparent;color:var(--on-surface-variant);cursor:pointer;" title="清除最大缩放限制">✕</button>' +
+              '<button type="button" class="scale-range-clear-btn" id="clearMaxZoomBtn" style="font-size:10px;padding:2px 5px;border:none;background:transparent;color:var(--on-surface-variant);cursor:pointer;" title="清除最大缩放限制"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>' +
             '</div>' +
           '</div>' +
           '<div class="info-group">' +
@@ -2775,9 +2783,18 @@ window.GIS = window.GIS || {};
 
   var _lastLegendData = null;
 
+  /** 隐藏浮动图例并清空记忆（图层删除/清空时调用，防止孤儿图例残留） */
+  function _hideFloatingLegend() {
+    _lastLegendData = null;
+    var panel = document.getElementById('mapFloatingLegend');
+    var pill = document.getElementById('mapLegendTogglePill');
+    if (panel) panel.style.display = 'none';
+    if (pill) pill.style.display = 'none';
+  }
+
   /** 显示地图浮动图例 */
-  function _renderFloatingLegend(layerName, data) {
-    _lastLegendData = { layerName: layerName, data: data };
+  function _renderFloatingLegend(layerName, data, layerId) {
+    _lastLegendData = { layerName: layerName, data: data, layerId: layerId || null };
     var panel = document.getElementById('mapFloatingLegend');
     var pill = document.getElementById('mapLegendTogglePill');
     var pillText = document.getElementById('mapLegendToggleText');
@@ -2821,7 +2838,7 @@ window.GIS = window.GIS || {};
       pill._bound = true;
       pill.addEventListener('click', function() {
         if (_lastLegendData) {
-          _renderFloatingLegend(_lastLegendData.layerName, _lastLegendData.data);
+          _renderFloatingLegend(_lastLegendData.layerName, _lastLegendData.data, _lastLegendData.layerId);
         } else {
           panel.style.display = 'flex';
           pill.style.display = 'none';
@@ -2868,7 +2885,7 @@ window.GIS = window.GIS || {};
     var layerName = layer ? (layer._rawName || layer.filename || layer.layer_id) : layerId;
 
     // 呈现在地图右下角浮动图例控件中
-    _renderFloatingLegend(layerName, data);
+    _renderFloatingLegend(layerName, data, layer ? layer.layer_id : null);
 
     if (!silent && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       window.GIS.chat.addMessage('已在地图右下角展示「' + escapeHtml(layerName) + '」图例', 'system');
@@ -2965,7 +2982,7 @@ window.GIS = window.GIS || {};
       }
       if (!layer) {
         if (_lastLegendData) {
-          _renderFloatingLegend(_lastLegendData.layerName, _lastLegendData.data);
+          _renderFloatingLegend(_lastLegendData.layerName, _lastLegendData.data, _lastLegendData.layerId);
         }
         return;
       }

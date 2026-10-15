@@ -11,7 +11,8 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 from langchain_core.messages import AIMessage
-from backend.services.tools import get_registered_layers, _temp_output_dir
+from backend.services.tools import get_registered_layers
+from backend.services import tools as _tools_mod  # _temp_output_dir 会被 init_temp_dir 重新赋值，运行时读取
 
 pytestmark = [pytest.mark.e2e, pytest.mark.regression]
 
@@ -28,7 +29,7 @@ def test_e2e_direct_tool_invocation_pipeline(client):
     assert res1_data.get("ok") is True
 
     # 2. 验证图层已被真实注册并在图层列表中可见
-    resp_layers = client.get("/api/layer/list")
+    resp_layers = client.get("/api/layers")
     assert resp_layers.status_code == 200
     layers = resp_layers.json().get("layers", [])
     assert any("鼓楼" in l.get("name", "") for l in layers)
@@ -52,7 +53,7 @@ print(f'OUTPUT_IMAGE:{out_png}')
     assert res2_data.get("ok") is True
 
     # 4. 验证磁盘上的成果图片
-    expected_img = os.path.join(_temp_output_dir, "e2e_pipeline_output.png")
+    expected_img = os.path.join(_tools_mod._temp_output_dir, "e2e_pipeline_output.png")
     assert os.path.exists(expected_img)
     assert os.path.getsize(expected_img) > 100
 
@@ -80,7 +81,11 @@ def test_e2e_agent_workflow_full_stream_pipeline(client):
         mock_agent_factory.return_value = mock_agent
 
         cfg = LLMConfig(api_key="mock", base_url="http://mock", model="mock")
-        for chunk in run_agent_stream("查询南京市鼓楼区", session_id="test_e2e_session", cfg=cfg):
+        from langchain_core.messages import HumanMessage
+        # 说明：单条消息会命中 _simple 纯文本快速通道（llm.invoke 直连真实网络）；
+        # 多轮消息 + GIS 工具关键词（"边界"）才会进入 Agent 工具流（被 mock 的 create_react_agent）
+        _hist = [HumanMessage(content="你好，请帮我分析南京市的数据")]
+        for chunk in run_agent_stream(_hist + [HumanMessage(content="加载南京市鼓楼区边界到地图")], cfg=cfg, session_id="test_e2e_session"):
             if chunk.startswith("data: "):
                 try:
                     payload = json.loads(chunk[6:].strip())

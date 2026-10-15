@@ -193,38 +193,40 @@ def validate_workflow(wf: Dict, available_tools: List[str]) -> List[str]:
 
 
 def _detect_cycle(nodes: List[Dict]) -> Optional[List[str]]:
-    """检测 DAG 中的循环依赖，返回循环路径或 None"""
-    graph = {n["id"]: n.get("depends_on", []) for n in nodes}
-    WHITE, GRAY, BLACK = 0, 1, 2
-    color = {nid: WHITE for nid in graph}
-    parent = {}
+    """检测 DAG 中的循环依赖（Kahn 拓扑）；检测到环返回环上受影响的节点列表，否则返回 None。
 
-    def dfs(u):
-        color[u] = GRAY
-        for v in graph.get(u, []):
-            if color[v] == GRAY:
-                # 找到循环，回溯路径
-                cycle = [v, u]
-                cur = u
-                while parent.get(cur) and parent[cur] != v:
-                    cur = parent[cur]
-                    cycle.append(cur)
-                cycle.append(v)
-                return list(reversed(cycle))
-            if color[v] == WHITE:
-                parent[v] = u
-                result = dfs(v)
-                if result:
-                    return result
-        color[u] = BLACK
+    比 DFS 回溯稳：不用 parent 回溯，能处理多汇聚点/重边，保证终止。
+    """
+    graph = {n["id"]: list(n.get("depends_on", [])) for n in nodes}
+    # 只能走依赖存在的边，防悬空 dep
+    node_ids = set(graph.keys())
+    for nid in graph:
+        graph[nid] = [d for d in graph[nid] if d in node_ids]
+
+    in_degree = {nid: 0 for nid in graph}
+    reverse = {nid: [] for nid in graph}
+    for nid, deps in graph.items():
+        in_degree[nid] = len(deps)
+        for dep in deps:
+            reverse[dep].append(nid)
+
+    # Kahn：持续弹出 in_degree=0 的节点。若结束时还有节点剩下来，就存在环
+    stack = [nid for nid, deg in in_degree.items() if deg == 0]
+    visited_count = 0
+    while stack:
+        u = stack.pop()
+        visited_count += 1
+        for v in reverse[u]:
+            in_degree[v] -= 1
+            if in_degree[v] == 0:
+                stack.append(v)
+
+    if visited_count == len(graph):
         return None
 
-    for nid in graph:
-        if color[nid] == WHITE:
-            result = dfs(nid)
-            if result:
-                return result
-    return None
+    # 返回仍在环/受环影响的节点列表（in_degree > 0）
+    cycle_nodes = [nid for nid, deg in in_degree.items() if deg > 0]
+    return cycle_nodes or None
 
 
 # ============================================================
@@ -308,8 +310,9 @@ class WorkflowExecutor:
                 dep_node = node_map[dep]
                 upstream_outputs[dep] = dep_node.get("outputs", {})
 
-            # 执行节点
+            # 执行节点（内部另存 ms 级 _started_ts 供 duration 精确计算）
             node["status"] = "running"
+            node["_started_ts"] = time.time()
             node["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             self._emit({
                 "type": "workflow_node_started",
@@ -322,14 +325,15 @@ class WorkflowExecutor:
                 result = self._execute_node(node, upstream_outputs)
                 node["outputs"] = result if isinstance(result, dict) else {"result": result}
                 node["status"] = "success"
+                node["_finished_ts"] = time.time()
                 node["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                if node["started_at"]:
-                    try:
-                        s = time.mktime(time.strptime(node["started_at"], "%Y-%m-%d %H:%M:%S"))
-                        f = time.mktime(time.strptime(node["finished_at"], "%Y-%m-%d %H:%M:%S"))
-                        node["duration"] = round(f - s, 2)
-                    except Exception:
-                        node["duration"] = None
+                # 用内部 ts 计算 duration（毫秒精度），显示字段保持字符串
+                _st = node.get("_started_ts")
+                _ft = node.get("_finished_ts")
+                if isinstance(_st, (int, float)) and isinstance(_ft, (int, float)):
+                    node["duration"] = round(_ft - _st, 3)
+                else:
+                    node["duration"] = None
                 self._emit({
                     "type": "workflow_node_completed",
                     "node_id": nid,
@@ -343,7 +347,14 @@ class WorkflowExecutor:
             except Exception as e:
                 node["status"] = "failed"
                 node["error"] = str(e)[:500]
+                node["_finished_ts"] = time.time()
                 node["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                _st = node.get("_started_ts")
+                _ft = node.get("_finished_ts")
+                if isinstance(_st, (int, float)) and isinstance(_ft, (int, float)):
+                    node["duration"] = round(_ft - _st, 3)
+                else:
+                    node["duration"] = None
                 self._emit({
                     "type": "workflow_node_failed",
                     "node_id": nid,

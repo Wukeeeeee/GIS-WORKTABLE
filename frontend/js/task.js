@@ -239,11 +239,11 @@ window.GIS = window.GIS || {};
         '</div>' +
         '<div class="task-card-actions">' +
           '<button class="task-action-btn task-toggle-save" title="' + (t.saved ? '取消保存' : '保存任务') + '">' +
-            (t.saved ? '★' : '☆') +
+            (t.saved ? '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="currentColor"/></svg>' : '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>') +
           '</button>' +
-          (canRerun ? '<button class="task-action-btn task-rerun" title="重新运行">↻</button>' : '') +
+          (canRerun ? '<button class="task-action-btn task-rerun" title="重新运行" aria-label="重新运行"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>' : '') +
           (isRunning ? '<span class="task-spinner"></span>' : '') +
-          '<button class="task-action-btn task-delete" title="删除">✕</button>' +
+          '<button class="task-action-btn task-delete" title="删除" aria-label="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>' +
         '</div>' +
       '</div>' +
       '<div class="task-card-body">' +

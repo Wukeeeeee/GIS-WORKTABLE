@@ -86,7 +86,15 @@ app.add_middleware(GZipMiddleware, minimum_size=10000)  # 10KB 以上自动 gzip
 @app.get("/output/{filename:path}")
 async def serve_output_file(filename: str):
     import glob
-    direct_path = os.path.join(_TEMP_OUTPUT_DIR, filename)
+    # 路径穿越防护：解析后必须仍在 _TEMP_OUTPUT_DIR 内
+    _norm_base = os.path.normpath(_TEMP_OUTPUT_DIR)
+    direct_path = os.path.normpath(os.path.join(_TEMP_OUTPUT_DIR, filename))
+    try:
+        _in_base = os.path.commonpath([_norm_base, direct_path]) == _norm_base
+    except ValueError:
+        _in_base = False  # 跨盘符
+    if not _in_base or filename.startswith('\\\\') or ':' in filename.split(os.sep)[0]:
+        raise HTTPException(status_code=403, detail="非法路径")
     if os.path.isfile(direct_path):
         return FileResponse(direct_path)
     
@@ -359,6 +367,7 @@ async def chat_stream(request: ChatRequest):
     def _persisted_stream():
         """流式执行 run_agent_stream；done 事件到达时把 AI 回复写回会话历史并落盘。
         修复 SSE 模式此前从不写回 assistant → 下一轮模型看不到上一轮 AI 说了什么。"""
+        from backend.services.tools import release_session_lock as _rel_slock
         try:
             for line in run_agent_stream(
                 messages=langgraph_messages,
@@ -395,9 +404,14 @@ async def chat_stream(request: ChatRequest):
                             pass
                 yield line
         except GeneratorExit:
-            # 客户端断开（用户取消/页面关闭）时，主动标记取消，让 Agent Loop 尽快中止
+            # 客户端断开（用户取消/页面关闭）时，仅标记本会话取消，
+            # 不再写全局标志并发中的其他会话不受影响
             import backend.services.ai_service as _ai_svc
-            _ai_svc._request_cancelled = True
+            _ai_svc.clear_session_cancel(session_id)
+            _ai_svc.request_cancel(session_id)
+        finally:
+            # 生成器关闭（正常完成/断开/异常）都补释放会话锁，防泄漏
+            _rel_slock(session_id or "default")
 
     return StreamingResponse(
         _persisted_stream(),
@@ -406,9 +420,9 @@ async def chat_stream(request: ChatRequest):
     )
 
 @app.post("/api/cancel")
-async def cancel_request():
-    """取消当前 AI 请求"""
-    result = request_cancel()
+async def cancel_request(session_id: str = ""):
+    """取消当前 AI 请求（带 session_id 时只取消该会话，兼容不带的全局取消）"""
+    result = request_cancel(session_id)
     return {"status": "ok", "message": result}
 
 @app.get("/favicon.ico")
@@ -1599,6 +1613,11 @@ async def api_tools_invoke(request: ToolInvokeRequest):
     args = request.arguments or {}
     if not isinstance(args, dict):
         raise HTTPException(status_code=400, detail="arguments 应为对象")
+    # 参数角色校验（ESRI 式参数类型系统的最小可用版）：只提示 + 自动纠错，不拦截
+    from backend.services.tool_args_guard import validate_tool_args
+    args, _arg_warnings = validate_tool_args(request.name, args)
+    if _arg_warnings:
+        args["_param_warnings"] = _arg_warnings
     reset_state()
     loop = asyncio.get_event_loop()
     try:
@@ -1612,6 +1631,7 @@ async def api_tools_invoke(request: ToolInvokeRequest):
     return {
         "ok": ok,
         "tool": request.name,
+        "param_warnings": _arg_warnings if _arg_warnings else [],
         "response": response,
         "layers": pending.get("layers", []),
         "layer_ops": pending.get("layer_ops", []),

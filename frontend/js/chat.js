@@ -25,7 +25,16 @@ if (typeof marked !== 'undefined') {
   /** @type {HTMLElement} */
   let messagesContainer = null;
   let followOutput = true;
-  function scrollMessages() {
+  function _currentSessionIdSafe() {
+  // 统一的会话 ID 解析（模块级，任何闭包可安全调用）
+  try {
+    return (window.GIS && window.GIS.project && window.GIS.project.getCurrentSessionId)
+      ? (window.GIS.project.getCurrentSessionId() || 'default')
+      : 'default';
+  } catch (e) { return 'default'; }
+}
+
+function scrollMessages() {
     if (messagesContainer && followOutput) messagesContainer.scrollTop = messagesContainer.scrollHeight;
   }
   let inputEl = null;
@@ -195,7 +204,7 @@ if (typeof marked !== 'undefined') {
         }
         window._aiRunning = false;
         // 先发取消请求到后端（keepalive 确保页面卸载时也能发送），再中断 SSE 连接
-        fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST', keepalive: true }).catch(function(){});
+        fetch(window.GIS.api.BASE_URL + '/api/cancel?session_id=' + encodeURIComponent(_currentSessionIdSafe()), { method: 'POST', keepalive: true }).catch(function(){});
         if (window._aiAbortController) window._aiAbortController.abort('user-cancel');
         _resetUIAfterStop();
         const loadingEl = document.getElementById('ai-loading-msg');
@@ -417,7 +426,7 @@ if (typeof marked !== 'undefined') {
     _skillChips.forEach(function(chip, i) {
       const el = document.createElement('span');
       el.className = 'skill-chip';
-      el.innerHTML = '/<span class="chip-name">' + chip.name + '</span><span class="chip-close" data-i="' + i + '">✕</span>';
+      el.innerHTML = '/<span class="chip-name">' + chip.name + '</span><span class="chip-close" data-i="' + i + '" role="button" tabindex="0" aria-label="移除技能标签" title="移除" style="display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:0;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>';
       el.querySelector('.chip-close').addEventListener('click', function(e) {
         e.stopPropagation();
         _removeChip(i);
@@ -506,7 +515,7 @@ if (typeof marked !== 'undefined') {
         window._aiAbortController.abort();
         window._aiAbortController = null;
       }
-      fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
+      fetch(window.GIS.api.BASE_URL + '/api/cancel?session_id=' + encodeURIComponent(_currentSessionIdSafe()), { method: 'POST' }).catch(function(){});
       var loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
@@ -581,7 +590,12 @@ if (typeof marked !== 'undefined') {
       if (window._aiAbortController) {
         window._aiAbortController.abort('user-cancel');
       }
-      fetch(window.GIS.api.BASE_URL + '/api/cancel', { method: 'POST' }).catch(function(){});
+      // 修复：此行位于 currentSessionId 声明之前（var 提升值 undefined），
+      // 会向后端发 session_id=undefined。改为即时解析当前会话 ID。
+      var _cancelSid = (window.GIS.project && window.GIS.project.getCurrentSessionId)
+        ? window.GIS.project.getCurrentSessionId()
+        : 'default';
+      fetch(window.GIS.api.BASE_URL + '/api/cancel?session_id=' + encodeURIComponent(_cancelSid), { method: 'POST' }).catch(function(){});
       var oldLoading = document.getElementById('ai-loading-msg');
       if (oldLoading) {
         if (oldLoading._timerInterval) clearInterval(oldLoading._timerInterval);
@@ -737,18 +751,39 @@ if (typeof marked !== 'undefined') {
       var result = null;
       var streamUrl = GIS.api.BASE_URL + '/api/chat/stream';
       window._aiAbortController = new AbortController();
-      // 超时保护：默认 600s（10分钟），可通过 sessionStorage 的 gis_timeout 覆盖（单位秒，设为 0 则不限时）
+      // 超时保护（双层）：
+      // - 总时长上限 gis_timeout（默认 900s，0=不限时）
+      // - 空闲看门狗：连续 90s 收不到任何 SSE 事件才判死；收到事件即重置  长任务只要在干活就不会被误杀
       var _timeoutSetting = parseInt(sessionStorage.getItem('gis_timeout'), 10);
-      var _timeoutMs = _timeoutSetting > 0 ? _timeoutSetting * 1000 : (_timeoutSetting === 0 ? Infinity : 600000);
-      var _streamTimeout = null;
+      var _timeoutMs = _timeoutSetting > 0 ? _timeoutSetting * 1000 : (_timeoutSetting === 0 ? Infinity : 900000);
+      var _idleLimitMs = 90000;
+      var _streamTimeout = null;   // 总时长定时器
+      var _idleTimeout = null;     // 空闲定时器（活动即重置）
+      var _armIdleWatchdog = function() {
+        if (_idleTimeout) clearTimeout(_idleTimeout);
+        _idleTimeout = setTimeout(function() {
+          if (window._aiAbortController && !window._aiAbortController.signal.aborted) {
+            window._aiAbortController.abort('timeout');
+            window._idleKilled = true;
+            console.warn('[GIS Chat] SSE 流空闲超 ' + (_idleLimitMs/1000) + 's 无响应，判定卡死，已终止');
+          }
+        }, _idleLimitMs);
+      };
+      var _clearAllTimeouts = function() {
+        // 修复：原代码此处误写为自我递归调用（立即栈溢出），且漏清 _streamTimeout
+        if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
+        if (_idleTimeout) { clearTimeout(_idleTimeout); _idleTimeout = null; }
+      };
       if (_timeoutMs < Infinity) {
         _streamTimeout = setTimeout(function() {
           if (window._aiAbortController && !window._aiAbortController.signal.aborted) {
             window._aiAbortController.abort('timeout');
-            console.warn('[GIS Chat] SSE 流请求超时（' + (_timeoutMs/1000) + 's），已强制终止');
+            console.warn('[GIS Chat] SSE 流总时长超限（' + (_timeoutMs/1000) + 's），已强制终止');
           }
         }, _timeoutMs);
       }
+      window._idleKilled = false;
+      _armIdleWatchdog();
       try {
         // 发送前同步所有图层到后端（后端重启后内存中的注册信息会丢失，这里重新注册）
         try {
@@ -829,6 +864,7 @@ if (typeof marked !== 'undefined') {
           for (var _i = 0; _i < lines.length; _i++) {
             var line = lines[_i];
             if (!line.startsWith('data: ')) continue;
+            _armIdleWatchdog(); // 收到任何 SSE 事件即证明 Agent 仍在干活，重置空闲看门狗
             var evt;
             try { evt = JSON.parse(line.slice(6)); } catch (parseErr) {
               console.warn('[GIS Chat] 流式数据解析失败，跳过:', line.slice(0, 80));
@@ -851,26 +887,26 @@ if (typeof marked !== 'undefined') {
                 lastStepEl = stepEl;
               } else if (evt.type === 'tool_end') {
                 if (lastStepEl) {
-                  lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);">✓</span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
+                  lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg></span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
                   lastStepEl.style.fontWeight = 'normal';
                   lastStepEl.style.color = 'var(--ui-gray-400)';
                 }
               } else if (evt.type === 'verifying') {
                 if (lastStepEl) {
-                  lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);">✓</span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
+                  lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg></span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
                   lastStepEl.style.fontWeight = 'normal';
                   lastStepEl.style.color = 'var(--ui-gray-400)';
                 }
                 var verifyEl = document.createElement('div');
                 verifyEl.className = 'step-item step-running';
-                verifyEl.innerHTML = '<span style="color:#ff9800;">⟳</span> <strong>校验结果...</strong>';
+                verifyEl.innerHTML = '<span style="color:#ff9800;display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span> <strong>校验结果...</strong>';
                 stepLog.appendChild(verifyEl);
                 lastStepEl = verifyEl;
                 scrollMessages();
               } else if (evt.type === 'done') {
                 _receivedDone = true;
                 result = evt;
-                if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
+                _clearAllTimeouts();
                 if (stepLog && stepLog.children.length > 1) {
                   stepLog.style.maxHeight = '44px';
                   stepLog.style.overflow = 'hidden';
@@ -890,7 +926,7 @@ if (typeof marked !== 'undefined') {
         }
       } catch (streamErr) {
         // 清除超时计时器
-        if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
+        _clearAllTimeouts();
         // P0-3: 明确区分异常类型
         var _errMsg = streamErr.message || '';
         if (_errMsg === '__USER_CANCELLED__') {
@@ -904,7 +940,7 @@ if (typeof marked !== 'undefined') {
           if (_abortReason === 'user-cancel') {
             throw new Error('__USER_CANCELLED__');
           }
-          throw new Error('AI 请求超时（' + (_timeoutMs === Infinity ? '不限时' : _timeoutMs/1000 + 's') + '），请简化操作或重试');
+          throw new Error('AI 请求' + (window._idleKilled ? '长时间无响应（90s 未收到任何进度）' : '总时长超限（' + (_timeoutMs === Infinity ? '不限时' : _timeoutMs/1000 + 's') + '）') + '，请简化操作或重试');
         }
         // 其他流式错误：降级到普通 API（仅当未收到任何有效结果时）
         if (!result) {
@@ -999,8 +1035,8 @@ if (typeof marked !== 'undefined') {
               var b = document.createElement('button');
               b.type = 'button';
               var isConfigured = opt.configured;
-              var labelText = opt.label + (opt.configured === true ? ' ✓' : (opt.configured === false ? ' (未配置)' : ''));
-              b.textContent = labelText;
+              var labelText = GIS.utils.escapeHtml(opt.label) + (opt.configured === true ? ' ' + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg>' : (opt.configured === false ? ' (未配置)' : ''));
+              b.innerHTML = labelText;
               b.title = opt.desc || opt.label;
               b.style.cssText =
                 'border-radius:14px;padding:6px 16px;font-size:12px;cursor:pointer;transition:all 0.15s;' +
@@ -1040,7 +1076,7 @@ if (typeof marked !== 'undefined') {
             var mkBtn = function(label, word, primary) {
               var b = document.createElement('button');
               b.type = 'button';
-              b.textContent = label;
+              b.innerHTML = label;
               b.className = primary ? 'chat-file-btn-primary' : 'chat-file-btn-secondary';
               b.style.borderRadius = '14px';
               b.style.padding = '5px 14px';
@@ -1052,8 +1088,8 @@ if (typeof marked !== 'undefined') {
               };
               return b;
             };
-            bar.appendChild(mkBtn('✓ 加载到地图', '继续', true));
-            bar.appendChild(mkBtn('✕ 取消', '取消', false));
+            bar.appendChild(mkBtn('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg> 加载到地图', '继续', true));
+            bar.appendChild(mkBtn('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 取消', '取消', false));
           }
           bubbleEl2.appendChild(bar);
         } catch (e) { /* 按钮渲染失败不阻塞回复 */ }
@@ -1306,6 +1342,53 @@ if (typeof marked !== 'undefined') {
         }
       }
 
+      // 【兜底】layer_ops 引用的图层若不在前端面板（后端已注册但本轮未随 done 推送），
+      // 先从后端 /api/layers 拉取补挂再执行操作——修复「未找到图层」导致设色/图例全部落空
+      if (result.layer_ops && result.layer_ops.length > 0) {
+        var _opLayerNames = [];
+        result.layer_ops.forEach(function(op) {
+          if (op && op.name && _opLayerNames.indexOf(op.name) < 0) _opLayerNames.push(op.name);
+        });
+        var _panelNow = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
+        var _missing = _opLayerNames.filter(function(nm) {
+          return !_panelNow.some(function(l) {
+            return l._rawName === nm || l.filename === nm || l.layer_id === nm
+              || (l.filename && l.filename.indexOf(nm) === 0)
+              || (l._rawName && l._rawName.indexOf(nm) === 0);
+          });
+        });
+        if (_missing.length > 0) {
+          try {
+            var _lyrRes = await fetch(((window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || '') + '/api/layers');
+            var _lyrData = await _lyrRes.json();
+            (_lyrData.layers || []).forEach(function(lyr) {
+              if (!lyr || !lyr.geojson) return;
+              var _hit = _missing.some(function(m) {
+                return lyr.name === m || (lyr.name && (lyr.name.indexOf(m) === 0 || m.indexOf(lyr.name) === 0));
+              });
+              if (!_hit) return;
+              if (window.GIS.state && window.GIS.state.addLayer) {
+                window.GIS.state.addLayer({
+                  name: lyr.name,
+                  geojson: lyr.geojson,
+                  style: lyr.style || null,
+                  source: 'ai',
+                });
+              } else if (GIS.map && GIS.map.loadGeoJSON && GIS.layers && GIS.layers.addLayer) {
+                GIS.map.loadGeoJSON(lyr.geojson, lyr.name, lyr.style || {});
+                GIS.layers.addLayer({
+                  filename: lyr.name, _rawName: lyr.name, geojson: lyr.geojson,
+                  crs: 'WGS-84', visible: true, source: 'ai',
+                });
+              }
+            });
+            console.log('[GIS Chat] layer_ops 引用图层缺失，已从后端补挂:', _missing.join(', '));
+          } catch (e) {
+            console.warn('[GIS Chat] 补挂缺失图层失败:', e);
+          }
+        }
+      }
+
       // 如果 AI 返回了图层操作指令（移除/显隐/改色/重命名/缩放/分级设色/图例），优化时序并逐个执行
       if (result.layer_ops && result.layer_ops.length > 0) {
         console.log('[GIS Chat] 收到图层操作指令:', result.layer_ops.length, '条');
@@ -1545,11 +1628,11 @@ if (typeof marked !== 'undefined') {
           detailPanel.style.cssText = 'display:none;margin-top:8px;padding:8px 12px;border-radius:6px;font-size:11px;line-height:1.6;background:var(--ui-gray-50,#f9fafb);border:1px solid var(--ui-gray-200,#e5e7eb);color:var(--ui-gray-700,#374151);';
 
           // 精致轻量 SVG 图标
-          var svgCheck = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>';
-          var svgWarn = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
-          var svgAlert = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
-          var svgChevron = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"></polyline></svg>';
-          var svgDoc = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>';
+          var svgCheck = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>';
+          var svgWarn = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
+          var svgAlert = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
+          var svgChevron = '<svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+          var svgDoc = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>';
 
           if (hasError) {
             pill.style.background = '#fef2f2';
@@ -1651,7 +1734,7 @@ if (typeof marked !== 'undefined') {
       }
     } catch (err) {
       // 清除超时计时器
-      if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
+      _clearAllTimeouts();
       // 移除"思考中"占位气泡
       const loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
@@ -1679,7 +1762,7 @@ if (typeof marked !== 'undefined') {
       if (inputEl) inputEl.placeholder = '输入指令或查询...';
     } finally {
       // 清除超时计时器
-      if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
+      _clearAllTimeouts();
       _resetUIAfterStop();
       if (inputEl) {
         inputEl.placeholder = '输入指令或查询...';
@@ -1984,7 +2067,7 @@ if (typeof marked !== 'undefined') {
       badge.className = 'token-usage-badge' + (isEst ? ' estimate' : '');
       const inStr = u.input_tokens >= 1000 ? (u.input_tokens / 1000).toFixed(1) + 'k' : u.input_tokens;
       const outStr = u.output_tokens >= 1000 ? (u.output_tokens / 1000).toFixed(1) + 'k' : u.output_tokens;
-      badge.textContent = (isEst ? '≈' : '⚡') + ' ↑' + inStr + ' ↓' + outStr + ' tok';
+      badge.innerHTML = (isEst ? '≈' : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>') + ' ↑' + inStr + ' ↓' + outStr + ' tok';
       badge.title = (isEst ? '【估算 Token (字符÷3.0)】' : '【真实 API Token】') +
         '\n• 输入 (Prompt): ' + u.input_tokens + ' tok' +
         '\n• 输出 (Completion): ' + u.output_tokens + ' tok' +
@@ -2277,7 +2360,7 @@ if (typeof marked !== 'undefined') {
     // 地理质量自检警告：显式展示，不静默吞掉可疑数据
     (result.qa_warnings || []).forEach(function (w) {
       if (window.GIS.chat && window.GIS.chat.addMessage) {
-        window.GIS.chat.addMessage('⚠ 质量提示[' + (w.layer || '') + ']: ' + w.warning, 'system');
+        window.GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> 质量提示[' + (w.layer || '') + ']: ' + w.warning, 'system');
       }
     });
     if (window.GIS.history && typeof window.GIS.history.refresh === 'function') {

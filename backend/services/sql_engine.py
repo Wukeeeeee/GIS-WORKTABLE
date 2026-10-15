@@ -23,9 +23,39 @@ def is_safe_readonly_sql(sql: str) -> Tuple[bool, str]:
     if not clean:
         return False, "SQL 语句不能为空"
 
-    # 去掉多行注释和单行注释
-    clean_no_comments = re.sub(r"/\*.*?\*/", "", clean, flags=re.DOTALL)
-    clean_no_comments = re.sub(r"--.*?\n", "\n", clean_no_comments)
+    # 去掉多行注释和单行注释。
+    # 修复：原实现对整串做正则替换，会误伤字符串字面量里的 "--"/"/*"（如
+    # WHERE note = '--说明' 会被截断  查询条件静默失效）。
+    # 现改为逐字符扫描、跳过 '..' 与 ".." 字面量内部，仅移除字面量外的注释。
+    def _strip_sql_comments(s: str) -> str:
+        out = []
+        i, n = 0, len(s)
+        while i < n:
+            ch = s[i]
+            if ch in ("'", '"'):
+                quote = ch
+                j = i + 1
+                while j < n:
+                    if s[j] == quote:
+                        if j + 1 < n and s[j + 1] == quote:  # 转义的引号 ''
+                            j += 2
+                            continue
+                        break
+                    j += 1
+                out.append(s[i:j + 1])
+                i = j + 1
+            elif s.startswith("/*", i):
+                j = s.find("*/", i + 2)
+                i = n if j == -1 else j + 2
+            elif s.startswith("--", i):
+                j = s.find("\n", i)
+                i = n if j == -1 else j + 1
+            else:
+                out.append(ch)
+                i += 1
+        return "".join(out)
+
+    clean_no_comments = _strip_sql_comments(clean)
     tokens = clean_no_comments.strip().split()
     if not tokens:
         return False, "SQL 语句无效"
@@ -81,16 +111,26 @@ def execute_layer_sql(sql: str, registered_layers: dict,
         cur = conn.cursor()
 
         # 1. 动态将每个图层挂载为内存表
+        _used_table_names = set()
         for layer_name, layer_data in registered_layers.items():
             geojson = layer_data.get("geojson") or (layer_data if isinstance(layer_data, dict) else {})
             features = geojson.get("features", [])
             if not features and geojson.get("type") == "Feature":
                 features = [geojson]
 
-            # 清理表名（只保留合法字符）
-            table_name = re.sub(r"[^\w\u4e00-\u9fa5]", "_", layer_name)
-            if not table_name:
+            # 清理表名（只保留合法字符）。保持「图层名 sanitize 后 = 表名」的对外约定
+            # （AI/用户按该名字写 FROM）。仅当多个图层 sanitize 后撞名时，对后来者
+            # 追加 6 位短 hash 后缀保唯一，防止 "A-B"/"A B" 数据混入同一表。
+            _safe_base = re.sub(r"[^\w\u4e00-\u9fa5]", "_", layer_name)
+            if not _safe_base:
                 continue
+            if _safe_base in _used_table_names:
+                import hashlib as _hl
+                _hash_tag = _hl.md5(layer_name.encode("utf-8")).hexdigest()[:6]
+                table_name = f"{_safe_base[:40]}_{_hash_tag}"
+            else:
+                table_name = _safe_base
+            _used_table_names.add(table_name)
 
             # 探测所有 properties 字段名
             all_fields = set()

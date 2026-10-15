@@ -43,9 +43,10 @@ def extract_and_record_token_usage(
     if has_api_usage and (total_input > 0 or total_output > 0):
         usage_type = "api"
     else:
-        # 兜底：字符数估算（中文+英文混合模式校准比率 3.0）
+        # 兜底：字符数估算。修复：原 3.0 粗比率对中文（1字/token）与
+        # 英文 schema（4 chars/token）都偏差大。现按 CJK / 非 CJK 分别计数：
+        #   CJK 字符  1 token/字；非 CJK 字符  4 chars/token（OpenAI 实测近似）
         usage_type = "estimate"
-        # 估算 input：输入消息字符 + 工具 schema 字符
         input_chars = schema_chars
         output_chars = 0
         for m in messages:
@@ -55,8 +56,16 @@ def extract_and_record_token_usage(
                     output_chars += len(content)
                 else:
                     input_chars += len(content)
-        total_input = max(1, int(input_chars / 3.0))
-        total_output = max(1, int(output_chars / 3.0))
+
+        def _est_tokens(s: str) -> int:
+            if not s:
+                return 0
+            cjk = sum(1 for ch in s if '\u4e00' <= ch <= '\u9fff')
+            other = len(s) - cjk
+            return max(1, int(cjk * 1.0 + other / 4.0))
+
+        total_input = _est_tokens(input_chars)
+        total_output = _est_tokens(output_chars)
 
     usage_record = {
         "timestamp": datetime.datetime.now().isoformat(),

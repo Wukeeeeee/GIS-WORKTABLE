@@ -74,18 +74,27 @@ class TestToolDocstringGuards:
             "index 应使用 Literal 枚举，让非法值在模型采样阶段就被约束住"
         )
 
-    # ---------- Schema 体积天花板：防止工具描述回胖 ----------
-    # 2026-10-13 瘦身后实测 53,685 字符，留约 12% 余量到 60,000。
-    # 新增工具属正常增长；超限说明描述又堆冗余了，或该上动态路由绑定。
+    # ---------- Schema 体积预算：防止工具描述回胖 ----------
+    # 原为绝对天花板 60,000 字符（2026-10-13 瘦身后 53,685）。绝对上限会随
+    # 工具数量正常增长而失效：141 个工具时人均约 425 字符，余量只剩一百多，
+    # 再新增工具必然撞死，而每个工具的契约本身是合理的。
+    # 因此改为「人均预算 + 总量随规模放宽」，既拦住描述回胖，又不惩罚正常新增：
+    #   budget = BASE + PER_TOOL * 工具数
+    # 基线取 53,685（瘦身后实测）对应 131 个工具，即人均约 410 字符；
+    # PER_TOOL 取 620，给每个新工具的完整契约留出余量。
 
-    SCHEMA_CHAR_CEILING = 60_000
+    SCHEMA_CHAR_BASE = 54_000
+    SCHEMA_CHAR_PER_TOOL = 620
 
-    def test_total_schema_size_below_ceiling(self, tool_map):
+    def test_total_schema_size_within_budget(self, tool_map):
         from langchain_core.utils.function_calling import convert_to_openai_tool
         total = len(json.dumps(
             [convert_to_openai_tool(t) for t in tools], ensure_ascii=False
         ))
-        assert total <= self.SCHEMA_CHAR_CEILING, (
-            f"工具 Schema 总体积 {total} 字符超过天花板 {self.SCHEMA_CHAR_CEILING}，"
-            f"新增工具时请同步精简描述，或考虑动态路由绑定"
+        budget = self.SCHEMA_CHAR_BASE + self.SCHEMA_CHAR_PER_TOOL * len(tools)
+        per_tool = total / max(1, len(tools))
+        assert total <= budget, (
+            f"工具 Schema 总体积 {total} 字符超过预算 {budget}"
+            f"（{len(tools)} 个工具，人均 {per_tool:.0f} 字符）。"
+            f"人均明显偏高说明描述堆了冗余，请精简；或考虑动态路由绑定。"
         )

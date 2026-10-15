@@ -35,6 +35,9 @@ _lock = threading.Lock()
 # 内存缓存：task_id -> TaskMemory
 _tasks: dict = {}
 
+# 会话  活跃任务 索引（避免 find_active_task_for_session 每次都全目录扫描）
+_session_active: dict = {}  # session_id -> task_id
+
 
 def _now() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -190,6 +193,7 @@ def create_task(user_goal: str, session_id: str = "default") -> str:
     tid = task["task_id"]
     with _lock:
         _tasks[tid] = task
+        _session_active[session_id or "default"] = tid
         _save_task_to_disk(task)
         # 创建代码目录
         os.makedirs(_code_dir(tid), exist_ok=True)
@@ -201,16 +205,21 @@ def create_task(user_goal: str, session_id: str = "default") -> str:
 
 
 def get_task(task_id: str) -> Optional[dict]:
-    """获取任务（内存优先，磁盘兜底）"""
+    """获取任务（内存优先，磁盘兜底），双检锁保证并发放大读盘后写回导致老数据覆盖新值"""
     with _lock:
         if task_id in _tasks:
             return _tasks[task_id]
-    # 从磁盘加载
-    task = _load_task_from_disk(task_id)
-    if task:
-        with _lock:
-            _tasks[task_id] = task
-    return task
+    # 磁盘加载（无锁 IO）
+    loaded = _load_task_from_disk(task_id)
+    if not loaded:
+        return None
+    with _lock:
+        # 双检：回到锁里再查一次，避免并发期间再有新数据写入又被覆盖
+        existing = _tasks.get(task_id)
+        if existing:
+            return existing
+        _tasks[task_id] = loaded
+        return loaded
 
 
 def update_task(task_id: str, **kwargs) -> bool:
@@ -229,7 +238,13 @@ def update_task(task_id: str, **kwargs) -> bool:
 
 def archive_task(task_id: str) -> bool:
     """归档任务"""
-    return update_task(task_id, status="archived", archived=True)
+    ok = update_task(task_id, status="archived", archived=True)
+    if ok:
+        with _lock:
+            for sid, tid in list(_session_active.items()):
+                if tid == task_id:
+                    _session_active.pop(sid, None)
+    return ok
 
 
 def restore_task(task_id: str) -> bool:
@@ -238,15 +253,19 @@ def restore_task(task_id: str) -> bool:
 
 
 def delete_task(task_id: str) -> bool:
-    """删除任务及其所有文件"""
+    """删除任务及其所有文件（磁盘的 rmtree 和内存清索引要放同一把锁里，避免并发重建）"""
     with _lock:
-        _tasks.pop(task_id, None)
-    d = _task_dir(task_id)
-    if os.path.exists(d):
-        try:
-            shutil.rmtree(d)
-        except Exception:
-            pass
+        task = _tasks.pop(task_id, None)
+        if task:
+            sid = task.get("session_id") or "default"
+            if _session_active.get(sid) == task_id:
+                _session_active.pop(sid, None)
+        d = _task_dir(task_id)
+        if os.path.exists(d):
+            try:
+                shutil.rmtree(d)
+            except Exception:
+                pass
     return True
 
 
@@ -554,13 +573,25 @@ def build_task_context(task_id: str) -> str:
 
 
 def find_active_task_for_session(session_id: str) -> Optional[str]:
-    """查找会话的当前活跃任务"""
+    """查找会话的当前活跃任务（优先走内存索引，索引不命中才回扫磁盘并回填索引）"""
+    sid = session_id or "default"
+    with _lock:
+        tid = _session_active.get(sid)
+        if tid:
+            task = _tasks.get(tid)
+            if task and task.get("status") == "active" and not task.get("archived"):
+                return tid
+            # 索引里的任务已被删除/归档，丢掉索引项
+            _session_active.pop(sid, None)
+    # 索引未命中  可能服务刚重启，磁盘扫一次回填
     if os.path.isdir(_BASE_DIR):
         for tid_dir in os.listdir(_BASE_DIR):
             task = get_task(tid_dir)
             if not task:
                 continue
-            if task.get("session_id") == session_id and task.get("status") == "active" and not task.get("archived"):
+            if task.get("session_id") == sid and task.get("status") == "active" and not task.get("archived"):
+                with _lock:
+                    _session_active[sid] = task["task_id"]
                 return task["task_id"]
     return None
 

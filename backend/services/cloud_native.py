@@ -318,7 +318,9 @@ class _HttpRangeSource:
             raise CloudNativeError(f"PMTiles 远程读取失败（Range 请求）: {str(e)[:200]}")
 
 
-def _pmtiles_open(source: str):
+from contextlib import contextmanager
+
+def _pmtiles_open(source: str, want_handle: bool = False):
     """打开 PMTiles：本地文件走 mmap，URL 走 HTTP Range。返回 (Reader, header)"""
     try:
         from pmtiles.reader import Reader, MmapSource
@@ -340,8 +342,30 @@ def _pmtiles_open(source: str):
         raise
     except Exception as e:
         raise CloudNativeError(f"PMTiles 打开失败: {str(e)[:300]}")
+    # 修复：返回文件句柄供调用方 finally close（原实现泄漏 fd，Windows 反复加载会耗尽句柄）。
+    # want_handle=False 时保持旧的二元组返回（兼容 tools.py / url_gis_service 的既有调用）。
+    if want_handle:
+        return reader, header, f
+    if f is not None:
+        try:
+            f.close()
+        except Exception:
+            pass
     return reader, header
 
+
+@contextmanager
+def _pmtiles_reader(source: str):
+    """PMTiles Reader 上下文管理器：确保本地文件句柄用后关闭。"""
+    reader, header, fh = _pmtiles_open(source, want_handle=True)
+    try:
+        yield reader, header
+    finally:
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
 
 def pmtiles_header_summary(header: dict) -> dict:
     e7 = 1e7
@@ -366,22 +390,22 @@ def pmtiles_header_summary(header: dict) -> dict:
 
 def pmtiles_info(source: str) -> dict:
     """PMTiles 元信息（只读 header + metadata，不读瓦片）"""
-    reader, header = _pmtiles_open(source)
-    info = pmtiles_header_summary(header)
-    try:
-        raw_meta = reader.metadata()
-        if isinstance(raw_meta, bytes):
-            raw_meta = json.loads(gzip.decompress(raw_meta) if raw_meta[:2] == b"\x1f\x8b" else raw_meta)
-        if isinstance(raw_meta, dict):
-            info["vector_layers"] = [
-                {"name": l.get("id") or l.get("name"), "fields": list((l.get("fields") or {}).keys())[:15]}
-                for l in (raw_meta.get("vector_layers") or [])[:8]
-            ]
-    except CloudNativeError:
-        raise
-    except Exception:
-        pass
-    return info
+    with _pmtiles_reader(source) as (reader, header):
+        info = pmtiles_header_summary(header)
+        try:
+            raw_meta = reader.metadata()
+            if isinstance(raw_meta, bytes):
+                raw_meta = json.loads(gzip.decompress(raw_meta) if raw_meta[:2] == b"\x1f\x8b" else raw_meta)
+            if isinstance(raw_meta, dict):
+                info["vector_layers"] = [
+                    {"name": l.get("id") or l.get("name"), "fields": list((l.get("fields") or {}).keys())[:15]}
+                    for l in (raw_meta.get("vector_layers") or [])[:8]
+                ]
+        except CloudNativeError:
+            raise
+        except Exception:
+            pass
+        return info
 
 
 def _deg2tile(lon: float, lat: float, z: int):
@@ -468,82 +492,82 @@ def pmtiles_vector_to_geojson(source: str, max_features: int = 5000,
     以数据中心所在瓦片为起点，同层螺旋扩圈取最多 max_tiles 块瓦片，
     解码 MVT 并转为 WGS84 GeoJSON。返回 (geojson, info)。
     """
-    reader, header = _pmtiles_open(source)
-    if int(header.get("tile_type", 0).value if hasattr(header.get("tile_type", 0), "value") else header.get("tile_type", 0)) != 1:  # TileType.MVT
-        raise CloudNativeError(
-            f"该 PMTiles 不是矢量瓦片（tile_type={header.get('tile_type')}），"
-            "当前工具仅支持 MVT 矢量类型")
+    with _pmtiles_reader(source) as (reader, header):
+        if int(header.get("tile_type", 0).value if hasattr(header.get("tile_type", 0), "value") else header.get("tile_type", 0)) != 1:  # TileType.MVT
+            raise CloudNativeError(
+                f"该 PMTiles 不是矢量瓦片（tile_type={header.get('tile_type')}），"
+                "当前工具仅支持 MVT 矢量类型")
 
-    summary = pmtiles_header_summary(header)
-    lon_c, lat_c = summary["center"][0], summary["center"][1]
-    z = max(int(summary["min_zoom"] or 0), min(int(summary["max_zoom"] or 10), 10))
-    cx, cy = _deg2tile(lon_c, lat_c, z)
+        summary = pmtiles_header_summary(header)
+        lon_c, lat_c = summary["center"][0], summary["center"][1]
+        z = max(int(summary["min_zoom"] or 0), min(int(summary["max_zoom"] or 10), 10))
+        cx, cy = _deg2tile(lon_c, lat_c, z)
 
-    collected = []
-    seen_layers = set()
-    seen_tiles = set()
-    n = 2 ** z
+        collected = []
+        seen_layers = set()
+        seen_tiles = set()
+        n = 2 ** z
 
-    # 螺旋扩圈：先中心，再 1 圈、2 圈……（Chebyshev 距离）
-    candidates = [(0, 0)]
-    for radius in range(1, 8):
-        candidates.extend([(dx, dy) for dx in range(-radius, radius + 1)
-                           for dy in range(-radius, radius + 1)
-                           if max(abs(dx), abs(dy)) == radius])
+        # 螺旋扩圈：先中心，再 1 圈、2 圈……（Chebyshev 距离）
+        candidates = [(0, 0)]
+        for radius in range(1, 8):
+            candidates.extend([(dx, dy) for dx in range(-radius, radius + 1)
+                               for dy in range(-radius, radius + 1)
+                               if max(abs(dx), abs(dy)) == radius])
 
-    for dx, dy in candidates:
-        if len(collected) >= max_features or len(seen_tiles) >= max_tiles:
-            break
-        tx, ty = cx + dx, cy + dy
-        if tx < 0 or ty < 0 or tx >= n or ty >= n:
-            continue
-        if (tx, ty) in seen_tiles:
-            continue
-        try:
-            tile_bytes = reader.get(z, tx, ty)
-        except CloudNativeError:
-            raise
-        except Exception:
-            continue
-        if not tile_bytes:
-            continue
-        seen_tiles.add((tx, ty))
-        feats = _mvt_decode_tile(tile_bytes, header.get("tile_compression"), z, tx, ty)
-        for geom, props, lname in feats:
-            seen_layers.add(lname)
-            collected.append(_geom_to_feature(geom, props))
-            if len(collected) >= max_features:
+        for dx, dy in candidates:
+            if len(collected) >= max_features or len(seen_tiles) >= max_tiles:
                 break
+            tx, ty = cx + dx, cy + dy
+            if tx < 0 or ty < 0 or tx >= n or ty >= n:
+                continue
+            if (tx, ty) in seen_tiles:
+                continue
+            try:
+                tile_bytes = reader.get(z, tx, ty)
+            except CloudNativeError:
+                raise
+            except Exception:
+                continue
+            if not tile_bytes:
+                continue
+            seen_tiles.add((tx, ty))
+            feats = _mvt_decode_tile(tile_bytes, header.get("tile_compression"), z, tx, ty)
+            for geom, props, lname in feats:
+                seen_layers.add(lname)
+                collected.append(_geom_to_feature(geom, props))
+                if len(collected) >= max_features:
+                    break
 
-    if not collected:
-        raise CloudNativeError(
-            f"在数据中心附近的 z={z} 级瓦片中未解出要素（该数据集此级别可能无数据），"
-            "可尝试其他数据源或更高 zoom 的数据集")
-    geojson = {"type": "FeatureCollection", "features": collected}
-    info = dict(summary)
-    info["zoom_sampled"] = z
-    info["tiles_sampled"] = len(seen_tiles)
-    info["feature_count"] = len(collected)
-    info["layers"] = sorted(seen_layers)
-    return geojson, info
+        if not collected:
+            raise CloudNativeError(
+                f"在数据中心附近的 z={z} 级瓦片中未解出要素（该数据集此级别可能无数据），"
+                "可尝试其他数据源或更高 zoom 的数据集")
+        geojson = {"type": "FeatureCollection", "features": collected}
+        info = dict(summary)
+        info["zoom_sampled"] = z
+        info["tiles_sampled"] = len(seen_tiles)
+        info["feature_count"] = len(collected)
+        info["layers"] = sorted(seen_layers)
+        return geojson, info
 
 
 def pmtiles_raster_tile_bounds(source: str):
     """栅格 PMTiles：取中心瓦片 PNG/JPEG 字节 + 其 WGS84 边界，供影像叠加。返回 (bytes, bounds, fmt)"""
-    reader, header = _pmtiles_open(source)
-    ttype = header.get("tile_type", 0)
-    ttype = int(ttype.value) if hasattr(ttype, "value") else int(ttype)
-    if ttype not in (2, 3, 4, 5):  # PNG/JPEG/WEBP/AVIF
-        raise CloudNativeError(f"该 PMTiles 不是栅格瓦片（tile_type={header.get('tile_type')}）")
-    summary = pmtiles_header_summary(header)
-    lon_c, lat_c = summary["center"][0], summary["center"][1]
-    z = min(int(summary["max_zoom"] or 8), 12)
-    x, y = _deg2tile(lon_c, lat_c, z)
-    tile_bytes = reader.get(z, x, y)
-    if not tile_bytes:
-        raise CloudNativeError("中心瓦片为空")
-    fmt = {2: "png", 3: "jpeg", 4: "webp", 5: "avif"}[ttype]
-    return tile_bytes, list(_tile_bounds(z, x, y)), fmt, summary
+    with _pmtiles_reader(source) as (reader, header):
+        ttype = header.get("tile_type", 0)
+        ttype = int(ttype.value) if hasattr(ttype, "value") else int(ttype)
+        if ttype not in (2, 3, 4, 5):  # PNG/JPEG/WEBP/AVIF
+            raise CloudNativeError(f"该 PMTiles 不是栅格瓦片（tile_type={header.get('tile_type')}）")
+        summary = pmtiles_header_summary(header)
+        lon_c, lat_c = summary["center"][0], summary["center"][1]
+        z = min(int(summary["max_zoom"] or 8), 12)
+        x, y = _deg2tile(lon_c, lat_c, z)
+        tile_bytes = reader.get(z, x, y)
+        if not tile_bytes:
+            raise CloudNativeError("中心瓦片为空")
+        fmt = {2: "png", 3: "jpeg", 4: "webp", 5: "avif"}[ttype]
+        return tile_bytes, list(_tile_bounds(z, x, y)), fmt, summary
 
 
 def _tile_bounds(z: int, x: int, y: int):

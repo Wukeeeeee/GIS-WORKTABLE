@@ -35,7 +35,10 @@ _active_session = "default"  # 供无 session 上下文的 @tool 使用（本工
 
 
 def _sidecar_path(session_id: str) -> str:
-    return os.path.join(_STORE_DIR, f"session_{session_id}_pending.json")
+    # session_id 白名单清洗（防路径污染）
+    from backend.services.ai_service import _sanitize_session_id
+    _sid = _sanitize_session_id(session_id)
+    return os.path.join(_STORE_DIR, f"session_{_sid}_pending.json")
 
 
 def _now() -> str:
@@ -84,10 +87,14 @@ def _save_locked(session_id: str):
             if os.path.exists(path):
                 os.remove(path)
         else:
-            with open(path, "w", encoding="utf-8") as f:
+            # 原子写入：先写临时文件再替换，避免断电/中断留下半截 JSON
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+            os.replace(tmp_path, path)
+    except Exception as e:
+        import sys
+        print(f"[pending_action] sidecar 写入失败 {session_id}: {e}", file=sys.stderr)
 
 
 def get_pending_action(session_id: str = "default") -> dict | None:

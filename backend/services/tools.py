@@ -132,6 +132,8 @@ def _validate_ast(node):
         for elt in node.elts:
             _validate_ast(elt)
     elif isinstance(node, ast.Attribute):
+        if node.attr.startswith('_'):
+            raise ValueError(f"沙箱拦截：禁止访问以 _ 开头的属性「{node.attr}」")
         _validate_ast(node.value)
     elif isinstance(node, ast.Compare):
         _validate_ast(node.left)
@@ -176,7 +178,23 @@ _pending_heatmap: dict = {"latest": None}
 _clear_layers_flag: bool = False
 _pending_layer_ops: list = []
 _current_amap_key: str = ""
-_search_call_count: int = 0    # 搜索次数计数，每次请求重置
+_search_call_count: int = 0
+_domain_fail: dict = {}          # 域名 -> 连续失败次数（熔断）
+_DOMAIN_FAIL_LIMIT = 2           # 同域连续失败 N 次即熔断
+_search_cache: dict = {}          # query -> (时间戳, 结果文本)
+_search_last_hit: dict = {}       # 引擎名 -> 上次请求时间（限速防验证码）
+_SEARCH_CACHE_TTL = 600.0         # 相同查询 10 分钟内直接用缓存
+_ENGINE_MIN_INTERVAL = 1.5       # 同一引擎两次请求最小间隔（秒）
+
+
+def _engine_throttle(engine_name: str) -> None:
+    """同引擎限速：间隔不足时 sleep 补齐，降低验证码/封禁概率。"""
+    import time as _t
+    last = _search_last_hit.get(engine_name, 0.0)
+    wait = _ENGINE_MIN_INTERVAL - (_t.time() - last)
+    if wait > 0:
+        _t.sleep(wait)
+    _search_last_hit[engine_name] = _t.time()    # 搜索次数计数，每次请求重置
 _exec_call_count: int = 0       # Python 执行次数计数，每次请求重置
 _exec_log: list = []            # 执行日志：记录每次execute_python的用途和结果
 _temp_output_dir: str = ""          # 在 reset_state 时设置
@@ -288,6 +306,32 @@ def record_tool_artifact(filename: str, filepath: str, artifact_type: str = "ima
     return art
 
 
+# ---- 同 session 并发互斥：防止两条并发请求互相 reset/覆盖 pending 图层 ----
+import threading as _threading_mod
+_session_locks: dict = {}
+_session_locks_guard = _threading_mod.Lock()
+
+def acquire_session_lock(session_id: str) -> bool:
+    """尝试占用会话锁（非阻塞）。成功 True；已被占用 False。"""
+    sid = session_id or "default"
+    with _session_locks_guard:
+        lock = _session_locks.get(sid)
+        if lock is None:
+            lock = _threading_mod.Lock()
+            _session_locks[sid] = lock
+    return lock.acquire(blocking=False)
+
+def release_session_lock(session_id: str):
+    """释放会话锁（忽略未持有）。"""
+    sid = session_id or "default"
+    with _session_locks_guard:
+        lock = _session_locks.get(sid)
+    if lock is not None:
+        try:
+            lock.release()
+        except RuntimeError:
+            pass
+
 def reset_state(amap_key: str = "", task_id: str = ""):
     """每次请求开始时调用，清空所有共享状态"""
     global _current_amap_key, _clear_layers_flag, _search_call_count, _exec_call_count, _exec_log, _current_task_id
@@ -307,6 +351,7 @@ def reset_state(amap_key: str = "", task_id: str = ""):
         _pending_layer_ops.clear()
         _current_amap_key = amap_key
         _search_call_count = 0
+        _domain_fail.clear()
         _exec_call_count = 0
         _exec_log.clear()
         _current_task_id = task_id or ""
@@ -388,8 +433,12 @@ def _compute_bbox(geojson: dict) -> list:
         _extract_coords(geom, coords)
     if not coords:
         return [0, 0, 0, 0]
-    lngs = [c[0] for c in coords]
-    lats = [c[1] for c in coords]
+    # 防护：坐标可能为 None 或长度不足
+    valid = [c for c in coords if c and len(c) >= 2]
+    if not valid:
+        return [0, 0, 0, 0]
+    lngs = [c[0] for c in valid]
+    lats = [c[1] for c in valid]
     return [min(lngs), min(lats), max(lngs), max(lats)]
 
 
@@ -511,47 +560,207 @@ def _add_pending_item(url: str, file_path: str = None):
 # 工具: search_web — 必应搜索
 # ============================================================
 
+def _bing_rss_search(query: str, timeout: float = 12.0) -> str:
+    """Bing RSS 免费出口：https://www.bing.com/search?q=...&format=rss
+    返回干净的 XML（标题/链接/摘要），无反爬困扰、无需解析 HTML。"""
+    import requests
+    from xml.etree import ElementTree as ET
+    url = "https://www.bing.com/search?q=" + requests.utils.quote(query) + "&format=rss&count=10"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+        if resp.status_code != 200:
+            return ""
+        root = ET.fromstring(resp.text)
+        items = root.findall(".//item")
+        out = []
+        for it in items[:10]:
+            title = (it.findtext("title") or "").strip()
+            link = (it.findtext("link") or "").strip()
+            desc = (it.findtext("description") or "").strip()
+            if title or desc:
+                out.append(f"- {title}\n  链接: {link}\n  摘要: {desc}")
+        return "\n".join(out)
+    except Exception:
+        return ""
+
+
+def _baidu_html_search(query: str, timeout: float = 12.0) -> str:
+    """百度网页搜索兜底：解析结果页的标题/摘要（带 UA，失败返回空）。"""
+    import requests
+    from bs4 import BeautifulSoup
+    url = "https://www.baidu.com/s?wd=" + requests.utils.quote(query) + "&rn=10"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+        if resp.status_code != 200 or not resp.text:
+            return ""
+        soup = BeautifulSoup(resp.text, "html.parser")
+        out = []
+        for h3 in soup.select("h3.c-title-font, h3.t, div.result h3, div.c-container h3")[:10]:
+            a = h3.find("a")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            link = a.get("href", "")
+            container = h3.find_parent(["div", "td"])
+            desc = ""
+            if container:
+                for sel in (".c-abstract", ".c_span9", "[class*=content-right]", "[class*=abstract]"):
+                    node = container.select_one(sel)
+                    if node and node.get_text(strip=True):
+                        desc = node.get_text(strip=True)
+                        break
+            if title:
+                out.append(f"- {title}\n  链接: {link}\n  摘要: {desc}")
+        return "\n".join(out)
+    except Exception:
+        return ""
+
+
+def _sogou_html_search(query: str, timeout: float = 12.0) -> str:
+    """搜狗网页搜索兜底 2。"""
+    import requests
+    from bs4 import BeautifulSoup
+    url = "https://www.sogou.com/web?query=" + requests.utils.quote(query)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+        if resp.status_code != 200 or not resp.text:
+            return ""
+        soup = BeautifulSoup(resp.text, "html.parser")
+        out = []
+        for vrwrap in soup.select("div.vrwrap, div.rb")[:10]:
+            h3 = vrwrap.select_one("h3")
+            if not h3:
+                continue
+            a = h3.find("a")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            link = a.get("href", "")
+            if link and not link.startswith("http"):
+                link = "https://www.sogou.com" + link
+            desc_node = vrwrap.select_one(".str-text-info, .space-txt, p.str_info")
+            desc = desc_node.get_text(strip=True) if desc_node else ""
+            if title:
+                out.append(f"- {title}\n  链接: {link}\n  摘要: {desc}")
+        return "\n".join(out)
+    except Exception:
+        return ""
+
+
+def _ddg_html_search(query: str, timeout: float = 12.0) -> str:
+    """DuckDuckGo HTML 版兜底 3（国际内容效果好，国内可能不可达）。"""
+    import requests
+    from bs4 import BeautifulSoup
+    url = "https://html.duckduckgo.com/html/?q=" + requests.utils.quote(query)
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+        if resp.status_code != 200 or not resp.text:
+            return ""
+        soup = BeautifulSoup(resp.text, "html.parser")
+        out = []
+        for r in soup.select("div.result")[:10]:
+            a = r.select_one("a.result__a")
+            if not a:
+                continue
+            title = a.get_text(strip=True)
+            link = a.get("href", "")
+            snip = r.select_one(".result__snippet")
+            desc = snip.get_text(strip=True) if snip else ""
+            if title:
+                out.append(f"- {title}\n  链接: {link}\n  摘要: {desc}")
+        return "\n".join(out)
+    except Exception:
+        return ""
+
+
+def _query_tokens(query: str) -> list:
+    """把查询拆成关键词 token（去空白/标点，保留 >=2 字符的段）。"""
+    import re as _re2
+    raw = _re2.split(r"[\s，。、,\.\?\?！!：:;\"'（）()　]+", query)
+    toks = []
+    for t in raw:
+        t = t.strip()
+        if len(t) >= 2:
+            # 去掉常见后缀让匹配更宽容（"2024年""2024"，"GDP的""GDP"）
+            t2 = t.rstrip("年的中之和与")
+            if len(t2) >= 2:
+                toks.append(t2)
+            else:
+                toks.append(t)
+    return list(dict.fromkeys(toks))  # 去重保序
+
+
+def _relevance_score(text: str, tokens: list) -> float:
+    """结果文本中命中的查询关键词比例（0~1）。"""
+    if not tokens:
+        return 0.0
+    low = text.lower()
+    hit = sum(1 for t in tokens if t.lower() in low)
+    return hit / len(tokens)
+
+
 @tool
 def search_web(query: str) -> str:
-    """搜索网络信息，返回网页标题/链接/摘要。用于搜索最新新闻、数据、资料。涉及国外内容用中英文搜。"""
+    """搜索网络信息，返回网页标题、链接/摘要。多引擎自动降级 + 相关性评分：
+    百度  搜狗  Bing RSS  DuckDuckGo。结果须命中查询关键词一半以上才算数，
+    否则继续尝试并最终返回最相关的一份。返回结构化摘要（非原始网页），token 省 90%。"""
     global _search_call_count
     _search_call_count += 1
     if _search_call_count > 30:
-        return "【搜索过热】已搜索太多次，请基于已有信息继续处理。"
+        return "【已停止】已搜索太多次，请基于已有信息继续处理。"
 
-    # 搜 Bing
-    content = ""
-    try:
-        url = f"https://cn.bing.com/search?q={query.replace(' ', '+')}"
-        content = fetch_webpage_impl(url)
-        if content.startswith("错误") or len(content) < 200:
-            content = ""
-    except Exception:
-        content = ""
+    # 结果缓存：相同查询 10 分钟内直接返回（省时间也省引擎额度，降低验证码概率）
+    import time as _time
+    _cached = _search_cache.get(query)
+    if _cached and (_time.time() - _cached[0]) < _SEARCH_CACHE_TTL:
+        print(f"[GIS] search_web 命中缓存: {query[:40]}", flush=True)
+        return _cached[1]
 
-    # 也搜 Yandex，结果合并
-    yandex_content = ""
-    try:
-        url = f"https://yandex.com/search/?text={query.replace(' ', '+')}"
-        yandex_content = fetch_webpage_impl(url)
-        if yandex_content.startswith("错误") or len(yandex_content) < 200:
-            yandex_content = ""
-    except Exception:
-        pass
+    engines = [
+        ("百度", _baidu_html_search),
+        ("搜狗", _sogou_html_search),
+        ("Bing RSS", _bing_rss_search),
+        ("DuckDuckGo", _ddg_html_search),
+    ]
+    tokens = _query_tokens(query)
+    threshold = 0.5
+    best_text, best_score, best_name = "", -1.0, ""
+    for name, fn in engines:
+        try:
+            _engine_throttle(name)
+            results = fn(query)
+            if not results or len(results.strip()) < 40:
+                continue
+            score = _relevance_score(results, tokens)
+            print(f"[GIS] search_web 引擎 {name} 相关性 {score:.2f} (query: {query[:40]})", flush=True)
+            if score > best_score:
+                best_text, best_score, best_name = results, score, name
+            if score >= threshold:
+                break  # 足够相关，立即采用
+        except Exception as e:
+            print(f"[GIS] search_web 引擎 {name} 异常: {str(e)[:100]}", flush=True)
+            continue
 
-    # 合并两个结果
-    if yandex_content:
-        if content:
-            content = content + "\n\n--- Yandex 搜索结果 ---\n" + yandex_content
-        else:
-            content = yandex_content
+    if best_text and best_score > 0.05:
+        _final = f"[搜索结果 | {best_name} | 相关性 {best_score:.0%}]" + chr(10) + best_text
+        _search_cache.clear()  # 只留最新一条，防内存膨胀
+        _search_cache[query] = (_time.time(), _final)
+        return _final
 
-    if not content:
-        return "错误：搜索失败（Bing 和 Yandex 均未返回有效结果）"
-
-    if len(content) > 6000:
-        content = content[:6000] + "\n\n...(内容过长，已截断)"
-    return content
+    # 所有引擎均无有效结果：不缓存失败，下次换关键词可立即重试
+    return ("错误：搜索失败（所有引擎均无有效结果，可能网络受限或关键词过于冷门）。"
+            "建议：1) 换个关键词 2) 若已有足够信息请直接分析，不要反复搜索。")
 
 
 # ============================================================
@@ -580,19 +789,66 @@ def _html_to_markdown(html: str, url: str = "") -> str:
     return text.strip()
 
 
+_JUNK_MARKERS = (
+    "404 Not Found", "403 Forbidden", "Access Denied", "访问被拒绝",
+    "页面不存在", "无法找到该页面", "系统发生错误", "Service Unavailable",
+    "Just a moment...", "请开启 JavaScript", "安全验证", "human verification",
+)
+
+
+def _looks_like_junk(text: str) -> bool:
+    """检测 404/403/反爬验证等无效页面，避免把错误页当正文喂给模型。"""
+    if not text:
+        return True
+    head = text[:300].lower()
+    if len(text.strip()) < 80:
+        # 极短页面几乎必为错误页/空壳
+        return True
+    for m in _JUNK_MARKERS:
+        if m.lower() in head:
+            return True
+    return False
+
+
 def fetch_webpage_impl(url: str, max_length: int = 10000) -> str:
+    """获取网页内容的实现（被 search_web 和 fetch_webpage 共用），带同域熔断。"""
+    global _domain_fail
+    from urllib.parse import urlparse as _urlparse
+    try:
+        _host = (_urlparse(url).hostname or "").lower()
+    except Exception:
+        _host = ""
+    if _host and _domain_fail.get(_host, 0) >= _DOMAIN_FAIL_LIMIT:
+        print(f"[GIS] 熔断：{_host} 已连续失败 {_domain_fail[_host]} 次，本轮不再抓取", flush=True)
+        return None
+
+    _impl_result = _fetch_webpage_impl_inner(url, max_length)
+    _ok = bool(_impl_result) and not _impl_result.startswith("错误")
+    if _host:
+        if _ok:
+            _domain_fail[_host] = 0
+        else:
+            _domain_fail[_host] = _domain_fail.get(_host, 0) + 1
+    return _impl_result
+
+
+def _fetch_webpage_impl_inner(url: str, max_length: int = 10000) -> str:
     """获取网页内容的实现（被 search_web 和 fetch_webpage 共用）"""
     # 方案 A：Scrapling
     try:
         from scrapling.fetchers import Fetcher
         page = Fetcher.get(url, timeout=20)
-        if page.status == 200:
-            html = str(page.html_content)
-            if html and len(html) > 50:
-                text = _html_to_markdown(html, url)
-                text = text[:max_length]
-                if text:
-                    return text
+        if page.status != 200:
+            print(f'[GIS] fetch_webpage HTTP {page.status}: {url}', flush=True)
+            return None
+        html = str(page.html_content)
+        if html and len(html) > 50:
+            text = _html_to_markdown(html, url)
+            text = text[:max_length]
+            if text and not _looks_like_junk(text):
+                return text
+            if text:
+                print(f'[GIS] fetch_webpage 页面疑似错误页/反爬页，已丢弃: {url}', flush=True)
     except ImportError:
         pass
     except Exception:
@@ -627,15 +883,17 @@ print(result[:int(sys.argv[2])])
         )
         stdout = result.stdout.decode('utf-8', errors='replace')
         if result.returncode != 0:
-            return f"错误：{result.stderr.decode('utf-8', errors='replace')[:300]}"
-        return stdout.strip() or "抓取结果为空"
+            return "错误：" + result.stderr.decode('utf-8', errors='replace')[:300]
+        _text_out = stdout.strip()
+        if not _text_out or _looks_like_junk(_text_out):
+            print(f'[GIS] fetch_webpage(playwright) 内容疑似错误页，已丢弃: {url}', flush=True)
+            return None
+        return _text_out or '抓取结果为空'
     except subprocess.TimeoutExpired:
         return "错误：抓取超时"
     except Exception as e:
         return f"错误：[{type(e).__name__}] {str(e)[:200]}"
-
-    # 所有抓取方案均失败
-    return "错误：所有抓取方案均失败（网站可能被屏蔽或网络不可达）"
+    # 注：方案 A/B 所有分支均已显式 return，无不可达代码
 
 
 @tool
@@ -733,6 +991,11 @@ def save_file(filename: str, content: str) -> str:
     init_temp_dir()
     if not isinstance(content, str):
         content = json.dumps(content, ensure_ascii=False)
+
+    # 安全：拒绝路径遍历，防止写出 output 目录
+    safe_name = os.path.basename(filename)
+    if safe_name != filename or filename.startswith('/') or '..' in filename:
+        return f"错误：无效的文件名 '{filename}'（已拒绝路径遍历）"
 
     output_dir = _temp_output_dir
     os.makedirs(output_dir, exist_ok=True)
@@ -1476,6 +1739,8 @@ def get_layer_detail(layer_name: str) -> str:
     - 属性字段列表
     - 前 3 个要素的属性预览
     """
+    if not layer_name or not layer_name.strip():
+        return f"错误：layer_name 不能为空，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
     info = _registered_layers.get(layer_name)
     if not info:
         matches = [n for n in _registered_layers.keys() if layer_name in n]
@@ -1559,11 +1824,7 @@ def datav_boundary(name: str) -> str:
                     "prompt": f"全国有多处「{name}」，请选择您需要分析的具体城市：",
                     "options": options,
                     "choice_key": "region_disambiguation",
-                }) if hasattr(ask_user_choice, "invoke") else ask_user_choice(
-                    prompt=f"全国有多处「{name}」，请选择您需要分析的具体城市：",
-                    options=options,
-                    choice_key="region_disambiguation",
-                )
+                })
 
         data = fetch_boundary(name)
         if data is None:
@@ -1916,7 +2177,11 @@ def field_calculate(layer_name: str, expression: str, new_field: str, field_type
             gdf[new_field] = result
         except Exception:
             try:
-                result = gdf.apply(lambda row: eval(expression, safe_globals, {**safe_locals, **row.to_dict()}), axis=1)
+                # 危险：eval 前必须过 AST 白名单校验，禁止属性链逃逸
+                _fc_tree = ast.parse(expression, mode="eval")
+                _validate_ast(_fc_tree.body)
+                _fc_code = compile(_fc_tree, "<safe>", "eval")
+                result = gdf.apply(lambda row: eval(_fc_code, safe_globals, {**safe_locals, **row.to_dict()}), axis=1)
                 gdf[new_field] = result
             except Exception as e2:
                 return f"表达式计算失败：{str(e2)[:200]}"
@@ -2807,7 +3072,9 @@ network_type: drive(车行路) walk(步行) bike(骑行) all(全部)，默认 dr
         try:
             G = fut.result(timeout=120)
         except concurrent.futures.TimeoutError:
-            executor.shutdown(wait=False)
+            # 显式 cancel + 关闭线程池，防止后台 osmnx 继续占用 socket
+            fut.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
             return (
                 f"下载「{location_name}」路网超时（120秒），OSM 服务器无响应。\n\n"
                 f"请尝试以下替代方案：\n"
@@ -3070,9 +3337,14 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
     - dissolve: 是否融合重叠缓冲区多边形（默认 False，保留各要素独立缓冲区）。"""
     try:
         import geopandas as gpd
+        from backend.services.spatial_robust import repair_geometry, estimate_tier, robust_note
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
+        gdf, rstats = repair_geometry(gdf)
+        if len(gdf) == 0:
+            return f"缓冲区分析失败: 图层「{name}」没有有效几何"
+        tier = estimate_tier(gdf)
         distance_m = distance * 1000 if unit == "km" else distance
         import warnings
         with warnings.catch_warnings():
@@ -3084,13 +3356,42 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
         lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
         crs_utm = _get_utm_crs(lon, lat)
         gdf_utm = gdf.to_crs(crs_utm)
-        gdf_utm["geometry"] = gdf_utm.geometry.buffer(distance_m)
+        _cstats = None
+        if tier["tier"] == "chunked":
+            from backend.services.spatial_robust import chunked_overlay
+            _buf_parts = []
+            _minx, _miny, _maxx, _maxy = gdf_utm.total_bounds
+            _dx = (_maxx - _minx) / 4 or 1.0
+            _dy = (_maxy - _miny) / 4 or 1.0
+            from shapely.geometry import box as _box
+            _okc = 0
+            for _i in range(4):
+                for _j in range(4):
+                    _cell = _box(_minx + _i * _dx, _miny + _j * _dy, _minx + (_i + 1) * _dx, _miny + (_j + 1) * _dy)
+                    _sub = gdf_utm[gdf_utm.geometry.intersects(_cell)]
+                    if len(_sub) == 0:
+                        continue
+                    try:
+                        _buf_parts.append(_sub.copy())
+                        _buf_parts[-1]["geometry"] = _sub.geometry.buffer(distance_m)
+                        _okc += 1
+                    except Exception:
+                        pass
+            import pandas as _pd
+            _cstats = {"cells": 16, "ok_cells": _okc, "failed_cells": 16 - _okc}
+            if _buf_parts:
+                gdf_utm = _pd.concat(_buf_parts, ignore_index=True)
+                gdf_utm = gpd.GeoDataFrame(gdf_utm, geometry="geometry", crs=crs_utm)
+                gdf_utm = gdf_utm.drop_duplicates(subset="geometry")
+        else:
+            gdf_utm["geometry"] = gdf_utm.geometry.buffer(distance_m)
         if dissolve:
             gdf_utm = gpd.GeoDataFrame({"geometry": [gdf_utm.union_all()]}, geometry="geometry", crs=crs_utm)
         gdf_wgs = gdf_utm.to_crs("EPSG:4326")
         result_name = f"{name}_缓冲区"
         _gdf_to_layer(gdf_wgs, result_name)
-        return f"已为「{name}」创建{distance}{unit}缓冲区，{len(gdf_wgs)} 个要素，已加载到地图"
+        _note = robust_note(rstats, tier, _cstats)
+        return f"已为「{name}」创建{distance}{unit}缓冲区，{len(gdf_wgs)} 个要素，已加载到地图{_note}"
     except Exception as e:
         import traceback
         return f"缓冲区分析失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
@@ -3430,11 +3731,23 @@ def spatial_intersect(layer_a: str, layer_b: str) -> str:
     - layer_a / layer_b: 待求交的两图层名。"""
     try:
         import geopandas as gpd
+        from backend.services.spatial_robust import repair_geometry, estimate_tier, chunked_overlay, robust_note
         gdf_a, name_a = _layer_to_gdf(layer_a)
         if gdf_a is None: return name_a
         gdf_b, name_b = _layer_to_gdf(layer_b)
         if gdf_b is None: return name_b
-        result = gpd.overlay(gdf_a, gdf_b, how="intersection")
+        gdf_a, rsa = repair_geometry(gdf_a)
+        gdf_b, rsb = repair_geometry(gdf_b)
+        rstats = {"repaired": rsa["repaired"] + rsb["repaired"],
+                   "dropped": rsa["dropped"] + rsb["dropped"]}
+        if len(gdf_a) == 0 or len(gdf_b) == 0:
+            return f"相交分析失败: 输入图层没有有效几何"
+        tier = estimate_tier(gdf_a if len(gdf_a) >= len(gdf_b) else gdf_b)
+        _cstats = None
+        if tier["tier"] == "chunked":
+            result, _cstats = chunked_overlay(gdf_a, gdf_b, lambda a, b: gpd.overlay(a, b, how="intersection"))
+        else:
+            result = gpd.overlay(gdf_a, gdf_b, how="intersection")
         if result.empty:
             return f"「{name_a}」和「{name_b}」没有重叠区域"
         result_name = f"{name_a}_∩_{name_b}"
@@ -3452,7 +3765,8 @@ def spatial_intersect(layer_a: str, layer_b: str) -> str:
             if area_b:
                 stat.append(f"- 占「{name_b}」面积的 {res_area/area_b*100:.2f}%")
         stat.append(f"- 输入图层：{name_a}（{len(gdf_a)} 要素）、{name_b}（{len(gdf_b)} 要素）")
-        return "\n".join(stat)
+        stat.append(robust_note(rstats, tier, _cstats).strip("（）") or None)
+        return "\n".join([s for s in stat if s])
     except Exception as e:
         return f"相交分析失败: {str(e)[:300]}"
 
@@ -3466,17 +3780,29 @@ def spatial_union(layer_a: str, layer_b: str) -> str:
     """合并两个图层的全部几何区域。"""
     try:
         import geopandas as gpd
+        from backend.services.spatial_robust import repair_geometry, estimate_tier, chunked_overlay, robust_note
         gdf_a, name_a = _layer_to_gdf(layer_a)
         if gdf_a is None: return name_a
         gdf_b, name_b = _layer_to_gdf(layer_b)
         if gdf_b is None: return name_b
-        result = gpd.overlay(gdf_a, gdf_b, how="union")
-        result_name = f"{name_a}_∪_{name_b}"
+        gdf_a, rsa = repair_geometry(gdf_a)
+        gdf_b, rsb = repair_geometry(gdf_b)
+        rstats = {"repaired": rsa["repaired"] + rsb["repaired"],
+                   "dropped": rsa["dropped"] + rsb["dropped"]}
+        if len(gdf_a) == 0 or len(gdf_b) == 0:
+            return f"合并失败: 输入图层没有有效几何"
+        tier = estimate_tier(gdf_a if len(gdf_a) >= len(gdf_b) else gdf_b)
+        _cstats = None
+        if tier["tier"] == "chunked":
+            result, _cstats = chunked_overlay(gdf_a, gdf_b, lambda a, b: gpd.overlay(a, b, how="union"))
+        else:
+            result = gpd.overlay(gdf_a, gdf_b, how="union")
+        result_name = f"{name_a}__{name_b}"
         _gdf_to_layer(result, result_name)
-        return f"合并完成：{len(result)} 个要素，已加载到地图"
+        _note = robust_note(rstats, tier, _cstats)
+        return f"合并完成：{len(result)} 个要素，已加载到地图{_note}"
     except Exception as e:
         return f"合并失败: {str(e)[:300]}"
-
 
 # ============================================================
 # 工具: spatial_difference — 空间差异
@@ -3487,11 +3813,23 @@ def spatial_difference(layer_a: str, layer_b: str) -> str:
     """用 layer_a 减去 layer_b，返回 layer_a 中不在 layer_b 内的部分。"""
     try:
         import geopandas as gpd
+        from backend.services.spatial_robust import repair_geometry, estimate_tier, chunked_overlay, robust_note
         gdf_a, name_a = _layer_to_gdf(layer_a)
         if gdf_a is None: return name_a
         gdf_b, name_b = _layer_to_gdf(layer_b)
         if gdf_b is None: return name_b
-        result = gpd.overlay(gdf_a, gdf_b, how="difference")
+        gdf_a, rsa = repair_geometry(gdf_a)
+        gdf_b, rsb = repair_geometry(gdf_b)
+        rstats = {"repaired": rsa["repaired"] + rsb["repaired"],
+                   "dropped": rsa["dropped"] + rsb["dropped"]}
+        if len(gdf_a) == 0 or len(gdf_b) == 0:
+            return f"差异分析失败: 输入图层没有有效几何"
+        tier = estimate_tier(gdf_a if len(gdf_a) >= len(gdf_b) else gdf_b)
+        _cstats = None
+        if tier["tier"] == "chunked":
+            result, _cstats = chunked_overlay(gdf_a, gdf_b, lambda a, b: gpd.overlay(a, b, how="difference"))
+        else:
+            result = gpd.overlay(gdf_a, gdf_b, how="difference")
         if result.empty:
             return f"「{name_a}」完全被「{name_b}」覆盖，无剩余部分"
         result_name = f"{name_a}_减_{name_b}"
@@ -3519,11 +3857,23 @@ def spatial_clip(layer_name: str, clip_layer: str) -> str:
     """用 clip_layer 的边界裁剪 layer_name。"""
     try:
         import geopandas as gpd
+        from backend.services.spatial_robust import repair_geometry, estimate_tier, chunked_overlay, robust_note
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None: return name
         clip_gdf, clip_name = _layer_to_gdf(clip_layer)
         if clip_gdf is None: return clip_name
-        result = gpd.clip(gdf, clip_gdf)
+        gdf, rsa = repair_geometry(gdf)
+        clip_gdf, rsb = repair_geometry(clip_gdf)
+        rstats = {"repaired": rsa["repaired"] + rsb["repaired"],
+                   "dropped": rsa["dropped"] + rsb["dropped"]}
+        if len(gdf) == 0 or len(clip_gdf) == 0:
+            return f"裁剪失败: 输入图层没有有效几何"
+        tier = estimate_tier(gdf if len(gdf) >= len(clip_gdf) else clip_gdf)
+        _cstats = None
+        if tier["tier"] == "chunked":
+            result, _cstats = chunked_overlay(gdf, clip_gdf, lambda a, b: gpd.clip(a, b))
+        else:
+            result = gpd.clip(gdf, clip_gdf)
         if result.empty:
             return f"裁剪后无剩余要素（「{name}」不在「{clip_name}」范围内）"
         result_name = f"{name}_裁剪"
@@ -3537,7 +3887,8 @@ def spatial_clip(layer_name: str, clip_layer: str) -> str:
             if src_area:
                 line += f"（占原图层的 {res_area/src_area*100:.2f}%）"
             stat.append(line)
-        return "\n".join(stat)
+        stat.append(robust_note(rstats, tier, _cstats).strip("（）") or None)
+        return "\n".join([s for s in stat if s])
     except Exception as e:
         return f"裁剪失败: {str(e)[:300]}"
 
@@ -4795,7 +5146,9 @@ def raster_calculator(layer_name: str, expression: str) -> str:
             "max": np.maximum,
             "power": np.power,
         })
-        result = eval(expression, {"__builtins__": {}}, safe_dict)
+        _rc_tree = ast.parse(expression, mode="eval")
+        _validate_ast(_rc_tree.body)
+        result = eval(compile(_rc_tree, "<safe>", "eval"), {"__builtins__": {}}, safe_dict)
         if not isinstance(result, np.ndarray):
             return f"表达式结果不是栅格数据: {type(result)}"
         if np.all(np.isnan(result)):
@@ -4912,6 +5265,7 @@ def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
         out_path = os.path.join(upload_dir, out_name)
         img.save(out_path)
         from rasterio.transform import from_bounds
+        import types
         transform = from_bounds(xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y, resolution, resolution)
         bounds = [xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y]
         _pending_layer_ops.append({
@@ -6886,7 +7240,9 @@ def ask_user_choice(prompt: str, options: list, choice_key: str = "") -> str:
             "context": _last_user_message[:300],
         }
         _pa.set_pending_action(_pa.get_active_session(), action)
-        return f"已向用户弹出选项（{choice_key or '未标识'}），共 {len(normalized)} 个选项，等待用户选择。用户选择后会自动继续。"
+        # [WAITING_USER_CHOICE] 标记：graph.py 检测到该标记后停止 agent 循环，
+        # 防止 LLM 拿到"等待用户选择"文本后继续自作主张往下跑
+        return f"[WAITING_USER_CHOICE] 已向用户弹出选项（{choice_key or '未标识'}），共 {len(normalized)} 个选项，等待用户选择。用户选择后会自动继续。"
     except Exception as e:
         return f"弹出选项失败: {str(e)[:200]}"
 
@@ -8901,6 +9257,1893 @@ def fetch_osm_boundary_or_features(query: str, feature_type: str = "boundary", b
         return f"OSM 抓取异常: {str(e)[:300]}"
 
 
+def _parse_reclass_rules(mapping: str):
+    """解析重分类映射串 'a-b=v;c+=v'，返回 [(lo, hi, val), ...]（a-b 为左闭右开 [a,b)，c+ 表示 >=c）"""
+    import math
+    import re
+    rules = []
+    text = str(mapping or "").replace("\n", ";").replace("，", ";").replace(",", ";")
+    for i, chunk in enumerate(text.split(";")):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            return []
+        left, right = chunk.split("=", 1)
+        left, right = left.strip(), right.strip()
+        try:
+            val = float(right)
+        except ValueError:
+            val = float(i + 1)
+        m = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s*\+", left)
+        if m:
+            lo, hi = float(m.group(1)), math.inf
+        else:
+            m = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s*[-~]\s*(-?\d+(?:\.\d+)?)", left)
+            if m:
+                lo, hi = float(m.group(1)), float(m.group(2))
+            else:
+                m = re.fullmatch(r"(-?\d+(?:\.\d+)?)", left)
+                if not m:
+                    return []
+                lo, hi = float(m.group(1)), float(m.group(1)) + 1e-9
+        if hi < lo:
+            lo, hi = hi, lo
+        rules.append((lo, hi, val))
+    return rules
+
+
+def _raster_out_profile(src, nodata, count: int = 1) -> dict:
+    """复制源栅格 profile 作为输出，清理与本机 GDAL 冲突的分块键，统一 float32"""
+    profile = src.profile.copy()
+    profile.update(count=count, dtype="float32", nodata=nodata)
+    if not profile.get("tiled"):
+        profile.pop("blockxsize", None)
+        profile.pop("blockysize", None)
+    return profile
+
+
+@tool
+def raster_reclassify(layer_name: str, mapping: str = "", method: str = "mapping", classes: int = 5) -> str:
+    """栅格重分类：把连续栅格值按规则重新编码为类别值，结果 GeoTIFF 落在源文件旁并出预览图层。
+    - layer_name: 栅格图层名（上传的 GeoTIFF 图层名）。
+    - mapping: 区间映射串，分号分隔，形如 '0-10=1;10-50=2;50+=3'；'a-b' 表示 a<=v<b（左闭右开），
+      'a+' 表示 v>=a；等号右边为类别值（非数字时按规则出现顺序编号 1,2,3...）。
+    - method: 重分类方式，'mapping'(按 mapping 串，默认) / 'equal_interval'(等间距分级) / 'quantile'(分位数分级)。
+    - classes: equal_interval / quantile 的分级数（整数>=2，默认 5）。
+    输入 nodata 像元保持 nodata；未命中任何规则的像元也输出为 nodata。"""
+    try:
+        import numpy as np
+        import rasterio
+
+        tif_path = _find_uploaded_tif(layer_name)
+        if tif_path is None:
+            return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
+        method_key = str(method or "mapping").strip().lower()
+        with rasterio.open(tif_path) as src:
+            data = src.read(1).astype("float64")
+            nodata = src.nodata
+            valid = np.isfinite(data)
+            if nodata is not None:
+                valid &= ~np.isclose(data, nodata)
+            if not valid.any():
+                return f"栅格「{layer_name}」没有有效像元，无法重分类"
+            vals = data[valid]
+            if method_key in ("equal_interval", "equal", "interval"):
+                n_cls = max(2, int(classes))
+                lo_v, hi_v = float(np.min(vals)), float(np.max(vals))
+                if hi_v <= lo_v:
+                    codes = np.ones(data.shape, dtype="float64")
+                    desc = f"equal_interval {n_cls} 级（值域退化为常数 {lo_v:.6g}）"
+                else:
+                    edges = np.linspace(lo_v, hi_v, n_cls + 1)
+                    codes = (np.digitize(data, edges[1:-1], right=False) + 1).astype("float64")
+                    desc = f"equal_interval {n_cls} 级 [{lo_v:.6g}, {hi_v:.6g}]"
+            elif method_key in ("quantile", "quantiles", "percentile"):
+                n_cls = max(2, int(classes))
+                edges = np.unique(np.quantile(vals, np.linspace(0.0, 1.0, n_cls + 1)))
+                if edges.size < 2:
+                    codes = np.ones(data.shape, dtype="float64")
+                    desc = f"quantile 分级（值域退化，实际 1 级）"
+                else:
+                    codes = (np.digitize(data, edges[1:-1], right=False) + 1).astype("float64")
+                    desc = f"quantile 分位分级（请求 {n_cls} 级，实际 {edges.size - 1} 级）"
+            else:
+                rules = _parse_reclass_rules(mapping)
+                if not rules:
+                    return "mapping 为空或格式不正确，示例：'0-10=1;10-50=2;50+=3'"
+                conds = [(data >= lo) & (data < hi) & valid for lo, hi, _v in rules]
+                choices = [v for _lo, _hi, v in rules]
+                codes = np.select(conds, choices, default=np.nan).astype("float64")
+                desc = f"mapping {len(rules)} 条规则"
+            out = np.full(data.shape, np.nan, dtype="float64")
+            out[valid] = np.asarray(codes, dtype="float64")[valid]
+            out_nodata = nodata if nodata is not None else np.nan
+            arr = np.where(np.isfinite(out), out, out_nodata)
+            out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_重分类"
+            out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+            with rasterio.open(out_path, "w", **_raster_out_profile(src, out_nodata)) as dst:
+                dst.write(arr.astype("float32"), 1)
+            note = _raster_preview_op(src, arr[None, :, :], out_name, f"栅格重分类（{desc}）")
+            classified = out[valid]
+            classified = classified[np.isfinite(classified)]
+            uniq = np.unique(classified)
+            hit = int(classified.size)
+            miss = int(valid.sum() - hit)
+        return (f"重分类完成（{desc}）：类别 {len(uniq)} 个，有效像元 {hit}/{int(valid.sum())}"
+                f"（{miss} 个未命中任何规则），结果已保存 {out_name}.tif；{note}")
+    except Exception as e:
+        return f"栅格重分类失败: {str(e)[:300]}"
+
+
+@tool
+def raster_focal_stats(layer_name: str, stat: str = "mean", size: int = 3) -> str:
+    """栅格焦点统计：按滑动窗口对每个像元做邻域统计，结果 GeoTIFF 落在源文件旁并出预览图层。
+    - layer_name: 栅格图层名（上传的 GeoTIFF 图层名）。
+    - stat: 统计量，'mean'(均值) / 'median'(中位数) / 'min'(最小值) / 'max'(最大值) /
+      'std'(标准差) / 'range'(极差 max-min) / 'majority'(众数)。
+    - size: 窗口边长（奇数，仅支持 3 / 5 / 7，默认 3）。
+    统计自动忽略 nodata 与无效像元；输入 nodata 像元输出仍为 nodata。"""
+    try:
+        import numpy as np
+        import rasterio
+
+        tif_path = _find_uploaded_tif(layer_name)
+        if tif_path is None:
+            return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
+        s = int(size)
+        if s % 2 == 0:
+            return f"窗口大小 size 必须为奇数（3/5/7），收到 {size}"
+        s = max(3, min(7, s))
+        key = str(stat or "mean").strip().lower()
+        key = {"average": "mean", "avg": "mean", "mode": "majority", "max-min": "range",
+               "maximum": "max", "minimum": "min"}.get(key, key)
+        if key not in ("mean", "median", "min", "max", "std", "range", "majority"):
+            return f"未知统计量 stat: {stat}，可选 mean/median/min/max/std/range/majority"
+        with rasterio.open(tif_path) as src:
+            data = src.read(1).astype("float64")
+            nodata = src.nodata
+            valid = np.isfinite(data)
+            if nodata is not None:
+                valid &= ~np.isclose(data, nodata)
+            if not valid.any():
+                return f"栅格「{layer_name}」没有有效像元，无法做焦点统计"
+            from scipy import ndimage
+            filled = np.where(valid, data, np.nan)
+            if key in ("min", "max", "range"):
+                mn = ndimage.minimum_filter(np.where(valid, data, np.inf), size=s, mode="nearest")
+                mx = ndimage.maximum_filter(np.where(valid, data, -np.inf), size=s, mode="nearest")
+                res = {"min": mn, "max": mx, "range": mx - mn}[key]
+            elif key == "majority":
+                def _mode(v):
+                    v = v[np.isfinite(v)]
+                    if v.size == 0:
+                        return np.nan
+                    u, c = np.unique(np.round(v, 6), return_counts=True)
+                    return float(u[int(np.argmax(c))])
+                res = ndimage.generic_filter(filled, _mode, size=s, mode="nearest")
+            else:
+                f = np.where(valid, data, 0.0)
+                w = valid.astype("float64")
+                cnt = np.maximum(ndimage.uniform_filter(w, size=s, mode="nearest"), 1e-12)
+                m1 = ndimage.uniform_filter(f, size=s, mode="nearest") / cnt
+                if key == "mean":
+                    res = m1
+                elif key == "std":
+                    m2 = ndimage.uniform_filter(f * f, size=s, mode="nearest") / cnt
+                    res = np.sqrt(np.maximum(m2 - m1 * m1, 0.0))
+                else:
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        res = ndimage.generic_filter(filled, np.nanmedian, size=s, mode="nearest")
+            res = np.where(valid, res, np.nan)
+            fin = res[np.isfinite(res)]
+            if fin.size == 0:
+                return f"焦点统计失败: 窗口 {s}x{s} 内没有有效像元"
+            out_nodata = nodata if nodata is not None else np.nan
+            arr = np.where(np.isfinite(res), res, out_nodata)
+            out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_焦点{key}"
+            out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+            with rasterio.open(out_path, "w", **_raster_out_profile(src, out_nodata)) as dst:
+                dst.write(arr.astype("float32"), 1)
+            note = _raster_preview_op(src, arr[None, :, :], out_name, f"焦点统计 {key} {s}x{s}")
+            rmin, rmax = float(fin.min()), float(fin.max())
+        return (f"焦点统计完成（{key}，窗口 {s}x{s}）：值域 [{rmin:.6g}, {rmax:.6g}]，"
+                f"结果已保存 {out_name}.tif；{note}")
+    except Exception as e:
+        return f"焦点统计失败: {str(e)[:300]}"
+
+
+@tool
+def euclidean_distance(layer_name: str, source_value: float = None, out_name: str = "") -> str:
+    """欧氏距离分析：计算每个像元到最近源像元的平面距离（像元中心，单位与栅格坐标系一致），
+    结果 GeoTIFF 落在源文件旁并出预览图层。
+    - layer_name: 栅格图层名（上传的 GeoTIFF 图层名）。
+    - source_value: 源像元取值，指定时把等于该值的像元视为源；缺省(None)时把非零且非 nodata 的像元视为源。
+    - out_name: 输出文件名（可不带 .tif），留空时自动命名为 '<源文件名>_欧氏距离'。
+    输入 nodata 像元输出仍为 nodata。"""
+    try:
+        import numpy as np
+        import rasterio
+        from scipy import ndimage
+
+        tif_path = _find_uploaded_tif(layer_name)
+        if tif_path is None:
+            return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
+        base = os.path.splitext(os.path.basename(tif_path))[0]
+        suffix = str(out_name or "").strip() or f"{base}_欧氏距离"
+        suffix = os.path.splitext(os.path.basename(suffix))[0]
+        with rasterio.open(tif_path) as src:
+            data = src.read(1).astype("float64")
+            nodata = src.nodata
+            valid = np.isfinite(data)
+            if nodata is not None:
+                valid &= ~np.isclose(data, nodata)
+            if source_value is None or str(source_value).strip() == "":
+                source = valid & (data != 0)
+                src_desc = "非零有效像元"
+            else:
+                sv = float(source_value)
+                source = valid & np.isclose(data, sv)
+                src_desc = f"值={sv:g}"
+            n_src = int(source.sum())
+            if n_src == 0:
+                return f"栅格「{layer_name}」中找不到源像元（{src_desc}），无法计算欧氏距离"
+            sampling = (abs(float(src.transform.e)), abs(float(src.transform.a)))
+            dist = ndimage.distance_transform_edt(~source, sampling=sampling).astype("float64")
+            dist[~valid] = np.nan
+            dmax = float(np.nanmax(dist))
+            out_nodata = nodata if nodata is not None else np.nan
+            arr = np.where(np.isfinite(dist), dist, out_nodata)
+            out_path = os.path.join(os.path.dirname(tif_path), suffix + ".tif")
+            with rasterio.open(out_path, "w", **_raster_out_profile(src, out_nodata)) as dst:
+                dst.write(arr.astype("float32"), 1)
+            note = _raster_preview_op(src, arr[None, :, :], suffix, f"欧氏距离（源：{src_desc}）")
+        return (f"欧氏距离完成：源像元 {n_src} 个（{src_desc}），最大距离 {dmax:.6g}"
+                f"（像元尺寸 {sampling[1]:g} x {sampling[0]:g}），结果已保存 {suffix}.tif；{note}")
+    except Exception as e:
+        return f"欧氏距离分析失败: {str(e)[:300]}"
+
+
+@tool
+def raster_extract_by_mask(raster_layer: str, zone_layer: str, inside: bool = True) -> str:
+    """按掩膜提取栅格：用矢量面图层裁剪栅格，保留面内（或面外）像元，
+    结果 GeoTIFF 落在源文件旁并出预览图层。
+    - raster_layer: 栅格图层名（上传的 GeoTIFF 图层名）。
+    - zone_layer: 矢量面图层名（掩膜范围，支持 Polygon / MultiPolygon）。
+    - inside: True(默认) 保留掩膜内像元；False 保留掩膜外像元。
+    掩膜外的像元写为 nodata；结果保持源栅格的行列范围与地理变换不变。"""
+    try:
+        import numpy as np
+        import rasterio
+        from rasterio.mask import mask as rio_mask
+        from rasterio.warp import transform_geom
+        from shapely.geometry import mapping
+
+        tif_path = _find_uploaded_tif(raster_layer)
+        if tif_path is None:
+            return f"未找到栅格文件「{raster_layer}」，请先上传 GeoTIFF"
+        zones, zone_name = _layer_to_gdf(zone_layer)
+        if zones is None:
+            return zone_name
+        try:
+            if zones.crs is None or zones.crs.to_epsg() != 4326:
+                zones = zones.to_crs(4326)
+        except Exception:
+            pass
+        with rasterio.open(tif_path) as src:
+            geoms = []
+            for geom in zones.geometry:
+                if geom is None or geom.is_empty:
+                    continue
+                try:
+                    geoms.append(transform_geom("EPSG:4326", src.crs, mapping(geom)))
+                except Exception:
+                    geoms.append(mapping(geom))
+            if not geoms:
+                return f"图层「{zone_layer}」没有可用的面几何，无法生成掩膜"
+            out_nodata = src.nodata if src.nodata is not None else -9999.0
+            arr, _out_transform = rio_mask(src, geoms, crop=False, filled=True,
+                                           nodata=out_nodata, invert=not bool(inside))
+            arr = np.asarray(arr).astype("float32")
+            band = arr[0]
+            invalid = (~np.isfinite(band)) | np.isclose(band, out_nodata)
+            keep = int((~invalid).sum())
+            out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_掩膜{'内' if inside else '外'}"
+            out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+            with rasterio.open(out_path, "w",
+                               **_raster_out_profile(src, out_nodata, count=arr.shape[0])) as dst:
+                dst.write(arr)
+            note = _raster_preview_op(src, arr[0:1, :, :], out_name,
+                                      f"按掩膜提取（{'保留面内' if inside else '保留面外'}）")
+        return (f"按掩膜提取完成（{'保留面内' if inside else '保留面外'}）：有效像元 {keep}/{band.size}，"
+                f"共 {arr.shape[0]} 个波段，结果已保存 {out_name}.tif；{note}")
+    except Exception as e:
+        return f"按掩膜提取失败: {str(e)[:300]}"
+
+
+@tool
+def surface_volumes(before_layer: str, after_layer: str, reference: float = None) -> str:
+    """填挖方计算：比较两个共配准 DEM（或一个 DEM 与参考高程面），输出挖方/填方/净方量与变化面积。
+    - before_layer: 施工前（现状）DEM 图层名（上传的 GeoTIFF 图层名）。
+    - after_layer: 施工后（设计）DEM 图层名；当给出 reference 时该参数可留空字符串。
+    - reference: 参考高程（米，浮点数）。给出时忽略 after_layer，用常数高程面作为设计面。
+    要求两个 DEM 的行列数与地理变换完全一致，否则直接失败并提示；
+    只有两个栅格都有效的像元参与计算。挖方=现状高于设计部分的体积，填方=设计高于现状部分的体积，
+    净方量=填方-挖方（正数表示净填）。结果为 m3 / m2。"""
+    try:
+        import numpy as np
+        import rasterio
+
+        before_path = _find_uploaded_tif(before_layer)
+        if before_path is None:
+            return f"未找到栅格文件「{before_layer}」，请先上传 GeoTIFF"
+        use_ref = reference is not None and str(reference).strip() != ""
+        ref_val = float(reference) if use_ref else None
+        after_path = None
+        if not use_ref:
+            after_path = _find_uploaded_tif(after_layer)
+            if after_path is None:
+                return f"未找到栅格文件「{after_layer}」，请先上传 GeoTIFF（或改用 reference 参考高程）"
+
+        with rasterio.open(before_path) as src_b:
+            before = src_b.read(1).astype("float64")
+            vb = np.isfinite(before)
+            if src_b.nodata is not None:
+                vb &= ~np.isclose(before, src_b.nodata)
+            tr_b, crs_b = src_b.transform, src_b.crs
+            hb, wb = src_b.height, src_b.width
+            if use_ref:
+                after = np.full(before.shape, float(ref_val), dtype="float64")
+                va = np.ones(before.shape, dtype=bool)
+                after_desc = f"参考高程面 {ref_val:.6g} m"
+            else:
+                with rasterio.open(after_path) as src_a:
+                    if (src_a.height, src_a.width) != (hb, wb):
+                        return (f"填挖方失败: 两个 DEM 行列数不一致（{hb}x{wb} vs "
+                                f"{src_a.height}x{src_a.width}），请先重采样或裁剪到同一网格")
+                    if not np.allclose(np.asarray(tr_b, dtype="float64"),
+                                       np.asarray(src_a.transform, dtype="float64"),
+                                       rtol=1e-9, atol=1e-9):
+                        return "填挖方失败: 两个 DEM 地理变换不一致（不是共配准栅格），请先重投影/重采样到同一网格"
+                    if str(crs_b) != str(src_a.crs):
+                        return f"填挖方失败: 两个 DEM 坐标系不一致（{crs_b} vs {src_a.crs}），请先统一坐标系"
+                    after = src_a.read(1).astype("float64")
+                    va = np.isfinite(after)
+                    if src_a.nodata is not None:
+                        va &= ~np.isclose(after, src_a.nodata)
+                after_desc = f"设计 DEM「{after_layer}」"
+
+            valid = vb & va
+            diff = after - before
+            d = diff[valid]
+            if d.size == 0:
+                return "填挖方失败: 两个 DEM 没有共同有效像元（nodata 或范围不重叠）"
+            cell_area = abs(float(tr_b.a) * float(tr_b.e) - float(tr_b.b) * float(tr_b.d))
+            if not np.isfinite(cell_area) or cell_area <= 0:
+                cell_area = abs(float(tr_b.a) * float(tr_b.e))
+            cut = float(np.clip(-d, 0.0, None).sum()) * cell_area
+            fill = float(np.clip(d, 0.0, None).sum()) * cell_area
+            net = fill - cut
+            changed = np.abs(d) > 1e-9
+            changed_n = int(changed.sum())
+            changed_area = float(changed_n) * cell_area
+            zmin, zmax = float(d.min()), float(d.max())
+            diff_out = np.where(valid, diff, np.nan)
+            out_nodata = src_b.nodata if src_b.nodata is not None else np.nan
+            arr = np.where(np.isfinite(diff_out), diff_out, out_nodata)
+            out_name = f"{os.path.splitext(os.path.basename(before_path))[0]}_填挖方"
+            out_path = os.path.join(os.path.dirname(before_path), out_name + ".tif")
+            with rasterio.open(out_path, "w", **_raster_out_profile(src_b, out_nodata)) as dst:
+                dst.write(arr.astype("float32"), 1)
+            note = _raster_preview_op(src_b, arr[None, :, :], out_name, "填挖方高程差")
+        return (f"填挖方计算完成（现状={before_layer}，设计={after_desc}）：\n"
+                f"挖方量 {cut:,.2f} m3，填方量 {fill:,.2f} m3，净方量 {net:,.2f} m3（正数=净填）\n"
+                f"变化面积 {changed_area:,.2f} m2（{changed_n} 个像元，单像元面积 {cell_area:.6g} m2），"
+                f"高程差范围 [{zmin:.6g}, {zmax:.6g}] m\n"
+                f"结果已保存 {out_name}.tif；{note}")
+    except Exception as e:
+        return f"填挖方失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: join_field  按属性字段连接（非空间连接）
+# ============================================================
+
+@tool
+def join_field(target_layer: str, join_layer: str, target_field: str, join_field: str, fields: str = "", how: str = "left") -> str:
+    """按公共属性键连接图层（属性连接，不是空间连接）。
+    - target_layer/join_layer: 目标图层与数据源图层名。
+    - target_field/join_field: 两侧连接键字段名。
+    - fields: 逗号分隔要带入的字段，留空=数据源除连接键外全部字段。
+    - how: 'left'(保留全部目标要素,未匹配为 NaN,默认) 或 'inner'(仅匹配)。
+    同名冲突字段重命名为「名字_join」；键唯一时 validate 防行倍增；结果作为新图层上图。"""
+    try:
+        gdf_t, name_t = _layer_to_gdf(target_layer)
+        if gdf_t is None:
+            return name_t
+        gdf_j, name_j = _layer_to_gdf(join_layer)
+        if gdf_j is None:
+            return name_j
+
+        how_key = str(how or "left").strip().lower()
+        if how_key not in ("left", "inner"):
+            return f"how 只能为 'left' 或 'inner'，收到：{how}"
+
+        if target_field not in gdf_t.columns:
+            cols = ", ".join(c for c in gdf_t.columns if c != "geometry")
+            return f"目标图层「{name_t}」中不存在字段「{target_field}」，可用字段：{cols}"
+        if join_field not in gdf_j.columns:
+            cols = ", ".join(c for c in gdf_j.columns if c != "geometry")
+            return f"数据源图层「{name_j}」中不存在字段「{join_field}」，可用字段：{cols}"
+
+        target_cols = [c for c in gdf_t.columns if c != "geometry"]
+        join_cols = [c for c in gdf_j.columns if c != "geometry" and c != join_field]
+        if str(fields or "").strip():
+            wanted = [f.strip() for f in str(fields).split(",") if f.strip()]
+            missing = [f for f in wanted if f not in join_cols]
+            if missing:
+                return f"数据源图层「{name_j}」中不存在字段：{', '.join(missing)}，可用字段：{', '.join(join_cols)}"
+            bring = wanted
+        else:
+            bring = list(join_cols)
+        if not bring:
+            return f"数据源图层「{name_j}」除连接键外没有可带入的字段"
+
+        collisions = [c for c in bring if c in target_cols]
+        rename = {}
+        used = set(target_cols) | set(bring)
+        for c in collisions:
+            new = f"{c}_join"
+            i = 2
+            while new in used:
+                new = f"{c}_join{i}"
+                i += 1
+            rename[c] = new
+            used.add(new)
+
+        right_keys = gdf_j[join_field].dropna().unique()
+        matched = int(gdf_t[target_field].isin(right_keys).sum())
+        unmatched = int(len(gdf_t) - matched)
+        duplicate_t = bool(gdf_t[target_field].duplicated().any())
+        duplicate_j = bool(gdf_j[join_field].duplicated().any())
+        if not duplicate_t and not duplicate_j:
+            validate = "1:1"
+        elif not duplicate_j:
+            validate = "many:1"
+        elif not duplicate_t:
+            validate = "1:many"
+        else:
+            validate = "many:many"
+
+        keep_cols = [join_field] + [c for c in bring if c != join_field]
+        join_sub = gdf_j[keep_cols].copy()
+        if rename:
+            join_sub = join_sub.rename(columns=rename)
+        result = gdf_t.merge(join_sub, left_on=target_field, right_on=join_field,
+                             how=how_key, validate=validate, suffixes=("", "_join"))
+        if join_field != target_field and join_field in result.columns:
+            result = result.drop(columns=[join_field])
+
+        result_name = f"{name_t}_连接{name_j}"
+        _gdf_to_layer(result, result_name)
+        collision_note = ""
+        if rename:
+            collision_note = "；冲突字段已重命名：" + ", ".join(f"{k}->{v}" for k, v in rename.items())
+        return (f"属性连接完成（{how_key}，validate={validate}）：目标 {len(gdf_t)} 个要素，"
+                f"匹配 {matched}，未匹配 {unmatched}，结果 {len(result)} 个要素{collision_note}，"
+                f"结果图层「{result_name}」已上图")
+    except Exception as e:
+        return f"属性连接失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: geometry_attributes  几何属性字段
+# ============================================================
+
+@tool
+def geometry_attributes(layer_name: str, metrics: str = "area,length,perimeter,centroid") -> str:
+    """为图层逐要素添加几何量测字段（几何不变，结果作为新图层上图）。
+    - layer_name: 待计算矢量图层名。
+    - metrics: 逗号分隔量测项，默认 'area,length,perimeter,centroid'。可选 area(投影面积 m2)、
+      length(线/面长度 m)、perimeter(面周长 m)、centroid(展开 centroid_x/y)、bbox(展开
+      bbox_minx/miny/maxx/maxy)，以及各 centroid_x、bbox_minx 单项。
+    经纬度下面积/长度为度/度：自动估算 UTM 投影带后在投影坐标计算，返回串会说明所用投影；
+    投影估算失败则直接报错。"""
+    try:
+        import geopandas as gpd
+        import numpy as np
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if gdf.empty:
+            return f"图层「{name}」为空"
+
+        raw = str(metrics or "").strip()
+        if not raw:
+            return "metrics 不能为空，可选：area,length,perimeter,centroid,bbox"
+        items = [m.strip().lower() for m in raw.split(",") if m.strip()]
+        allowed = {"area", "length", "perimeter", "centroid", "centroid_x", "centroid_y",
+                   "bbox", "bbox_minx", "bbox_miny", "bbox_maxx", "bbox_maxy"}
+        bad = [m for m in items if m not in allowed]
+        if bad:
+            return f"不支持的 metrics 项：{', '.join(bad)}，可选：{', '.join(sorted(allowed))}"
+
+        crs = gdf.crs
+        is_geographic = bool(crs is not None and crs.is_geographic)
+        if is_geographic:
+            utm = gdf.estimate_utm_crs()
+            if utm is None:
+                return "无法估算 UTM 投影带（图层范围异常），无法计算面积/长度"
+            metric_gdf = gdf.to_crs(utm)
+            crs_note = f"图层为地理坐标系（{crs.to_string()}），面积/长度/周长已在 UTM {utm.to_string()} 投影下计算"
+        else:
+            metric_gdf = gdf
+            crs_note = f"按图层原投影 {crs.to_string() if crs is not None else '未定义'} 计算"
+
+        out = gdf.copy()
+        geom = metric_gdf.geometry
+        want = set(items)
+        added = []
+
+        if "area" in want:
+            out["area"] = geom.area.astype(float)
+            added.append("area")
+        if "length" in want:
+            out["length"] = geom.length.astype(float)
+            added.append("length")
+        if "perimeter" in want:
+            is_poly = geom.geom_type.isin(["Polygon", "MultiPolygon"])
+            out["perimeter"] = geom.length.where(is_poly, np.nan).astype(float)
+            added.append("perimeter")
+
+        need_cx = "centroid" in want or "centroid_x" in want
+        need_cy = "centroid" in want or "centroid_y" in want
+        if need_cx or need_cy:
+            cents = geom.centroid
+            if need_cx:
+                out["centroid_x"] = cents.x.astype(float)
+                added.append("centroid_x")
+            if need_cy:
+                out["centroid_y"] = cents.y.astype(float)
+                added.append("centroid_y")
+
+        b = geom.bounds
+        need_bbox = "bbox" in want
+        for bn, col in zip(["bbox_minx", "bbox_miny", "bbox_maxx", "bbox_maxy"],
+                           ["minx", "miny", "maxx", "maxy"]):
+            if need_bbox or bn in want:
+                out[bn] = b[col].astype(float)
+                added.append(bn)
+
+        out_name = f"{name}_几何属性"
+        _gdf_to_layer(out, out_name)
+        return (f"几何属性计算完成（{crs_note}）：新增字段 {', '.join(added)}，"
+                f"结果图层「{out_name}」已上图")
+    except Exception as e:
+        return f"几何属性计算失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: minimum_bounding_geometry  最小外包几何
+# ============================================================
+
+@tool
+def minimum_bounding_geometry(layer_name: str, kind: str = "envelope", group_field: str = "") -> str:
+    """计算图层（或分组后）的最小外包几何，结果作为新图层上图。
+    - layer_name: 输入矢量图层名。
+    - kind: 'envelope'(轴对齐包络,默认) / 'convex_hull'(凸包) / 'circle'(最小外接圆,
+      输出 center_x/y、radius_m、radius_km) / 'oriented_bbox'(最小面积定向矩形,输出 length_m、width_m)。
+    - group_field: 可选分组字段，留空=整层一个外包几何，给出时按该字段融合、每组一个几何；
+      字段不存在时明确报错并列出可用字段。
+    circle 半径与 oriented_bbox 边长在 UTM 投影下按米计算，结果几何转回原坐标系上图。"""
+    try:
+        import geopandas as gpd
+        from shapely.geometry import Point
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if gdf.empty:
+            return f"图层「{name}」为空"
+
+        kind_key = str(kind or "envelope").strip().lower()
+        kind_map = {
+            "envelope": "envelope", "bbox": "envelope", "extent": "envelope",
+            "convex_hull": "convex_hull", "hull": "convex_hull", "convexhull": "convex_hull",
+            "circle": "circle", "minimum_bounding_circle": "circle", "mbc": "circle",
+            "oriented_bbox": "oriented_bbox", "oriented": "oriented_bbox",
+            "rotated_bbox": "oriented_bbox", "obb": "oriented_bbox",
+        }
+        if kind_key not in kind_map:
+            return f"不支持的 kind：{kind}，可选 envelope/convex_hull/circle/oriented_bbox"
+        kind_key = kind_map[kind_key]
+        suffix_map = {"envelope": "_包络", "convex_hull": "_凸包",
+                      "circle": "_最小外接圆", "oriented_bbox": "_定向外接矩形"}
+
+        crs = gdf.crs
+        is_geographic = bool(crs is not None and crs.is_geographic)
+        need_proj = kind_key in ("circle", "oriented_bbox")
+        if need_proj and is_geographic:
+            utm = gdf.estimate_utm_crs()
+            if utm is None:
+                return "无法估算 UTM 投影带（图层范围异常），无法计算圆/定向矩形"
+            work = gdf.to_crs(utm)
+        else:
+            utm = None
+            work = gdf
+
+        def _one(geom):
+            if kind_key == "envelope":
+                return geom.envelope, {}
+            if kind_key == "convex_hull":
+                return geom.convex_hull, {}
+            if kind_key == "oriented_bbox":
+                rect = geom.minimum_rotated_rectangle
+                if rect.is_empty:
+                    return rect, {}
+                coords = list(rect.exterior.coords)
+                sides = [((coords[i + 1][0] - coords[i][0]) ** 2 +
+                          (coords[i + 1][1] - coords[i][1]) ** 2) ** 0.5 for i in range(4)]
+                return rect, {"length_m": float(max(sides)), "width_m": float(min(sides))}
+            try:
+                from shapely import minimum_bounding_circle
+                circ = minimum_bounding_circle(geom)
+                cx, cy = float(circ.centroid.x), float(circ.centroid.y)
+                pts = list(circ.exterior.coords)[:-1]
+                radius = max(((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in pts) if pts else 0.0
+            except Exception:
+                hull = geom.convex_hull
+                c = hull.centroid
+                cx, cy = float(c.x), float(c.y)
+                pts = list(hull.exterior.coords)[:-1] if hull.geom_type == "Polygon" else []
+                radius = max(((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in pts) if pts else 0.0
+                circ = Point(cx, cy).buffer(radius, quad_segs=64)
+            return circ, {"center_x": float(cx), "center_y": float(cy),
+                          "radius_m": float(radius), "radius_km": float(radius) / 1000.0}
+
+        if str(group_field or "").strip():
+            gf = str(group_field).strip()
+            if gf not in work.columns:
+                cols = ", ".join(c for c in work.columns if c != "geometry")
+                return f"未找到分组字段「{gf}」，可用字段：{cols}"
+            rows, geoms = [], []
+            for key, sub in work.groupby(gf, dropna=False):
+                merged = sub.geometry.union_all()
+                geom, extra = _one(merged)
+                row = {gf: key, "feature_count": int(len(sub))}
+                row.update(extra)
+                rows.append(row)
+                geoms.append(geom)
+            if not geoms:
+                return f"图层「{name}」没有可计算的分组"
+            out = gpd.GeoDataFrame(rows, geometry=geoms, crs=work.crs)
+            out_name = f"{name}_按{gf}{suffix_map[kind_key]}"
+        else:
+            merged = work.geometry.union_all()
+            geom, extra = _one(merged)
+            row = {"feature_count": int(len(work))}
+            row.update(extra)
+            out = gpd.GeoDataFrame([row], geometry=[geom], crs=work.crs)
+            out_name = f"{name}{suffix_map[kind_key]}"
+
+        if need_proj and is_geographic:
+            out = out.to_crs(crs)
+            note = f"（圆/定向边在 UTM {utm.to_string()} 下按米计算，几何已转回 {crs.to_string()}）"
+        else:
+            note = f"（按 {work.crs.to_string() if work.crs is not None else '未定义坐标系'} 计算）"
+        _gdf_to_layer(out, out_name)
+        extra_txt = f"，半径 {float(out['radius_m'].iloc[0]):.3f} m" if (kind_key == "circle" and len(out)) else ""
+        return f"最小外包几何完成（{kind_key}{extra_txt}）：{len(out)} 个要素，结果图层「{out_name}」已上图{note}"
+    except Exception as e:
+        return f"最小外包几何失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: points_to_line  点按分组连线
+# ============================================================
+
+@tool
+def points_to_line(layer_name: str, group_field: str, order_field: str = "", close_ring: bool = False) -> str:
+    """把点图层按分组字段连成线，结果作为新图层上图。
+    - layer_name: 输入点图层名。
+    - group_field: 分组字段名，同一取值连成一条线；不存在时明确报错并列出可用字段。
+    - order_field: 可选排序字段，给出时组内按它升序连线，留空=原顺序。
+    - close_ring: True 把首点追加到末尾闭合成环，False(默认)不闭合。
+    少于 2 个有效点的分组会被跳过并报告；MultiPoint 会先拆成单点再连线。"""
+    try:
+        import geopandas as gpd
+        from shapely.geometry import LineString
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if gdf.empty:
+            return f"图层「{name}」为空"
+
+        gf = str(group_field or "").strip()
+        if not gf:
+            return "group_field 不能为空"
+        if gf not in gdf.columns:
+            cols = ", ".join(c for c in gdf.columns if c != "geometry")
+            return f"未找到分组字段「{gf}」，可用字段：{cols}"
+        of = str(order_field or "").strip()
+        if of and of not in gdf.columns:
+            cols = ", ".join(c for c in gdf.columns if c != "geometry")
+            return f"未找到排序字段「{of}」，可用字段：{cols}"
+
+        work = gdf if not of else gdf.sort_values(of, kind="stable")
+        grouped = {}
+        for _, row in work.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+            if geom.geom_type == "Point":
+                pts = [geom]
+            elif geom.geom_type == "MultiPoint":
+                pts = list(geom.geoms)
+            else:
+                continue
+            for pt in pts:
+                grouped.setdefault(row[gf], []).append(pt)
+
+        lines, attrs, skipped = [], [], 0
+        for gval, pts in grouped.items():
+            if len(pts) < 2:
+                skipped += 1
+                continue
+            coords = [(float(p.x), float(p.y)) for p in pts]
+            if bool(close_ring) and coords[0] != coords[-1]:
+                coords = coords + [coords[0]]
+            try:
+                line = LineString(coords)
+            except Exception:
+                skipped += 1
+                continue
+            lines.append(line)
+            attrs.append({gf: gval, "point_count": int(len(pts)), "closed": bool(close_ring)})
+
+        if not lines:
+            return f"没有可连线的分组（共 {len(grouped)} 个分组，全部少于 2 个有效点），未生成图层"
+        out = gpd.GeoDataFrame(attrs, geometry=lines, crs=gdf.crs)
+        try:
+            utm = out.estimate_utm_crs()
+            if utm is not None:
+                out["length_m"] = out.to_crs(utm).geometry.length.astype(float)
+        except Exception:
+            pass
+        out_name = f"{name}_点转线"
+        _gdf_to_layer(out, out_name)
+        return f"点转线完成：生成 {len(out)} 条线，跳过 {skipped} 个点不足 2 的分组，结果图层「{out_name}」已上图"
+    except Exception as e:
+        return f"点转线失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: generate_points_along_lines  沿线等距生成点
+# ============================================================
+
+@tool
+def generate_points_along_lines(layer_name: str, interval: float = 100, unit: str = "m") -> str:
+    """沿每条线按固定间隔生成点，结果作为新图层上图。
+    - layer_name: 输入线图层名。
+    - interval: 点间隔，正数，默认 100；单位由 unit 指定。
+    - unit: 'm'(米,默认) 或 'km'(千米)。
+    在距起点 interval、2*interval... 处取点（不含起点；整倍数时含终点）；短于一个间隔的线不产点。
+    长度与间隔在 UTM 投影下按米计算，结果点转回原坐标系；返回总点数与覆盖线长。"""
+    try:
+        import geopandas as gpd
+        import numpy as np
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if gdf.empty:
+            return f"图层「{name}」为空"
+        try:
+            iv = float(interval)
+        except Exception:
+            return f"interval 必须是数字，收到：{interval}"
+        if not np.isfinite(iv) or iv <= 0:
+            return f"interval 必须为正数，收到：{interval}"
+        unit_key = str(unit or "m").strip().lower()
+        if unit_key in ("m", "meter", "meters", "米"):
+            iv_m = iv
+            unit_note = f"{iv:g} m"
+        elif unit_key in ("km", "kilometer", "kilometers", "千米", "公里"):
+            iv_m = iv * 1000.0
+            unit_note = f"{iv:g} km（{iv_m:g} m）"
+        else:
+            return f"unit 只能为 'm' 或 'km'，收到：{unit}"
+
+        work = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
+        work = work[work.geometry.geom_type.isin(["LineString", "MultiLineString"])]
+        if work.empty:
+            return f"图层「{name}」中没有有效线要素"
+
+        crs = gdf.crs
+        is_geographic = bool(crs is not None and crs.is_geographic)
+        if is_geographic:
+            utm = gdf.estimate_utm_crs()
+            if utm is None:
+                return "无法估算 UTM 投影带（图层范围异常），无法按米生成点"
+            proj = work.to_crs(utm)
+        else:
+            utm = None
+            proj = work
+        proj = proj.explode(index_parts=False)
+
+        total_pts, covered_m, total_len_m = 0, 0.0, 0.0
+        pt_geoms, attrs = [], []
+        for idx, row in proj.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty or geom.geom_type != "LineString":
+                continue
+            L = float(geom.length)
+            total_len_m += L
+            if L < iv_m:
+                continue
+            dists = np.arange(iv_m, L + 1e-9, iv_m)
+            for d in dists:
+                try:
+                    pt = geom.interpolate(float(d))
+                except Exception:
+                    continue
+                if pt is None or pt.is_empty:
+                    continue
+                pt_geoms.append(pt)
+                attrs.append({"source_index": int(idx) if isinstance(idx, (int, np.integer)) else str(idx),
+                              "dist_m": float(d), "line_length_m": L})
+                total_pts += 1
+            if len(dists):
+                covered_m += float(min(float(dists[-1]), L))
+
+        if not pt_geoms:
+            return f"沿线生成等距点：线总长 {total_len_m:,.2f} m，均短于一个间隔（{unit_note}），未生成点"
+        out = gpd.GeoDataFrame(attrs, geometry=pt_geoms, crs=proj.crs)
+        if is_geographic:
+            out = out.to_crs(crs)
+        out_name = f"{name}_沿线等距点"
+        _gdf_to_layer(out, out_name)
+        return (f"沿线生成等距点完成（间隔 {unit_note}）：共 {total_pts} 个点，"
+                f"覆盖线长 {covered_m:,.2f} m（线总长 {total_len_m:,.2f} m），"
+                f"结果图层「{out_name}」已上图")
+    except Exception as e:
+        return f"沿线生成等距点失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具组: 空间统计扩展  权重矩阵 / 空间回归 / 标准差椭圆 / 中心趋势 / OD 成本矩阵
+# ============================================================
+
+def _stats_metric_gdf(gdf):
+    """把图层投影到本地 UTM 米制坐标系，用于距离/面积/协方差计算。"""
+    b = gdf.total_bounds
+    lon, lat = (float(b[0]) + float(b[2])) / 2.0, (float(b[1]) + float(b[3])) / 2.0
+    crs = _get_utm_crs(lon, lat)
+    return gdf.to_crs(crs), crs
+
+
+def _stats_coords_weights(gdf_metric, weight_field: str = ""):
+    """取要素代表点坐标 (N,2) 与可选权重 (N,)。非点要素取 representative_point（保证落在几何内部）。"""
+    import numpy as np
+    geom = gdf_metric.geometry
+    try:
+        pts = geom.representative_point()
+    except Exception:
+        pts = geom
+    coords = np.array([[float(p.x), float(p.y)] for p in pts], dtype=float)
+    weights = None
+    if weight_field:
+        if weight_field not in gdf_metric.columns:
+            raise ValueError(f"权重字段「{weight_field}」不存在")
+        weights = np.asarray(gdf_metric[weight_field].values, dtype=float)
+        if not np.isfinite(weights).all() or (weights < 0).any() or weights.sum() <= 0:
+            raise ValueError(f"权重字段「{weight_field}」必须为有限非负数且总和大于 0")
+    return coords, weights
+
+
+def _is_contiguous(g1, g2, method: str) -> bool:
+    """面邻接判定：queen=共享边或顶点(touches)；rook=仅共享边(交集为线且长度>0)。"""
+    if g1 is None or g2 is None:
+        return False
+    try:
+        if not g1.touches(g2):
+            return False
+        if method == "rook":
+            inter = g1.intersection(g2)
+            return (not inter.is_empty) and float(inter.length) > 0.0
+        return True
+    except Exception:
+        return False
+
+
+def _contiguity_pairs(geoms, method: str):
+    """用 STRtree 预筛候选对再精确判定；无 STRtree 时退化为 O(n^2)。"""
+    n = len(geoms)
+    pairs = []
+    try:
+        from shapely import STRtree
+        tree = STRtree(geoms)
+        for i in range(n):
+            for j in tree.query(geoms[i]):
+                j = int(j)
+                if j <= i:
+                    continue
+                if _is_contiguous(geoms[i], geoms[j], method):
+                    pairs.append((i, j))
+    except Exception:
+        for i in range(n):
+            for j in range(i + 1, n):
+                if _is_contiguous(geoms[i], geoms[j], method):
+                    pairs.append((i, j))
+    return pairs
+
+
+def _build_spatial_weights(gdf, method: str = "queen", k: int = 8):
+    """统一的邻接/权重构建入口（spatial_weights_matrix 与 spatial_regression 复用）。
+
+    返回 (W csr 稀疏矩阵, neighbors 列表, backend 说明)。
+    - queen / rook: 优先 libpysal（惰性导入，不在 requirements.txt），
+      不可用时用 shapely touches/intersects 的纯 numpy/scipy 实现。
+    - knn: cKDTree 质心近邻。
+    """
+    import numpy as np
+    from scipy import sparse
+
+    n = len(gdf)
+    if n < 2:
+        raise ValueError(f"要素数（{n}）太少，至少需要 2 个")
+    method = str(method).lower().strip()
+    neighbors = [[] for _ in range(n)]
+    backend = "numpy/scipy"
+
+    if method in ("queen", "rook"):
+        libpysal_w = None
+        try:
+            from libpysal.weights import Queen, Rook
+            libpysal_w = (Queen if method == "queen" else Rook).from_dataframe(gdf, use_index=False)
+        except Exception:
+            libpysal_w = None
+        if libpysal_w is not None:
+            try:
+                for i in range(n):
+                    neighbors[i] = sorted(int(j) for j in libpysal_w.neighbors.get(i, []) if int(j) != i)
+                backend = "libpysal"
+            except Exception:
+                libpysal_w = None
+        if libpysal_w is None:
+            geoms = list(gdf.geometry)
+            _types = {str(t) for t in gdf.geometry.geom_type.dropna().unique()}
+            if not _types or not _types.issubset({"Polygon", "MultiPolygon"}):
+                raise ValueError(
+                    f"{method} 邻接需要面图层，而当前是 {'/'.join(sorted(_types)) or '未知'}；点图层请改用 method='knn'")
+            for i, j in _contiguity_pairs(geoms, method):
+                neighbors[i].append(j)
+                neighbors[j].append(i)
+            for i in range(n):
+                neighbors[i] = sorted(neighbors[i])
+    elif method == "knn":
+        # cKDTree 用欧氏距离：绝不能直接吃经纬度（1 度经差  1 度纬差），
+        # 先投影到本地 UTM 米制坐标再建树，这样 knn 才是真正的"最近邻"。
+        gdf_metric, _ = _stats_metric_gdf(gdf)
+        coords = np.array([[float(p.x), float(p.y)] for p in gdf_metric.geometry.representative_point()], dtype=float)
+        from scipy.spatial import cKDTree
+        k_eff = max(1, min(int(k), n - 1))
+        tree = cKDTree(coords)
+        _, idx = tree.query(coords, k=k_eff + 1)
+        for i in range(n):
+            neighbors[i] = sorted(int(j) for j in np.atleast_1d(idx[i])[1:] if int(j) != i)
+    else:
+        raise ValueError("method 仅支持 queen / rook / knn")
+
+    rows, cols, data = [], [], []
+    for i, nbrs in enumerate(neighbors):
+        for j in nbrs:
+            rows.append(i)
+            cols.append(j)
+            data.append(1.0)
+    W = sparse.csr_matrix((data, (rows, cols)), shape=(n, n))
+    return W, neighbors, backend
+
+
+def _moran_from_weights(W, x):
+    """给定权重矩阵与数值向量计算全局 Moran's I 及随机化假设下的 z/p（与 spatial_moran 同口径）。"""
+    import numpy as np
+    from scipy.stats import norm
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    z = x - x.mean()
+    zz = float(z @ z)
+    S0 = float(W.sum())
+    if n < 3 or zz <= 0 or S0 <= 0:
+        return None
+    I = (n / S0) * float(z @ (W @ z)) / zz
+    E_I = -1.0 / (n - 1)
+    z_score, p_value, method = 0.0, 1.0, "置换检验"
+    denom = (n - 1) * (n - 2) * (n - 3) * S0 * S0
+    if n > 3 and denom > 0:
+        m2 = float((z ** 2).mean())
+        if m2 > 0:
+            S1 = 0.5 * float(((W + W.T) ** 2).sum())
+            S2 = float(((W.sum(axis=1) + W.sum(axis=0)) ** 2).sum())
+            b2 = float((z ** 4).mean()) / (m2 ** 2)
+            k1 = n * (S1 * (n * n - 3 * n + 3) - n * S2 + 3 * S0 * S0) / denom
+            k2 = (S1 * (n * n - n) - 2 * n * S2 + 6 * S0 * S0) / denom
+            var_I = k1 - k2 * b2 - E_I * E_I
+            if var_I > 0:
+                z_score = (I - E_I) / np.sqrt(var_I)
+                p_value = 2.0 * (1.0 - norm.cdf(abs(z_score)))
+                method = "正态近似"
+    if method != "正态近似":
+        rng = np.random.default_rng(20240915)
+        perm = []
+        for _ in range(99):
+            xp = rng.permutation(x)
+            zp = xp - xp.mean()
+            zzp = float(zp @ zp)
+            if zzp > 0:
+                perm.append((n / S0) * float(zp @ (W @ zp)) / zzp)
+        perm = np.asarray(perm)
+        if perm.size and perm.std() > 0:
+            z_score = (I - perm.mean()) / perm.std()
+            p_value = (1 + int((np.abs(perm - perm.mean()) >= abs(I - perm.mean())).sum())) / (perm.size + 1)
+    return I, z_score, p_value, method
+
+
+def _stats_out_dir(kind: str = "") -> str:
+    """空间统计文件产物目录（<temp>/stats[/kind]），与图层通道无关。"""
+    init_temp_dir()
+    d = os.path.join(_temp_output_dir, "stats", kind) if kind else os.path.join(_temp_output_dir, "stats")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _stats_safe_name(name: str) -> str:
+    """文件名安全化：保留中英文与数字。"""
+    return (re.sub(r"[^\w\u4e00-\u9fff-]+", "_", str(name)).strip("_") or "layer")[:60]
+
+
+def _stats_summary(tool: str, payload: dict) -> str:
+    """短机器可读摘要行（JSON），便于前端/测试稳定解析。"""
+    try:
+        return "STATS_SUMMARY: " + json.dumps({"tool": tool, **payload}, ensure_ascii=False, default=str)
+    except Exception:
+        return ""
+
+@tool
+def spatial_weights_matrix(layer_name: str, method: str = "queen", k: int = 8) -> str:
+    """构建并持久化空间权重矩阵（邻接矩阵）文件产物，供 spatial_moran / spatial_hotspot / spatial_regression 复用。
+    - layer_name: 图层名；queen/rook 邻接需要面图层，点/线图层请改用 method='knn'。
+    - method: 'queen'(共享边或顶点，默认) / 'rook'(仅共享边) / 'knn'(K 近邻)。
+    - k: knn 的近邻数（默认 8，自动收敛到 N-1）；knn 在本地 UTM 米制投影坐标上计算，避免经纬度欧氏距离失真。
+    产出：<临时输出目录>/stats/weights/<图层>_<method>.npz（scipy 稀疏矩阵）与同名 .json 邻居表，并返回要素数与平均邻居数。
+    注意：本工具只产出磁盘文件而非地图图层。"""
+    try:
+        import numpy as np
+        from scipy import sparse
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        W, neighbors, backend = _build_spatial_weights(gdf, method=method, k=k)
+        n = len(gdf)
+        counts = np.array([len(v) for v in neighbors], dtype=int)
+        mean_nbrs = float(counts.mean()) if n else 0.0
+        out_dir = _stats_out_dir("weights")
+        stem = f"{_stats_safe_name(name)}_{str(method).lower()}"
+        npz_path = os.path.join(out_dir, stem + ".npz")
+        json_path = os.path.join(out_dir, stem + ".json")
+        sparse.save_npz(npz_path, W)
+        try:
+            fids = gdf["_fid"].tolist() if "_fid" in gdf.columns else None
+        except Exception:
+            fids = None
+        sidecar = {
+            "layer": name, "method": str(method).lower(), "k": int(k),
+            "n_features": n, "mean_neighbors": round(mean_nbrs, 4),
+            "min_neighbors": int(counts.min()) if n else 0,
+            "max_neighbors": int(counts.max()) if n else 0,
+            "neighbor_counts": counts.tolist(),
+            "neighbors": neighbors,
+            "feature_ids": fids,
+            "matrix_npz": npz_path,
+            "backend": backend,
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(sidecar, f, ensure_ascii=False, indent=2)
+        record_tool_artifact(os.path.basename(npz_path), npz_path, artifact_type="file")
+        record_tool_artifact(os.path.basename(json_path), json_path, artifact_type="file")
+        summary = _stats_summary("spatial_weights_matrix", {
+            "layer": name, "method": str(method).lower(), "n_features": n,
+            "mean_neighbors": round(mean_nbrs, 4), "backend": backend,
+            "matrix": npz_path, "sidecar": json_path,
+        })
+        return (
+            f"空间权重矩阵已生成（{str(method).lower()}，实现路径：{backend}）。\n"
+            f"- 图层：{name}，要素数：{n}\n"
+            f"- 平均邻居数：{mean_nbrs:.3f}（最小 {int(counts.min()) if n else 0}，最大 {int(counts.max()) if n else 0}）\n"
+            f"- 稀疏矩阵：{npz_path}\n"
+            f"- 邻居表：{json_path}\n"
+            f"（本工具产物为磁盘文件而非地图图层，供 spatial_moran / spatial_hotspot / spatial_regression 复用）\n"
+            f"{summary}"
+        )
+    except Exception as e:
+        return f"空间权重矩阵构建失败: {str(e)[:300]}"
+
+
+@tool
+def spatial_regression(layer_name: str, dependent: str, independents: str, model: str = "ols") -> str:
+    """空间回归分析：OLS + 残差空间自相关（Moran's I），检验自变量对因变量的解释力。
+    - layer_name: 图层名。
+    - dependent: 因变量字段名（必须为数值型）。
+    - independents: 自变量字段名，英文逗号分隔（必须全部为数值型）。
+    - model: 'ols'(普通最小二乘，默认) / 'gwr'(地理加权回归，暂未支持，会明确返回不支持提示)。
+    输出：系数、标准误、t 值、p 值、R、调整 R、AIC、Jarque-Bera 正态性 p 值，以及残差 Moran's I（默认 queen 权重）。
+    注意：本工具只产出数值结果，不生成地图图层。"""
+    try:
+        import numpy as np
+        import pandas as pd
+        from scipy import stats
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        model = str(model).lower().strip()
+        if model == "gwr":
+            return ("gwr（地理加权回归）暂未支持：当前实现只做 OLS 探索性回归（系数/显著性/残差自相关）。"
+                    "请改用 model='ols'，或先用 spatial_weights_matrix 生成权重矩阵后再扩展使用。")
+        if model != "ols":
+            return f"不支持的 model：{model}，可选 'ols'（默认）或 'gwr'（暂未支持）"
+        num_cols = set(gdf.select_dtypes(include=[np.number]).columns.tolist())
+        if dependent not in gdf.columns:
+            return f"因变量字段「{dependent}」不存在"
+        if dependent not in num_cols:
+            return f"因变量「{dependent}」不是数值字段，空间回归要求数值型"
+        indep_list = [s.strip() for s in str(independents).split(",") if s.strip()]
+        if not indep_list:
+            return "自变量 independents 为空，请用逗号分隔数值字段名"
+        for fld in indep_list:
+            if fld not in gdf.columns:
+                return f"自变量字段「{fld}」不存在"
+            if fld not in num_cols:
+                return f"自变量「{fld}」不是数值字段，空间回归要求数值型"
+        data = gdf[[dependent] + indep_list].apply(pd.to_numeric, errors="coerce")
+        data = data.replace([np.inf, -np.inf], np.nan).dropna()
+        n = len(data)
+        p = len(indep_list) + 1
+        if n < p + 1:
+            return f"有效样本数（{n}）太少，OLS 至少需要 {p + 1} 个"
+        X = np.column_stack([np.ones(n), data[indep_list].values.astype(float)])
+        y = data[dependent].values.astype(float)
+        beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+        resid = y - X @ beta
+        dof = n - p
+        rss = float(resid @ resid)
+        tss = float(((y - y.mean()) ** 2).sum())
+        r2 = 1.0 - rss / tss if tss > 0 else float("nan")
+        adj_r2 = 1.0 - (1.0 - r2) * (n - 1) / dof if tss > 0 else float("nan")
+        sigma2 = rss / dof
+        try:
+            se = np.sqrt(np.maximum(np.diag(np.linalg.pinv(X.T @ X)) * sigma2, 0.0))
+        except Exception:
+            se = np.full(p, np.nan)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tvals = beta / se
+        pvals = 2.0 * (1.0 - stats.t.cdf(np.abs(tvals), df=dof))
+        aic = n * np.log(rss / n) + 2 * p if rss > 0 else float("inf")
+        jb_stat, jb_p = (float("nan"), float("nan"))
+        if rss > 0 and n > 2:
+            try:
+                jb_stat, jb_p = stats.jarque_bera(resid)
+            except Exception:
+                pass
+        names = ["const"] + indep_list
+        lines = [f"空间回归（OLS）完成，图层「{name}」，有效样本 {n} 个："]
+        lines.append("  变量        系数        标准误      t 值      p 值")
+        for nm, b, s, t, pv in zip(names, beta, se, tvals, pvals):
+            lines.append(f"  {nm:<10} {b:>10.4f} {s:>10.4f} {t:>9.3f} {pv:>9.4f}")
+        lines.append(f"  R = {r2:.4f}，调整 R = {adj_r2:.4f}，AIC = {aic:.2f}")
+        if jb_p == jb_p:
+            lines.append(f"  Jarque-Bera 正态性检验：统计量 = {jb_stat:.4f}，p = {jb_p:.4f}"
+                         + ("（p<0.05，残差偏离正态）" if jb_p < 0.05 else "（未拒绝正态）"))
+        else:
+            lines.append("  Jarque-Bera 正态性检验：样本不足，已跳过")
+        moran_txt = "残差 Moran's I：样本不足，已跳过"
+        try:
+            if n >= 5:
+                sub = gdf.loc[data.index]
+                # 残差自相关：面图层优先 queen 邻接；点/线图层 queen 不适用，退回 knn
+                try:
+                    W, _, w_backend = _build_spatial_weights(sub, method="queen", k=8)
+                except Exception:
+                    W, _, w_backend = _build_spatial_weights(sub, method="knn", k=8)
+                mi = _moran_from_weights(W, resid)
+                if mi is not None:
+                    I, z, pv2, mtd = mi
+                    moran_txt = (f"残差 Moran's I = {I:.4f}，z = {z:.2f}，p = {pv2:.4f}"
+                                 f"（{w_backend} queen 权重，{mtd}；"
+                                 + ("残差仍存在显著空间自相关" if abs(z) > 1.96 else "残差无显著空间自相关") + "）")
+        except Exception as _me:
+            moran_txt = f"残差 Moran's I 计算跳过：{str(_me)[:120]}"
+        lines.append("  " + moran_txt)
+        summary = _stats_summary("spatial_regression", {
+            "layer": name, "model": "ols", "n": n,
+            "coefficients": {nm: round(float(b), 6) for nm, b in zip(names, beta)},
+            "r2": None if r2 != r2 else round(float(r2), 6),
+            "adj_r2": None if adj_r2 != adj_r2 else round(float(adj_r2), 6),
+            "aic": round(float(aic), 4) if np.isfinite(aic) else None,
+        })
+        lines.append(summary)
+        lines.append("（本工具只产出数值结果，不生成地图图层）")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"空间回归失败: {str(e)[:300]}"
+
+
+@tool
+def directional_distribution(layer_name: str, group_field: str = "", weight_field: str = "",
+                             std_deviations: str = "1_std,2_std") -> str:
+    """方向分布（标准差椭圆）：按分组计算中心、长短轴标准差距离与方向角，并生成椭圆面图层供上图。
+    - layer_name: 图层名（点要素，或可取质心的面/线）。
+    - group_field: 可选分组字段（空=全部要素一组）。
+    - weight_field: 可选权重字段（需为非负数值；空=等权）。
+    - std_deviations: 要输出的标准差倍数，逗号分隔，如 '1_std,2_std'（也接受 2、1.5 等数字）。
+    输出：每组中心 X/Y、方向角（自正北顺时针，度）、X/Y 轴标准差距离（米）；椭圆在 UTM 投影下计算后转回 WGS84 上图。
+    """
+    try:
+        import numpy as np
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if group_field and group_field not in gdf.columns:
+            return f"分组字段「{group_field}」不存在"
+        gdf_metric, crs_m = _stats_metric_gdf(gdf)
+        coords, weights = _stats_coords_weights(gdf_metric, weight_field)
+        mults = []
+        raw = str(std_deviations if std_deviations is not None else "1_std,2_std")
+        raw = raw.replace("_std", " ").replace("std", " ").replace("标准差", " ")
+        for tok in raw.replace("，", ",").split(","):
+            for sub in tok.split():
+                try:
+                    v = float(sub)
+                    if v > 0:
+                        mults.append(v)
+                except ValueError:
+                    if sub.strip():
+                        return f"std_deviations 解析失败：'{sub.strip()}'，示例 '1_std,2_std'"
+        if not mults:
+            mults = [1.0, 2.0]
+        if group_field:
+            if gdf_metric[group_field].isna().all():
+                return f"分组字段「{group_field}」全为空"
+            groups = list(gdf_metric.groupby(group_field, dropna=True).groups.keys())
+            if not groups:
+                return f"分组字段「{group_field}」没有有效分组"
+        else:
+            groups = [None]
+        polys, attrs, lines, skipped = [], [], [], []
+        for gval in groups:
+            if gval is None:
+                c, w, glabel = coords, weights, "全部要素"
+            else:
+                mask = (gdf_metric[group_field] == gval).values
+                c = coords[mask]
+                w = weights[mask] if weights is not None else None
+                glabel = str(gval)
+            n_g = len(c)
+            if n_g < 2:
+                skipped.append(f"组「{glabel}」要素数 {n_g} < 2")
+                continue
+            ww = np.ones(n_g, dtype=float) if w is None else np.asarray(w, dtype=float)
+            if not np.isfinite(ww).all() or (ww < 0).any() or ww.sum() <= 0:
+                return f"组「{glabel}」权重无效：必须为有限非负数且总和大于 0"
+            wsum = float(ww.sum())
+            cx = float((ww * c[:, 0]).sum() / wsum)
+            cy = float((ww * c[:, 1]).sum() / wsum)
+            dx = c[:, 0] - cx
+            dy = c[:, 1] - cy
+            sxx = float((ww * dx * dx).sum() / wsum)
+            syy = float((ww * dy * dy).sum() / wsum)
+            sxy = float((ww * dx * dy).sum() / wsum)
+            vals, vecs = np.linalg.eigh(np.array([[sxx, sxy], [sxy, syy]], dtype=float))
+            order = np.argsort(vals)[::-1]
+            vals = np.maximum(vals[order], 0.0)
+            vecs = vecs[:, order]
+            sdx = float(np.sqrt(vals[0]))
+            sdy = float(np.sqrt(vals[1]))
+            maj = vecs[:, 0]
+            rot = float(np.degrees(np.arctan2(maj[0], maj[1]))) % 360.0
+            lines.append(f"  组「{glabel}」：n={n_g}，中心=({cx:.2f}, {cy:.2f})，方向角={rot:.2f}，"
+                         f"X轴标准差={sdx:.2f} m，Y轴标准差={sdy:.2f} m")
+            ux, uy = float(maj[0]), float(maj[1])
+            vx, vy = -uy, ux
+            t = np.linspace(0.0, 2.0 * np.pi, 73)
+            if sdx <= 0 or sdy <= 0:
+                # 点共线/重合时某个轴标准差为 0，椭圆退化成线段，无法构成多边形
+                skipped.append(f"组「{glabel}」点共线或重合（轴标准差 {sdx:.3f}/{sdy:.3f}）")
+                continue
+            for m in mults:
+                a, b = sdx * m, sdy * m
+                ex = cx + a * np.cos(t) * ux + b * np.sin(t) * vx
+                ey = cy + a * np.cos(t) * uy + b * np.sin(t) * vy
+                polys.append(Polygon(list(zip(ex.tolist(), ey.tolist()))))
+                attrs.append({
+                    "group": glabel, "std_dev": float(m), "center_x": round(cx, 3),
+                    "center_y": round(cy, 3), "rotation_deg": round(rot, 3),
+                    "x_std_distance": round(sdx, 3), "y_std_distance": round(sdy, 3),
+                })
+        if not polys:
+            reason = "；".join(skipped) if skipped else "没有可用分组"
+            return f"标准差椭圆未生成：没有任何分组能构成有效椭圆（{reason}）"
+        ell = gpd.GeoDataFrame(attrs, geometry=polys, crs=crs_m).to_crs("EPSG:4326")
+        result_name = f"{name}_标准差椭圆"
+        _gdf_to_layer(ell, result_name)
+        summary = _stats_summary("directional_distribution", {
+            "layer": name, "layer_out": result_name, "ellipses": len(ell), "std_deviations": mults,
+            "skipped_groups": skipped,
+        })
+        skip_txt = ("\n- 已跳过分组：" + "；".join(skipped)) if skipped else ""
+        return (f"方向分布（标准差椭圆）完成，结果图层「{result_name}」已加载到地图：\n"
+                + "\n".join(lines) + f"\n- 椭圆要素数：{len(ell)}{skip_txt}\n{summary}")
+    except Exception as e:
+        return f"方向分布分析失败: {str(e)[:300]}"
+
+
+@tool
+def central_tendency(layer_name: str, weight_field: str = "") -> str:
+    """中心趋势分析：平均中心、中位中心、中心要素、标准距离与平均最近邻比率。
+    - layer_name: 图层名（点要素，或可取质心的面/线）。
+    - weight_field: 可选权重字段（需为非负数值；空=等权）。
+    输出：平均中心、中位中心、中心要素（到其他要素总距离最小者）、标准距离（米）、平均最近邻比率及其期望/观测/z/p 值。
+    注意：本工具只产出数值结果，不生成地图图层。"""
+    try:
+        import numpy as np
+        from scipy.spatial.distance import cdist
+        from scipy.stats import norm
+
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        gdf_metric, crs_m = _stats_metric_gdf(gdf)
+        coords, weights = _stats_coords_weights(gdf_metric, weight_field)
+        n = len(coords)
+        if n < 2:
+            return f"要素数（{n}）太少，中心趋势至少需要 2 个"
+        ww = np.ones(n, dtype=float) if weights is None else np.asarray(weights, dtype=float)
+        if not np.isfinite(ww).all() or (ww < 0).any() or ww.sum() <= 0:
+            return "权重字段必须为有限非负数且总和大于 0"
+        wsum = float(ww.sum())
+        mean_x = float((ww * coords[:, 0]).sum() / wsum)
+        mean_y = float((ww * coords[:, 1]).sum() / wsum)
+        med_x = float(np.median(coords[:, 0]))
+        med_y = float(np.median(coords[:, 1]))
+        D = cdist(coords, coords)
+        total_dist = D.sum(axis=1)
+        center_idx = int(np.argmin(total_dist))
+        sx = float(np.sqrt((ww * (coords[:, 0] - mean_x) ** 2).sum() / wsum))
+        sy = float(np.sqrt((ww * (coords[:, 1] - mean_y) ** 2).sum() / wsum))
+        std_dist = float(np.sqrt(sx ** 2 + sy ** 2))
+        nearest = np.where(~np.eye(n, dtype=bool), D, np.inf).min(axis=1)
+        obs_mean = float(nearest.mean())
+        minx, miny, maxx, maxy = [float(v) for v in gdf_metric.total_bounds]
+        b_w, b_h = (maxx - minx), (maxy - miny)
+        area = b_w * b_h
+        if area > 0:
+            density = n / area
+            exp_mean = 0.5 / np.sqrt(density)
+            se_ann = 0.26136 / np.sqrt(n * density)
+            ratio = obs_mean / exp_mean
+            z_ann = (obs_mean - exp_mean) / se_ann
+            p_ann = 2.0 * (1.0 - norm.cdf(abs(z_ann)))
+            pattern = ("聚集分布（观测最近邻距离小于期望）" if ratio < 1 else
+                       "离散分布（观测最近邻距离大于期望）" if ratio > 1 else "随机分布")
+        else:
+            exp_mean = se_ann = ratio = z_ann = p_ann = float("nan")
+            pattern = "范围面积为 0，无法计算平均最近邻"
+        try:
+            center_fid = gdf["_fid"].iloc[center_idx] if "_fid" in gdf.columns else center_idx
+        except Exception:
+            center_fid = center_idx
+        summary = _stats_summary("central_tendency", {
+            "layer": name, "n": n, "crs": crs_m,
+            "mean_center": [round(mean_x, 3), round(mean_y, 3)],
+            "median_center": [round(med_x, 3), round(med_y, 3)],
+            "standard_distance_m": round(std_dist, 3),
+            "ann_observed_mean_m": round(obs_mean, 3),
+            "ann_expected_mean_m": None if exp_mean != exp_mean else round(float(exp_mean), 3),
+            "ann_se": None if se_ann != se_ann else round(float(se_ann), 4),
+            "ann_z": None if z_ann != z_ann else round(float(z_ann), 4),
+            "ann_p": None if p_ann != p_ann else round(float(p_ann), 6),
+            "ann_ratio": None if ratio != ratio else round(float(ratio), 4),
+        })
+        return (
+            f"中心趋势分析完成，图层「{name}」，要素数 {n}（投影：{crs_m}）：\n"
+            f"- 平均中心：(X={mean_x:.2f}, Y={mean_y:.2f}) m\n"
+            f"- 中位中心：(X={med_x:.2f}, Y={med_y:.2f}) m\n"
+            f"- 中心要素：第 {center_idx + 1} 个要素（_fid={center_fid}），到其他要素总距离 {total_dist[center_idx]:.2f} m\n"
+            f"- 标准距离：{std_dist:.2f} m（X 向 {sx:.2f} m，Y 向 {sy:.2f} m）\n"
+            f"- 平均最近邻：观测均值 {obs_mean:.2f} m，期望均值 {exp_mean:.2f} m，"
+            f"比率 ANN = {ratio:.4f}，z = {z_ann:.3f}，p = {p_ann:.4f}（{pattern}）\n"
+            f"{summary}\n"
+            f"（本工具只产出数值结果，不生成地图图层）"
+        )
+    except Exception as e:
+        return f"中心趋势分析失败: {str(e)[:300]}"
+
+
+@tool
+def od_cost_matrix(origins_layer: str, destinations_layer: str, network_source: str = "osm") -> str:
+    """多对多 OD 成本矩阵：起点/终点吸附到既有 OSM 路网节点后跑多源 Dijkstra，输出成本矩阵文件产物。
+    - origins_layer: 起点图层名（点要素）。
+    - destinations_layer: 终点图层名（点要素）。
+    - network_source: 路网来源。'osm'（默认）= 复用已注册的路网图层（按起点坐标自动匹配）；
+      也可直接填已注册路网图层名（如 download_road_network 生成的图层）。
+    输出：<临时输出目录>/stats/od/<起点>_<终点>_od_matrix.csv 与同名 .json，并返回总/平均/最大出行成本（米）与不可达对数。
+    注意：本工具只产出磁盘文件，不生成地图图层。
+    """
+    try:
+        import numpy as np
+        import csv as _csv
+        import networkx as nx
+        from backend.services import network_service as ns
+
+        ogdf, oname = _layer_to_gdf(origins_layer)
+        if ogdf is None:
+            return oname
+        dgdf, dname = _layer_to_gdf(destinations_layer)
+        if dgdf is None:
+            return dname
+        o_pts = [(float(p.x), float(p.y)) for p in ogdf.geometry.representative_point()]
+        d_pts = [(float(p.x), float(p.y)) for p in dgdf.geometry.representative_point()]
+        if not o_pts or not d_pts:
+            return "起点或终点图层为空"
+        src = str(network_source or "osm").strip()
+        info = None
+        if src and src.lower() != "osm":
+            info = _registered_layers.get(src)
+            if info is None:
+                cands = [n for n in _registered_layers if src in n]
+                if len(cands) == 1:
+                    src, info = cands[0], _registered_layers[cands[0]]
+        if info is None:
+            for (x, y) in o_pts:
+                cand = _find_layer_for_coord(x, y)
+                if cand and cand in _registered_layers:
+                    info, src = _registered_layers[cand], cand
+                    break
+        if info is None and len(_registered_layers) == 1:
+            src = next(iter(_registered_layers))
+            info = _registered_layers[src]
+        if info is None:
+            return ("未找到可用的路网图层（network_source='osm' 需要先注册路网）：请先调用 download_road_network 下载路网，"
+                    f"或把已注册路网图层名传给 network_source。当前图层：{', '.join(list(_registered_layers.keys())[:10]) or '无'}")
+        geojson = info.get("geojson", {})
+        if not geojson or not geojson.get("features"):
+            return f"路网图层「{src}」为空"
+        graph = ns._get_cached_graph(geojson)
+        if not graph or not graph.nodes:
+            return f"路网图层「{src}」未构建出有效图（需要 LineString/MultiLineString 路网要素）"
+
+        def _snap_all(pts):
+            nodes, missed = [], []
+            for pt in pts:
+                s = ns.snap_to_network(geojson, pt, max_dist=5000)
+                if s.get("snapped"):
+                    nodes.append(tuple(s["snapped"]))
+                else:
+                    missed.append(pt)
+            return nodes, missed
+
+        o_nodes, o_miss = _snap_all(o_pts)
+        d_nodes, d_miss = _snap_all(d_pts)
+        if not o_nodes or not d_nodes:
+            return "起点或终点全部无法吸附到路网节点（请检查路网覆盖范围是否包含起终点）"
+        matrix = [[None] * len(d_nodes) for _ in range(len(o_nodes))]
+        for i, onode in enumerate(o_nodes):
+            if onode not in graph:
+                continue
+            lengths = nx.single_source_dijkstra_path_length(graph, onode, weight="weight")
+            for j, dnode in enumerate(d_nodes):
+                cost = lengths.get(dnode)
+                if cost is not None:
+                    matrix[i][j] = round(float(cost), 3)
+        flat = [v for row in matrix for v in row if v is not None]
+        total = float(np.sum(flat)) if flat else 0.0
+        mean_c = float(np.mean(flat)) if flat else 0.0
+        max_c = float(np.max(flat)) if flat else 0.0
+        unreachable = sum(1 for row in matrix for v in row if v is None)
+        out_dir = _stats_out_dir("od")
+        stem = f"{_stats_safe_name(oname)}__{_stats_safe_name(dname)}_od_matrix"
+        csv_path = os.path.join(out_dir, stem + ".csv")
+        json_path = os.path.join(out_dir, stem + ".json")
+        with open(csv_path, "w", encoding="utf-8", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["origin_index", "destination_index", "cost_m", "reachable"])
+            for i, row in enumerate(matrix):
+                for j, v in enumerate(row):
+                    w.writerow([i, j, "" if v is None else v, 1 if v is not None else 0])
+        payload = {
+            "origins_layer": oname, "destinations_layer": dname, "network_layer": src,
+            "n_origins": len(o_nodes), "n_destinations": len(d_nodes),
+            "unreachable_pairs": unreachable, "cost_unit": "meter",
+            "total_cost_m": round(total, 3), "mean_cost_m": round(mean_c, 3), "max_cost_m": round(max_c, 3),
+            "matrix": matrix, "csv": csv_path,
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        record_tool_artifact(os.path.basename(csv_path), csv_path, artifact_type="file")
+        record_tool_artifact(os.path.basename(json_path), json_path, artifact_type="file")
+        summary = _stats_summary("od_cost_matrix", {
+            "origins": oname, "destinations": dname, "network_layer": src,
+            "n_origins": len(o_nodes), "n_destinations": len(d_nodes),
+            "total_cost_m": round(total, 3), "mean_cost_m": round(mean_c, 3), "max_cost_m": round(max_c, 3),
+            "unreachable_pairs": unreachable, "csv": csv_path, "json": json_path,
+        })
+        miss_txt = ""
+        if o_miss or d_miss:
+            miss_txt = f"\n- 未能吸附：起点 {len(o_miss)} 个、终点 {len(d_miss)} 个（已从矩阵中剔除）"
+        return (
+            f"OD 成本矩阵完成（多源 Dijkstra，路网图层「{src}」）：\n"
+            f"- 起点 {len(o_nodes)} 个，终点 {len(d_nodes)} 个，不可达 {unreachable} 对{miss_txt}\n"
+            f"- 总出行成本 {total:.2f} m，平均 {mean_c:.2f} m，最大 {max_c:.2f} m\n"
+            f"- 矩阵文件：{csv_path}\n"
+            f"- JSON 文件：{json_path}\n"
+            f"（本工具产物为磁盘文件而非地图图层）\n"
+            f"{summary}"
+        )
+    except Exception as e:
+        return f"OD 成本矩阵计算失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: feature_to_raster  矢量转栅格
+# ============================================================
+@tool
+def feature_to_raster(layer_name: str, value_field: str = "", cell_size: float = 0.0, all_touched: bool = False) -> str:
+    """矢量转栅格：把点/线/面要素按属性值烧录到栅格网格（ArcGIS FeatureToRaster 对应）。
+    - layer_name: 矢量图层名（注册图层，EPSG:4326）。
+    - value_field: 作为像元值的属性字段名；留空则全部烧录常量 1。
+    - cell_size: 像元尺寸（度，与图层同单位）；0 = 自动取使长边约 256 像元的尺寸。
+    - all_touched: true=像元被几何触碰即烧录；false（默认）=像元中心在几何内才烧录。
+    结果 GeoTIFF 落盘并输出预览图层。"""
+    try:
+        import numpy as np
+        import rasterio
+        from rasterio.features import rasterize
+        from rasterio.transform import from_bounds
+        import types
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        if gdf.empty:
+            return f"图层「{name}」没有要素，无法转栅格"
+        minx, miny, maxx, maxy = gdf.total_bounds
+        if cell_size and cell_size > 0:
+            cs = float(cell_size)
+        else:
+            cs = max(maxx - minx, maxy - miny) / 256.0
+            if cs <= 0:
+                return "图层范围为空，无法推导像元尺寸，请显式传 cell_size"
+        width = max(1, int(round((maxx - minx) / cs)))
+        height = max(1, int(round((maxy - miny) / cs)))
+        transform = from_bounds(minx, miny, maxx, maxy, width, height)
+        if value_field:
+            if value_field not in gdf.columns:
+                return f"未找到字段「{value_field}」，可用字段：{', '.join(map(str, gdf.columns))}"
+            shapes_iter = ((geom, val) for geom, val in zip(gdf.geometry, gdf[value_field]) if geom is not None and val is not None)
+        else:
+            shapes_iter = ((geom, 1) for geom in gdf.geometry if geom is not None)
+        arr = rasterize(
+            shapes_iter, out_shape=(height, width), transform=transform,
+            fill=0, all_touched=bool(all_touched),
+            dtype="float64" if value_field else "uint8",
+        )
+        out_name = f"{name}_转栅格"
+        out_path = os.path.join(_temp_output_dir, "uploads", out_name + ".tif")
+        profile = dict(driver="GTiff", height=height, width=width, count=1, dtype=arr.dtype.name,
+                       crs="EPSG:4326", transform=transform, nodata=0)
+        with rasterio.open(out_path, "w", **profile) as dst:
+            dst.write(arr, 1)
+        with rasterio.open(out_path) as _src_for_preview:
+            note = _raster_preview_op(_src_for_preview, arr, out_name, f"矢量转栅格 {width}x{height}@{cs:.6g}")
+        stat = f"值域 {np.nanmin(arr[arr > 0]):.4g}~{np.nanmax(arr):.4g}" if value_field and (arr > 0).any() else "常量 1"
+        return (f"矢量转栅格完成：{width}x{height} 像元，像元尺寸 {cs:.6g}，已烧录 {int((arr > 0).sum())} 个像元（{stat}）。"
+                f"结果已保存 {out_name}.tif；{note}")
+    except Exception as e:
+        return f"矢量转栅格失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: raster_to_feature  栅格转矢量
+# ============================================================
+@tool
+def raster_to_feature(layer_name: str, connectivity: int = 8, simplify: float = 0.0) -> str:
+    """栅格转矢量：把分类栅格按连续同值区域矢量化为面图层（ArcGIS RasterToPolygon 对应）。
+    - layer_name: 上传的 GeoTIFF 栅格名。
+    - connectivity: 4 或 8，同值像元连通判定。
+    - simplify: 面简化容差（度）；0 = 不简化。
+    输出面图层（含 value 属性），面数与面积统计随结果返回。"""
+    try:
+        import numpy as np
+        import rasterio
+        from rasterio.features import shapes as rio_shapes
+        from shapely.geometry import shape as shp_shape
+        import geopandas as gpd
+        tif_path = _find_uploaded_tif(layer_name)
+        if tif_path is None:
+            return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
+        conn = int(connectivity) if int(connectivity) in (4, 8) else 8
+        with rasterio.open(tif_path) as src:
+            arr = src.read(1)
+            mask = np.isfinite(arr) if arr.dtype.kind == "f" else np.ones_like(arr, dtype=bool)
+            if src.nodata is not None:
+                mask &= ~np.isclose(arr, src.nodata)
+            geoms = []
+            vals = []
+            for geom, val in rio_shapes(arr, mask=mask, transform=src.transform, connectivity=conn):
+                if val == 0 or val is None:
+                    continue
+                geoms.append(shp_shape(geom))
+                vals.append(val)
+            if not geoms:
+                return "栅格中没有可矢量化的有效像元（全为 nodata 或 0）"
+            gdf = gpd.GeoDataFrame({"value": vals}, geometry=geoms, crs=src.crs or "EPSG:4326")
+        if simplify and simplify > 0:
+            gdf["geometry"] = gdf.geometry.simplify(float(simplify), preserve_topology=True)
+        out_name = f"{layer_name}_转矢量"
+        _gdf_to_layer(gdf, out_name)
+        utm = gdf.estimate_utm_crs()
+        areas_km2 = gdf.to_crs(utm).geometry.area.sum() / 1e6 if utm is not None else float("nan")
+        return (f"栅格转矢量完成：{len(gdf)} 个面（连通度 {conn}，值域 {min(vals)}~{max(vals)}），"
+                f"总面积 {areas_km2:.3f} km（UTM 投影计算）。图层「{out_name}」已加载到地图")
+    except Exception as e:
+        return f"栅格转矢量失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: create_fishnet  创建渔网格网
+# ============================================================
+@tool
+def create_fishnet(extent_layer: str = "", cell_size: float = 0.0, rows: int = 0, cols: int = 0, out_name: str = "fishnet") -> str:
+    """创建矩形渔网采样格网（ArcGIS CreateFishnet 对应）。
+    - extent_layer: 范围参照图层名；留空则用当前所有注册图层的联合范围。
+    - cell_size: 每格边长（度）；与 rows/cols 二选一，同时给出时优先 cell_size。
+    - rows / cols: 显式行列数（cell_size 为 0 时生效）。
+    - out_name: 输出图层名。
+    输出面格网图层，逐格带 row/col 属性。"""
+    try:
+        import numpy as np
+        from shapely.geometry import box
+        import geopandas as gpd
+        if extent_layer:
+            gdf_e, ename = _layer_to_gdf(extent_layer)
+            if gdf_e is None:
+                return ename
+            minx, miny, maxx, maxy = gdf_e.total_bounds
+        else:
+            if not _registered_layers:
+                return "当前没有任何注册图层，请先加载图层或显式传 extent_layer"
+            bs = [gpd.GeoDataFrame.from_features(v.get("geojson", {}).get("features", []), crs="EPSG:4326").total_bounds
+                  for v in _registered_layers.values() if v.get("geojson", {}).get("features")]
+            if not bs:
+                return "注册图层都没有要素，无法确定范围"
+            minx = min(b[0] for b in bs); miny = min(b[1] for b in bs)
+            maxx = max(b[2] for b in bs); maxy = max(b[3] for b in bs)
+        w = maxx - minx; h = maxy - miny
+        if w <= 0 or h <= 0:
+            return "范围为空，无法创建格网"
+        if cell_size and cell_size > 0:
+            cs = float(cell_size)
+            ncols = max(1, int(np.ceil(w / cs)))
+            nrows = max(1, int(np.ceil(h / cs)))
+        elif rows and cols and int(rows) > 0 and int(cols) > 0:
+            nrows, ncols = int(rows), int(cols)
+            cs = 0.0
+        else:
+            return "请提供 cell_size，或同时提供 rows 与 cols"
+        feats = []
+        for r in range(nrows):
+            for c in range(ncols):
+                x0 = minx + c * (w / ncols); x1 = minx + (c + 1) * (w / ncols)
+                y0 = miny + r * (h / nrows); y1 = miny + (r + 1) * (h / nrows)
+                feats.append({"type": "Feature", "properties": {"row": r, "col": c},
+                              "geometry": box(x0, y0, x1, y1).__geo_interface__})
+        out = {"type": "FeatureCollection", "features": feats}
+        final_name = out_name or "fishnet"
+        _push_layer(final_name, out, {"color": "#555", "weight": 1, "fillOpacity": 0.05})
+        _register_layer(final_name, out)
+        cs_txt = (f"{cs:.6g}" if cs else f"{w / ncols:.6g} x {h / nrows:.6g}")
+        return (f"渔网创建完成：{nrows} 行 x {ncols} 列 = {nrows * ncols} 格，格尺寸 {cs_txt}，"
+                f"范围 {w:.4g} x {h:.4g}。图层「{final_name}」已加载到地图")
+    except Exception as e:
+        return f"渔网创建失败: {str(e)[:300]}"
+
+
+def _cost_graph(cost_arr):
+    """cost_distance / least_cost_path 共用的 8 邻域代价图。返回 (csr_graph, node_index)。
+    节点 = 有效像元；边权 = 平均代价  像元距离（4 邻 = 1，对角 = sqrt(2)）。"""
+    import numpy as np
+    from scipy.sparse import csr_matrix
+    h, w = cost_arr.shape
+    valid = np.isfinite(cost_arr) & (cost_arr > 0)
+    idx = np.full((h, w), -1, dtype=np.int64)
+    idx[valid] = np.arange(int(valid.sum()))
+    rows_l, cols_l, vals = [], [], []
+    nb = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
+          (-1, -1, 2 ** 0.5), (-1, 1, 2 ** 0.5), (1, -1, 2 ** 0.5), (1, 1, 2 ** 0.5)]
+    ca = cost_arr
+    for r in range(h):
+        for c in range(w):
+            if not valid[r, c]:
+                continue
+            u = idx[r, c]
+            for dr, dc, dist in nb:
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < h and 0 <= cc < w and valid[rr, cc]:
+                    rows_l.append(u); cols_l.append(idx[rr, cc])
+                    vals.append((float(ca[r, c]) + float(ca[rr, cc])) * 0.5 * dist)
+    n = int(valid.sum())
+    g = csr_matrix((vals, (rows_l, cols_l)), shape=(n, n))
+    return g, idx, valid
+
+
+# ============================================================
+# 工具: cost_distance  代价距离面
+# ============================================================
+@tool
+def cost_distance(cost_layer: str, source_layer: str, out_name: str = "") -> str:
+    """代价距离面：基于代价栅格，计算每个像元到最近源的最小累积代价（8 邻域 Dijkstra，ArcGIS CostDistance 对应）。
+    - cost_layer: 代价栅格（上传的 GeoTIFF，值>0，越大越难通行；nodata/非正值为不可通行）。
+    - source_layer: 源要素图层（会烧录到代价栅格网格上作为源像元）。
+    - out_name: 输出栅格名。
+    输出累积代价 GeoTIFF + 预览图层，并报告可达/不可达像元数。"""
+    try:
+        import numpy as np
+        import types
+        from rasterio.transform import array_bounds
+        import rasterio
+        from scipy.sparse.csgraph import dijkstra
+        from rasterio.features import rasterize as rio_rasterize
+        from rasterio.transform import from_bounds
+        tif_path = _find_uploaded_tif(cost_layer)
+        if tif_path is None:
+            return f"未找到代价栅格「{cost_layer}」，请先上传 GeoTIFF"
+        with rasterio.open(tif_path) as src:
+            cost = src.read(1).astype("float64")
+            transform = src.transform
+            crs = src.crs or "EPSG:4326"
+            nodata = src.nodata
+        valid0 = np.isfinite(cost)
+        if nodata is not None:
+            valid0 &= ~np.isclose(cost, nodata)
+        cost = np.where(valid0, cost, np.nan)
+        gdf_s, sname = _layer_to_gdf(source_layer)
+        if gdf_s is None:
+            return sname
+        h, w = cost.shape
+        src_r = rio_rasterize(
+            ((geom, 1) for geom in gdf_s.geometry if geom is not None),
+            out_shape=(h, w), transform=transform, fill=0, dtype="uint8")
+        src_nodes = np.argwhere(src_r == 1)
+        if src_nodes.size == 0:
+            return "源图层与代价栅格范围不相交，没有源像元"
+        graph, idx, valid = _cost_graph(cost)
+        flat_src = [idx[r, c] for r, c in src_nodes if idx[r, c] >= 0]
+        dist = dijkstra(graph, directed=False, indices=flat_src, min_only=True)
+        out = np.full(cost.shape, np.nan, dtype="float64")
+        m = valid & np.isfinite(dist[np.maximum(idx, 0)].reshape(h, w) if idx.max() >= 0 else np.nan)
+        vm = valid & (idx >= 0)
+        out[vm] = dist[idx[vm]]
+        reachable = int(np.isfinite(out).sum())
+        unreachable = int((valid & ~np.isfinite(out)).sum())
+        out_name = out_name or f"{cost_layer}_代价距离"
+        out_path = os.path.join(_temp_output_dir, "uploads", out_name + ".tif")
+        profile = dict(driver="GTiff", height=h, width=w, count=1, dtype="float64", crs=crs, transform=transform, nodata=float("nan"))
+        with rasterio.open(out_path, "w", **profile) as dst:
+            dst.write(out, 1)
+        with rasterio.open(out_path) as _src_preview:
+            note = _raster_preview_op(_src_preview, out, out_name, "代价距离面（累积代价）")
+        fin = out[np.isfinite(out)]
+        return (f"代价距离完成（8 邻域 Dijkstra）：可达 {reachable} 像元，不可达 {unreachable} 像元，"
+                f"代价范围 {fin.min():.3f}~{fin.max():.3f}（单位=代价栅格值像元距离）。"
+                f"结果已保存 {out_name}.tif；{note}")
+    except Exception as e:
+        return f"代价距离计算失败: {str(e)[:300]}"
+
+
+# ============================================================
+# 工具: least_cost_path  最小代价路径
+# ============================================================
+@tool
+def least_cost_path(cost_layer: str, source_layer: str, destination_layer: str) -> str:
+    """最小代价路径：在代价栅格上求源到目的地的最小累积代价路径（与 cost_distance 共用同一图与算法）。
+    - cost_layer: 代价栅格（GeoTIFF）。
+    - source_layer / destination_layer: 源/目的地点图层。
+    输出路径线图层（含累积代价属性），并报告总代价与像素步数。"""
+    try:
+        import numpy as np
+        import types
+        import rasterio
+        from scipy.sparse.csgraph import dijkstra
+        from rasterio.features import rasterize as rio_rasterize
+        from shapely.geometry import LineString, Point
+        import geopandas as gpd
+        tif_path = _find_uploaded_tif(cost_layer)
+        if tif_path is None:
+            return f"未找到代价栅格「{cost_layer}」，请先上传 GeoTIFF"
+        with rasterio.open(tif_path) as src:
+            cost = src.read(1).astype("float64")
+            transform = src.transform
+            crs = src.crs or "EPSG:4326"
+            nodata = src.nodata
+        valid0 = np.isfinite(cost)
+        if nodata is not None:
+            valid0 &= ~np.isclose(cost, nodata)
+        cost = np.where(valid0, cost, np.nan)
+        h, w = cost.shape
+        graph, idx, valid = _cost_graph(cost)
+        gdf_s, sname = _layer_to_gdf(source_layer)
+        if gdf_s is None: return sname
+        gdf_d, dname = _layer_to_gdf(destination_layer)
+        if gdf_d is None: return dname
+        def snap(g):
+            pts = g.geometry.centroid
+            rows = []
+            inv = ~transform
+            for pt in pts:
+                col, row = inv * (pt.x, pt.y)
+                r, c = int(row), int(col)
+                if 0 <= r < h and 0 <= c < w and idx[r, c] >= 0:
+                    rows.append(idx[r, c])
+            return rows
+        s_nodes = snap(gdf_s); d_nodes = snap(gdf_d)
+        if not s_nodes or not d_nodes:
+            return f"源或目的地未能吸附到有效像元（源 {len(s_nodes)} 个，目的地 {len(d_nodes)} 个），请检查位置是否在栅格有效区内"
+        dist_mat, preds = dijkstra(graph, directed=False, indices=s_nodes, return_predecessors=True)
+        lines = []; costs = []
+        for di, dn in enumerate(d_nodes):
+            best_si = int(np.argmin(dist_mat[:, dn])) if np.isfinite(dist_mat[:, dn]).any() else -1
+            if best_si < 0 or not np.isfinite(dist_mat[best_si, dn]):
+                continue
+            total = float(dist_mat[best_si, dn])
+            path_nodes = [dn]
+            cur = dn
+            while cur != best_si and cur >= 0:
+                cur = preds[best_si, cur]
+                if cur < 0: break
+                path_nodes.append(int(cur))
+            
+            coords_rc = []
+            for n in path_nodes:
+                r, c = divmod(int(n), w)
+                coords_rc.append((r, c))
+            xs = []; ys = []
+            inv_t = ~transform
+            for r, c in coords_rc:
+                x, y = transform * (c + 0.5, r + 0.5)
+                xs.append(x); ys.append(y)
+            if len(xs) >= 2:
+                lines.append(LineString(zip(xs, ys))); costs.append(total)
+        if not lines:
+            return "源与目的地之间不存在可达路径（被 nodata/非正值阻断）"
+        gdf = gpd.GeoDataFrame({"total_cost": costs}, geometry=lines, crs=crs)
+        out_name = f"{sname}_到_{dname}_代价路径"
+        _gdf_to_layer(gdf, out_name)
+        utm = gdf.estimate_utm_crs()
+        len_km = gdf.to_crs(utm).geometry.length.sum() / 1000.0 if utm is not None else float("nan")
+        return (f"最小代价路径完成（与 cost_distance 共用 8 邻域图）：{len(lines)} 条路径，"
+                f"总代价 {min(costs):.3f}~{max(costs):.3f}，路径总长 {len_km:.2f} km（UTM 投影计算）。"
+                f"图层「{out_name}」已加载到地图")
+    except Exception as e:
+        return f"最小代价路径计算失败: {str(e)[:300]}"
+
+
 tools = [
     search_web,
     fetch_webpage,
@@ -9033,6 +11276,26 @@ tools = [
     fetch_gis_data_url,
     search_global_entities,
     fetch_osm_boundary_or_features,
+    raster_reclassify,
+    raster_focal_stats,
+    euclidean_distance,
+    raster_extract_by_mask,
+    surface_volumes,
+    join_field,
+    geometry_attributes,
+    minimum_bounding_geometry,
+    points_to_line,
+    generate_points_along_lines,
+    spatial_weights_matrix,
+    spatial_regression,
+    directional_distribution,
+    central_tendency,
+    od_cost_matrix,
+    feature_to_raster,
+    raster_to_feature,
+    create_fishnet,
+    cost_distance,
+    least_cost_path,
 ]
 
 # ============================================================

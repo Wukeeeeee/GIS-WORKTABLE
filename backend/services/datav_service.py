@@ -7,6 +7,8 @@ from backend.services.geo_coords import gcj02_to_wgs84
 
 # 缓存目录
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "cache", "aoi")
+# 缓存版本号：坐标转换算法修复后 +1，旧版本缓存自动失效
+_CACHE_VERSION = 2
 
 # 省级 adcode 字典
 _ADCODES = {
@@ -41,7 +43,7 @@ def _load_city_adcodes():
     for prov_name, prov_adcode in _ADCODES.items():
         try:
             url = f"https://geo.datav.aliyun.com/areas_v3/bound/{prov_adcode}_full.json"
-            resp = requests.get(url, timeout=15)
+            resp = requests.get(url, timeout=15, headers=_HEADERS)
             if resp.status_code == 200:
                 data = resp.json()
                 for feat in data.get('features', []):
@@ -64,7 +66,7 @@ def _load_city_adcodes():
     for city_name, city_adcode in city_adcodes:
         try:
             url = f"https://geo.datav.aliyun.com/areas_v3/bound/{city_adcode}_full.json"
-            resp = requests.get(url, timeout=15)
+            resp = requests.get(url, timeout=15, headers=_HEADERS)
             if resp.status_code == 200:
                 data = resp.json()
                 for feat in data.get('features', []):
@@ -266,14 +268,20 @@ def fetch_boundary(name: str) -> dict:
     os.makedirs(_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(_CACHE_DIR, f"datav_{name}.json")
 
-    # 检查缓存
+    # 检查缓存（校验版本：坐标转换算法升级后旧缓存自动失效，防止错误坐标永久命中）
     if os.path.exists(cache_path):
-        with open(cache_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            if isinstance(cached, dict) and cached.get("_cache_version") == _CACHE_VERSION:
+                cached.pop("_cache_version", None)
+                return cached
+        except Exception:
+            pass
 
     # 先用名称直接请求
     url = f"https://geo.datav.aliyun.com/areas_v3/bound/{name}_full.json"
-    resp = requests.get(url, timeout=15)
+    resp = requests.get(url, timeout=15, headers=_HEADERS)
 
     # 失败则用 adcode
     target_code = None
@@ -281,7 +289,7 @@ def fetch_boundary(name: str) -> dict:
         code = _find_adcode(name)
         if code:
             target_code = code
-            resp = requests.get(f"https://geo.datav.aliyun.com/areas_v3/bound/{code}_full.json", timeout=15)
+            resp = requests.get(f"https://geo.datav.aliyun.com/areas_v3/bound/{code}_full.json", timeout=15, headers=_HEADERS)
 
     # 区级 adcode 直接请求会 404，需从市级 GeoJSON 中提取
     if resp.status_code != 200 and target_code and isinstance(target_code, (int, str)):
@@ -289,7 +297,7 @@ def fetch_boundary(name: str) -> dict:
         if len(code_str) == 6 and not code_str.endswith('00'):
             # 推断市级 adcode（前四位 + 00）
             city_code = code_str[:4] + '00'
-            city_resp = requests.get(f"https://geo.datav.aliyun.com/areas_v3/bound/{city_code}_full.json", timeout=15)
+            city_resp = requests.get(f"https://geo.datav.aliyun.com/areas_v3/bound/{city_code}_full.json", timeout=15, headers=_HEADERS)
             if city_resp.status_code == 200:
                 city_data = city_resp.json()
                 # 从市级 GeoJSON 中过滤出目标区级
@@ -307,12 +315,14 @@ def fetch_boundary(name: str) -> dict:
                         for feat in data["features"]:
                             if feat.get("geometry", {}).get("coordinates"):
                                 feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
-                    # 写缓存
+                    # 写缓存（打版本标记）
                     try:
+                        data["_cache_version"] = _CACHE_VERSION
                         with open(cache_path, 'w', encoding='utf-8') as f:
                             json.dump(data, f, ensure_ascii=False)
                     except Exception:
                         pass
+                    data.pop("_cache_version", None)
                     return data
 
     if resp.status_code != 200:
@@ -326,11 +336,13 @@ def fetch_boundary(name: str) -> dict:
             if feat.get("geometry", {}).get("coordinates"):
                 feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
 
-    # 写缓存（已转 WGS-84）
+    # 写缓存（已转 WGS-84，打版本标记供读取侧校验）
     try:
+        data["_cache_version"] = _CACHE_VERSION
         with open(cache_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False)
     except Exception:
         pass
+    data.pop("_cache_version", None)
 
     return data

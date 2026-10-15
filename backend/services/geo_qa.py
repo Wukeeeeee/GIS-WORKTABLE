@@ -74,9 +74,16 @@ def qa_check(geojson) -> list:
             if out_of_range:
                 # 注：不做"经纬度顺序颠倒"启发式判断——中国区域经度普遍 >90，
                 # 该启发式会大面积误报；范围检查已能拦住颠倒后的越界数据。
-                warnings.append(
+                # 若数据天然跨越反经线（lon 跨越 180），越界可能误报，提示用户可忽略
+                lng_span = max(lngs) - min(lngs)
+                crossing_antimeridian = lng_span > 180.0
+                msg = (
                     f"坐标超出 WGS-84 合法范围（样本经度 [{min(lngs):.2f}, {max(lngs):.2f}]、"
-                    f"纬度 [{min(lats):.2f}, {max(lats):.2f}]）——疑似 CRS 未转换为 4326 或经纬度顺序颠倒")
+                    f"纬度 [{min(lats):.2f}, {max(lats):.2f}]）疑似 CRS 未转换为 4326 或经纬度顺序颠倒"
+                )
+                if crossing_antimeridian:
+                    msg += "；若数据跨越反经线（太平洋区域），可忽略该警告"
+                warnings.append(msg)
 
         # 3) 几何有效性（抽样）
         if features:

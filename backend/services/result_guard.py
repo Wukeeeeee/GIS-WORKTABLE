@@ -101,6 +101,10 @@ def resolve_artifact_path(path: str):
     if not rest:
         return None
     abs_path = os.path.normpath(os.path.join(base, rest))
+    # 防越界：normpath 之后必须仍落在 base 之内；否则视为不在已知输出目录，不再继续解析
+    _base_norm = os.path.normpath(base)
+    if not (abs_path == _base_norm or abs_path.startswith(_base_norm + os.sep)):
+        return None
     if os.path.exists(abs_path):
         return abs_path
     # 兼容自动重命名前缀：检查同目录下是否存在形如 {timestamp}_{basename} 的真实文件
@@ -310,11 +314,26 @@ def _three_way_check(final_text: str, task_id: str = None, run_id: str = None, r
         art_task_id = matched.get("task_id") if matched else None
         belongs_to_current_task = (art_task_id == task_id) if matched else (matched is not None)
 
-        # 自愈与补录：如果未登记，但文件确实存在于磁盘且非空，且其修改时间在当前执行窗口内（mtime >= run_start_time - 5.0）
-        # 说明该文件是本轮执行真实生成的合法受控产物，非历史残留！自动补录到 registry 并标记为 VERIFIED。
+        # 自愈与补录（收紧版）：
+        #   只有当「storage_service.get_run_artifacts(run_id) 明确返回了与 claim_basename 同名记录」时才允许把
+        #   历史磁盘文件当作本轮产物补录。仅凭 mtime 不能防误判复制/touch 会更新 mtime，导致旧文件冒认为新产物。
         if not registered and exists and non_empty and run_start_time and resolved:
-            try:
+            # 自愈条件（分层防误判）：
+            #   a) 有 run_id：必须 storage_service 的 run registry 里确实登记过同名 artifact 才允许自愈
+            #      （防止历史文件被 touch/复制后仅凭 mtime 冒认本轮产物）。
+            #   b) 无 run_id（兼容 verify_result 直调场景）：退回 mtime-only 判定，
+            #      run_start_time 窗口本身已限定「本轮开始时间之后修改过的文件」，误判面足够小。
+            if run_id:
+                run_artifact_matched = any(
+                    os.path.basename(a.get("path") or a.get("rel_path") or a.get("filename") or "") == claim_basename
+                    for a in registry
+                    if a.get("artifact_id") and a.get("run_id") == run_id
+                )
+            else:
+                run_artifact_matched = True
+            if run_artifact_matched:
                 mtime = os.path.getmtime(resolved)
+                # mtime 允许向前后退 5 秒窗口容忍时钟/写文件延迟
                 if mtime >= (run_start_time - 5.0):
                     registered = True
                     registry_path_matches = True
@@ -329,14 +348,12 @@ def _three_way_check(final_text: str, task_id: str = None, run_id: str = None, r
                             pass
                     if run_id:
                         try:
-                            import uuid
+                            import uuid as _uuid
                             from backend.services import storage_service
-                            art_id = artifact_id or uuid.uuid4().hex[:10]
+                            art_id = artifact_id or _uuid.uuid4().hex[:10]
                             storage_service.register_run_artifact(run_id, art_id, claim_basename, resolved)
                         except Exception:
                             pass
-            except Exception:
-                pass
 
         # 状态机
         if not registered:

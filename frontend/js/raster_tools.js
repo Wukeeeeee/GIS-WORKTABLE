@@ -414,6 +414,15 @@ window.GIS = window.GIS || {};
         target_crs: document.getElementById('rtDstCrs').value,
       });
     }
+    if (op.id === 'geocode') {
+      // 坐标转地址：reverse_geocode(lng, lat)，与坐标转换一样无需图层
+      var graw = document.getElementById('rtCoords').value.trim();
+      if (!graw) { alert('请输入坐标，格式：经度,纬度（如 112.94,28.23）'); return; }
+      var parts = graw.split(/[,，;；\s]+/);
+      var lng = parseFloat(parts[0]), lat = parseFloat(parts[1]);
+      if (!isFinite(lng) || !isFinite(lat)) { alert('坐标格式不对，应为 经度,纬度（如 112.94,28.23）'); return; }
+      return _invoke(op.tool, { lng: lng, lat: lat });
+    }
     // 栅格类：选择器优先，手输名兜底
     var layerName = document.getElementById('rtLayer').value ||
       document.getElementById('rtLayerText').value.trim();

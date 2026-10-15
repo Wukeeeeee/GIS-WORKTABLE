@@ -41,6 +41,7 @@ import json
 import re
 import uuid
 import time
+import threading
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, ToolMessage
@@ -60,6 +61,44 @@ import backend.services.ai_service as _ai_svc
 from backend.services import task_manager
 from backend.services.token_usage_service import extract_and_record_token_usage
 from langchain_core.utils.function_calling import convert_to_openai_tool
+
+
+# 按 session 保存最近一次构建的 agent graph，供取消/中断定位；避免全局单值并发覆盖
+_graph_lock = threading.Lock()
+_cached_graphs = {}
+
+# 每 session 已补执行一次 的标记（防 _need_force_exec 在同一用户消息下重复触发死循环 / 多次强制补执行）
+_force_exec_lock = threading.Lock()
+_force_exec_done = set()
+
+def set_cached_graph(session_id: str, agent) -> None:
+    sid = session_id or "default"
+    with _graph_lock:
+        _cached_graphs[sid] = agent
+
+def get_cached_graph(session_id: str):
+    sid = session_id or "default"
+    with _graph_lock:
+        return _cached_graphs.get(sid)
+
+def clear_cached_graph(session_id: str) -> None:
+    sid = session_id or "default"
+    with _graph_lock:
+        _cached_graphs.pop(sid, None)
+
+def _force_exec_key(session_id: str, original_message: str) -> str:
+    return f"{session_id or 'default'}::{(original_message or '').strip()[:200]}"
+
+def _force_exec_should_run(key: str) -> bool:
+    with _force_exec_lock:
+        if key in _force_exec_done:
+            return False
+        _force_exec_done.add(key)
+        return True
+
+def _force_exec_clear(key: str) -> None:
+    with _force_exec_lock:
+        _force_exec_done.discard(key)
 
 
 # ============================================================
@@ -148,25 +187,21 @@ def _run_verifier(llm: ChatOpenAI, original_message: str, response: str, pending
 # ============================================================
 
 def _clean_ai_text(text: str) -> str:
-    """清理 AI 回复中的工具调用协议文本，避免内部协议泄露给用户。"""
-    if not text:
-        return text
-    cleaned = text
-    # 移除各类变体 DSML 格式工具调用标记：
-    # 如 <｜｜DSML｜｜tool_calls>...</｜｜DSML｜｜tool_calls>
-    # 或 < | | DSML | | calls> ... < / | | DSML | | calls>
-    # 以及 < | | DSML | | invoke name="..."> ... </ | | DSML | | invoke>
-    cleaned = re.sub(r'<[\s\S]*?DSML[\s\S]*?>[\s\S]*?</[\s\S]*?DSML[\s\S]*?>', '', cleaned)
-    cleaned = re.sub(r'<[|\s｜]*DSML[|\s｜]*(?:calls|tool_calls|invoke)[^>]*>[\s\S]*?</[|\s｜]*DSML[|\s｜]*(?:calls|tool_calls|invoke)>', '', cleaned)
-    # 单独闭合或未闭合的残余 DSML 标签清理
-    cleaned = re.sub(r'</?[|\s｜]*DSML[|\s｜]*[^>]*>', '', cleaned)
-    # 移除常见的工具调用标记
-    cleaned = re.sub(r'<tool_call>.*?</tool_call>', '', cleaned, flags=re.DOTALL)
-    cleaned = re.sub(r'</?tool_call>', '', cleaned)
-    cleaned = re.sub(r'```tool_call.*?```', '', cleaned, flags=re.DOTALL)
-    # 移除残留的空行（最多保留一个空行）
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-    return cleaned.strip()
+    """清理 AI 回复中的工具调用协议文本，避免内部协议泄露给用户。
+
+    委托给 ai_service._strip_protocol_text（逐行状态机，不依赖标签正确配对）。
+    """
+    try:
+        from backend.services.ai_service import _strip_protocol_text
+        return _strip_protocol_text(text)
+    except Exception:
+        if not text:
+            return text
+        cleaned = re.sub(r'</?[|\s｜]*DSML[|\s｜]*[^>]*>', '', text)
+        cleaned = re.sub(r'<tool_call>.*?</tool_call>', '', cleaned, flags=re.DOTALL)
+        cleaned = re.sub(r'</?tool_call>', '', cleaned)
+        cleaned = re.sub(r'```tool_call.*?```', '', cleaned, flags=re.DOTALL)
+        return re.sub(r'\n{3,}', '\n\n', cleaned).strip()
 
 
 def _last_ai_text(msgs: list):
@@ -179,6 +214,85 @@ def _last_ai_text(msgs: list):
     return "", None
 
 
+import time as _time_mod
+import concurrent.futures as _cf_mod
+
+_GRAPH_TOTAL_TIMEOUT_S = float(__import__("os").environ.get("GIS_GRAPH_TIMEOUT", "420"))
+
+# ============================================================
+# 上下文膨胀兜底（2026-10-15）
+# 背景：Agent 多轮循环会把工具输出整段回填上下文，输入 token 可涨到
+# 数十万甚至百万级（台账实测 330 万），表现为「说完开始执行就没反应」，
+# 直到 420s 时间预算才收尾  期间纯粹在烧 token。
+# 这里加三道闸，与时间预算互补：时间闸管墙钟，下面三道管上下文体积。
+# 均可用环境变量关闭/调整，默认保守（只截大结果，不丢小结果）。
+# ============================================================
+# 1) 单条工具输出超过该字符数 -> 截断保留头尾（防止省界/搜索结果整段灌入）
+GRAPH_TOOL_OUT_MAX_CHARS = int(__import__('os').environ.get('GIS_TOOL_OUT_MAX', '4000'))
+# 2) 消息总字符超过该值 -> 压缩更早的工具消息（保留最近 N 条工具结果原文）
+GRAPH_CTX_MAX_CHARS = int(__import__('os').environ.get('GIS_CTX_MAX', '150000'))
+GRAPH_CTX_KEEP_TOOLS = int(__import__('os').environ.get('GIS_CTX_KEEP_TOOLS', '4'))
+# 3) 累计输入 token 超过该值 -> 提前触发「停止调工具、文字总结」收尾
+GRAPH_TOKEN_BUDGET = int(__import__('os').environ.get('GIS_TOKEN_BUDGET', '260000'))
+
+
+def _trim_text(s: str, limit: int) -> str:
+    '''把超长文本截断为 头 + ... + 尾，避免单条结果撑爆上下文'''
+    if limit <= 0 or not isinstance(s, str) or len(s) <= limit:
+        return s
+    head = int(limit * 0.7)
+    tail = max(0, limit - head - 60)
+    return (s[:head] + '\n...[结果过长已截断 ' + str(len(s) - head - tail) + ' 字符]...\n' + s[len(s) - tail:] if tail else s[:head])
+
+
+def _compact_messages(msgs: list) -> list:
+    '''上下文压缩：把较早的工具结果压成一行摘要，保留最近 K 条原文。'''
+    if not msgs:
+        return msgs
+    try:
+        total = sum(len(str(getattr(m, 'content', '') or '')) for m in msgs)
+    except Exception:
+        return msgs
+    if total <= GRAPH_CTX_MAX_CHARS:
+        return msgs
+    # 找出工具消息下标（ToolMessage 通常带 name/type=tool）
+    tool_idx = [i for i, m in enumerate(msgs)
+                if getattr(m, 'type', '') == 'tool' or hasattr(m, 'tool_call_id')]
+    if len(tool_idx) <= GRAPH_CTX_KEEP_TOOLS:
+        return msgs
+    keep = set(tool_idx[-GRAPH_CTX_KEEP_TOOLS:])
+    out = []
+    for i, m in enumerate(msgs):
+        if i in keep or getattr(m, 'type', '') != 'tool' and not hasattr(m, 'tool_call_id'):
+            out.append(m)
+            continue
+        txt = str(getattr(m, 'content', '') or '')
+        summary = txt.strip().splitlines()
+        first = summary[0][:120] if summary else ''
+        try:
+            m.content = '[历史工具结果已压缩，原 %d 字符] %s' % (len(txt), first)
+        except Exception:
+            pass
+        out.append(m)
+    print('[GIS] 上下文超过 %d 字符，已压缩 %d 条历史工具结果' %
+          (GRAPH_CTX_MAX_CHARS, len(tool_idx) - len(keep)), flush=True)
+    return out
+
+_GRAPH_RECURSION_LIMIT = int(__import__("os").environ.get("GIS_GRAPH_RECURSION", "120"))
+
+
+def _invoke_agent_with_budget(agent, payload, limit):
+    """总时长预算版 agent.invoke：
+    - 超预算 -> 返回 ("timeout", None)，由调用方降级收尾（复用已有 result 或强制文本收尾）
+    - recursion_limit 收紧为可配置（默认 120，经环境变量可降）
+    """
+    try:
+        res = agent.invoke(payload, {"recursion_limit": limit})
+        return ("ok", res)
+    except Exception as e:
+        return ("err", e)
+
+
 def _tool_not_callable(e: Exception) -> bool:
     """识别 LangChain 框架角例：'StructuredTool' object is not callable。"""
     return isinstance(e, TypeError) and "callable" in str(e)
@@ -186,11 +300,11 @@ def _tool_not_callable(e: Exception) -> bool:
 
 _PROMISE_PREFIXES = (
     "好的", "好", "行", "可以", "没问题", "稍等", "请稍等", "马上",
-    "我这就", "我现在", "我先", "让我", "我来", "这就去",
+    "我这就", "我现在", "我先", "让我", "我来", "这就去", "正在",
     "现在开始", "好嘞", "我先确认", "我来确认", "正在查询", "正在查找",
 )
 _PROMISE_VERBS = re.compile(
-    r"(获取|下载|加载|搜索|查找|抓取|截取|提取|分析|计算|生成|绘制|采集|整理|统计|构建|创建|调用|做一下|找一下|确认|查询|核对|测量|测算)"
+    r"(获取|下载|加载|搜索|查找|抓取|截取|提取|分析|计算|生成|绘制|采集|整理|统计|构建|创建|调用|做一下|找一下|确认|查询|核对|测量|测算|标注|标出|标到|重绘)"
 )
 
 
@@ -224,6 +338,49 @@ _CODE_DUMP_PATTERNS = re.compile(
     r"(没法在这边|无法直接生成|不能直接生成|无法直接跑出|没法直接出图|复制到本地|在\s*(Jupyter|本地|VSCode|终端)\s*里?(直接)?(出图|运行|执行)|代码复制到|把下面代码存成)",
     re.IGNORECASE
 )
+
+
+_CODE_BLOCK_RE = re.compile(r"```[ \t]*([a-zA-Z0-9_+-]*)[ \t]*\r?\n[\s\S]*?```", re.MULTILINE)
+_CODE_REQUEST_KWS = (
+    "代码", "源码", "脚本", "怎么写", "如何写", "给我写", "贴一下",
+    "python", "code", "script", "snippet",
+)
+_EXECUTED_CODE_NOTE = "〔已执行的 Python 脚本，源码省略〕"
+
+
+def _strip_executed_code_blocks(text: str, msgs: list, original_message: str = "") -> str:
+    """把「本轮已经真实执行过」的 Python 源码从最终正文中折叠掉。
+
+    背景：模型习惯先把整坨 matplotlib 代码粘进回复、再贴结论，用户看到的是几百行源码
+    而不是交付物。代码只是执行细节，不是答案——但用户明确索要代码时必须保留原样。
+
+    触发条件（全满足才折叠）：
+    1. 正文里存在代码块；
+    2. 本轮确实有工具消息（代码已经在服务端跑过，不是甩给用户跑）；
+    3. 用户原话没有索要代码。
+    """
+    if not text or "```" not in text:
+        return text
+    if not _has_tool_messages(msgs):
+        return text
+    if original_message and any(k in original_message.lower() for k in _CODE_REQUEST_KWS):
+        return text
+
+    def _repl(m: "re.Match") -> str:
+        lang = (m.group(1) or "").lower()
+        if lang and lang != "python":
+            # 非 Python 代码块（JSON 数据、SQL、命令行输出等）属于结论的一部分，保留
+            return m.group(0)
+        lines = m.group(0).splitlines()[1:-1]
+        if not any(l.strip() for l in lines):
+            return m.group(0)
+        return _EXECUTED_CODE_NOTE
+
+    cleaned = _CODE_BLOCK_RE.sub(_repl, text)
+    # 折叠后可能出现连续空 Note 行 → 合并
+    cleaned = re.sub(rf"(?:{re.escape(_EXECUTED_CODE_NOTE)}\s*){{2,}}", _EXECUTED_CODE_NOTE + "\n", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def _is_unexecuted_code_or_disclaimer(text, msgs) -> bool:
@@ -278,6 +435,34 @@ def _auto_promote_pending(session_id: str, start_registered: set, pushed_names: 
         print(f"[GIS] auto-promote pending 失败（忽略）: {_e}", flush=True)
 
 
+def _ensure_ops_layers_present(pending: dict):
+    """layer_ops 引用的图层若只注册未推送（常见于上轮卡死/模型偷懒复用注册层），
+    直接从注册表补推进 pending——杜绝「正文说已标出、done 里却没有该图层」。
+
+    幂等：已在 pending.layers 里的跳过；注册表没有的忽略（保持原有报错路径）。
+    """
+    try:
+        pushed_names = {l.get("name") for l in (pending.get("layers") or [])}
+        for op in (pending.get("layer_ops") or []):
+            name = (op or {}).get("name")
+            if not name or name in pushed_names:
+                continue
+            reg = getattr(_tools_mod, "_registered_layers", {}) or {}
+            info = reg.get(name)
+            if info is None:
+                # 模糊匹配：op 名与注册名互为前缀
+                for rname, rinfo in reg.items():
+                    if rname and (rname.startswith(name) or name.startswith(rname)):
+                        info, name = rinfo, rname
+                        break
+            if info and info.get("geojson") is not None:
+                _tools_mod._push_layer(name, info["geojson"], style=info.get("style"))
+                pushed_names.add(name)
+                print(f"[GIS] layer_ops 引用图层「{name}」未推送，已从注册表补推", flush=True)
+    except Exception as _e:
+        print(f"[GIS] ops-layers 补推失败（忽略）: {_e}", flush=True)
+
+
 def run_agent(
     messages: list,
     cfg: LLMConfig,
@@ -311,6 +496,17 @@ def run_agent(
         }
     """
     # 重置共享状态（tools.py 中的全局变量）
+    ai_service_mod = None
+    import backend.services.ai_service as _ai_cancel_svc
+    _ai_cancel_svc.clear_session_cancel(session_id or "default")
+    # 同 session 并发互斥：已被占用时快速返回，不排队（防止全局态互踩/图层丢失）
+    if not _tools_mod.acquire_session_lock(session_id or "default"):
+        return {
+            "response": "当前会话已有请求在处理中，请等待上一条完成后再发送新消息。",
+            "reasoning": None, "layers": [], "images": [], "heatmap": None,
+            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+            "confirm_pending": None,
+        }
     reset_state(amap_key)
     _tools_mod.set_last_user_message(original_message or "")
     # 提取最近多轮上下文（供工具层消歧与实体复用）
@@ -354,17 +550,26 @@ def run_agent(
         _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
         _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线']
         _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
-        if _need_tools or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
+        # 用户反馈交付物缺失（没标出来/没显示/没看到）或存在待确认挂起动作 →
+        # 必须走 Agent 工具通道修复，禁止纯文本捷径（否则模型只回一句"正在处理"就没下文）
+        _complaint_kws = ('没标', '没有标', '没显示', '没有显示', '没看到', '没出来', '不出来', '没画', '没生成', '没加载', '没上图')
+        _complaint = any(kw in _last for kw in _complaint_kws)
+        _has_pending_act = False
+        try:
+            _has_pending_act = bool(pending_action.get_pending_action(session_id or "default"))
+        except Exception:
+            pass
+        if _need_tools or _complaint or _has_pending_act or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
             _simple = False
     if _simple:
-        if _ai_svc._request_cancelled:
+        if _ai_svc.is_session_cancelled(session_id or "default"):
             return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
                     "heatmap": None, "clear_layers": False, "layer_ops": [],
                     "pending_suggestions": None}
         try:
             _resp = llm.invoke(messages)
             return {
-                "response": _resp.content,
+                "response": _clean_ai_text(_resp.content or ""),
                 "reasoning": get_message_reasoning(_resp),
                 "layers": [], "images": [], "heatmap": None,
                 "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
@@ -386,6 +591,13 @@ def run_agent(
     # 构建 LangGraph ReAct Agent
     agent = create_react_agent(llm, tools)
 
+    # 快照进入本轮 invoke 之前的 pending 状态（失败重试时只保留"本次 invoke 产生的差量"）
+    _pre_invoke_pending = None
+    try:
+        _pre_invoke_pending = get_pending_state()
+    except Exception:
+        _pre_invoke_pending = None
+
     # 运行 Agent
     # 框架角例：langchain 1.x 下 @tool 返回 StructuredTool（无 __call__），reasoning 模型
     # 在长工具链末尾偶发把工具对象当普通函数调用 → TypeError "'StructuredTool' object is not callable"。
@@ -393,20 +605,52 @@ def run_agent(
     result = None
     _msgs = list(messages)
     _run_status = "calling_llm"
+    _budget_deadline = _time_mod.monotonic() + _GRAPH_TOTAL_TIMEOUT_S
+    _budget_hit = False
     for _attempt in range(2):
         try:
-            if _ai_svc._request_cancelled:
+            if _ai_svc.is_session_cancelled(session_id or "default"):
                 return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
                         "heatmap": None, "clear_layers": False, "layer_ops": [],
                         "pending_suggestions": None}
-            result = agent.invoke(
-                {"messages": _msgs},
-                {"recursion_limit": 120},
-            )
-            break
+            if _time_mod.monotonic() > _budget_deadline:
+                _budget_hit = True
+                raise TimeoutError(f"graph total budget exceeded ({_GRAPH_TOTAL_TIMEOUT_S:.0f}s)")
+            _status, _inv = _invoke_agent_with_budget(agent, {"messages": _msgs}, _GRAPH_RECURSION_LIMIT)
+            if _status == "ok":
+                result = _inv
+                # 重试成功：把 invoke 前快照的 pending 差量合并回原 pending 列表（去重）
+                if _pre_invoke_pending is not None:
+                    try:
+                        _cur = get_pending_state()
+                        for _k in ("layers", "images", "layer_ops", "qa_warnings"):
+                            _prev = _pre_invoke_pending.get(_k) or []
+                            _now = _cur.get(_k) or []
+                            if _prev and _now:
+                                _seen = set()
+                                _merged = []
+                                for _it in _prev + _now:
+                                    _key = json.dumps(_it, ensure_ascii=False, sort_keys=True, default=str)
+                                    if _key in _seen:
+                                        continue
+                                    _seen.add(_key)
+                                    _merged.append(_it)
+                                if _k in _cur:
+                                    _cur[_k] = _merged
+                    except Exception:
+                        pass
+                break
+            raise _inv
         except Exception as e:
             import traceback
             traceback.print_exc()
+            if _budget_hit:
+                return {
+                    "response": "任务执行时长已达上限（约 %d 秒），已自动停止以避免无效消耗。\n\n请基于本轮已生成的图层/数据继续操作，或把任务拆分成更小的步骤后重试。" % int(_GRAPH_TOTAL_TIMEOUT_S),
+                    "reasoning": None, "layers": [], "images": [],
+                    "heatmap": None, "clear_layers": False, "layer_ops": [],
+                    "pending_suggestions": None,
+                }
             if _attempt == 0 and _tool_not_callable(e):
                 print("[GIS] 工具调度 TypeError，自动纯文本收尾重试一次", flush=True)
                 _msgs = list(messages) + [HumanMessage(
@@ -445,6 +689,20 @@ def run_agent(
     final_text, final_reasoning = _last_ai_text(final_messages)
 
     # === P0-2: 检查 LLM finish_reason ===
+    # 保守处理：只在最后一条 AIMessage 做用户可见提示；
+    # 全流式中间消息若发生截断，暂不另行重试（风险：后续工具结果可能让模型继续走、错误不被观察到），
+    # 这里仅做一次任何 AIMessage 截断的日志提示，保持现有行为但对调试可见。
+    _any_truncation = False
+    for _msg in final_messages:
+        if not isinstance(_msg, AIMessage):
+            continue
+        _fr = (_msg.response_metadata or {}).get("finish_reason", "")
+        if _fr in ("length", "content_filter", "insufficient_system_resource"):
+            _any_truncation = True
+            break
+    if _any_truncation:
+        print("[GIS] 流程中存在 AIMessage 被截断（length/content_filter/insufficient_system_resource），结果可能不完整。", flush=True)
+
     for _msg in reversed(final_messages):
         if isinstance(_msg, AIMessage):
             _fr = (_msg.response_metadata or {}).get("finish_reason", "")
@@ -477,14 +735,28 @@ def run_agent(
 
     # 收集本轮产生的共享状态
     pending = get_pending_state()
+    # layer_ops 引用但未推送的注册图层 → 补推进 done，防止前端「未找到图层」
+    _ensure_ops_layers_present(pending)
+    # ask_user_choice 弹选项（非流式一次性 invoke 无法中途打断，收尾时发现标记
+    # 则直接用提示文本收尾，并跳过"强制补执行"否则 force exec 会把选项流程搅黄）
+    _waiting_choice = False
+    for _m in final_messages:
+        _mc = str(getattr(_m, "content", "") or "")
+        if not isinstance(_m, AIMessage) and "[WAITING_USER_CHOICE]" in _mc:
+            _waiting_choice = True
+            break
+    if _waiting_choice and not final_text:
+        final_text = "已向用户弹出选项，请点击选择后继续。"
 
     # === 防“只说开始就结束”：只承诺未执行（无任何工具调用）时强制补一轮真实执行 ===
     _initial_tool_calls = _count_tool_calls(final_messages)
     _initial_has_tools = _has_tool_messages(final_messages)
     print(f"[GIS DEBUG] 初始工具调用: {_initial_tool_calls} 次, 有工具消息: {_initial_has_tools}", flush=True)
     
-    _need_force_exec = _promise_without_action(final_text, final_messages) or _is_unexecuted_code_or_disclaimer(final_text, final_messages)
-    if _need_force_exec:
+    _need_force_exec = (not _waiting_choice) and (_promise_without_action(final_text, final_messages) or _is_unexecuted_code_or_disclaimer(final_text, final_messages))
+    _force_key = _force_exec_key(session_id, original_message)
+    _allow_force = _need_force_exec and _force_exec_should_run(_force_key)
+    if _allow_force:
         try:
             print("[GIS] 检测到未执行承诺或未执行制图代码，强制补一轮真实工具执行", flush=True)
             _prompt_text = (
@@ -518,6 +790,11 @@ def run_agent(
                     final_text = final_text + "\n\n【注意】当前AI模型可能不支持工具调用，无法自动执行操作。请尝试更换支持tool calling的模型（如GPT-4、DeepSeek等）。"
         except Exception as _pe:
             print(f"[GIS] 强制补执行失败（保留原结果）: {_pe}", flush=True)
+        # 已至少尝试过一次 force exec （成功或未成功），不再给当前消息无限补执行
+        # _force_exec_done 已累计该消息 key，同消息再触发 _need_force_exec 也会直接跳过。
+    elif _need_force_exec and not _allow_force:
+        # 助可观测性：同消息二次触发提示
+        print("[GIS] 本消息已触发过一次 force-exec，跳过再补执行以避免死循环", flush=True)
 
     # === 自校验已停用（2026-09-05）===
     # 原因：Verifier 每轮额外一次 LLM 调用，增加延迟和 API 成本；
@@ -526,6 +803,9 @@ def run_agent(
     # if original_message and len(original_message) > 3:
     #     verdict = _run_verifier(build_llm(disable_reasoning(cfg)), original_message, final_text, pending)
     #     ...
+
+    # === 正文净化：本轮已执行的 Python 源码折叠为一行，避免几百行代码盖住交付物 ===
+    final_text = _strip_executed_code_blocks(final_text, final_messages, original_message or "")
 
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
     # 仅在后台自检并记录日志，默认不向用户端追加内部检查说明（避免误报和干扰用户）
@@ -605,6 +885,17 @@ def run_agent_stream(
         {"type":"thinking"}
         {"type":"done","response":"...","reasoning":...,"layers":[...],...}
     """
+    # 同 session 并发互斥：流式被占用  yield busy done 后直接结束
+    if not _tools_mod.acquire_session_lock(session_id or "default"):
+        _busy_evt = json.dumps({
+            "type": "done",
+            "response": "当前会话已有请求在处理中，请等待上一条完成后再发送新消息。",
+            "reasoning": None, "layers": [], "images": [], "heatmap": None,
+            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+            "confirm_pending": None,
+        }, ensure_ascii=False)
+        yield f"data: {_busy_evt}\n\n"
+        return
     reset_state(amap_key)
     _tools_mod.set_last_user_message(original_message or "")
     # 提取最近多轮上下文（供工具层消歧与实体复用）
@@ -616,12 +907,15 @@ def run_agent_stream(
     _tools_mod.set_conversation_context("\n".join(_ctx_texts))
     pending_action.set_active_session(session_id or "default")
     _start_registered = set(getattr(_tools_mod, "_registered_layers", {}).keys())
-    # 重置取消标志（每次新请求开始）
+    # 重置取消标志（每次新请求开始；仅清本会话，不误伤并发中的其他会话）
     import backend.services.ai_service as _ai_svc
-    _ai_svc._request_cancelled = False
+    _ai_svc.clear_session_cancel(session_id or "default")
     llm = build_llm(cfg)
+    # 流式总预算：与非流式 _GRAPH_TOTAL_TIMEOUT_S 一致
+    _stream_budget_deadline = _time_mod.monotonic() + _GRAPH_TOTAL_TIMEOUT_S
 
     # === Task Manager 与 SQLite 台账: 解析/创建任务与运行轮次 ===
+    _run_started_at = time.time()
     _run_id = uuid.uuid4().hex[:12]
     _tools_mod.set_current_run(_run_id)
     _task_id = task_manager.find_or_create_task(session_id or "default", original_message or "")
@@ -641,25 +935,41 @@ def run_agent_stream(
         _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
         _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线']
         _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
-        if _need_tools or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
+        # 用户反馈交付物缺失（没标出来/没显示/没看到）或存在待确认挂起动作 →
+        # 必须走 Agent 工具通道修复，禁止纯文本捷径（否则模型只回一句"正在处理"就没下文）
+        _complaint_kws = ('没标', '没有标', '没显示', '没有显示', '没看到', '没出来', '不出来', '没画', '没生成', '没加载', '没上图')
+        _complaint = any(kw in _last for kw in _complaint_kws)
+        _has_pending_act = False
+        try:
+            _has_pending_act = bool(pending_action.get_pending_action(session_id or "default"))
+        except Exception:
+            pass
+        if _need_tools or _complaint or _has_pending_act or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
             _simple = False
     if _simple:
         _resp = llm.invoke(messages)
         yield "data: {\"type\":\"thinking\"}\n\n"
         result = {
-            "response": _resp.content,
+            "response": _clean_ai_text(_resp.content or ""),
             "reasoning": get_message_reasoning(_resp),
             "layers": [], "images": [], "heatmap": None,
             "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+            "confirm_pending": None,  # 与非流式 run_agent 返回结构保持一致，便于前端统一处理
         }
         yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
         return
 
     agent = create_react_agent(llm, tools)
 
-    global _cached_graph
-    _cached_graph = agent
+    set_cached_graph(session_id or "default", agent)
 
+    # 预算用：本轮工具 schema 字符数（粗估，不重复 JSON 序列化）
+    try:
+        _schema_chars_est = len(json.dumps([convert_to_openai_tool(t) for t in tools], ensure_ascii=False))
+    except Exception:
+        _schema_chars_est = 60000
+
+    _ai_waiting_choice = False  # 初始化，防止 stream 提前异常/空流时 L1021 引用未定义变量
     try:
         msgs = []  # 初始化，防止空流时 verifier 引用未定义变量
         for step in agent.stream(
@@ -668,13 +978,72 @@ def run_agent_stream(
             stream_mode="values",
         ):
             # 每次循环检查是否被取消
-            if _ai_svc._request_cancelled:
+            if _ai_svc.is_session_cancelled(session_id or "default"):
                 yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
+                _tools_mod.release_session_lock(session_id or "default")
                 return
+
+            # --- 上下文膨胀兜底 3：累计输入 token 预算（早于 420s 触发）---
+            # 只按字符粗估（1 token ~ 2-3 字符，取保守 3），避免额外依赖
+            if GRAPH_TOKEN_BUDGET > 0:
+                try:
+                    _est = sum(len(str(getattr(_m, "content", "") or "")) for _m in (msgs or []))
+                    _est = int(_est / 3) + int(_schema_chars_est / 3)
+                except Exception:
+                    _est = 0
+                if _est > GRAPH_TOKEN_BUDGET:
+                    print(f"[GIS] 累计输入约 {_est} token 超预算 {GRAPH_TOKEN_BUDGET}，强制收尾", flush=True)
+                    try:
+                        _b_llm = build_llm(disable_reasoning(cfg))
+                        _b_rep = _b_llm.invoke(
+                            list(msgs) + [HumanMessage(content="请停止调用任何工具，直接用文字总结最终结果（可引用前面已经完成的数据/图层）。")],
+                            max_tokens=800,
+                        )
+                        _b_text = (_b_rep.content or "").strip()
+                    except Exception:
+                        _b_text = ""
+                    if not _b_text:
+                        _b_text = ("上下文已达上限（累计输入约 %d token），已自动停止以避免无效消耗。"
+                                   "\\n\\n请基于本轮已生成的图层/数据继续操作，或把任务拆成更小的步骤重试。" % _est)
+                    msgs.append(AIMessage(content=_b_text))
+                    break
+
+            # 总时长预算检查（与非流式 run_agent 相同的 420s 预算）：
+            # 流式 path 之前完全无预算，模型陷入「调工具失败再调」可无限烧 token
+            if _time_mod.monotonic() > _stream_budget_deadline:
+                print(f"[GIS] 流式总时长超预算（{_GRAPH_TOTAL_TIMEOUT_S:.0f}s），强制收尾", flush=True)
+                try:
+                    _budget_llm = build_llm(disable_reasoning(cfg))
+                    _budget_reply = _budget_llm.invoke(
+                        list(msgs) + [HumanMessage(content="请停止调用任何工具，直接用文字总结最终结果（可引用前面已经完成的数据/图层）。")],
+                        max_tokens=800,
+                    )
+                    _budget_text = (_budget_reply.content or "").strip()
+                except Exception:
+                    _budget_text = ""
+                if _budget_text:
+                    msgs.append(AIMessage(content=_budget_text))
+                else:
+                    _budget_text = "任务执行时长已达上限（约 %.0f 秒），已自动停止以避免无效消耗。\n\n请基于本轮已生成的图层/数据继续操作，或把任务拆分成更小的步骤后重试。" % _GRAPH_TOTAL_TIMEOUT_S
+                    msgs.append(AIMessage(content=_budget_text))
+                break  # 跳出 stream 循环，走正常收尾（done 事件照常发）
 
             msgs = step.get("messages", [])
             if not msgs:
                 continue
+            # --- 上下文膨胀兜底 1：截断过大的工具结果 ---
+            if GRAPH_TOOL_OUT_MAX_CHARS > 0:
+                for _m in msgs:
+                    _is_tool = getattr(_m, "type", "") == "tool" or hasattr(_m, "tool_call_id")
+                    if _is_tool:
+                        _c = getattr(_m, "content", "") or ""
+                        if isinstance(_c, str) and len(_c) > GRAPH_TOOL_OUT_MAX_CHARS:
+                            try:
+                                _m.content = _trim_text(_c, GRAPH_TOOL_OUT_MAX_CHARS)
+                            except Exception:
+                                pass
+            # --- 上下文膨胀兜底 2：压缩较早的工具结果 ---
+            msgs = _compact_messages(msgs)
             last = msgs[-1]
 
             # DEBUG: 打印最后一条消息的类型和内容
@@ -701,6 +1070,12 @@ def run_agent_stream(
                     "output": str(last.content)[:300],
                 }, ensure_ascii=False)
                 yield f"data: {event}\n\n"
+                # ask_user_choice 已弹出选项：立即停止 agent 循环，
+                # 等用户选择后走下一轮（防 LLM 拿到"等待选择"文本后继续乱跑）
+                if "[WAITING_USER_CHOICE]" in str(last.content or ""):
+                    print("[GIS] 检测到 ask_user_choice 弹出选项，停止本轮 agent 循环", flush=True)
+                    _ai_waiting_choice = True
+                    break
 
             # AI 正在思考（没有 tool_calls）
             elif isinstance(last, AIMessage) and last.content:
@@ -731,19 +1106,72 @@ def run_agent_stream(
                 yield f"data: {event}\n\n"
         else:
             _err_str = str(e)
-            if "402" in _err_str or "Insufficient Balance" in _err_str:
-                _err_str = "API 余额不足（402），请充值或在设置中更换有余额的 API Key 后重试。"
-            elif "401" in _err_str or "invalid_api_key" in _err_str:
-                _err_str = "API Key 无效或已过期（401），请在设置中检查 API Key 配置。"
-            elif "429" in _err_str or "rate_limit" in _err_str:
-                _err_str = "API 请求频率超限（429），请稍后重试。"
-            elif "timeout" in _err_str.lower():
-                _err_str = "API 请求超时，请检查网络连接或稍后重试。"
-            event = json.dumps({"type": "error", "message": _err_str})
-            yield f"data: {event}\n\n"
+            # --- 服务端临时故障兜底：流式路径对 5xx/断连等整轮重试一次 ---
+            # 背景：非流式 path 有 _is_temp 重试，流式没有；服务端（如 DeepSeek）
+            # 间歇性崩溃时，第一次 stream 中途断流，重试往往即可恢复。
+            _err_lower0 = _err_str.lower()
+            _is_temp_stream = any(k in _err_lower0 for k in [
+                "timeout", "timed out", "connection", "502", "503", "504",
+                "rate limit", "429", "temporarily", "server error",
+                "api connection", "network", "reset by peer", "internal server",
+                "overloaded", "bad gateway", "service unavailable",
+            ])
+            if _is_temp_stream and not _ai_svc.is_session_cancelled(session_id or "default"):
+                _retry_ok = False
+                try:
+                    print("[GIS] 流式遇到临时性服务端异常，整轮重试一次: " + _err_str[:100], flush=True)
+                    import time as _rt; _rt.sleep(1.5)
+                    _retry_res = agent.invoke(
+                        {"messages": list(messages)},
+                        {"recursion_limit": 60},
+                    )
+                    _rm = _retry_res.get("messages", [])
+                    if _rm:
+                        _r_text, _r_reason = _last_ai_text(_rm)
+                        if _r_text:
+                            msgs = _rm
+                            _retry_ok = True
+                            event = json.dumps({"type": "note", "message": "服务端临时故障已自动重试成功。"}, ensure_ascii=False)
+                            yield f"data: {event}\n\n"
+                except Exception as _re:
+                    print("[GIS] 流式重试仍失败: " + str(_re)[:100], flush=True)
+                    _err_str = str(_re)
+                if _retry_ok:
+                    # 跳过错误上报，走正常收尾（msgs 已是重跑结果）
+                    _final2, _r2 = "", None
+                    try:
+                        _final2, _r2 = _last_ai_text(msgs)
+                    except Exception:
+                        pass
+                    if _final2:
+                        event = json.dumps({"type": "partial", "text": _final2}, ensure_ascii=False)
+                        yield f"data: {event}\n\n"
+                    # 直接跳到收尾段（复用下方 done 逻辑）：以一个跳标记完成
+                    _stream_retry_done = True
+                else:
+                    _stream_retry_done = False
+            else:
+                _stream_retry_done = False
+            if not _stream_retry_done:
+                if "402" in _err_str or "Insufficient Balance" in _err_str:
+                    _err_str = "API 余额不足（402），请充值或在设置中更换有余额的 API Key 后重试。"
+                elif "401" in _err_str or "invalid_api_key" in _err_str:
+                    _err_str = "API Key 无效或已过期（401），请在设置中检查 API Key 配置。"
+                elif "429" in _err_str or "rate_limit" in _err_str:
+                    _err_str = "API 请求频率超限（429），请稍后重试。"
+                elif "timeout" in _err_str.lower():
+                    _err_str = "API 请求超时，请检查网络连接或稍后重试。"
+                event = json.dumps({"type": "error", "message": _err_str})
+                yield f"data: {event}\n\n"
 
     # 收集最终结果
     pending = get_pending_state()
+    # layer_ops 引用但未推送的注册图层 → 补推进 done，防止前端「未找到图层」
+    _ensure_ops_layers_present(pending)
+    # ask_user_choice 弹选项导致 break：msgs 尾部是 ToolMessage 而无 AIMessage，
+    # 补一条收尾消息，让 _last_ai_text / done 事件正常工作
+    if _ai_waiting_choice and (not msgs or not isinstance(msgs[-1], AIMessage)):
+        msgs.append(AIMessage(content="已向用户弹出选项，请点击选择后继续。"))
     final_text, final_reasoning = "", None
     try:
         final_text, final_reasoning = _last_ai_text(msgs)
@@ -751,6 +1179,18 @@ def run_agent_stream(
         pass
 
     # === P0-2: 流式版本 finish_reason 检查 ===
+    # 保守：对所有 AIMessage 做截断类 finish_reason 日志；仅当最后一条也截断时才提示给用户
+    _any_truncation = False
+    for _msg in msgs:
+        if not isinstance(_msg, AIMessage):
+            continue
+        _fr = (_msg.response_metadata or {}).get("finish_reason", "")
+        if _fr in ("length", "content_filter", "insufficient_system_resource"):
+            _any_truncation = True
+            break
+    if _any_truncation:
+        print("[GIS] 流式：存在 AIMessage 截断（length/content_filter/insufficient_system_resource），结果可能不完整。", flush=True)
+
     for _msg in reversed(msgs):
         if isinstance(_msg, AIMessage):
             _fr = (_msg.response_metadata or {}).get("finish_reason", "")
@@ -768,7 +1208,9 @@ def run_agent_stream(
     print(f"[GIS DEBUG] 流式初始工具调用: {_initial_tool_calls} 次, 有工具消息: {_initial_has_tools}", flush=True)
     
     _need_force_exec = _promise_without_action(final_text, msgs) or _is_unexecuted_code_or_disclaimer(final_text, msgs)
-    if _need_force_exec:
+    _force_key = _force_exec_key(session_id, original_message)
+    _allow_force = _need_force_exec and _force_exec_should_run(_force_key)
+    if _allow_force:
         try:
             print("[GIS] 流式：检测到未执行承诺或未执行制图代码，强制补一轮真实工具执行", flush=True)
             yield "data: {\"type\":\"thinking\"}\n\n"
@@ -803,10 +1245,14 @@ def run_agent_stream(
                     final_text = final_text + "\n\n【注意】当前AI模型可能不支持工具调用，无法自动执行操作。请尝试更换支持tool calling的模型（如GPT-4、DeepSeek等）。"
         except Exception as _pe:
             print(f"[GIS] 流式强制补执行失败（保留原结果）: {_pe}", flush=True)
+        # 已尝试过一次 force exec，同一 (session,message) 不再重复补执行
 
     # === 自校验已停用（2026-09-05，流式版本）===
     # 同 run_agent：节省一次 LLM 调用，降低延迟和成本。
     # yield "data: {\"type\":\"verifying\"}\n\n" 行已一并移除。
+
+    # === 正文净化：本轮已执行的 Python 源码折叠为一行，避免几百行代码盖住交付物 ===
+    final_text = _strip_executed_code_blocks(final_text, msgs, original_message or "")
 
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
     # 仅在后台自检并记录日志，默认不向用户端追加内部检查说明（避免误报和干扰用户）
@@ -832,7 +1278,7 @@ def run_agent_stream(
     _dur_ms = int((time.time() - _run_started_at) * 1000)
     _schema_chars = len(json.dumps([convert_to_openai_tool(t) for t in tools], ensure_ascii=False))
     _token_usage = extract_and_record_token_usage(
-        messages=final_messages,
+        messages=msgs,
         model_name=cfg.model,
         task_id=_task_id,
         tool_count=len(tools),
@@ -859,4 +1305,5 @@ def run_agent_stream(
         "mode": "full",
         "token_usage": _token_usage,
     }
+    _tools_mod.release_session_lock(session_id or "default")
     yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"

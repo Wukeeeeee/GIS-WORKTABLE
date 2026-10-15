@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+### 2026-10-15 工具能力扩展（20 个新工具 + 健壮性 + 参数校验）
+
+#### Added
+- 新增 20 个空间分析工具（注册表 131  151），入口：顶部菜单「工具  分析工具」新面板，按栅格分析 / 矢量与属性 / 空间统计 / 转换与代价距离四组组织：
+  栅格：raster_reclassify（重分类）、raster_focal_stats（邻域统计）、euclidean_distance（欧氏距离面）、raster_extract_by_mask（掩膜提取）、surface_volumes（填挖方）。
+  矢量：join_field（属性键连接，补上空间连接之外的另一半）、geometry_attributes（面积/长度/质心入表，自动投影 UTM）、minimum_bounding_geometry（包络/凸包/最小外接圆/旋转矩形）、points_to_line（点串线）、generate_points_along_lines（沿线布点）。
+  统计：spatial_weights_matrix（queen/rook/knn 权重矩阵落盘）、spatial_regression（OLS+残差自相关）、directional_distribution（标准差椭圆）、central_tendency（中心要素/标准距离/最近邻指数）、od_cost_matrix（路网 OD 矩阵）。
+  转换：feature_to_raster / raster_to_feature（矢量栅格互转）、create_fishnet（渔网）、cost_distance（代价距离面）、least_cost_path（最小代价路径，与前者共享 8 邻域图）。
+- 新增空间健壮性层 `backend/services/spatial_robust.py`：无效几何自动修复（buffer(0)）、大数据自动分批（44 网格切块合并）、单块失败降级。接入 spatial_buffer / spatial_intersect / spatial_clip / spatial_union / spatial_difference 五个高频工具，结果文案附「已自动修复 N 个无效几何」「已启用分批处理」等状态。
+- 新增参数角色校验层 `backend/services/tool_args_guard.py`（ESRI 参数类型系统的最小可用版）：图层存在性、栅格文件存在性、字段动态校验、枚举约束、数值范围、单位与奇偶窗口自动纠正。已在 14 个高频工具启用，`/api/tools/invoke` 响应新增 `param_warnings` 字段。
+- 新增「分析工具」前端面板（frontend/js/analysis_tools.js），20 个工具带参数表单与分组下拉，复用共享面板样式与定位接口，未新增任何 CSS。
+- AI 助手系统提示追加 20 个新工具及路由规则（属性连接 join_field 与空间连接 spatial_join 的区分、栅格代价面与路网分析的区分等）；新增 7 条方法选择决策。
+- 新增操作手册 docs/USER_GUIDE_ANALYSIS_TOOLS.md（工具用法、AI 路由、兜底参数与排查步骤），README 挂链接。
+
+#### Changed
+- AI 流式链路新增三道上下文兜底：单条工具输出超 4000 字符截断、消息总字符超 15 万压缩历史工具结果、累计输入约 26 万 token 强制收尾（均可经环境变量 GIS_TOOL_OUT_MAX / GIS_CTX_MAX / GIS_TOKEN_BUDGET 调整）。解决多轮任务「说完开始执行就无响应」的上下文膨胀问题。
+- AI 流式链路新增服务端临时故障整轮自动重试一次（5xx/断连/超载），与非流式路径对齐。
+- 工具 Schema 体积守卫从绝对上限 60000 字符改为随规模的预算（54000 + 620工具数），防止正常新增工具被误伤。
+- docs/ui-guidelines.md 图标条目与实际实现对齐：内联 SVG 与 PNG 遮罩均为合法机制（均继承文字颜色），仅禁外部 SVG 文件引用与 data URI。
+- 前端 10 个 JS 文件的字符符号（      等）统一替换为内联 SVG（stroke=currentColor，12-14px），保持图标与文本同行，深浅主题自适应；统计前缀剥离正则改为容错形式。
+- DataV 边界服务全部请求统一携带浏览器 User-Agent（无 UA 请求 CDN 偶发 403）。
+
+#### Fixed
+- 修复 POST /api/tools/invoke 被重复注册导致手动面板图层产物与处理历史失效的回归（FastAPI 仅命中先注册者，后者成死代码）；新增路由唯一性守卫测试。
+- 修复旧「栅格与地理工具」面板「坐标转地址」误要求选择图层的问题。
+- 修复 analysis_tools 面板菜单入口与 map.js 分发重复触发的隐患，统一走 _handleMenuAction。
+- 修复 test_raster_gap_tools 对注册表数量的硬编码断言（==136 改 >=136），避免批次追加后误报。
+
+#### Security / Removal
+- 移除仓库中含 ESRI 帮助文档原文的提取产物与分析文档（已移至仓库外归档），确保分发内容不含第三方专有材料；新工具实现均为开源栈（geopandas/rasterio/scipy/scikit-image）自研，无 arcpy 依赖。
 ### Added
 
 - 新增左侧导航“首页”侧面板（位于数据、图层、处理之前），内置最近工程列表、3个可一键运行的样例卡片（多边形与缓冲区、POI 聚类与圆点白边、路网线要素）以及简短三步操作指引。

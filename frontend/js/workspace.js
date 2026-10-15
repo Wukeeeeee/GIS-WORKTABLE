@@ -213,10 +213,10 @@
         GIS.project.save(saveName).then(function(res) {
           if (res && res.id) {
             renderRecentProjects();
-            if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('✓ 已保存工程「' + (res.name || saveName) + '」', 'system');
+            if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已保存工程「' + (res.name || saveName) + '」', 'system');
           }
         }).catch(function(err) {
-          if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('✕ 保存工程失败: ' + (err.message || err), 'system');
+          if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 保存工程失败: ' + (err.message || err), 'system');
         });
       }
     }, function(exportName) {
@@ -226,7 +226,7 @@
           if (res && res.id) {
             renderRecentProjects();
             if (GIS.project.exportCurrent) GIS.project.exportCurrent(res.id, exportName);
-            if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('✓ 已导出工程文件: ' + exportName + '.giswork', 'system');
+            if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已导出工程文件: ' + exportName + '.giswork', 'system');
           }
         });
       }
@@ -285,7 +285,7 @@
             if (res && res.id && GIS.project && GIS.project.loadProject) {
               GIS.project.loadProject(res.id);
             } else if (res && res.name) {
-              if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('✓ 已导入工程「' + res.name + '」', 'system');
+              if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已导入工程「' + res.name + '」', 'system');
               renderRecentProjects();
             }
           }).catch(function(err) {
@@ -457,7 +457,7 @@
     }
     const rawMessage = error ? (error.message || String(error)) : String(result && result.response || '处理结束，未返回说明。');
     const statLabels = {count:'记录数', non_null:'有效值', null:'空值', min:'最小值', max:'最大值', mean:'平均值', sum:'总和', std:'标准差'};
-    const message = rawMessage.replace(/^\s*📊\s*/u, '').replace(/^(\s*)(count|non_null|null|min|max|mean|sum|std):/gm,
+    const message = rawMessage.replace(/^\s*[\p{S}\uFE0F]+\s*/u, '').replace(/^(\s*)(count|non_null|null|min|max|mean|sum|std):/gm,
       function(_, space, key) { return space+statLabels[key]+'：'; });
     const failed = !!error || (result && result.ok === false) || /^(?:[^\n:：]{0,24}失败[:：]|未找到|工具执行失败|错误[:：])/.test(message.trim());
     const count = result && result.layers ? result.layers.length : 0;
@@ -742,11 +742,11 @@
             visible: true
           });
         }
-        if (feedback) feedback.textContent = '✓ 已加载 ' + info.name + '，可前往图层面板或直接在地图查看';
+        if (feedback) feedback.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已加载 ' + info.name + '，可前往图层面板或直接在地图查看';
         setTimeout(function() { if (feedback) feedback.textContent = ''; }, 4000);
       })
       .catch(function(err) {
-        if (feedback) feedback.textContent = '✕ 加载失败: ' + err.message;
+        if (feedback) feedback.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 加载失败: ' + err.message;
       });
   }
   function button(action, label, glyph, detail) {
@@ -815,6 +815,16 @@
     dock.className = 'workspace-dock';
     dock.innerHTML = '<div class="workspace-dock-header"><strong id="workspaceDockTitle">首页</strong><button id="workspaceDockClose" class="workspace-icon-btn" title="收起首页面板">'+icon('close')+'</button></div>' +
       '<section data-dock-pane="home" class="workspace-home">' +
+        '<div class="workspace-new-tools" style="margin:2px 0 12px;padding:8px 10px;border:1px solid var(--outline-variant,#e2e2e2);border-radius:8px;background:var(--surface-container-low,#f7f7f7);">' +
+          '<p class="workspace-section-label" style="margin:0 0 4px;">本次更新（10-15）</p>' +
+          '<div style="font-size:12px;color:var(--on-surface-variant,#888);line-height:1.7;">' +
+            '新增 20 个分析工具（栅格 / 矢量 / 统计 / 转换）+ 无效几何自动修复 + 大数据自动分批。' +
+          '</div>' +
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">' +
+            '<button type="button" class="workspace-recent-btn" data-workspace-action="open-analysis-tools">打开分析工具</button>' +
+            '<button type="button" class="workspace-recent-btn" data-workspace-action="load-sample-newtools">加载示例图层试试</button>' +
+          '</div>' +
+        '</div>' +
         '<div class="workspace-recent-header" style="margin-top:4px;">' +
           '<p class="workspace-section-label" style="margin:0;">最近工程历史</p>' +
           '<div style="display:flex;gap:6px;">' +
@@ -890,6 +900,15 @@
       const tab = e.target.closest('[data-dock-tab]');
       if (tab) { setTab(tab.dataset.dockTab); return; }
       const action = e.target.closest('[data-workspace-action]');
+      if (action && action.dataset.workspaceAction === 'open-analysis-tools') {
+        if (GIS.analysisTools && GIS.analysisTools.activate) GIS.analysisTools.activate();
+        return;
+      }
+      if (action && action.dataset.workspaceAction === 'load-sample-newtools') {
+        loadSample('buffer');
+        if (GIS.analysisTools && GIS.analysisTools.activate) GIS.analysisTools.activate();
+        return;
+      }
       if (action) run(action.dataset.workspaceAction);
     });
 

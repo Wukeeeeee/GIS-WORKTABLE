@@ -1452,6 +1452,9 @@ var _undoSkip = false;
       case 'tool-spatial-stats':
         if (GIS.spatialStats && GIS.spatialStats.toggle) GIS.spatialStats.toggle();
         break;
+      case 'tool-analysis-tools':
+        if (GIS.analysisTools && GIS.analysisTools.toggle) GIS.analysisTools.toggle();
+        break;
       case 'tool-debug-panel':
         if (GIS.debug && GIS.debug.toggle) GIS.debug.toggle();
         break;
@@ -2159,7 +2162,7 @@ var _undoSkip = false;
     var divider = document.createElement('div');
     divider.className = 'swipe-divider swipe-' + orientation;
     divider.innerHTML =
-      "<div class=\"swipe-handle\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-501a6d71bf48.png')\"></span></div><button class=\"swipe-close\" title=\"关闭卷帘对比\">✕</button>";
+      "<div class=\"swipe-handle\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-501a6d71bf48.png')\"></span></div><button class=\"swipe-close\" title=\"关闭卷帘对比\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" style=\"vertical-align:-2px;\"><line x1=\"18\" y1=\"6\" x2=\"6\" y2=\"18\"/><line x1=\"6\" y1=\"6\" x2=\"18\" y2=\"18\"/></svg></button>";
     mapInstance.getContainer().appendChild(divider);
 
     _swipe = { leftLayer: leftLayer, rightLayer: rightLayer, orientation: orientation, divider: divider, ratio: 0.5 };
@@ -2198,7 +2201,7 @@ var _undoSkip = false;
 
     _applySwipeClip(0.5);
     if (window.GIS && GIS.chat && GIS.chat.addMessage) {
-      GIS.chat.addMessage('卷帘对比已开启：拖动分割线对比「' + leftName + '」与「' + rightName + '」，点分割线上 ✕ 关闭', 'system');
+      GIS.chat.addMessage('卷帘对比已开启：拖动分割线对比「' + leftName + '」与「' + rightName + '」，点分割线上的关闭按钮即可关闭', 'system');
     }
     return true;
   }

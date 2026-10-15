@@ -53,8 +53,9 @@ def get_db_connection(readonly: bool = False) -> sqlite3.Connection:
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"GeoSource 数据库未找到: {db_path}，请确认已放置 gis_services.db")
     if readonly:
-        # URI 模式只读打开
-        uri = f"file:{os.path.abspath(db_path)}?mode=ro"
+        # URI 模式只读打开（路径转义：兼容含 ?、%、空格、中文的 db 路径）
+        from urllib.parse import quote as _urlquote
+        uri = f"file:{_urlquote(os.path.abspath(db_path).replace(chr(92), '/'))}?mode=ro"
         conn = sqlite3.connect(uri, uri=True)
     else:
         conn = sqlite3.connect(db_path)
@@ -156,9 +157,14 @@ def search_services(
     """
     query_params = list(params) + [actual_limit, actual_offset]
 
-    cur.execute(sql, query_params)
-    rows = cur.fetchall()
-    conn.close()
+    try:
+        cur.execute(sql, query_params)
+        rows = cur.fetchall()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     results = [dict(r) for r in rows]
     return {

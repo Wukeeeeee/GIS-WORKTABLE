@@ -18,6 +18,7 @@ _ENTRIES = []                # [{index, tool, args, time, ok, layer_ids, task_id
 _NEXT_INDEX = [1]
 _LOADED = [False]
 _MAX_ENTRIES = 200
+_PER_TASK_KEEP = 20  # 截断时每任务至少保留的条数（防旧任务记录被整段清零）
 _CUSTOM_PATH = [None]
 
 
@@ -86,7 +87,25 @@ def record(tool_name: str, args: dict, ok: bool, layer_ids=None,
         _NEXT_INDEX[0] += 1
         _ENTRIES.append(entry)
         if len(_ENTRIES) > _MAX_ENTRIES * 2:
-            del _ENTRIES[:_MAX_ENTRIES]
+            # 按任务分组截断：全局裁到 _MAX_ENTRIES，但每任务保底 _PER_TASK_KEEP 条，
+            # 防止高频任务把其他任务的记录整体挤出历史
+            from collections import Counter
+            # 目标：删除 len - _MAX_ENTRIES 条最旧的，但确保任何任务剩余 >= _PER_TASK_KEEP
+            _to_remove = len(_ENTRIES) - _MAX_ENTRIES
+            _kept_per_task = Counter()
+            _survivors = []
+            for e in reversed(_ENTRIES):
+                if _to_remove <= 0:
+                    _survivors.append(e)
+                    continue
+                _tid = e.get("task_id") or "_none_"
+                if _kept_per_task[_tid] < _PER_TASK_KEEP:
+                    _kept_per_task[_tid] += 1
+                    _survivors.append(e)
+                else:
+                    _to_remove -= 1
+            _survivors.reverse()
+            _ENTRIES[:] = _survivors
         _persist()
         return entry["index"]
 

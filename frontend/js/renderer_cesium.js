@@ -434,7 +434,7 @@ window.GIS = window.GIS || {};
     if (!document.getElementById('drillBreadcrumb')) {
       const crumb = document.createElement('div');
       crumb.id = 'drillBreadcrumb';
-      crumb.title = '行政区下钻导航：显示当前所在的层级，点击任意层级可跳回；下钻结束后可点击 ✕ 收起';
+      crumb.title = '行政区下钻导航：显示当前所在的层级，点击任意层级可跳回；下钻结束后可点击右侧关闭按钮收起';
       crumb.style.cssText = 'position:absolute;top:46px;left:50%;transform:translateX(-50%);' +
         'z-index:500;display:none;align-items:center;gap:6px;padding:4px 10px;' +
         'background:rgba(15,18,25,0.82);border:1px solid rgba(255,255,255,0.12);' +
@@ -463,7 +463,7 @@ window.GIS = window.GIS || {};
     const stack = GIS.state.getDrillStack();
     if (!stack.length) {
       crumb.style.display = 'flex';
-      crumb.innerHTML = '<span id="crumbInit" style="cursor:pointer;opacity:0.85;">🌐 加载全国省级行政区</span>';
+      crumb.innerHTML = '<span id="crumbInit" style="cursor:pointer;opacity:0.85;display:inline-flex;align-items:center;gap:4px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> 加载全国省级行政区</span>';
       const initBtn = document.getElementById('crumbInit');
       if (initBtn) initBtn.addEventListener('click', function() {
         GIS.state.initCountryLevel().catch(function(e) {
@@ -477,13 +477,13 @@ window.GIS = window.GIS || {};
     crumb.style.display = 'flex';
     let html = '<span style="opacity:0.55;font-size:11px;">下钻层级</span>' +
       '<span style="opacity:0.3;">|</span>' +
-      '<span style="cursor:pointer;opacity:0.9;" data-depth="-1">🌐 全国</span>';
+      '<span style="cursor:pointer;opacity:0.9;display:inline-flex;align-items:center;gap:4px;" data-depth="-1"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> 全国</span>';
     stack.forEach(function(s, i) {
       html += '<span style="opacity:0.4;">›</span>' +
         '<span style="cursor:pointer;" data-depth="' + i + '">' + escapeHtml(s.name) + '</span>';
     });
     html += '<span id="crumbClose" title="收起导航条（不影响当前图层）" ' +
-      'style="cursor:pointer;opacity:0.5;margin-left:4px;font-size:12px;">✕</span>';
+      'style="cursor:pointer;opacity:0.5;margin-left:4px;font-size:12px;display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></span>';
     crumb.innerHTML = html;
     const closeBtn = document.getElementById('crumbClose');
     if (closeBtn) closeBtn.addEventListener('click', function(e) {

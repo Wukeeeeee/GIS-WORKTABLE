@@ -97,15 +97,18 @@ def _reasoning_request_body(base_url: str) -> Optional[dict]:
     """根据接口根地址决定「思考开关」要往请求体塞什么（不认识的接口不塞）。
 
     不同 OpenAI 兼容厂商思考模式的请求参数不一样，塞错会被 400/404：
-      - 智谱 bigmodel（open.bigmodel.cn）：官方文档为
+      - 智谱 bigmodel 系列（open.bigmodel.cn / api.bigmodel.cn / bigmodel.cn 等子域名，
+        GLM-4.7-Flash / GLM-4.7 / GLM-5.2 思考模式都用这个参数）：
           thinking: {"type": "enabled"}
-        GLM-4.7-Flash / GLM-4.7 / GLM-5.2 思考模式都用这个参数。
       - openrouter / 其它 OpenAI 兼容接口：不注入（reasoner 默认会返回
         reasoning_content，我们只做抽取展示，不强塞参数以免被拒）。
     """
     if not base_url:
         return None
-    if "bigmodel.cn" in base_url.lower():
+    host = base_url.lower()
+    # 匹配智谱官方相关域名（含任意子域名），避免只认 bigmodel.cn 一处硬编码
+    glm_hosts = ("bigmodel.cn", "zhipuai.cn", "open.bigmodel.cn", "api.bigmodel.cn")
+    if any(h in host for h in glm_hosts):
         return {"thinking": {"type": "enabled"}}
     return None
 

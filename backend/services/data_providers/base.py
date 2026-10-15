@@ -75,6 +75,10 @@ class DataProvider(ABC):
         )
 
 
+import threading
+
+_PROVIDER_INSTALL_LOCK = threading.Lock()
+
 class ProviderRegistry:
     """Provider 注册表：集中管理数据源 + 能力检测 + 按类型/认证选择。"""
 
@@ -89,10 +93,17 @@ class ProviderRegistry:
         self._providers[pid] = provider
 
     def _ensure_installed(self) -> None:
-        """懒加载：把默认 Provider 注册进注册表（避免启动即 import 重库）。"""
+        """懒加载：把默认 Provider 注册进注册表（避免启动即 import 重库）。
+        线程安全：双检 + 进程级锁，防止并发首调双重注册。"""
         if self._installed:
             return
-        self._installed = True
+        with _PROVIDER_INSTALL_LOCK:
+            if self._installed:
+                return  # 双检：等锁期间已被另一线程装好
+            self._installed = True
+            self._install_providers()
+
+    def _install_providers(self) -> None:
         # 延迟 import：这些模块顶层只引 stdlib/requests，加载廉价
         from backend.services.data_providers.osm_provider import OpenStreetMapProvider
         from backend.services.data_providers.copernicus_provider import CopernicusProvider
