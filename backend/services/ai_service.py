@@ -593,25 +593,10 @@ def _strip_protocol_text(text: str) -> str:
         return text
 
     import re as _re
-    lines = text.splitlines(keepends=True)
-    out_lines = []
-    inside_block = False
-    open_re = _re.compile(r'<[|\s｜]*DSML')
-    close_re = _re.compile(r'</[|\s｜]*DSML')
-    for line in lines:
-        has_open = bool(open_re.search(line))
-        has_close = bool(close_re.search(line))
-        if inside_block:
-            if has_close:
-                inside_block = False  # 块结束（闭合行本身也丢弃）
-            continue
-        if has_open:
-            if not has_close:  # 单行自闭合（开闭同现）直接丢弃；只有孤立开标签才进块模式
-                inside_block = True
-            continue
-        out_lines.append(line)
-    cleaned = "".join(out_lines)
-    # 兜底：删除所有残余 DSML 标签 token（含畸形闭合）
+    cleaned = text
+    # 1) 成对/跨行协议块整段删除（非贪婪、允许畸形标签；未闭合则删到文末）
+    cleaned = _re.sub(r'<[|\s｜]*DSML.*?(?:</[|\s｜]*DSML[^>]*>|\Z)', '', cleaned, flags=_re.DOTALL)
+    # 2) 残余的孤立/畸形 DSML 标签 token
     cleaned = _re.sub(r'</?[|\s｜]*DSML[|\s｜]*[^>]*>', '', cleaned)
     # 其余协议标记
     cleaned = _re.sub(r'<tool_call>.*?</tool_call>', '', cleaned, flags=_re.DOTALL)

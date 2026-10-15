@@ -23,8 +23,14 @@ def test_roles_cover_registered_tools():
     assert not bad, "PARAM_ROLES 里有不存在的工具名: %s" % bad
 
 
-def test_layer_missing_gives_suggestion():
-    """图层不存在 -> warning 里带可用图层列表"""
+def test_layer_missing_gives_suggestion(monkeypatch):
+    """图层不存在 -> warning 里带可用图层列表
+
+    提示只列前 8 个可用图层，若同批其他用例先注册了大量图层，本用例的 ga_ok 会被挤出列表
+    （顺序相关假失败）。这里在用例内隔离图层注册表，保持断言强度同时消除顺序依赖。
+    """
+    from backend.services import tools as _T
+    monkeypatch.setattr(_T, "_registered_layers", {}, raising=False)
     _mk_layer("ga_ok", {"id": 1})
     clean, w = validate_tool_args("spatial_intersect", {"layer_a": "ga_ok", "layer_b": "不存在的图层"})
     assert any("layer_b" in x and "不存在" in x for x in w), w
