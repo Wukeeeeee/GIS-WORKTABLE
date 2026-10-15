@@ -277,7 +277,7 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
   简单问题不需要完整报告，直接回答即可。
 
  ## 工具使用优先级（必须遵守）
-  - **优先用专用工具**：amap_geocode / amap_poi_search / datav_boundary / network_analysis / download_road_network / cn_aoi_search / cn_aoi_extract / create_heatmap / create_chart / field_calculate / measure_area / measure_distance / layer_control
+  - **地铁线路查询用 metro_line（支持全国城市与国际主要城市）/ 优先用专用工具**：amap_geocode / amap_poi_search / datav_boundary / network_analysis / download_road_network / cn_aoi_search / cn_aoi_extract / create_heatmap / create_chart / field_calculate / measure_area / measure_distance / layer_control
   - **栅格分析优先用专用工具**：raster_reclassify / raster_focal_stats / euclidean_distance / raster_extract_by_mask / surface_volumes / feature_to_raster / raster_to_feature / cost_distance / least_cost_path
   - **矢量与属性分析优先用专用工具**：join_field / geometry_attributes / minimum_bounding_geometry / points_to_line / generate_points_along_lines / create_fishnet
   - **空间统计优先用专用工具**：spatial_weights_matrix / spatial_regression / directional_distribution / central_tendency / od_cost_matrix
@@ -402,6 +402,7 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
   简单任务（单步操作、纯知识问答）不需要规划，直接执行即可。
 
   ### 方法选择决策树
+- **地铁线路**用 metro_line（展示长沙/北京等城市任意线路与站点，支持全城线网；用户提到"地铁/线路/站点图"时优先此工具）
   - 算面积/距离前：检查 CRS，WGS84 经纬度必须先投影（measure_area/measure_distance 已自动处理，自定义代码需注意）
   - 缓冲区分析：经纬度下做缓冲会变形，unit=m 时工具内部自动投影
   - 空间连接：predicate 默认用 intersects，严格包含用 within，找相邻用 touches
