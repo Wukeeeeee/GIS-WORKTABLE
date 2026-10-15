@@ -209,6 +209,13 @@ _last_user_message: str = ""        # 本轮用户原始请求（由 graph.py �
 # 用非重入 Lock 会同线程自死锁（2026-10-13 E2E 实测：加载工程即挂死整个后端）
 _state_lock = threading.RLock()
 
+def peek_pending_images():
+    """非消费读取当前待推送图片（供历史记录捕获，不影响主链路消费）"""
+    with _state_lock:
+        return [{"url": im.get("url") or im.get("path") or "", "label": im.get("label") or ""}
+                for im in list(_pending_images) if isinstance(im, dict)]
+
+
 def get_pending_state():
     """获取当前所有待发送状态并消费（清空），防止跨请求污染和校验器重复收集"""
     global _clear_layers_flag
@@ -8835,6 +8842,10 @@ def _raster_preview_op(src, data, out_name: str, label: str) -> str:
         "bounds": [float(v) for v in bounds],
         "label": label,
     })
+    try:
+        record_tool_artifact(png_name, os.path.join(upload_dir, png_name), artifact_type="image")
+    except Exception:
+        pass
     return "预览已叠加到地图"
 
 
@@ -9564,7 +9575,7 @@ def raster_extract_by_mask(raster_layer: str, zone_layer: str, inside: bool = Tr
 
 
 @tool
-def surface_volumes(before_layer: str, after_layer: str, reference: float = None) -> str:
+def surface_volumes(before_layer: str, after_layer: str, reference: float = -99999.0) -> str:
     """填挖方计算：比较两个共配准 DEM（或一个 DEM 与参考高程面），输出挖方/填方/净方量与变化面积。
     - before_layer: 施工前（现状）DEM 图层名（上传的 GeoTIFF 图层名）。
     - after_layer: 施工后（设计）DEM 图层名；当给出 reference 时该参数可留空字符串。
@@ -9579,7 +9590,7 @@ def surface_volumes(before_layer: str, after_layer: str, reference: float = None
         before_path = _find_uploaded_tif(before_layer)
         if before_path is None:
             return f"未找到栅格文件「{before_layer}」，请先上传 GeoTIFF"
-        use_ref = reference is not None and str(reference).strip() != ""
+        use_ref = reference is not None and float(reference) > -99998.0
         ref_val = float(reference) if use_ref else None
         after_path = None
         if not use_ref:
@@ -11352,10 +11363,23 @@ def _recorded(t):
             out = f"工具执行失败: {str(e)[:300]}"
             _ok, _err = False, str(e)
         _new = [n for n in _registered_layers if n not in _before]
+        # 捕获图片与文件产物（此前历史记录只有图层，图片/文件全丢  用户翻历史找不到图）
+        _imgs = peek_pending_images()
+        _files = []
+        try:
+            _run_id = get_current_run_id()
+            if _run_id:
+                from backend.services import storage_service as _ss
+                for a in (_ss.get_run_artifacts(_run_id) or []):
+                    _files.append({"filename": a.get("filename") or a.get("name") or "",
+                                   "path": a.get("rel_path") or a.get("filepath") or ""})
+        except Exception:
+            pass
         _history_svc.record(
             t.name, kwargs, _ok, _new,
             task_id=get_current_task_id(), error=_err,
             duration_ms=int((time.time() - _t0) * 1000),
+            images=_imgs, file_artifacts=_files,
         )
         return out
 

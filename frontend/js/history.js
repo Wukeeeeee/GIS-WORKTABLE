@@ -121,6 +121,60 @@
       ly.title = layers;
       div.appendChild(ly);
     }
+    // 图片产物：缩略图可点开（此前历史记录丢图片，翻历史找不到图）
+    var imgs = (e.images || []);
+    if (imgs.length) {
+      var imw = document.createElement('div');
+      imw.className = 'toolhist-images';
+      imw.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;';
+      imgs.forEach(function (im) {
+        var url = im.url || im.path || '';
+        if (!url) return;
+        if (url.indexOf('/output/') !== 0 && url.indexOf('http') !== 0) url = '/output/' + url.replace(/^\/+/, '');
+        var a = document.createElement('a');
+        a.href = url; a.target = '_blank';
+        var img = document.createElement('img');
+        img.src = url; img.alt = im.label || '产物图片';
+        img.title = im.label || url;
+        img.style.cssText = 'width:72px;height:54px;object-fit:cover;border:1px solid var(--outline-variant,#e2e2e2);border-radius:4px;cursor:zoom-in;';
+        a.appendChild(img); imw.appendChild(a);
+      });
+      if (imw.childNodes.length) div.appendChild(imw);
+    }
+    // 文件产物（tif/csv/npz 等）：可复制路径
+    var files = (e.file_artifacts || []);
+    if (files.length) {
+      var fw = document.createElement('div');
+      fw.className = 'toolhist-files';
+      fw.style.cssText = 'font-size:11px;color:var(--on-surface-variant,#888);margin-top:3px;';
+      files.forEach(function (fa) {
+        var isImg = /\.(png|jpe?g|gif|webp)$/i.test(fa.filename || '');
+        if (isImg) {
+          // 图片型文件产物也出缩略（上传目录经 /output/ 静态服务）
+          var url2 = '/output/uploads/' + (fa.filename || '');
+          var a2 = document.createElement('a');
+          a2.href = url2; a2.target = '_blank';
+          var im2 = document.createElement('img');
+          im2.src = url2; im2.alt = fa.filename || '';
+          im2.title = fa.filename || '';
+          im2.style.cssText = 'width:72px;height:54px;object-fit:cover;border:1px solid var(--outline-variant,#e2e2e2);border-radius:4px;cursor:zoom-in;';
+          a2.appendChild(im2);
+          if (!fw.childNodes.length) { fw.style.cssText += ';display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;'; }
+          fw.appendChild(a2);
+          return;
+        }
+        var line = document.createElement('div');
+        line.textContent = '产物文件: ' + (fa.filename || '') + '  ' + (fa.path || '');
+        line.title = '点击复制路径';
+        line.style.cursor = 'pointer';
+        line.onclick = function () {
+          if (navigator.clipboard) navigator.clipboard.writeText(fa.path || '');
+          line.textContent = '已复制: ' + (fa.path || '');
+        };
+        fw.appendChild(line);
+      });
+      if (fw.childNodes.length) div.appendChild(fw);
+    }
 
     var actions = document.createElement('div');
     actions.className = 'toolhist-item-actions';

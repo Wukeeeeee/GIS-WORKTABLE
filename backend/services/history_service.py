@@ -68,7 +68,7 @@ def _persist():
 
 def record(tool_name: str, args: dict, ok: bool, layer_ids=None,
            task_id: str = "", error: str = "", duration_ms: int = 0,
-           rerun_of: int = 0) -> int:
+           rerun_of: int = 0, images=None, file_artifacts=None) -> int:
     """记录一次工具执行，返回分配的历史编号 index。"""
     with _LOCK:
         _load()
@@ -83,6 +83,8 @@ def record(tool_name: str, args: dict, ok: bool, layer_ids=None,
             "error": (error or "")[:300],
             "duration_ms": int(duration_ms or 0),
             "rerun_of": int(rerun_of or 0),
+            "images": list(images or []),
+            "file_artifacts": list(file_artifacts or []),
         }
         _NEXT_INDEX[0] += 1
         _ENTRIES.append(entry)

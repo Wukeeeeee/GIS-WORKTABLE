@@ -1625,6 +1625,12 @@ async def api_tools_invoke(request: ToolInvokeRequest):
     if _arg_warnings:
         args["_param_warnings"] = _arg_warnings
     reset_state()
+    # 直连链路同样绑定 run/task，让工具产物（图片/文件）进历史与 SQLite 台账
+    from backend.services.tools import set_current_run as _scr, set_current_task as _sct
+    import uuid as _uuid_mod
+    _scr(_uuid_mod.uuid4().hex[:12])
+    from backend.services import task_manager as _tm
+    _sct(_tm.find_or_create_task('default', request.name))
     loop = asyncio.get_event_loop()
     try:
         response = await loop.run_in_executor(
