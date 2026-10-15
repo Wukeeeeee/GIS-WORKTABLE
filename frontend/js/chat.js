@@ -987,6 +987,40 @@ function scrollMessages() {
         window.GIS.task.updateTask(taskId, taskUpdate);
       }
 
+      // 会话忙（上一条工具链还在收尾）：这不是 AI 的回答，别当正文渲染
+      if (result && result.busy) {
+        removePendingActionBars();
+        if (taskId && window.GIS.task) {
+          window._currentTaskId = null;
+          window.GIS.task.updateTask(taskId, { status: 'failed', resultSummary: '会话忙，本条未执行' });
+        }
+        var _busyEl = addMessage('上一条 AI 请求还在收尾（工具链尚未结束），这条消息没有执行。', 'system');
+        try {
+          var _busyBar = document.createElement('div');
+          _busyBar.className = 'pending-action-bar';
+          _busyBar.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;align-items:center;';
+          var _retryBtn = document.createElement('button');
+          _retryBtn.type = 'button';
+          _retryBtn.className = 'chat-file-btn-primary';
+          _retryBtn.style.borderRadius = '14px';
+          _retryBtn.textContent = '重试这条分析';
+          _retryBtn.onclick = function () {
+            _busyBar.remove();
+            window.GIS.chat.sendMessage(text, displayText ? { displayText: displayText, provider: providerOverride } : undefined);
+          };
+          var _dismissBtn = document.createElement('button');
+          _dismissBtn.type = 'button';
+          _dismissBtn.textContent = '知道了';
+          _dismissBtn.style.cssText = 'border:none;background:transparent;color:var(--ui-gray-400,#aaa);font-size:11px;cursor:pointer;padding:4px 8px;';
+          _dismissBtn.onclick = function () { _busyBar.remove(); };
+          _busyBar.appendChild(_retryBtn);
+          _busyBar.appendChild(_dismissBtn);
+          var _busyBubble = _busyEl ? (_busyEl.querySelector('.message-bubble') || _busyEl) : null;
+          if (_busyBubble) _busyBubble.appendChild(_busyBar);
+        } catch (_busyErr) { /* 按钮渲染失败不影响提示 */ }
+        return;
+      }
+
       // 显示 AI 的文字回复
       if (!result) {
         addMessage('AI 未返回有效响应', 'ai');

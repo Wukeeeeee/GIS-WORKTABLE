@@ -1043,7 +1043,11 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
 
     # 写回本轮 AI 回复到历史并落盘（与 SSE 流共用同一函数）
     ai_reply = result.get("response", "")
-    commit_assistant_reply(session_id, ai_reply, result.get("reasoning"))
+    if result.get("busy"):
+        # 会话忙不是 AI 的回复：写进历史会让下一轮把它当成"自己说过的话"
+        print("[GIS] 会话忙，本轮不写入会话历史", flush=True)
+    else:
+        commit_assistant_reply(session_id, ai_reply, result.get("reasoning"))
 
     # 定期清理过期历史文件
     if len(conversation_history) > 100:

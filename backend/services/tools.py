@@ -318,14 +318,37 @@ import threading as _threading_mod
 _session_locks: dict = {}
 _session_locks_guard = _threading_mod.Lock()
 
-def acquire_session_lock(session_id: str) -> bool:
-    """尝试占用会话锁（非阻塞）。成功 True；已被占用 False。"""
+def session_lock_wait_seconds() -> float:
+    """同 session 新请求在被占用时最多等待多少秒。
+
+    用户在上一条工具链还没收尾时又发一条（例如右键「问 AI」），旧逻辑会立刻
+    返回「当前会话已有请求在处理中」，看起来像 AI 的正式回答。默认改为最多等
+    20 秒，等上一条释放会话锁；可用环境变量 GIS_SESSION_LOCK_WAIT 调整，
+    设为 0 恢复「不等待、立即忙」的旧行为。
+    """
+    raw = os.environ.get("GIS_SESSION_LOCK_WAIT", "20")
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def acquire_session_lock(session_id: str, timeout: Optional[float] = None) -> bool:
+    """尝试占用会话锁。
+
+    timeout=None 时使用 session_lock_wait_seconds()（默认 20s）；
+    timeout<=0 表示非阻塞。成功 True；等待超时返回 False。
+    """
     sid = session_id or "default"
     with _session_locks_guard:
         lock = _session_locks.get(sid)
         if lock is None:
             lock = _threading_mod.Lock()
             _session_locks[sid] = lock
+    if timeout is None:
+        timeout = session_lock_wait_seconds()
+    if timeout and timeout > 0:
+        return lock.acquire(timeout=timeout)
     return lock.acquire(blocking=False)
 
 def release_session_lock(session_id: str):

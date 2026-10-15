@@ -506,6 +506,7 @@ def run_agent(
             "reasoning": None, "layers": [], "images": [], "heatmap": None,
             "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
             "confirm_pending": None,
+            "busy": True,
         }
     reset_state(amap_key)
     _tools_mod.set_last_user_message(original_message or "")
@@ -548,7 +549,7 @@ def run_agent(
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
         _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
-        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线']
+        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线','地铁','公交','铁路','高铁','线路','站点','车站','机场','航班','轮渡']
         _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
         # 用户反馈交付物缺失（没标出来/没显示/没看到）或存在待确认挂起动作 →
         # 必须走 Agent 工具通道修复，禁止纯文本捷径（否则模型只回一句"正在处理"就没下文）
@@ -568,12 +569,23 @@ def run_agent(
                     "pending_suggestions": None}
         try:
             _resp = llm.invoke(messages)
-            return {
-                "response": _clean_ai_text(_resp.content or ""),
-                "reasoning": get_message_reasoning(_resp),
-                "layers": [], "images": [], "heatmap": None,
-                "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
-            }
+            _quick_text = _clean_ai_text(_resp.content or "")
+            if _looks_like_incomplete_promise(_quick_text):
+                # 快路径不带任何工具：模型只是"口头承诺去获取/生成"时必须改走 Agent，
+                # 否则用户看到的就是一句"我来获取"然后没有下文。
+                print("[GIS] 快路径命中空口承诺，改走 Agent 工具通道", flush=True)
+                _simple = False
+            else:
+                try:
+                    storage_service.record_run_finish(_run_id, _quick_text, "success", "BYPASS")
+                except Exception:
+                    pass
+                return {
+                    "response": _quick_text,
+                    "reasoning": get_message_reasoning(_resp),
+                    "layers": [], "images": [], "heatmap": None,
+                    "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+                }
         except Exception as e:
             _err_str = str(e)
             if "402" in _err_str or "Insufficient Balance" in _err_str:
@@ -893,6 +905,7 @@ def run_agent_stream(
             "reasoning": None, "layers": [], "images": [], "heatmap": None,
             "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
             "confirm_pending": None,
+            "busy": True,
         }, ensure_ascii=False)
         yield f"data: {_busy_evt}\n\n"
         return
@@ -933,7 +946,7 @@ def run_agent_stream(
     if messages and len(messages) > 1:
         _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
         _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
-        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线']
+        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线','地铁','公交','铁路','高铁','线路','站点','车站','机场','航班','轮渡']
         _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
         # 用户反馈交付物缺失（没标出来/没显示/没看到）或存在待确认挂起动作 →
         # 必须走 Agent 工具通道修复，禁止纯文本捷径（否则模型只回一句"正在处理"就没下文）
@@ -948,16 +961,26 @@ def run_agent_stream(
             _simple = False
     if _simple:
         _resp = llm.invoke(messages)
-        yield "data: {\"type\":\"thinking\"}\n\n"
-        result = {
-            "response": _clean_ai_text(_resp.content or ""),
-            "reasoning": get_message_reasoning(_resp),
-            "layers": [], "images": [], "heatmap": None,
-            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
-            "confirm_pending": None,  # 与非流式 run_agent 返回结构保持一致，便于前端统一处理
-        }
-        yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
-        return
+        _quick_text = _clean_ai_text(_resp.content or "")
+        if _looks_like_incomplete_promise(_quick_text):
+            # 快路径不带任何工具：模型只是"口头承诺去获取/生成"时必须改走 Agent
+            print("[GIS] 流式快路径命中空口承诺，改走 Agent 工具通道", flush=True)
+            _simple = False
+        else:
+            try:
+                storage_service.record_run_finish(_run_id, _quick_text, "success", "BYPASS")
+            except Exception:
+                pass
+            yield "data: {\"type\":\"thinking\"}\n\n"
+            result = {
+                "response": _quick_text,
+                "reasoning": get_message_reasoning(_resp),
+                "layers": [], "images": [], "heatmap": None,
+                "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+                "confirm_pending": None,  # 与非流式 run_agent 返回结构保持一致，便于前端统一处理
+            }
+            yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
+            return
 
     agent = create_react_agent(llm, tools)
 
