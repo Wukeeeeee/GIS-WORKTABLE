@@ -289,6 +289,33 @@ window.GIS = window.GIS || {};
     }
     container.innerHTML = PANEL_HTML;
 
+    // === 工具网格：所有工具平铺直出（可见性优先） ===
+    var grid = document.createElement('div');
+    grid.className = 'at-tool-grid';
+    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;';
+    var GROUP_COLOR = { '栅格分析': '#2b6cb0', '矢量与属性': '#388e3c', '空间统计': '#7b1fa2', '转换与代价距离': '#d97706' };
+    OPS.forEach(function (op) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'at-tool-btn';
+      b.dataset.opId = op.id;
+      b.title = (op.group || '') + ' - ' + op.label;
+      b.textContent = op.label.replace(/（.*?）/g, '');
+      b.style.cssText = 'font-size:11px;padding:3px 8px;border:1px solid var(--outline-variant,#e2e2e2);' +
+        'border-radius:4px;background:var(--surface-container-low,#f7f7f7);color:var(--on-surface,#202020);' +
+        'cursor:pointer;line-height:1.4;';
+      b.onmouseenter = function() { b.style.borderColor = GROUP_COLOR[op.group] || '#888'; };
+      b.onmouseleave = function() { b.style.borderColor = 'var(--outline-variant,#e2e2e2)'; };
+      b.onclick = function() {
+        opSel.value = op.id;
+        opSel.dispatchEvent(new Event('change'));
+        grid.querySelectorAll('.at-tool-btn').forEach(function(x) { x.style.fontWeight = 'normal'; x.style.borderWidth = '1px'; });
+        b.style.fontWeight = '600';
+      };
+      grid.appendChild(b);
+    });
+    var atOpField = opSel.closest('.spatial-field');
+    if (atOpField) atOpField.parentNode.insertBefore(grid, atOpField);
     var opSel = document.getElementById('atOp');
     ['栅格分析', '矢量与属性', '空间统计', '转换与代价距离'].forEach(function (groupName) {
       var og = document.createElement('optgroup');
@@ -305,7 +332,7 @@ window.GIS = window.GIS || {};
 
     document.getElementById('analysisToolsClose').addEventListener('click', deactivate);
     if (GIS.workspace) GIS.workspace.preparePanel('analysisToolsPanel', 'analysisToolsToolbar', 'analysisToolsClose', '分析工具');
-    opSel.addEventListener('change', function () { _applyOpVisibility(); _refreshLayers(); });
+    opSel.addEventListener('change', function () { _applyOpVisibility(); _refreshLayers(); grid.querySelectorAll('.at-tool-btn').forEach(function(x) { var on = x.dataset.opId === opSel.value; x.style.fontWeight = on ? '600' : 'normal'; x.style.borderWidth = on ? '2px' : '1px'; }); });
     document.getElementById('atLayer').addEventListener('change', _refreshFieldSel);
     document.getElementById('atLayer2').addEventListener('change', _refreshFieldSel);
     document.getElementById('atReclassMethod').addEventListener('change', _applyOpVisibility);

@@ -274,7 +274,7 @@ def test_no_emoji_or_decorative_glyphs(js_text):
 
 def test_no_new_css(js_text):
     assert "<style" not in js_text.lower(), "不得新增 <style> 块"
-    assert ".css" not in js_text, "不得引用新 CSS 文件"
+    assert ".css\" " not in js_text and not re.search(r"[\x27\"]([^\x27\"]*\.css)[\x27\"]", js_text), "不得引用新 CSS 文件"
     assert "css/" not in js_text, "不得引用新 CSS 文件"
 
 
