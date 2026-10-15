@@ -162,10 +162,16 @@ window.GIS = window.GIS || {};
   // 状态 → 3D 渲染同步
   // ============================================================
 
+  // 同一图层的异步加载竞态会让它被加载两次（3D 里表现为粗细两条线叠加）
+  const _syncing = {};
   function syncLayer(rec) {
     if (!viewer || !rec.geojson) return;
+    if (rec.layer_id) {
+      if (_syncing[rec.layer_id]) return _syncing[rec.layer_id];
+      if (dsMap[rec.layer_id]) return Promise.resolve(dsMap[rec.layer_id]);
+    }
     const opScale = (rec.style && rec.style.opacity !== undefined) ? rec.style.opacity : 1;
-    return Cesium.GeoJsonDataSource.load(rec.geojson, {
+    const _loadPromise = Cesium.GeoJsonDataSource.load(rec.geojson, {
       stroke: Cesium.Color.fromCssColorString((rec.style && rec.style.color) || '#1c1b1b'),
       fill: Cesium.Color.fromCssColorString((rec.style && rec.style.fillColor) || (rec.style && rec.style.color) || '#1c1b1b')
         .withAlpha(((rec.style && rec.style.fillOpacity !== undefined) ? rec.style.fillOpacity : 0.35) * opScale),
@@ -180,7 +186,13 @@ window.GIS = window.GIS || {};
         // outline 在部分 GPU 上不可靠；面要素用填充色即可辨识
         if (e.polygon) e.polygon.outline = false;
         // 点要素：Cesium 默认给 GeoJSON Point 生成 Pin 气球图标 (billboard)，将其去除并强制渲染为实心圆点 + 细白边
-        const ptColor = Cesium.Color.fromCssColorString((rec.style && (rec.style.fillColor || rec.style.color)) || '#e74c3c');
+        const _props = (e.properties && e.properties.getValue)
+          ? e.properties.getValue(Cesium.JulianDate.now()) : (e.properties || null);
+        const _featColor = (_props && typeof _props.color === 'string') ? _props.color : null;
+        if (_featColor && e.polyline) {
+          e.polyline.material = new Cesium.ColorMaterialProperty(Cesium.Color.fromCssColorString(_featColor));
+        }
+        const ptColor = Cesium.Color.fromCssColorString(_featColor || (rec.style && (rec.style.fillColor || rec.style.color)) || '#e74c3c');
         const ptSize = Math.max(10, ((rec.style && rec.style.weight) || 2) * 4);
         if (e.billboard || (e.position && !e.polygon && !e.polyline && !e.point)) {
           e.billboard = undefined;
@@ -219,9 +231,13 @@ window.GIS = window.GIS || {};
       if (rec.featureColors) applyFeatureColors(ds, rec);
       if (rec.viz) applyViz(ds, rec.viz, rec);
       requestRender();
+      if (rec.layer_id) delete _syncing[rec.layer_id];
     }).catch(function(e) {
+      if (rec.layer_id) delete _syncing[rec.layer_id];
       console.error('[GIS 3D] 图层加载失败:', rec.name, e);
     });
+    if (rec.layer_id) _syncing[rec.layer_id] = _loadPromise;
+    return _loadPromise;
   }
 
   function desyncLayer(layerId) {
@@ -798,7 +814,7 @@ window.GIS = window.GIS || {};
               layer_id: pl.layer_id,
               name: pl.filename || pl.name || '图层',
               geojson: pl.geojson,
-              style: { color: pl.color || '#1c1b1b', fillColor: pl.color || '#1c1b1b' },
+              style: Object.assign({ color: pl.color || '#1c1b1b', fillColor: pl.color || '#1c1b1b' }, pl.style || {}),
               visible: pl.visible !== false,
             });
           }

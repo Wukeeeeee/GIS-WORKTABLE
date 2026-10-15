@@ -567,10 +567,16 @@ var _undoSkip = false;
         renderer: canvasRenderer,
         smoothFactor: 1.0,
         style: function(feature) {
-          return _isPointFeature(feature) ? _pointStyle(style) : mergedStyle;
+          // 要素自带 color（如地铁官方线色）优先于图层级样式，保证同一图层内也能分色
+          var fc = feature && feature.properties && feature.properties.color;
+          if (_isPointFeature(feature)) {
+            return _pointStyle(fc ? Object.assign({}, style, { color: fc, fillColor: fc }) : style);
+          }
+          return fc ? Object.assign({}, mergedStyle, { color: fc, fillColor: fc }) : mergedStyle;
         },
         pointToLayer: function(feature, latlng) {
-          return L.circleMarker(latlng, _pointStyle(style));
+          var fc = feature && feature.properties && feature.properties.color;
+          return L.circleMarker(latlng, _pointStyle(fc ? Object.assign({}, style, { color: fc, fillColor: fc }) : style));
         },
         coordsToLatLng: function(coords) {
           var lng = coords[0], lat = coords[1];

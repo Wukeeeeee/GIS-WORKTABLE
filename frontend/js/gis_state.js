@@ -143,6 +143,7 @@ window.GIS = window.GIS || {};
         crs: 'WGS-84',
         geojson: geojson,
         color: rec.style.fillColor || rec.style.color,
+        style: rec.style,          // 面板侧也要保留完整样式（3D 兜底/工程保存/图例用得到）
         visible: rec.visible,
         source: rec.source,
         _rawName: rawName,
