@@ -356,6 +356,12 @@ var _undoSkip = false;
             if (GIS.spatial && GIS.spatial.toggle) GIS.spatial.toggle();
             return;
           }
+          if (tool === 'analysis-tools') {
+            // 分析工具面板：切换高亮行为与面板开合一致（面板是浮动的，不再保持按钮 active）
+            btn.classList.remove('active');
+            if (GIS.analysisTools && GIS.analysisTools.toggle) GIS.analysisTools.toggle();
+            return;
+          }
           if (tool === 'convert-crs') {
             if (window.GIS.chat) {
               window.GIS.chat.addMessage('坐标转换：发送"将[图层]转为Web Mercator" 或 "转换坐标 116.4,39.9 到web_mercator" 到聊天', 'system');
