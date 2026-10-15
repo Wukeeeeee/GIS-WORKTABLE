@@ -57,6 +57,37 @@ def norm_city(city):
     return _CITY_ALIAS.get(c, c)
 
 
+_LINE_NOISE_RE = re.compile(r"(地铁|轻轨|号线|线路|轨道|线|line|metro|subway)", re.IGNORECASE)
+
+
+def line_key(text) -> str:
+    """线路匹配键：'广州地铁1号线'->'1'，'11号线'->'11'，'APM线'->'apm'。
+
+    取数字编号（若有）作为键，这样「1号线」不会误命中「11号线」「21号线」。
+    """
+    s = str(text or "").strip().lower()
+    if not s:
+        return ""
+    m = re.search(r"\d+", s)
+    if m:
+        return m.group(0)
+    return _LINE_NOISE_RE.sub("", s)
+
+
+def line_matches(line_name, line_filter) -> bool:
+    """线路名是否匹配筛选条件：编号精确匹配优先，无编号（APM 线等）退化为包含匹配。"""
+    f = str(line_filter or "").strip()
+    if not f:
+        return True
+    n = str(line_name or "")
+    if not n:
+        return False
+    fk, nk = line_key(f), line_key(n)
+    if fk and nk:
+        return fk == nk
+    return f.lower() in n.lower()
+
+
 def fetch_cn(city_norm):
     key = ("cn", city_norm)
     hit = _cache.get(key)
@@ -220,7 +251,7 @@ def build_metro_layers(city_norm, line_filter=""):
         data = fetch_cn(city_norm)
         for lo in data.get("l", []):
             ln = str(lo.get("ln") or "")
-            if line_filter and line_filter not in ln:
+            if not line_matches(ln, line_filter):
                 continue
             lf, sts, color = cn_line_to_features(lo, city_norm)
             if lf is None:
@@ -237,7 +268,7 @@ def build_metro_layers(city_norm, line_filter=""):
             rel_id = rel_meta["id"]
             tags0 = rel_meta.get("tags", {})
             ln_name = str(tags0.get("ref") or tags0.get("name") or "")
-            if line_filter and line_filter.lower() not in ln_name.lower():
+            if not line_matches(ln_name, line_filter):
                 continue
             # 逐条拉 full（relation + 成员 way + node 坐标），单条失败跳过
             try:
