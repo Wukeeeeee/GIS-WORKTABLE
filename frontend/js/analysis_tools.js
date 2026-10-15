@@ -1,17 +1,16 @@
 window.GIS = window.GIS || {};
 
 /**
- * analysis_tools.js  分析工具浮动面板
- * 顶部菜单「工具」中的「分析工具」条目：栅格分析、矢量与属性、空间统计、
- * 转换与代价距离共 20 个直连后端工具，全部经 /api/tools/invoke 执行，不经 LLM。
- * 面板样式完全复用 spatial-* 公共类，不新增 CSS、不新增色值。
+ * analysis_tools.js  分析工具窗口
+ * 顶部菜单「工具」里的 20 个分析工具各自打开独立窗口，只显示该工具需要的参数；
+ * 「分析工具」条目打开全部工具选择器（启动台），点选后再打开对应工具的窗口。
+ * 全部工具经 /api/tools/invoke 直连后端执行，不经 LLM。
+ * 面板样式复用 spatial-* 公共类，不新增 CSS、不新增色值。
  */
 (function () {
   'use strict';
 
   var GIS = window.GIS;
-  var _active = false;
-  var _initialized = false;
   var PANEL_WIDTH = 400;
   var _lastLeft = NaN, _lastTop = NaN;
 
@@ -242,149 +241,278 @@ window.GIS = window.GIS || {};
   }
 
   function _show(id, on) {
-    var el = document.getElementById(id);
+    var el = _g(id);
     if (el) el.style.display = on ? '' : 'none';
   }
 
   function _setLabel(id, text) {
-    var el = document.getElementById(id);
+    var el = _g(id);
     if (el) el.textContent = text;
   }
 
   function _text(id) {
-    var el = document.getElementById(id);
+    var el = _g(id);
     return el ? String(el.value || '').trim() : '';
   }
 
   function _num(id, fallback) {
-    var el = document.getElementById(id);
+    var el = _g(id);
     var v = el ? parseFloat(el.value) : NaN;
     return isNaN(v) ? fallback : v;
   }
 
   function _int(id, fallback) {
-    var el = document.getElementById(id);
+    var el = _g(id);
     var v = el ? parseInt(el.value, 10) : NaN;
     return isNaN(v) ? fallback : v;
   }
 
   function _checked(id) {
-    var el = document.getElementById(id);
+    var el = _g(id);
     return !!(el && el.checked);
   }
 
-  function init() {
-    if (_initialized) return;
-    var wrapper = document.getElementById('analysisToolsPanelWrapper');
-    if (!wrapper) {
-      wrapper = document.createElement('div');
-      wrapper.id = 'analysisToolsPanelWrapper';
-      document.documentElement.appendChild(wrapper);
-    }
-    var container = document.getElementById('analysisToolsPanelContainer');
-    if (!container) {
-      container = document.createElement('div');
-      container.id = 'analysisToolsPanelContainer';
-      wrapper.appendChild(container);
-    }
-    container.innerHTML = PANEL_HTML;
+  /** Scoped id lookup: resolves against the panel currently stored in _root. */
+  function _g(id) {
+    if (!_root) return document.getElementById(id);
+    var suffix = _root.getAttribute('data-at-suffix');
+    if (!suffix) return document.getElementById(id);
+    return _root.querySelector('#' + id + '-' + suffix);
+  }
 
-    // === 工具网格：所有工具平铺直出（可见性优先） ===
-    var grid = document.createElement('div');
-    grid.className = 'at-tool-grid';
-    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px;';
-    var GROUP_COLOR = { '栅格分析': '#2b6cb0', '矢量与属性': '#388e3c', '空间统计': '#7b1fa2', '转换与代价距离': '#d97706' };
+  // =====================================================================
+  // One independent window per analysis tool.
+  // ---------------------------------------------------------------------
+  // `analysisToolsPanel` keeps its fixed id and becomes the "all tools"
+  // launcher (opened by the top-menu entry). Every tool gets its own panel
+  // whose DOM ids are suffixed with the op id, so several tool windows can
+  // be open at the same time without clashing.
+  // =====================================================================
+  var _root = null;      // panel element the field helpers operate on
+  var _panels = {};      // opId -> { op, wrapper, container, root }
+  var _launcher = null;
+  var _keepBound = false;
+
+  var _iconTags = PANEL_HTML.match(/--ui-icon-image:url\('([^']+)'\)/g) || [];
+  function _iconUrl(tag, fallback) {
+    var m = tag ? /url\('([^']+)'\)/.exec(tag) : null;
+    return m ? m[1] : fallback;
+  }
+  var PANEL_ICON = _iconUrl(_iconTags[0], '');
+  var CLOSE_ICON = _iconUrl(_iconTags[1] || _iconTags[0], PANEL_ICON);
+  var PANEL_TITLE = (PANEL_HTML.match(/spatial-toolbar-title">([^<]*)</) || [])[1] || '';
+
+  var GROUP_COLOR = {};
+  var GROUP_ORDER = [];
+  (function () {
+    var palette = ['#2b6cb0', '#388e3c', '#7b1fa2', '#d97706'];
     OPS.forEach(function (op) {
-      var b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'at-tool-btn';
-      b.dataset.opId = op.id;
-      b.title = (op.group || '') + ' - ' + op.label;
-      b.textContent = op.label.replace(/（.*?）/g, '');
-      b.style.cssText = 'font-size:11px;padding:3px 8px;border:1px solid var(--outline-variant,#e2e2e2);' +
-        'border-radius:4px;background:var(--surface-container-low,#f7f7f7);color:var(--on-surface,#202020);' +
-        'cursor:pointer;line-height:1.4;';
-      b.onmouseenter = function() { b.style.borderColor = GROUP_COLOR[op.group] || '#888'; };
-      b.onmouseleave = function() { b.style.borderColor = 'var(--outline-variant,#e2e2e2)'; };
-      b.onclick = function() {
-        opSel.value = op.id;
-        opSel.dispatchEvent(new Event('change'));
-        grid.querySelectorAll('.at-tool-btn').forEach(function(x) { x.style.fontWeight = 'normal'; x.style.borderWidth = '1px'; });
-        b.style.fontWeight = '600';
-      };
-      grid.appendChild(b);
+      if (GROUP_ORDER.indexOf(op.group) < 0) GROUP_ORDER.push(op.group);
+      if (!GROUP_COLOR[op.group]) {
+        GROUP_COLOR[op.group] = palette[Object.keys(GROUP_COLOR).length % palette.length];
+      }
     });
-    var atOpField = opSel.closest('.spatial-field');
-    if (atOpField) atOpField.parentNode.insertBefore(grid, atOpField);
-    var opSel = document.getElementById('atOp');
-    ['栅格分析', '矢量与属性', '空间统计', '转换与代价距离'].forEach(function (groupName) {
+  })();
+
+  /** Give every id / for attribute a private suffix so panels never clash. */
+  function _suffixIds(html, suffix) {
+    return html
+      .replace(/\bid="([A-Za-z0-9_-]+)"/g, function (m, id) { return 'id="' + id + '-' + suffix + '"'; })
+      .replace(/\bfor="([A-Za-z0-9_-]+)"/g, function (m, id) { return 'for="' + id + '-' + suffix + '"'; });
+  }
+
+  function _fillOpSelect(sel, op) {
+    GROUP_ORDER.forEach(function (group) {
       var og = document.createElement('optgroup');
-      og.label = groupName;
-      OPS.forEach(function (op) {
-        if (op.group !== groupName) return;
+      og.label = group;
+      OPS.forEach(function (o) {
+        if (o.group !== group) return;
         var opt = document.createElement('option');
-        opt.value = op.id;
-        opt.textContent = op.label;
+        opt.value = o.id;
+        opt.textContent = o.label;
         og.appendChild(opt);
       });
-      opSel.appendChild(og);
+      sel.appendChild(og);
     });
+    sel.value = op.id;
+  }
 
-    document.getElementById('analysisToolsClose').addEventListener('click', deactivate);
-    if (GIS.workspace) GIS.workspace.preparePanel('analysisToolsPanel', 'analysisToolsToolbar', 'analysisToolsClose', '分析工具');
-    opSel.addEventListener('change', function () { _applyOpVisibility(); _refreshLayers(); grid.querySelectorAll('.at-tool-btn').forEach(function(x) { var on = x.dataset.opId === opSel.value; x.style.fontWeight = on ? '600' : 'normal'; x.style.borderWidth = on ? '2px' : '1px'; }); });
-    document.getElementById('atLayer').addEventListener('change', _refreshFieldSel);
-    document.getElementById('atLayer2').addEventListener('change', _refreshFieldSel);
-    document.getElementById('atReclassMethod').addEventListener('change', _applyOpVisibility);
-    document.getElementById('atWeightsMethod').addEventListener('change', _applyOpVisibility);
-    document.getElementById('atRun').addEventListener('click', _run);
+  function _bindResize() {
+    if (_keepBound) return;
+    _keepBound = true;
     window.addEventListener('resize', _keepVisible);
+  }
 
-    _applyOpVisibility();
+  function _reveal(container, root, panelId) {
+    container.style.display = '';
+    if (GIS.workspace) {
+      GIS.workspace.expandPanel(panelId);
+      return;
+    }
+    root.classList.remove('is-hidden');
+    root.removeAttribute('hidden');
+    if (root.style.display === 'none') root.style.removeProperty('display');
+  }
+
+  function _buildToolPanel(op) {
+    var suffix = op.id;
+    var wrapper = document.createElement('div');
+    wrapper.id = 'analysisToolWrapper-' + suffix;
+    var container = document.createElement('div');
+    container.id = 'analysisToolContainer-' + suffix;
+    container.className = 'analysis-tool-container';
+    container.style.display = 'none';
+    container.innerHTML = _suffixIds(PANEL_HTML, suffix);
+    wrapper.appendChild(container);
+    document.documentElement.appendChild(wrapper);
+
+    var root = container.querySelector('.spatial-panel') || container.firstElementChild;
+    root.setAttribute('data-at-suffix', suffix);
+    var titleEl = root.querySelector('.spatial-toolbar-title');
+    if (titleEl) titleEl.textContent = op.label;
+
+    // The tool picker stays in the DOM (the existing helpers read atOp) but
+    // is never shown: this window serves exactly one tool.
+    var opSel = container.querySelector('#atOp-' + suffix);
+    if (opSel) {
+      _fillOpSelect(opSel, op);
+      var field = opSel.closest ? opSel.closest('.spatial-field') : null;
+      if (field) field.style.display = 'none';
+      opSel.addEventListener('change', function () { _applyOpVisibility(root); _refreshLayers(root); });
+    }
+
+    var closeBtn = container.querySelector('#analysisToolsClose-' + suffix);
+    if (closeBtn) closeBtn.addEventListener('click', function () { container.style.display = 'none'; });
+
+    ['atLayer-' + suffix, 'atLayer2-' + suffix].forEach(function (id) {
+      var el = container.querySelector('#' + id);
+      if (el) el.addEventListener('change', function () { _refreshFieldSel(root); });
+    });
+    ['atReclassMethod-' + suffix, 'atWeightsMethod-' + suffix].forEach(function (id) {
+      var el = container.querySelector('#' + id);
+      if (el) el.addEventListener('change', function () { _applyOpVisibility(root); });
+    });
+    var runBtn = container.querySelector('#atRun-' + suffix);
+    if (runBtn) runBtn.addEventListener('click', function () { _run(root); });
+
+    if (GIS.workspace) {
+      GIS.workspace.preparePanel(root.id, 'analysisToolsToolbar-' + suffix, 'analysisToolsClose-' + suffix, op.label);
+    }
+    _centerPanel(container);
+    // Cascade tool windows so several open at once stay readable.
+    var openCount = Object.keys(_panels).length;
+    if (openCount > 0) {
+      var offset = 22 * (openCount % 7);
+      var pos = _clampToMapArea(container, (parseFloat(container.style.left) || 0) + offset,
+        (parseFloat(container.style.top) || 0) + offset);
+      container.style.left = pos[0] + 'px';
+      container.style.top = pos[1] + 'px';
+    }
+    _initDrag(container);
+    _bindResize();
+    _applyOpVisibility(root);
+
+    var rec = { op: op, wrapper: wrapper, container: container, root: root };
+    _panels[op.id] = rec;
+    return rec;
+  }
+
+  function _showTool(opId) {
+    var op = _opById(opId);
+    if (!op) return _showLauncher();
+    var rec = _panels[op.id] || _buildToolPanel(op);
+    _reveal(rec.container, rec.root, rec.root.id);
+    _applyOpVisibility(rec.root);
+    _refreshLayers(rec.root);
+    return rec;
+  }
+
+  function _buildLauncher() {
+    var wrapper = document.createElement('div');
+    wrapper.id = 'analysisToolsPanelWrapper';
+    var container = document.createElement('div');
+    container.id = 'analysisToolsPanelContainer';
+    container.style.display = 'none';
+    wrapper.appendChild(container);
+    document.documentElement.appendChild(wrapper);
+    container.innerHTML =
+      '<div class="spatial-panel" id="analysisToolsPanel">' +
+        '<div class="spatial-toolbar" id="analysisToolsToolbar">' +
+          '<span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url(\'' + PANEL_ICON + '\')"></span>' +
+          '<span class="spatial-toolbar-title">' + PANEL_TITLE + '</span>' +
+          '<button class="spatial-toolbar-close" id="analysisToolsClose">' +
+            '<span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url(\'' + CLOSE_ICON + '\')"></span>' +
+          '</button>' +
+        '</div>' +
+        '<div class="spatial-body" id="analysisToolsBody"></div>' +
+      '</div>';
+
+    var root = container.firstElementChild;
+    var body = container.querySelector('#analysisToolsBody');
+    var grid = document.createElement('div');
+    grid.className = 'at-tool-grid';
+    grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
+    GROUP_ORDER.forEach(function (group) {
+      var head = document.createElement('div');
+      head.style.cssText = 'flex:0 0 100%;margin:6px 0 2px;font-size:12px;color:var(--on-surface-variant,#5f5f5f);';
+      head.textContent = group;
+      grid.appendChild(head);
+      OPS.forEach(function (o) {
+        if (o.group !== group) return;
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'at-tool-btn';
+        b.title = o.label + ' - ' + o.tool;
+        b.textContent = o.label.replace(/\uFF08.*?\uFF09/g, '');
+        b.style.cssText = 'font-size:12px;padding:4px 10px;border:1px solid var(--outline-variant,#e2e2e2);' +
+          'border-radius:4px;background:var(--surface-container-low,#f7f7f7);color:var(--on-surface,#202020);cursor:pointer;line-height:1.4;';
+        b.onclick = function () { _showTool(o.id); };
+        grid.appendChild(b);
+      });
+    });
+    if (body) body.appendChild(grid);
+
+    var closeBtn = container.querySelector('#analysisToolsClose');
+    if (closeBtn) closeBtn.addEventListener('click', function () { container.style.display = 'none'; });
+    if (GIS.workspace) {
+      GIS.workspace.preparePanel('analysisToolsPanel', 'analysisToolsToolbar', 'analysisToolsClose', PANEL_TITLE);
+    }
     _centerPanel(container);
     _initDrag(container);
-    _initialized = true;
+    _bindResize();
+    _launcher = { wrapper: wrapper, container: container, root: root };
+    return _launcher;
   }
 
-  function activate() {
-    if (_active) return;
-    init();
-    var container = document.getElementById('analysisToolsPanelContainer');
-    if (!container) return;
-    container.style.display = '';
-    if (GIS.workspace) GIS.workspace.expandPanel('analysisToolsPanel');
-    _refreshLayers();
-    _centerPanel(container);
-    _active = true;
+  function _showLauncher() {
+    if (!_launcher) _buildLauncher();
+    _reveal(_launcher.container, _launcher.root, 'analysisToolsPanel');
+    return _launcher;
   }
+
+  function init() { if (!_launcher) _buildLauncher(); }
+
+  function activate() { return _showLauncher(); }
 
   function deactivate() {
-    _active = false;
-    var container = document.getElementById('analysisToolsPanelContainer');
-    if (container) container.style.display = 'none';
+    Object.keys(_panels).forEach(function (id) { _panels[id].container.style.display = 'none'; });
+    if (_launcher) _launcher.container.style.display = 'none';
   }
 
   function toggle() {
-    if (window.GIS._lastMenuOp) {
-      var opid = window.GIS._lastMenuOp;
-      window.GIS._lastMenuOp = '';
-      openWith(opid);
-      return;
-    }
-    if (_active) { deactivate(); } else { activate(); }
+    var opId = window.GIS._lastMenuOp || '';
+    window.GIS._lastMenuOp = '';
+    if (opId && _opById(opId)) _showTool(opId);
+    else _showLauncher();
   }
 
   function openWith(opId) {
-    activate();
-    if (opId && _opById(opId)) {
-      document.getElementById('atOp').value = opId;
-      _applyOpVisibility();
-      _refreshLayers();
-    }
+    if (opId && _opById(opId)) return _showTool(opId);
+    return _showLauncher();
   }
-
-  function _applyOpVisibility() {
-    var op = _opById(document.getElementById('atOp').value);
+  function _applyOpVisibility(root) {
+    _root = root;
+    var op = _opById(_g('atOp').value);
     if (!op) return;
     var lArgs = _opLayerArgs(op);
     _show('atLayerField', lArgs.length >= 1);
@@ -411,8 +539,8 @@ window.GIS = window.GIS || {};
     _setLabel('atField2Label', e === 'join' ? '连接字段' : (e === 'p2l' ? '排序字段（可选）' : '字段'));
 
     _show('atReclassMethodField', e === 'reclassify');
-    _show('atMappingField', e === 'reclassify' && document.getElementById('atReclassMethod').value === 'mapping');
-    _show('atClassesField', e === 'reclassify' && document.getElementById('atReclassMethod').value !== 'mapping');
+    _show('atMappingField', e === 'reclassify' && _g('atReclassMethod').value === 'mapping');
+    _show('atClassesField', e === 'reclassify' && _g('atReclassMethod').value !== 'mapping');
     _show('atFocalStatField', e === 'focal');
     _show('atFocalSizeField', e === 'focal');
     _show('atSourceValueField', e === 'sourceValue');
@@ -426,7 +554,7 @@ window.GIS = window.GIS || {};
     _show('atIntervalField', e === 'gpal');
     _show('atUnitField', e === 'gpal');
     _show('atWeightsMethodField', e === 'weights');
-    _show('atKField', e === 'weights' && document.getElementById('atWeightsMethod').value === 'knn');
+    _show('atKField', e === 'weights' && _g('atWeightsMethod').value === 'knn');
     _show('atWeightsIntervalField', e === 'weights');
     _show('atWeightsLagField', e === 'weights');
     _show('atIndependentsField', e === 'regression');
@@ -438,11 +566,12 @@ window.GIS = window.GIS || {};
     _show('atRowsField', e === 'fishnet');
     _show('atColsField', e === 'fishnet');
     _show('atAllTouchedField', e === 'f2r');
-    _refreshFieldSel();
+    _refreshFieldSel(root);
   }
 
   /** 图层下拉：后端注册名 与 前端面板名 合并（直连前会自动补注册） */
-  function _refreshLayers() {
+  function _refreshLayers(root) {
+    _root = root;
     var feNames = (GIS.layers && GIS.layers.getLayerNames) ? GIS.layers.getLayerNames() : [];
     fetch((GIS.api && GIS.api.BASE_URL || '') + '/api/layers/names')
       .then(function (r) { return r.json(); })
@@ -451,21 +580,22 @@ window.GIS = window.GIS || {};
         ((data && data.names) || []).concat(feNames).forEach(function (n) {
           if (n && !seen[n]) { seen[n] = 1; merged.push(n); }
         });
-        _fillLayerSelect('atLayer', merged);
-        _fillLayerSelect('atLayer2', merged);
-        _fillLayerSelect('atLayer3', merged);
-        _refreshFieldSel();
+        _fillLayerSelect(root, 'atLayer', merged);
+        _fillLayerSelect(root, 'atLayer2', merged);
+        _fillLayerSelect(root, 'atLayer3', merged);
+        _refreshFieldSel(root);
       })
       .catch(function () {
-        _fillLayerSelect('atLayer', feNames);
-        _fillLayerSelect('atLayer2', feNames);
-        _fillLayerSelect('atLayer3', feNames);
-        _refreshFieldSel();
+        _fillLayerSelect(root, 'atLayer', feNames);
+        _fillLayerSelect(root, 'atLayer2', feNames);
+        _fillLayerSelect(root, 'atLayer3', feNames);
+        _refreshFieldSel(root);
       });
   }
 
-  function _fillLayerSelect(selId, names) {
-    var sel = document.getElementById(selId);
+  function _fillLayerSelect(root, selId, names) {
+    _root = root;
+    var sel = _g(selId);
     if (!sel) return;
     var cur = sel.value;
     sel.innerHTML = '<option value="">-- 请选择图层 --</option>';
@@ -478,18 +608,20 @@ window.GIS = window.GIS || {};
     });
   }
 
-  function _refreshFieldSel() {
-    var op = _opById(document.getElementById('atOp').value);
-    _fillFieldSel('atField1', document.getElementById('atLayer').value);
+  function _refreshFieldSel(root) {
+    _root = root;
+    var op = _opById(_g('atOp').value);
+    _fillFieldSel(root, 'atField1', _g('atLayer').value);
     if (op && op.extra === 'join') {
-      _fillFieldSel('atField2', document.getElementById('atLayer2').value);
+      _fillFieldSel(root, 'atField2', _g('atLayer2').value);
     } else {
-      _fillFieldSel('atField2', document.getElementById('atLayer').value);
+      _fillFieldSel(root, 'atField2', _g('atLayer').value);
     }
   }
 
-  function _fillFieldSel(selId, layerName) {
-    var sel = document.getElementById(selId);
+  function _fillFieldSel(root, selId, layerName) {
+    _root = root;
+    var sel = _g(selId);
     if (!sel) return;
     var cur = sel.value;
     sel.innerHTML = '<option value="">-- 选择字段 --</option>';
@@ -546,17 +678,21 @@ window.GIS = window.GIS || {};
 
   /** 面板保持在地图可见区域内（窗口缩放/侧栏宽度变化时）。 */
   function _keepVisible() {
-    var container = document.getElementById('analysisToolsPanelContainer');
-    if (!container || !container.offsetHeight) return;
-    var r = container.getBoundingClientRect();
-    var pos = _clampToMapArea(container, r.left, r.top);
-    container.style.left = pos[0] + 'px';
-    container.style.top = pos[1] + 'px';
-    _lastLeft = pos[0]; _lastTop = pos[1];
+    var list = [];
+    Object.keys(_panels).forEach(function (id) { list.push(_panels[id].container); });
+    if (_launcher) list.push(_launcher.container);
+    list.forEach(function (container) {
+      if (!container || container.style.display === 'none' || !container.offsetHeight) return;
+      var r = container.getBoundingClientRect();
+      var pos = _clampToMapArea(container, r.left, r.top);
+      container.style.left = pos[0] + 'px';
+      container.style.top = pos[1] + 'px';
+      _lastLeft = pos[0]; _lastTop = pos[1];
+    });
   }
 
   function _initDrag(container) {
-    var header = document.getElementById('analysisToolsToolbar');
+    var header = container.querySelector('.spatial-toolbar');
     if (!header) return;
     var startX, startY, startLeft, startTop;
     function onStart(e) {
@@ -583,10 +719,12 @@ window.GIS = window.GIS || {};
   }
 
   /** 直连执行：同步图层 然后 调用后端工具，结果/错误都回到面板内 */
-  function _invoke(tool, args) {
-    var btn = document.getElementById('atRun');
+  function _invoke(root, tool, args) {
+    _root = root;
+    var panelId = root.id;
+    var btn = _g('atRun');
     if (btn) btn.disabled = true;
-    if (GIS.workspace) GIS.workspace.toolPending('analysisToolsPanel', btn);
+    if (GIS.workspace) GIS.workspace.toolPending(panelId, btn);
     var layerNames = Object.keys(args || {})
       .filter(function (k) { return /layer/.test(k) && typeof args[k] === 'string' && args[k]; })
       .map(function (k) { return args[k]; });
@@ -598,17 +736,18 @@ window.GIS = window.GIS || {};
       return GIS.api.invokeTool(tool, args);
     }).then(function (result) {
       if (btn && !GIS.workspace) btn.disabled = false;
-      if (GIS.workspace && !GIS.workspace.toolFeedback('analysisToolsPanel', result)) return;
+      if (GIS.workspace && !GIS.workspace.toolFeedback(panelId, result)) return;
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
     }).catch(function (err) {
       if (btn && !GIS.workspace) btn.disabled = false;
-      if (GIS.workspace) GIS.workspace.toolFeedback('analysisToolsPanel', null, err);
+      if (GIS.workspace) GIS.workspace.toolFeedback(panelId, null, err);
       else alert('执行失败: ' + err.message);
     });
   }
 
-  function _run() {
-    var op = _opById(document.getElementById('atOp').value);
+  function _run(root) {
+    _root = root;
+    var op = _opById(_g('atOp').value);
     if (!op) return;
     var args = {};
     Object.keys(op.args || {}).forEach(function (k) { args[k] = op.args[k]; });
@@ -628,7 +767,7 @@ window.GIS = window.GIS || {};
 
     var e = op.extra || '';
     if (e === 'reclassify') {
-      var method = document.getElementById('atReclassMethod').value;
+      var method = _g('atReclassMethod').value;
       args.method = method;
       if (method === 'mapping') {
         var mapping = _text('atMapping');
@@ -638,7 +777,7 @@ window.GIS = window.GIS || {};
         args.classes = Math.max(2, Math.round(_num('atClasses', 5)));
       }
     } else if (e === 'focal') {
-      args.stat = document.getElementById('atFocalStat').value;
+      args.stat = _g('atFocalStat').value;
       args.size = Math.max(3, Math.round(_num('atFocalSize', 3)));
     } else if (e === 'sourceValue') {
       var sv = _text('atSourceValue');
@@ -649,57 +788,57 @@ window.GIS = window.GIS || {};
       var ref = _text('atReference');
       if (ref !== '') args.reference = parseFloat(ref);
     } else if (e === 'join') {
-      var tf = document.getElementById('atField1').value;
-      var jf = document.getElementById('atField2').value;
+      var tf = _g('atField1').value;
+      var jf = _g('atField2').value;
       if (!tf) { alert('请选择目标字段'); return; }
       if (!jf) { alert('请选择连接字段'); return; }
       args.target_field = tf;
       args.join_field = jf;
       var fields = _text('atJoinFields');
       if (fields) args.fields = fields;
-      args.how = document.getElementById('atHow').value;
+      args.how = _g('atHow').value;
     } else if (e === 'metrics') {
       var metrics = _text('atMetrics');
       if (metrics) args.metrics = metrics;
     } else if (e === 'minGeom') {
-      args.kind = document.getElementById('atKind').value;
-      var mggf = document.getElementById('atField1').value;
+      args.kind = _g('atKind').value;
+      var mggf = _g('atField1').value;
       if (mggf) args.group_field = mggf;
     } else if (e === 'p2l') {
-      var pgf = document.getElementById('atField1').value;
+      var pgf = _g('atField1').value;
       if (!pgf) { alert('请选择分组字段'); return; }
       args.group_field = pgf;
-      var of = document.getElementById('atField2').value;
+      var of = _g('atField2').value;
       if (of) args.order_field = of;
       args.close_ring = _checked('atCloseRing');
     } else if (e === 'gpal') {
       args.interval = _num('atInterval', 100);
-      args.unit = document.getElementById('atUnit').value;
+      args.unit = _g('atUnit').value;
     } else if (e === 'weights') {
-      args.method = document.getElementById('atWeightsMethod').value;
+      args.method = _g('atWeightsMethod').value;
       args.k = Math.max(1, Math.round(_num('atK', 8)));
       var wInterval = _text('atWeightsInterval');
       if (wInterval !== '') args.interval = parseFloat(wInterval);
       var wLag = _text('atWeightsLag');
       if (wLag !== '') args.lag = Math.round(parseFloat(wLag));
     } else if (e === 'regression') {
-      var dep = document.getElementById('atField1').value;
+      var dep = _g('atField1').value;
       var ind = _text('atIndependents');
       if (!dep) { alert('请选择因变量字段'); return; }
       if (!ind) { alert('请输入自变量字段，逗号分隔'); return; }
       args.dependent = dep;
       args.independents = ind;
     } else if (e === 'directional') {
-      var dgf = document.getElementById('atField1').value;
+      var dgf = _g('atField1').value;
       if (dgf) args.group_field = dgf;
     } else if (e === 'tendency') {
-      var twf = document.getElementById('atField1').value;
+      var twf = _g('atField1').value;
       if (twf) args.weight_field = twf;
     } else if (e === 'od') {
-      var ns = document.getElementById('atNetworkSource').value;
+      var ns = _g('atNetworkSource').value;
       if (ns) args.network_source = ns;
     } else if (e === 'f2r') {
-      var vf = document.getElementById('atField1').value;
+      var vf = _g('atField1').value;
       if (vf) args.value_field = vf;
       args.cell_size = _num('atCellSize', 0);
       args.all_touched = _checked('atAllTouched');
@@ -713,7 +852,7 @@ window.GIS = window.GIS || {};
       args.rows = Math.round(_num('atRows', 0));
       args.cols = Math.round(_num('atCols', 0));
     }
-    return _invoke(op.tool, args);
+    return _invoke(root, op.tool, args);
   }
 
   GIS.analysisTools = { init: init, activate: activate, deactivate: deactivate, toggle: toggle, openWith: openWith };

@@ -215,9 +215,9 @@ def test_direct_invoke_and_sync(js_text):
 
 
 def test_feedback_and_busy_state(js_text):
-    assert "GIS.workspace.toolFeedback('analysisToolsPanel'" in js_text, \
-        "结果/错误必须经 GIS.workspace.toolFeedback('analysisToolsPanel', ...) 渲染在面板内"
-    assert "toolPending('analysisToolsPanel'" in js_text, \
+    assert "toolFeedback(panelId" in js_text, \
+        "结果/错误必须经 GIS.workspace.toolFeedback(panelId, ...) 渲染在面板内"
+    assert "toolPending(panelId" in js_text, \
         "执行期间应经 GIS.workspace.toolPending 标记忙碌（禁用运行按钮）"
     assert re.search(r"\.disabled\s*=\s*true", js_text), "运行期间必须禁用运行按钮"
 

@@ -538,6 +538,12 @@
     const panel = document.getElementById(panelId);
     if (!panel) return;
     panel.classList.remove('workspace-panel-folded');
+    // preparePanel's close handler also sets hidden / is-hidden / display:none!important on the
+    // panel element. Clear that state on every open, otherwise the panel stays blank after
+    // being closed with the X button and reopened.
+    panel.classList.remove('is-hidden');
+    panel.removeAttribute('hidden');
+    if (panel.style.display === 'none') panel.style.removeProperty('display');
     const fold = panel.querySelector('.workspace-panel-fold');
     if (fold) {
       fold.title = fold.title.replace(/^展开/, '折叠');
@@ -546,7 +552,7 @@
     }
   }
   function keepPanelsVisible() {
-    document.querySelectorAll('#spatialPanelContainer, #networkPanelContainer, #spatialStatsPanelContainer, #rasterToolsPanelContainer, #debugPanel').forEach(function(container) {
+    document.querySelectorAll('#spatialPanelContainer, #networkPanelContainer, #spatialStatsPanelContainer, #rasterToolsPanelContainer, #analysisToolsPanelContainer, #debugPanel').forEach(function(container) {
       if (!container.getClientRects().length || !container.offsetHeight) return;
       const r = container.getBoundingClientRect();
       const pos = clampPanel(container, r.left, r.top, r.width);
