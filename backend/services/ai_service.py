@@ -46,7 +46,7 @@ _KNOWLEDGE_MAP = {
 
 # 内联技能缓存
 _INLINE_SKILLS = {
-    "matplotlib": "Matplotlib 数据可视化，支持线图/散点图/柱状图/直方图/热图/六边形分箱/3D图。中文字体已配。plt.savefig('output/chart_name.png')",
+    "matplotlib": "Matplotlib 数据可视化，支持线图/散点图/柱状图/直方图/热图/六边形分箱/3D图。中文字体已配（严禁 rcdefaults/style.use 或改写 font.* 重置字体，否则中文变方框）。plt.savefig('output/chart_name.png')",
     "pyecharts": "Pyecharts 交互式 HTML 图表，支持 Map/Bar/Line/Pie/Radar。chart.render('name.html')",
     "geopandas": "GeoPandas 空间数据处理：gpd.sjoin()空间连接、gdf.clip()裁剪、gdf.dissolve()聚合",
     "shapely": "Shapely 几何操作：buffer/intersection/union/difference/centroid/area/simplify",
@@ -296,6 +296,7 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
   - **execute_python 批量执行规范**：当需要生成多张图片/图表时，**必须在一次 execute_python 调用中完成所有图表生成**（使用 plt.subplot 或多次 plt.savefig），不要为每张图片单独调用 execute_python。单独调用会触发过热保护（上限20次/请求）。
   - **严禁在最终回复里粘贴你已经执行过的源码**（复述也不行）：代码跑完后只是执行细节，不是交付物，正文只写"做了什么→结果是什么→结论是什么"；只有用户明确索要代码时才展示源码。
   - **图表/地图制图规范（强制执行）**：使用 matplotlib 生成任何图表或地图成果图时：
+     **中文字体绝对不许重置（否则标题/图例全变方框）**：沙箱已预置中文字体，**严禁**调用 `plt.rcdefaults()` / `matplotlib.rcdefaults()` / `plt.style.use(...)`（会重置 rcParams），也**严禁**把 `font.family`、`font.sans-serif` 赋值成 Arial/SimHei/DejaVu Sans 等字体名；需要样式时只做单项设置（例如关掉负号乱码开关），不要再动字体项。万不得已要补字体，只能**追加**：`plt.rcParams['font.sans-serif'] = list(plt.rcParams['font.sans-serif']) + ['SimHei']`。
     ① **版面紧凑与无裁切**：保存时必须指定 `plt.savefig(..., bbox_inches='tight', dpi=150)` 并合理设置 figsize（推荐宽屏比例如 10x6 或 9x6），确保主体撑满画幅、无四周大面积无意义留白。色条（Colorbar）若置于右侧，必须设置 `fraction=0.03, pad=0.04`，避免右侧文字刻度被画布边缘截断。
     ② **专业制图排版（杜绝图表垃圾）**：行政区专题图/面要素填色图**禁止使用灰底与网格线**（背景保持纯白或透明），必须使用 `plt.axis('off')` 关闭无意义的经纬度数字坐标轴；标题必须简明规范（如《2024年全国城市GDP前20强分布图》），**严禁在主标题加括号写"黄→橙→红"或"颜色越深代表越高"等废话**。
     ③ **注记防重叠与自动避让（重中之重，严禁黑块堆叠）**：
@@ -479,7 +480,7 @@ SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
   - execute_python 中禁止硬编码 API Key
   - **execute_python 批量执行规范**：当需要生成多张图片/图表时，**必须在一次 execute_python 调用中完成所有图表生成**（使用 plt.subplot 或多次 plt.savefig），不要为每张图片单独调用 execute_python。单独调用会触发过热保护（上限20次/请求）。
   - **严禁在最终回复里粘贴你已经执行过的源码**（复述也不行）：代码跑完后只是执行细节，不是交付物，正文只写"做了什么→结果是什么→结论是什么"；只有用户明确索要代码时才展示源码。
-  - **图表/地图制图规范（强制执行）**：使用 matplotlib 生成任何图表或地图时：①标题明确规范（无多余废话）；②必须带标准图例或色条（注明指标与单位），遥感分类图必须标明类别对应颜色；③**注记严禁相互堆叠重叠**：长三角、珠三角等密集区域必须使用 `adjustText`（已预装：`from adjustText import adjust_text; adjust_text(texts, arrowprops=dict(arrowstyle='->', color='#666', lw=0.6))`）或引出线避让，文字简练（如“上海\n4.7万亿”），边框浅灰细线，严禁挤成黑块；④保存必须用 `bbox_inches='tight', dpi=150`。生成后在回复中说明主要图例与结论。
+  - **图表/地图制图规范（强制执行）**：使用 matplotlib 生成任何图表或地图时：**中文字体不许重置**（严禁 `plt.rcdefaults()`/`plt.style.use()` 或改写 `font.*`，否则中文全变方框）；①标题明确规范（无多余废话）；②必须带标准图例或色条（注明指标与单位），遥感分类图必须标明类别对应颜色；③**注记严禁相互堆叠重叠**：长三角、珠三角等密集区域必须使用 `adjustText`（已预装：`from adjustText import adjust_text; adjust_text(texts, arrowprops=dict(arrowstyle='->', color='#666', lw=0.6))`）或引出线避让，文字简练（如“上海\n4.7万亿”），边框浅灰细线，严禁挤成黑块；④保存必须用 `bbox_inches='tight', dpi=150`。生成后在回复中说明主要图例与结论。
 
   - **专题图制作与空间可视化规范（强制执行）**：
     ① 交互式地图渲染优先（强制）：平台地图本身具备完整的矢量图层交互能力与右下角动态浮动图例。当用户要求“做专题图”、“分级设色”、“人口/经济分布图”、“带图例”时，**必须且首选使用 datav_boundary 加载行政区，结合指标字段直接调用 spatial_graduated_colors 工具在交互地图上渲染分级图层**（前端地图会自动在右下角浮现标准分级图例框，要素可点击查看属性）。

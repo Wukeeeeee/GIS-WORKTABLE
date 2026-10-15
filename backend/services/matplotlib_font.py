@@ -193,6 +193,43 @@ for _fp in _candidate_fonts:
         except Exception:
             continue
 
+# 兜底：模型若调用 rcdefaults() / style.use() 或改写 font.* 把中文字体重置掉，
+# 这里包一层，执行完自动把 CJK 字体贴回去（否则出图中文会变方框）
+try:
+    import matplotlib as _mpl
+    _cjk_chain = list(plt.rcParams.get('font.sans-serif', [])) or ['Microsoft YaHei', 'SimHei', 'DejaVu Sans']
+
+    def _reapply_cjk():
+        try:
+            plt.rcParams['font.sans-serif'] = _cjk_chain
+            plt.rcParams['font.family'] = 'sans-serif'
+            plt.rcParams['axes.unicode_minus'] = False
+        except Exception:
+            pass
+
+    _orig_rcdefaults = _mpl.rcdefaults
+
+    def _safe_rcdefaults(*_a, **_k):
+        _orig_rcdefaults(*_a, **_k)
+        _reapply_cjk()
+
+    _mpl.rcdefaults = _safe_rcdefaults
+    try:
+        plt.rcdefaults = _safe_rcdefaults
+    except Exception:
+        pass
+
+    _orig_style_use = plt.style.use
+
+    def _safe_style_use(style=None, *a, **k):
+        r = _orig_style_use(style, *a, **k)
+        _reapply_cjk()
+        return r
+
+    plt.style.use = _safe_style_use
+except Exception:
+    pass
+
 # 兜底：遍历 fontManager 查找任何 CJK 字体
 if not _font_set:
     try:
