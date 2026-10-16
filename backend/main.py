@@ -1142,6 +1142,11 @@ def _export_shp_sync(geojson: dict, crs: str, name: str):
         if gdf.empty:
             return None, "没有可导出的要素"
 
+        # 不静默丢弃混合几何要素；由用户选择同类型图层后重试。
+        types = gdf.geom_type.value_counts()
+        if len(types) > 1:
+            return None, "Shapefile 不支持混合几何类型，请按几何类型拆分图层后导出，或使用 GeoJSON 保留全部要素"
+
         # 字段名截断（Shapefile 限制 10 字符）
         rename_map = {}
         for col in gdf.columns:

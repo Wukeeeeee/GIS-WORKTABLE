@@ -1,0 +1,66 @@
+{
+  "type": "FeatureCollection",
+  "name": "sample_delivery_test",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:OGC:1.3:CRS84"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "poly_001",
+        "name": "示范园区核心区",
+        "category": "规划面",
+        "level": "A",
+        "score": 96.5
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [121.310, 31.190],
+            [121.320, 31.190],
+            [121.320, 31.200],
+            [121.310, 31.200],
+            [121.310, 31.190]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "line_001",
+        "name": "示范园区联络线",
+        "category": "干道",
+        "level": "主干",
+        "score": 88.0
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [121.305, 31.195],
+          [121.315, 31.195],
+          [121.325, 31.195]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "point_001",
+        "name": "空气质量微站01",
+        "category": "微站",
+        "level": "国控",
+        "score": 99.2
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [121.315, 31.195]
+      }
+    }
+  ]
+}

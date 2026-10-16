@@ -86,7 +86,7 @@ def main():
     print("分层测试执行汇总报告")
     print("=" * 70)
     for title, passed, dur in results:
-        status_str = "✓ 通过 (PASSED)" if passed else "✕ 失败 (FAILED)"
+        status_str = "[PASS] 通过" if passed else "[FAIL] 失败"
         print(f"[{status_str}] {title:<48} ({dur:.2f}s)")
 
     print("-" * 70)

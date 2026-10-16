@@ -53,6 +53,10 @@ GIS WorkTable 将数据加载、空间分析、地图展示和结果导出放在
 
 ### 安装与启动
 
+Windows 64 位用户可直接双击 `start.bat`：自动检查 Python 3.11–3.13 与依赖，必要时创建项目虚拟环境并安装依赖，然后启动浏览器。首次运行需要联网、目录可写；安装缓存位于 `.bootstrap/`。已有可用 `.venv` 优先复用，`GIS_PYTHON` 可指定创建环境的基础解释器。
+
+以下为手动安装方式（macOS / Linux 仍需按实际环境安装）：
+
 以下命令在仓库根目录执行：
 
 ```bash
@@ -84,7 +88,7 @@ python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 
 Windows 可运行 `start.bat` 或 `scripts/start-desktop.bat`。启动器只复用当前仓库的 GIS 服务；默认固定使用 8000，冲突时报错，不自动切换端口，以保持浏览器本地存储地址稳定。可以用环境变量 `GIS_PORT` 手动指定其他端口。`scripts/stop.bat` 只停止默认端口（或 `GIS_PORT` 指定端口上）身份匹配的服务；更新前启动的旧服务请在原窗口按 Ctrl+C 关闭。
 
-Python 解释器依次选择 `GIS_PYTHON`、项目 `.venv`、PATH 中的 Python。上述手动安装命令尚未在全新环境验证，macOS / Linux 也尚未完成平台验收。
+Windows 自动启动优先复用通过检查的项目 `.venv`；`GIS_PYTHON` 指定创建环境时使用的基础解释器，未指定时探测系统 Python，必要时下载运行时。上述手动安装命令尚未在全新环境验证，macOS / Linux 也尚未完成平台验收。
 
 ### 第一次操作：不配置 AI 也可体验
 
@@ -200,3 +204,5 @@ GIS 结果仅供研究和辅助分析，不替代专业判断。软件许可证�
 项目采用 [MIT License](LICENSE)。Leaflet、CesiumJS、FastAPI、LangGraph、GeoPandas、Shapely、Rasterio 等依赖及第三方数据仍适用各自许可证和使用条款。
 
 卫星影像巡检的算法思路参考 [GeoHarness](https://github.com/Star-Learning/GeoHarness)；空间服务目录关联项目为 [GeoSource-MCP](https://github.com/Wukeeeeee/GeoSource-MCP.git)。
+
+本次跨仓同步范围与验收：见 [同步记录](docs/SYNC-2026-10-16.md)。
