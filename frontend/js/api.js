@@ -699,7 +699,7 @@ window.GIS.api = (() => {
     if (!res.ok) throw new Error(`删除全部工程失败: ${res.status}`);
     return res.json();
   }
-  async function autoSaveProject(sessionId, projectId) {
+  async function autoSaveProject(sessionId, projectId, layerGroups, layerAssignments) {
     const sid = sessionId || (window.GIS.project && window.GIS.project.getCurrentSessionId ? window.GIS.project.getCurrentSessionId() : 'default');
     const pid = projectId || (window.GIS.project && window.GIS.project.getCurrentProjectId ? window.GIS.project.getCurrentProjectId() : null);
     let url = `${BASE_URL}/api/projects/auto-save?session_id=${encodeURIComponent(sid)}`;
@@ -707,6 +707,10 @@ window.GIS.api = (() => {
     const res = await fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        layer_groups: layerGroups || [],
+        layer_assignments: layerAssignments || [],
+      }),
     });
     if (!res.ok) throw new Error(`自动保存失败: ${res.status}`);
     return res.json();

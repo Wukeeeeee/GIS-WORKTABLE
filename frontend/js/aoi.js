@@ -46,6 +46,7 @@ window.GIS = window.GIS || {};
     bubble.appendChild(title);
 
     // 候选列表
+    var choices = [];
     suggestions.forEach(function(item, idx) {
       var el = document.createElement('div');
       el.style.cssText = 'padding:8px 10px;margin-bottom:4px;border:1px solid #e0e0e0;border-radius:4px;cursor:pointer;font-size:13px;transition:background 0.15s;';
@@ -64,10 +65,11 @@ window.GIS = window.GIS || {};
         this.style.background = '';
       });
       el.addEventListener('click', function() {
-        selectAndSend(item);
+        selectAndSend(item, row);
       });
 
       bubble.appendChild(el);
+      choices.push(el);
     });
 
     // 底部提示
@@ -75,44 +77,72 @@ window.GIS = window.GIS || {};
     hint.style.cssText = 'font-size:11px;color:#aaa;margin-top:10px;';
     hint.textContent = '点击上方任意一项选择';
     bubble.appendChild(hint);
+    row._aoiChoices = choices;
+    row._aoiHint = hint;
 
     row.appendChild(bubble);
     container.appendChild(row);
     container.scrollTop = container.scrollHeight;
   }
 
-  function selectAndSend(item) {
+  function selectAndSend(item, row) {
     var name = item.name;
     var poiId = item.id || item.uid || '';
 
-    if (!poiId) return;
+    if (!poiId || (row && row.dataset.busy === 'true')) return;
+    if (row) {
+      row.dataset.busy = 'true';
+      (row._aoiChoices || []).forEach(function (choice) {
+        choice.style.pointerEvents = 'none';
+        choice.setAttribute('aria-disabled', 'true');
+      });
+      if (row._aoiHint) row._aoiHint.textContent = '正在提取「' + name + '」；失败时可重试或选择其他地点';
+    }
 
-    // 移除选择消息（避免重复点击）
-    var msgEl = document.getElementById('aoi-select-msg');
-    if (msgEl) msgEl.remove();
+    function restoreChoices(message) {
+      if (!row) return;
+      row.dataset.busy = 'false';
+      (row._aoiChoices || []).forEach(function (choice) {
+        choice.style.pointerEvents = '';
+        choice.removeAttribute('aria-disabled');
+      });
+      if (row._aoiHint) row._aoiHint.textContent = message;
+    }
+    function removeChoices() {
+      if (row && row.remove) row.remove();
+    }
 
     // 直连提取（不经 AI）：cn_aoi_extract 是确定性工具
     if (GIS.api && GIS.api.invokeTool) {
-      GIS.chat.addMessage('正在提取「' + name + '」的建筑轮廓…', 'system');
+      if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('正在提取「' + name + '」的建筑轮廓…', 'system');
       GIS.api.invokeTool('cn_aoi_extract', { uid: poiId, name: name })
         .then(function (result) {
-          if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
-          if (GIS.chat && GIS.chat.addMessage && result.response) {
+          var succeeded = !!(result && result.ok !== false && Array.isArray(result.layers) && result.layers.length);
+          if (succeeded && GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
+          if (GIS.chat && GIS.chat.addMessage && result && result.response) {
             GIS.chat.addMessage(result.response, 'system');
           }
+          if (succeeded) removeChoices();
+          else restoreChoices('提取未成功，可重试或选择其他地点');
         })
         .catch(function (err) {
           console.error('[GIS AOI] 直连提取失败:', err);
           if (GIS.chat && GIS.chat.addMessage) {
             GIS.chat.addMessage('AOI 提取失败: ' + err.message, 'system');
           }
+          restoreChoices('提取失败，可重试或选择其他地点');
         });
       return;
     }
     // 兜底：旧路径走 AI
     var message = '已选择AOI候选: ' + name + ' | ID: ' + poiId;
-    GIS.chat.sendMessage(message).catch(function(err) {
+    if (!GIS.chat || !GIS.chat.sendMessage) {
+      restoreChoices('暂时无法提交该地点，请稍后重试');
+      return;
+    }
+    GIS.chat.sendMessage(message).then(removeChoices).catch(function(err) {
       console.error('[GIS AOI] 发送失败:', err);
+      restoreChoices('提交失败，可重试或选择其他地点');
     });
   }
 

@@ -182,7 +182,7 @@ window.GIS = window.GIS || {};
     // 运行按钮
     container.querySelectorAll('.spatial-run-btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        _runOperation(this.dataset.op);
+        _runOperation(this.dataset.op, this);
       });
     });
 
@@ -334,23 +334,32 @@ window.GIS = window.GIS || {};
     var layerSel = document.getElementById(layerId);
     var fieldSel = document.getElementById(fieldId);
     if (!layerSel || !fieldSel) return;
+    if (layerSel._spatialStatsFieldRefreshHandler) {
+      layerSel.removeEventListener('change', layerSel._spatialStatsFieldRefreshHandler);
+    }
     function update() {
       var name = layerSel.value;
+      var currentField = fieldSel.value;
       fieldSel.innerHTML = '<option value="">-- 自动选择第一个数值字段 --</option>';
       if (!name || !GIS.layers || !GIS.layers.getLayerByName) return;
       var layer = GIS.layers.getLayerByName(name);
       if (!layer || !layer.geojson || !layer.geojson.features) return;
-      var props = layer.geojson.features[0] ? layer.geojson.features[0].properties : {};
-      Object.keys(props).forEach(function (k) {
-        if (typeof props[k] === 'number') {
-          var opt = document.createElement('option');
-          opt.value = k;
-          opt.textContent = k;
-          fieldSel.appendChild(opt);
-        }
+      var numericFields = new Set();
+      layer.geojson.features.forEach(function (feature) {
+        var props = feature && feature.properties || {};
+        Object.keys(props).forEach(function (key) {
+          if (typeof props[key] === 'number' && Number.isFinite(props[key])) numericFields.add(key);
+        });
+      });
+      numericFields.forEach(function (k) {
+        var opt = document.createElement('option');
+        opt.value = k;
+        opt.textContent = k;
+        if (k === currentField) opt.selected = true;
+        fieldSel.appendChild(opt);
       });
     }
-    layerSel.removeEventListener('change', update);
+    layerSel._spatialStatsFieldRefreshHandler = update;
     layerSel.addEventListener('change', update);
     update();
   }
@@ -358,10 +367,10 @@ window.GIS = window.GIS || {};
   /** 直连执行：调后端工具 → 结果上图 + 面板展示文本（不经 AI） */
   var METERS_PER_DEGREE = 111320;
 
-  function _invoke(tool, args) {
+  function _invoke(tool, args, runButton) {
     var loader = document.getElementById('ssLoader');
     if (loader) loader.style.display = 'flex';
-    if (GIS.workspace) GIS.workspace.toolPending('spatialStatsPanel');
+    if (GIS.workspace) GIS.workspace.toolPending('spatialStatsPanel', runButton);
     var syncP = (GIS.api && GIS.api.syncLayer && args.layer_name)
       ? GIS.api.syncLayer(args.layer_name) : Promise.resolve();
     var p = syncP.then(function() {
@@ -383,7 +392,7 @@ window.GIS = window.GIS || {};
     });
   }
 
-  function _runOperation(op) {
+  function _runOperation(op, runButton) {
     if (op === 'moran') {
       var layer = document.getElementById('ssMoranLayer').value;
       if (!layer) { alert('请选择图层'); return; }
@@ -397,7 +406,7 @@ window.GIS = window.GIS || {};
       } else {
         args.k = parseInt(document.getElementById('ssMoranK').value, 10) || 5;
       }
-      return _invoke('spatial_moran', args);
+      return _invoke('spatial_moran', args, runButton);
     }
     if (op === 'hotspot') {
       var layer2 = document.getElementById('ssHotspotLayer').value;
@@ -407,7 +416,7 @@ window.GIS = window.GIS || {};
       return _invoke('spatial_hotspot', {
         layer_name: layer2, field: field2 || '',
         threshold: +(dist2 / METERS_PER_DEGREE).toFixed(6),  // 米 → 度
-      });
+      }, runButton);
     }
     if (op === 'kde') {
       var layer3 = document.getElementById('ssKdeLayer').value;
@@ -416,7 +425,7 @@ window.GIS = window.GIS || {};
       var grid = parseInt(document.getElementById('ssKdeGrid').value, 10) || 50;
       var args3 = { layer_name: layer3, grid_size: grid };
       if (bw) args3.bandwidth = +(bw / METERS_PER_DEGREE).toFixed(6);  // 米 → 度
-      return _invoke('spatial_kde', args3);
+      return _invoke('spatial_kde', args3, runButton);
     }
   }
 

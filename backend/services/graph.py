@@ -101,6 +101,51 @@ def _force_exec_clear(key: str) -> None:
         _force_exec_done.discard(key)
 
 
+_LAYER_QUERY_KEYWORDS = (
+    "图层", "layer", "几个", "多少", "东西", "要素", "列表", "查看", "有哪些", "有什么",
+    "数据", "当前", "统计", "属性", "字段", "记录", "数量", "信息", "处理",
+)
+_GIS_ACTION_KEYWORDS = (
+    "搜索", "搜一下", "查一下", "画", "制图", "加载", "地图", "生成", "计算", "算一下", "执行",
+    "边界", "提取", "POI", "AOI", "热力", "标记", "导出", "下载", "道路", "建筑", "水系", "影像",
+    "遥感", "DEM", "要素", "缓冲区", "叠加", "裁剪", "插值", "聚类", "回归", "继续", "确认", "取消",
+    "接着", "对图层", "对这个图层", "天气", "降水", "气温", "地震", "震中", "风速", "湿度", "预报",
+    "巡检", "卫星图", "地物", "覆被", "在哪里", "在哪", "坐标", "经纬度", "定位", "位置", "哪儿",
+    "什么地方", "距离", "直线距离", "有多远", "千米", "公里", "测距", "导航", "路线", "地铁", "公交",
+    "铁路", "高铁", "线路", "站点", "车站", "机场", "航班", "轮渡",
+)
+_MISSING_RESULT_KEYWORDS = (
+    "没标", "没有标", "没显示", "没有显示", "没看到", "没出来", "不出来", "没画", "没生成", "没加载", "没上图",
+)
+_TASK_CONTINUATION_KEYWORDS = (
+    "它", "这个", "那个", "刚才", "上一步", "上次", "上一轮", "结果", "改成", "改为", "公里", "米", "缓冲",
+    "换成", "换个", "颜色", "分级", "分位数", "等间距", "浅一点", "浅一些", "变浅", "深一点",
+    "改色", "图例", "图名", "导出刚才", "这张图", "只显示",
+)
+
+
+def _should_use_agent(messages: list, session_id: str, start_registered=None) -> bool:
+    """Shared tool-routing decision for streamed and non-streamed requests."""
+    if not messages or len(messages) <= 1:
+        return False
+    last = messages[-1]
+    content = getattr(last, "content", last if isinstance(last, str) else "")
+    if not isinstance(content, str):
+        content = str(content or "")
+    needs_tools = any(kw in content for kw in (
+        _GIS_ACTION_KEYWORDS + _LAYER_QUERY_KEYWORDS + _TASK_CONTINUATION_KEYWORDS
+    ))
+    complaint = any(kw in content for kw in _MISSING_RESULT_KEYWORDS)
+    try:
+        has_pending = bool(pending_action.get_pending_action(session_id or "default"))
+    except Exception:
+        has_pending = False
+    has_contextual_layer_query = bool(start_registered) and any(
+        kw in content for kw in ("图层", "要素", "东西", "数据", "查看")
+    )
+    return needs_tools or complaint or has_pending or len(content) > 150 or has_contextual_layer_query
+
+
 # ============================================================
 # 自校验 Verifier Agent（Agent 2）
 # ============================================================
@@ -296,6 +341,19 @@ def _invoke_agent_with_budget(agent, payload, limit):
 def _tool_not_callable(e: Exception) -> bool:
     """识别 LangChain 框架角例：'StructuredTool' object is not callable。"""
     return isinstance(e, TypeError) and "callable" in str(e)
+
+
+def _recover_tool_dispatch_text(cfg, messages) -> str:
+    """工具调度异常后只做纯文本收尾，避免从原始请求重跑已执行过的工具。"""
+    fallback_llm = build_llm(disable_reasoning(cfg))
+    response = fallback_llm.invoke(
+        list(messages) + [HumanMessage(
+            content="请停止调用任何工具，直接用文字总结已经完成的结果；"
+                    "如果工具没有成功完成，请明确说明，不要声称成功。"
+        )],
+        max_tokens=800,
+    )
+    return (getattr(response, "content", "") or "").strip()
 
 
 _PROMISE_PREFIXES = (
@@ -545,23 +603,7 @@ def run_agent(
 
     # 简单文本对话（无关键词）直接调 LLM，不走 LangGraph 省掉框架开销
     # A+ 优化：去掉"帮我"等易误判词，短路时用精简版 system prompt
-    _simple = True
-    if messages and len(messages) > 1:
-        _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
-        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线','地铁','公交','铁路','高铁','线路','站点','车站','机场','航班','轮渡']
-        _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
-        # 用户反馈交付物缺失（没标出来/没显示/没看到）或存在待确认挂起动作 →
-        # 必须走 Agent 工具通道修复，禁止纯文本捷径（否则模型只回一句"正在处理"就没下文）
-        _complaint_kws = ('没标', '没有标', '没显示', '没有显示', '没看到', '没出来', '不出来', '没画', '没生成', '没加载', '没上图')
-        _complaint = any(kw in _last for kw in _complaint_kws)
-        _has_pending_act = False
-        try:
-            _has_pending_act = bool(pending_action.get_pending_action(session_id or "default"))
-        except Exception:
-            pass
-        if _need_tools or _complaint or _has_pending_act or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
-            _simple = False
+    _simple = not _should_use_agent(messages, session_id, _start_registered)
     if _simple:
         if _ai_svc.is_session_cancelled(session_id or "default"):
             return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
@@ -615,6 +657,7 @@ def run_agent(
     # 在长工具链末尾偶发把工具对象当普通函数调用 → TypeError "'StructuredTool' object is not callable"。
     # 处理：自动降级重试一次（追加“请纯文本收尾，不再调工具”），有界且保留已产出图层/数据。
     result = None
+    _invoke_pending = None
     _msgs = list(messages)
     _run_status = "calling_llm"
     _budget_deadline = _time_mod.monotonic() + _GRAPH_TOTAL_TIMEOUT_S
@@ -635,10 +678,11 @@ def run_agent(
                 if _pre_invoke_pending is not None:
                     try:
                         _cur = get_pending_state()
+                        _invoke_pending = _cur
                         for _k in ("layers", "images", "layer_ops", "qa_warnings"):
                             _prev = _pre_invoke_pending.get(_k) or []
                             _now = _cur.get(_k) or []
-                            if _prev and _now:
+                            if _prev or _now:
                                 _seen = set()
                                 _merged = []
                                 for _it in _prev + _now:
@@ -664,10 +708,21 @@ def run_agent(
                     "pending_suggestions": None,
                 }
             if _attempt == 0 and _tool_not_callable(e):
-                print("[GIS] 工具调度 TypeError，自动纯文本收尾重试一次", flush=True)
-                _msgs = list(messages) + [HumanMessage(
-                    content="请停止调用任何工具，直接用文字总结最终结果（可引用前面已经完成的数据/图层）。")]
-                continue
+                print("[GIS] 工具调度 TypeError，使用无工具模型收尾，避免重放原任务", flush=True)
+                try:
+                    _recovery_text = _recover_tool_dispatch_text(cfg, messages)
+                except Exception as _recovery_error:
+                    print(f"[GIS] 工具调度异常后的文本收尾失败: {_recovery_error}", flush=True)
+                    _recovery_text = ""
+                if _recovery_text:
+                    result = {"messages": list(messages) + [AIMessage(content=_recovery_text)]}
+                    break
+                return {
+                    "response": "工具调度发生异常，已停止自动重放以避免重复执行。请检查工具记录后重试。",
+                    "reasoning": None, "layers": [], "images": [],
+                    "heatmap": None, "clear_layers": False, "layer_ops": [],
+                    "pending_suggestions": None,
+                }
             # P1-2: 网络临时异常重试一次（不重试确定性错误）
             _err_lower = str(e).lower()
             _is_temp = any(k in _err_lower for k in [
@@ -746,7 +801,9 @@ def run_agent(
             final_text = "AI 未返回有效响应，请重试或更换模型。"
 
     # 收集本轮产生的共享状态
-    pending = get_pending_state()
+    # The successful invoke snapshot is already consumed from shared state; carry it
+    # forward instead of returning an empty done payload for map updates/artifacts.
+    pending = _invoke_pending if _invoke_pending is not None else get_pending_state()
     # layer_ops 引用但未推送的注册图层 → 补推进 done，防止前端「未找到图层」
     _ensure_ops_layers_present(pending)
     # ask_user_choice 弹选项（非流式一次性 invoke 无法中途打断，收尾时发现标记
@@ -874,7 +931,89 @@ def run_agent(
 
 # _cached_graph 在模块顶部已初始化
 
-def run_agent_stream(
+def _stream_step_descriptor(tool_name: str, args: dict, user_text: str, active_web: dict | None = None) -> tuple[str, str, str]:
+    """Build a compact task-step key/label from actual tool arguments and the user request."""
+    args = args if isinstance(args, dict) else {}
+    def clean_target(value: object) -> str:
+        value = str(value or "").lower()
+        value = re.sub(r"https?://|www\.", "", value)
+        value = re.sub(r"[a-z0-9_-]+\.[a-z]{2,}", " ", value)
+        value = re.sub(r"[，,。.!！?？:：;；()（）\[\]{}\"']+", " ", value)
+        stop = ("please", "find", "search", "look up", "check", "current", "today", "weather", "forecast", "in ",
+                "查询", "搜索", "网页", "天气", "预报", "现在", "今天", "请问", "帮我", "查一下", "搜一下", "看看", "获取", "的", "一下")
+        for word in stop:
+            value = value.replace(word, " ")
+        return re.sub(r"\s+", " ", value).strip(" _-")[:56]
+
+    def canonical_target(value: str) -> tuple[str, str]:
+        aliases = (
+            (("new york city", "new york", "nyc", "纽约市", "纽约"), "new-york", "纽约"),
+            (("london", "伦敦"), "london", "伦敦"),
+            (("united states", "usa", "us", "america", "美国"), "united-states", "美国"),
+            (("changsha", "长沙"), "changsha", "长沙"),
+        )
+        low = value.lower()
+        for forms, key, display in aliases:
+            if any((form in low if any(ord(ch) > 127 for ch in form) else re.search(r"\b" + re.escape(form) + r"\b", low)) for form in forms):
+                return key, display
+        return value.replace(" ", "-"), value
+
+    name = str(tool_name or "tool")
+    if name in {"search_web", "fetch_webpage", "fetch_webpage_scrapling"}:
+        raw_query = str(args.get("query") or "")
+        target = clean_target(raw_query or args.get("url") or user_text)
+        if name != "search_web" and active_web:
+            key, label = active_web["key"], active_web["label"]
+        else:
+            target_key, target_label = canonical_target(target)
+            is_weather = bool(re.search(r"weather|forecast|天气|气温|降水", raw_query, re.I))
+            key = ("weather:" if is_weather else "web:") + (target_key or "request")
+            label = "查询" + (target_label or "网页信息") + ("天气" if is_weather else "")
+        return key, label, "web"
+    if name == "fetch_weather_data":
+        match = re.search(r"(?:查一下|查询|查看|获取|weather in)\s*(.+?)(?:的?天气|天气|weather|$)", user_text, re.I)
+        target = clean_target(match.group(1) if match else user_text) or "指定地点"
+        target_key, target_label = canonical_target(target)
+        # 与同一请求中围绕该地点进行的天气搜索/网页读取归入同一任务卡。
+        if active_web and active_web["key"].endswith(target_key):
+            return active_web["key"], active_web["label"], "weather"
+        return "weather:" + target_key, "查询" + target_label + "天气", "weather"
+    if name == "focus_map":
+        match = re.search(r"(?:定位到|飞到|定位)\s*([^，,。.!！?？]+)", user_text)
+        target = clean_target(args.get("layer_name") or (match.group(1) if match else user_text)) or "指定位置"
+        target_key, target_label = canonical_target(target)
+        return "map:" + target_key, "定位" + target_label, "map"
+    target = clean_target(args.get("query") or args.get("location") or args.get("layer_name") or args.get("name") or user_text)
+    return name + ":" + (target or "task"), name.replace("_", " ") + (" · " + target if target else ""), name
+
+
+def _stream_tool_failure(content: object) -> tuple[bool, str]:
+    """Recognize explicit structured tool failures and return a concise reason."""
+    value = content
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            value = content
+    if isinstance(value, dict):
+        failed = value.get("ok") is False or value.get("success") is False or value.get("is_error") is True
+        failed = failed or str(value.get("status", "")).lower() in {"error", "failed", "failure"}
+        if failed:
+            reason = value.get("error") or value.get("message") or value.get("hint") or "工具执行失败"
+            return True, str(reason).strip()[:240]
+    text = str(content or "").strip()
+    failed = bool(re.match(
+        r"^(?:错误|失败|无法|未找到|请提供|\[[ \t]*(?:error|failed|failure|exception)[ \t]*\]|"
+        r"(?:error|failed|failure|exception)\b|"
+        r"[^\r\n。；;]{1,40}?(?:失败|错误|异常|未通过|未能|无法)(?=[:：,，\s]|$)|"
+        r"[^\r\n.!?]{1,48}\b(?:failed|failure|error|exception)(?:[:.,\s]|$))",
+        text,
+        re.IGNORECASE,
+    ))
+    return failed, (text[:240] if failed else "")
+
+
+def _run_agent_stream_impl(
     messages: list,
     cfg: LLMConfig,
     amap_key: str = "",
@@ -897,18 +1036,6 @@ def run_agent_stream(
         {"type":"thinking"}
         {"type":"done","response":"...","reasoning":...,"layers":[...],...}
     """
-    # 同 session 并发互斥：流式被占用  yield busy done 后直接结束
-    if not _tools_mod.acquire_session_lock(session_id or "default"):
-        _busy_evt = json.dumps({
-            "type": "done",
-            "response": "当前会话已有请求在处理中，请等待上一条完成后再发送新消息。",
-            "reasoning": None, "layers": [], "images": [], "heatmap": None,
-            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
-            "confirm_pending": None,
-            "busy": True,
-        }, ensure_ascii=False)
-        yield f"data: {_busy_evt}\n\n"
-        return
     reset_state(amap_key)
     _tools_mod.set_last_user_message(original_message or "")
     # 提取最近多轮上下文（供工具层消歧与实体复用）
@@ -920,6 +1047,10 @@ def run_agent_stream(
     _tools_mod.set_conversation_context("\n".join(_ctx_texts))
     pending_action.set_active_session(session_id or "default")
     _start_registered = set(getattr(_tools_mod, "_registered_layers", {}).keys())
+    _stream_step_ids: dict[str, str] = {}
+    _stream_call_steps: dict[str, dict] = {}
+    _stream_active_web: dict | None = None
+    _streamed_layer_op_ids: set[str] = set()
     # 重置取消标志（每次新请求开始；仅清本会话，不误伤并发中的其他会话）
     import backend.services.ai_service as _ai_svc
     _ai_svc.clear_session_cancel(session_id or "default")
@@ -942,23 +1073,7 @@ def run_agent_stream(
         pass
 
     # 简单问题快速 bypass（A+ 优化：精简 prompt + 去掉易误判词）
-    _simple = True
-    if messages and len(messages) > 1:
-        _last = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-        _layer_kws = ['图层','layer','几个','多少','东西','要素','列表','查看','有哪些','有什么','数据','当前','统计','属性','字段','记录','数量','信息','处理']
-        _gis_kws = ['搜索','搜一下','查一下','画','制图','加载','地图','生成','计算','算一下','执行','边界','提取','POI','AOI','热力','标记','导出','下载','道路','建筑','水系','影像','遥感','DEM','要素','缓冲区','叠加','裁剪','插值','聚类','回归','继续','确认','取消','接着','对图层','对这个图层','天气','降水','气温','地震','震中','风速','湿度','预报','巡检','卫星图','地物','覆被','在哪里','在哪','坐标','经纬度','定位','位置','哪儿','什么地方','距离','直线距离','有多远','千米','公里','测距','导航','路线','地铁','公交','铁路','高铁','线路','站点','车站','机场','航班','轮渡']
-        _need_tools = any(kw in _last for kw in (_gis_kws + _layer_kws))
-        # 用户反馈交付物缺失（没标出来/没显示/没看到）或存在待确认挂起动作 →
-        # 必须走 Agent 工具通道修复，禁止纯文本捷径（否则模型只回一句"正在处理"就没下文）
-        _complaint_kws = ('没标', '没有标', '没显示', '没有显示', '没看到', '没出来', '不出来', '没画', '没生成', '没加载', '没上图')
-        _complaint = any(kw in _last for kw in _complaint_kws)
-        _has_pending_act = False
-        try:
-            _has_pending_act = bool(pending_action.get_pending_action(session_id or "default"))
-        except Exception:
-            pass
-        if _need_tools or _complaint or _has_pending_act or len(_last) > 150 or (_start_registered and any(kw in _last for kw in ['图层','要素','东西','数据','查看'])):
-            _simple = False
+    _simple = not _should_use_agent(messages, session_id, _start_registered)
     if _simple:
         _resp = llm.invoke(messages)
         _quick_text = _clean_ai_text(_resp.content or "")
@@ -1003,7 +1118,6 @@ def run_agent_stream(
             # 每次循环检查是否被取消
             if _ai_svc.is_session_cancelled(session_id or "default"):
                 yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
-                _tools_mod.release_session_lock(session_id or "default")
                 return
 
             # --- 上下文膨胀兜底 3：累计输入 token 预算（早于 420s 触发）---
@@ -1078,24 +1192,90 @@ def run_agent_stream(
             # AI 调用了工具
             if isinstance(last, AIMessage) and last.tool_calls:
                 for tc in last.tool_calls:
+                    _tool_name = tc.get("name", "?")
+                    _tool_args = tc.get("args", {}) if isinstance(tc.get("args"), dict) else {}
+                    _step_key, _step_label, _step_kind = _stream_step_descriptor(
+                        _tool_name, _tool_args, original_message or "", _stream_active_web
+                    )
+                    if _step_key not in _stream_step_ids:
+                        _stream_step_ids[_step_key] = "step-" + uuid.uuid4().hex[:12]
+                    _step_id = _stream_step_ids[_step_key]
+                    if _step_kind == "web":
+                        _stream_active_web = {"key": _step_key, "label": _step_label, "step_id": _step_id}
+                    _call_id = str(tc.get("id") or ("legacy-" + uuid.uuid4().hex[:12]))
+                    _stream_call_steps[_call_id] = {"step_id": _step_id, "step_label": _step_label, "name": _tool_name, "args": _tool_args}
                     event = json.dumps({
                         "type": "tool_start",
-                        "name": tc.get("name", "?"),
-                        "input": str(tc.get("args", {}))[:300],
+                        "name": _tool_name,
+                        "input": str(tc.get("args", {}))[:1200],
+                        "tool_call_id": _call_id,
+                        "step_id": _step_id,
+                        "step_label": _step_label,
+                        "map_ops_pending": 1 if _tool_name == "focus_map" else 0,
                     }, ensure_ascii=False)
                     yield f"data: {event}\n\n"
 
             # 工具返回结果
             elif hasattr(last, "name") and last.name and hasattr(last, "content"):
+                _call_id = str(getattr(last, "tool_call_id", "") or "")
+                _call_meta = _stream_call_steps.pop(_call_id, None)
+                if _call_meta is None:
+                    _step_key, _step_label, _step_kind = _stream_step_descriptor(last.name, {}, original_message or "", _stream_active_web)
+                    if _step_key not in _stream_step_ids:
+                        _stream_step_ids[_step_key] = "step-" + uuid.uuid4().hex[:12]
+                    _call_meta = {"step_id": _stream_step_ids[_step_key], "step_label": _step_label, "name": last.name}
+                _tool_output = str(last.content)
+                _content_error, _error_message = _stream_tool_failure(last.content)
+                _tool_error = getattr(last, "status", None) == "error" or _content_error
                 event = json.dumps({
                     "type": "tool_end",
                     "name": last.name,
-                    "output": str(last.content)[:300],
+                    "output": _tool_output[:1200],
+                    "tool_call_id": _call_id,
+                    "step_id": _call_meta["step_id"],
+                    "step_label": _call_meta["step_label"],
+                    "status": "error" if _tool_error else "success",
+                    "is_error": _tool_error,
+                    "error_message": _error_message if _tool_error else "",
                 }, ensure_ascii=False)
                 yield f"data: {event}\n\n"
+                # 让 focus_map 等地图操作在当前工具返回后立即应用；done 仍携带原操作并由前端按 _stream_id 去重。
+                _pending_ops = getattr(_tools_mod, "_pending_layer_ops", []) if last.name == "focus_map" else []
+                _delta_ops = []
+                _focus_args = _call_meta.get("args", {})
+                _focus_center = None
+                if _focus_args.get("center"):
+                    try:
+                        _parts = str(_focus_args["center"]).replace("，", ",").split(",")
+                        _focus_center = [float(_parts[0].strip()), float(_parts[1].strip())]
+                    except (ValueError, IndexError):
+                        pass
+                for _op in _pending_ops:
+                    if not isinstance(_op, dict) or _op.get("action") not in {"center", "fit"}:
+                        continue
+                    if _op.get("_stream_id"):
+                        continue
+                    if _op.get("action") == "center" and _focus_center != _op.get("center"):
+                        continue
+                    if _op.get("action") == "fit":
+                        _requested_layer = str(_focus_args.get("layer_name") or "")
+                        _resolved_layer = str(_op.get("name") or "")
+                        if not (_resolved_layer == _requested_layer or _requested_layer in _resolved_layer or _resolved_layer in _requested_layer):
+                            continue
+                    _op["_stream_id"] = "op-" + uuid.uuid4().hex[:12]
+                    _op["_step_id"] = _call_meta["step_id"]
+                    _delta_ops.append(dict(_op))
+                    _streamed_layer_op_ids.add(_op["_stream_id"])
+                if _delta_ops:
+                    _delta_evt = json.dumps({"type": "layer_ops_delta", "step_id": _call_meta["step_id"],
+                                             "step_label": _call_meta["step_label"], "layer_ops": _delta_ops}, ensure_ascii=False)
+                    yield f"data: {_delta_evt}\n\n"
                 # ask_user_choice 已弹出选项：立即停止 agent 循环，
                 # 等用户选择后走下一轮（防 LLM 拿到"等待选择"文本后继续乱跑）
                 if "[WAITING_USER_CHOICE]" in str(last.content or ""):
+                    _wait_evt = json.dumps({"type": "waiting_choice", "step_id": _call_meta["step_id"],
+                                            "step_label": _call_meta["step_label"]}, ensure_ascii=False)
+                    yield f"data: {_wait_evt}\n\n"
                     print("[GIS] 检测到 ask_user_choice 弹出选项，停止本轮 agent 循环", flush=True)
                     _ai_waiting_choice = True
                     break
@@ -1111,14 +1291,7 @@ def run_agent_stream(
         # 自动“纯文本收尾”一次（保留前面已产出的图层），尽量不让整轮失败。
         if _tool_not_callable(e):
             try:
-                fb_llm = build_llm(disable_reasoning(cfg))
-                _fb = fb_llm.invoke(
-                    list(messages) + [HumanMessage(
-                        content="请停止调用任何工具，直接用文字总结最终结果"
-                                "（可引用前面已经完成的数据/图层）。")],
-                    max_tokens=800,
-                )
-                _fb_text = (_fb.content or "").strip()
+                _fb_text = _recover_tool_dispatch_text(cfg, messages)
             except Exception:
                 _fb_text = ""
             if _fb_text:
@@ -1328,5 +1501,40 @@ def run_agent_stream(
         "mode": "full",
         "token_usage": _token_usage,
     }
-    _tools_mod.release_session_lock(session_id or "default")
     yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
+
+
+def run_agent_stream(
+    messages: list,
+    cfg: LLMConfig,
+    amap_key: str = "",
+    skill_text: str = "",
+    original_message: str = "",
+    session_id: str = "default",
+    mode: str = "full",
+):
+    """运行流式 Agent，并在正常结束、异常或客户端断开时释放会话锁。"""
+    sid = session_id or "default"
+    if not _tools_mod.acquire_session_lock(sid):
+        busy_event = json.dumps({
+            "type": "done",
+            "response": "当前会话已有请求在处理中，请等待上一条完成后再发送新消息。",
+            "reasoning": None, "layers": [], "images": [], "heatmap": None,
+            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+            "confirm_pending": None,
+            "busy": True,
+        }, ensure_ascii=False)
+        yield f"data: {busy_event}\n\n"
+        return
+    try:
+        yield from _run_agent_stream_impl(
+            messages=messages,
+            cfg=cfg,
+            amap_key=amap_key,
+            skill_text=skill_text,
+            original_message=original_message,
+            session_id=sid,
+            mode=mode,
+        )
+    finally:
+        _tools_mod.release_session_lock(sid)

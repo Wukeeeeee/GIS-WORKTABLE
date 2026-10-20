@@ -485,10 +485,10 @@ window.GIS = window.GIS || {};
       .then(function(r) { return r.json(); })
       .then(function(data) {
         var beNames = (data && data.names) || [];
-        var seen = {};
+        var seen = new Set();
         var merged = [];
         beNames.concat(feNames).forEach(function(n) {
-          if (n && !seen[n]) { seen[n] = 1; merged.push(n); }
+          if (n && !seen.has(n)) { seen.add(n); merged.push(n); }
         });
         _fillLayerSelects(merged);
       })
@@ -524,7 +524,7 @@ window.GIS = window.GIS || {};
     _refreshFieldSelects();
   }
 
-  /** 字段下拉：基于图层第一个要素的属性 */
+  /** 字段下拉：汇总全部要素属性，避免首个要素缺值时隐藏后续字段 */
   function _refreshFieldSelects() {
     var pairs = [
       ['geomLayer', 'geomDissolveFieldSel', false],
@@ -540,14 +540,26 @@ window.GIS = window.GIS || {};
       fieldSel.innerHTML = pair[2] ? '<option value="">全部数值字段</option>' : '<option value="">-- 选择字段 --</option>';
       if (!layerName || !GIS.layers || !GIS.layers.getLayerByName) return;
       var layer = GIS.layers.getLayerByName(layerName);
-      var props = layer && layer.geojson && layer.geojson.features && layer.geojson.features[0]
-        ? layer.geojson.features[0].properties : {};
-      Object.keys(props).forEach(function(k) {
+      var geojson = layer && layer.geojson;
+      var features = geojson && geojson.type === 'FeatureCollection' ? (geojson.features || [])
+        : geojson && geojson.type === 'Feature' ? [geojson] : [];
+      var fieldTypes = Object.create(null);
+      features.forEach(function(feature) {
+        var props = feature && feature.properties || {};
+        Object.keys(props).forEach(function(k) {
+          if (k === '_fid') return;
+          if (!fieldTypes[k]) fieldTypes[k] = { hasNumber: false };
+          if (props[k] !== null && props[k] !== undefined && props[k] !== '') {
+            if (typeof props[k] === 'number' && Number.isFinite(props[k])) fieldTypes[k].hasNumber = true;
+          }
+        });
+      });
+      Object.keys(fieldTypes).forEach(function(k) {
         if (k === '_fid') return;
         var opt = document.createElement('option');
         opt.value = k;
         opt.textContent = k;
-        if (pair[2] && typeof props[k] !== 'number') return;  // 统计字段只要数值
+        if (pair[2] && !fieldTypes[k].hasNumber) return;  // 任一要素出现有限数值即可统计
         if (k === current) opt.selected = true;
         fieldSel.appendChild(opt);
       });

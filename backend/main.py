@@ -371,7 +371,6 @@ async def chat_stream(request: ChatRequest):
     def _persisted_stream():
         """流式执行 run_agent_stream；done 事件到达时把 AI 回复写回会话历史并落盘。
         修复 SSE 模式此前从不写回 assistant → 下一轮模型看不到上一轮 AI 说了什么。"""
-        from backend.services.tools import release_session_lock as _rel_slock
         try:
             for line in run_agent_stream(
                 messages=langgraph_messages,
@@ -413,9 +412,15 @@ async def chat_stream(request: ChatRequest):
             import backend.services.ai_service as _ai_svc
             _ai_svc.clear_session_cancel(session_id)
             _ai_svc.request_cancel(session_id)
-        finally:
-            # 生成器关闭（正常完成/断开/异常）都补释放会话锁，防泄漏
-            _rel_slock(session_id or "default")
+        except Exception:
+            # 生成器初始化或执行阶段异常也要成为可读的 SSE 事件，
+            # 否则浏览器只能看到断流并可能误判为可安全重试。
+            import traceback
+            traceback.print_exc()
+            yield "data: " + json.dumps({
+                "type": "error",
+                "message": "AI 流式执行失败，请检查服务状态后重试。",
+            }, ensure_ascii=False) + "\n\n"
 
     return StreamingResponse(
         _persisted_stream(),
@@ -466,7 +471,9 @@ async def geo_credentials_status():
 @app.delete("/api/geo-credentials/{service}")
 async def delete_geo_credential(service: str):
     """删除指定服务的凭据"""
-    from backend.services.credential_store import delete_credential
+    from backend.services.credential_store import delete_credential, has_credential
+    if not has_credential(service):
+        return {"status": "ok", "deleted": False, "already_absent": True}
     ok = delete_credential(service)
     return {"status": "ok" if ok else "error", "deleted": ok}
 
@@ -719,13 +726,38 @@ async def get_boundary_api(place: str = "长沙市", adcode: str = ""):
 async def upload(file: UploadFile = File(...)):
     import os, tempfile, zipfile, orjson
     loop = asyncio.get_event_loop()
-    filename = file.filename or ''
+    # UploadFile.filename is client-controlled. Treat both slash styles as
+    # separators so Windows paths are safe even when the server runs elsewhere.
+    filename = str(file.filename or '').replace('\\', '/').rsplit('/', 1)[-1]
+    if filename in ('', '.', '..'):
+        return {"error": "无效的上传文件名"}
     ext = os.path.splitext(filename)[1].lower()
     upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
+    upload_fd = None
+    if ext in ('.geojson', '.json'):
+        # Same-named GeoJSON uploads must not overwrite either the saved file or
+        # the backend layer registration. Reserve a free path atomically so
+        # concurrent uploads also receive distinct names.
+        from backend.services.tools import get_registered_layers_snapshot
+        registered_names = {item.get('filename') or item.get('name') for item in get_registered_layers_snapshot()}
+        stem, file_ext = os.path.splitext(filename)
+        suffix = 0
+        while True:
+            candidate = filename if suffix == 0 else f"{stem}_{suffix}{file_ext}"
+            candidate_path = os.path.join(upload_dir, candidate)
+            if candidate in registered_names:
+                suffix += 1
+                continue
+            try:
+                upload_fd = os.open(candidate_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o666)
+                filename = candidate
+                break
+            except FileExistsError:
+                suffix += 1
     saved_path = os.path.join(upload_dir, filename)
     # 流式落盘（8MB 分块）：上传不再整读进内存，GB 级文件内存峰值 ~10MB
-    with open(saved_path, 'wb') as f:
+    with (os.fdopen(upload_fd, 'wb') if upload_fd is not None else open(saved_path, 'wb')) as f:
         while True:
             chunk = await file.read(8 * 1024 * 1024)
             if not chunk:
@@ -939,17 +971,28 @@ class ProjectSaveRequest(BaseModel):
     map_state: dict = {}
     messages: list = []
     layers: list = []
+    layer_groups: list = []
+
+class ProjectAutoSaveRequest(BaseModel):
+    layer_groups: list = []
+    layer_assignments: list = []
 
 class ProjectRenameRequest(BaseModel):
     name: str
 
 @app.post("/api/projects/auto-save")
-async def auto_save_project(session_id: str = "default", project_id: str = None):
+async def auto_save_project(
+    session_id: str = "default",
+    project_id: str = None,
+    req: Optional[ProjectAutoSaveRequest] = None,
+):
     """由前端在对话完成后调用，自动保存当前工程"""
     result = await asyncio.to_thread(
         project_service.auto_save,
         session_id=session_id,
         project_id=project_id,
+        layer_groups=req.layer_groups if req else None,
+        layer_assignments=req.layer_assignments if req else None,
     )
     if result is None:
         return {"id": None, "note": "无消息，跳过保存"}
@@ -971,6 +1014,7 @@ async def save_project(req: ProjectSaveRequest):
         map_state=req.map_state,
         messages=req.messages,
         layers=req.layers,
+        layer_groups=req.layer_groups,
     )
     return result
 
@@ -1499,8 +1543,14 @@ async def api_history_rerun(request: HistoryRerunRequest):
     reset_state()
     resp = rerun_tool.invoke({"index": request.index})
     pending = get_pending_state()
+    # rerun_history 的响应首句包含目标工具的真实执行状态；仅工具返回了一段
+    # “失败”文本并不代表重跑成功，前端必须据此决定是否应用本次产物。
+    status_line = str(resp).split("；", 1)[0]
+    rerun_ok = status_line.startswith(f"已重跑 #{request.index} ") and status_line.endswith("→ 成功")
     return {
         "response": resp,
+        "ok": rerun_ok,
+        "error": "" if rerun_ok else str(resp),
         "layers": pending.get("layers", []),
         "layer_ops": pending.get("layer_ops", []),
         "images": pending.get("images", []),

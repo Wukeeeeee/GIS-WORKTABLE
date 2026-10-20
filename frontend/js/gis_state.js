@@ -28,14 +28,14 @@ window.GIS = window.GIS || {};
     stack: [],                // [{ level, adcode, name, layerId }]
   };
 
-  // 稳定 _fid：adcode > name > id > index 兜底
+  // 稳定 _fid：行政代码 > 数据源 id > 名称 > 要素顺序兜底
   function makeFid(props, idx) {
     props = props || {};
     if (props.adcode !== undefined && props.adcode !== null && props.adcode !== '') {
       return 'p:' + props.adcode;
     }
-    if (props.name) return 'n:' + props.name;
     if (props.id !== undefined && props.id !== null) return 'id:' + props.id;
+    if (props.name) return 'n:' + props.name;
     return 'i:' + idx;
   }
 
@@ -91,11 +91,26 @@ window.GIS = window.GIS || {};
     var features = (geojson && geojson.type === 'FeatureCollection') ? (geojson.features || [])
       : geojson ? [geojson] : [];
 
-    // 注入稳定 _fid（幂等：已有则不覆盖）
+    // 注入唯一 _fid。重复的行政代码/名称/传入 _fid 会退回其他稳定属性，
+    // 最后使用要素序号，避免选择、专题着色和 3D 映射互相覆盖。
+    var usedFids = Object.create(null);
     features.forEach(function(f, idx) {
-      if (f && f.properties && f.properties._fid === undefined) {
-        f.properties._fid = makeFid(f.properties, idx);
+      if (!f || !f.properties) return;
+      var props = f.properties;
+      var fid = props._fid !== undefined && props._fid !== null && props._fid !== ''
+        ? String(props._fid) : makeFid(props, idx);
+      if (usedFids[fid]) {
+        var candidates = [];
+        if (props.adcode !== undefined && props.adcode !== null && props.adcode !== '') candidates.push('p:' + props.adcode);
+        if (props.id !== undefined && props.id !== null) candidates.push('id:' + props.id);
+        if (props.name) candidates.push('n:' + props.name);
+        candidates.push('i:' + idx);
+        fid = candidates.find(function(candidate) { return !usedFids[candidate]; }) || ('i:' + idx);
+        var suffix = 1;
+        while (usedFids[fid]) fid = 'i:' + idx + ':' + suffix++;
       }
+      props._fid = fid;
+      usedFids[fid] = true;
     });
 
     var bbox = computeBbox(features);
@@ -112,10 +127,11 @@ window.GIS = window.GIS || {};
       source: record.source || 'ai',
       crs: 'EPSG:4326',
       visible: record.visible !== false,
+      groupId: record.groupId || null,
       bbox: bbox,
       featureCount: features.length,
       metadata: record.metadata || {},   // { level?, parentAdcode?, drillChildOf? }
-      fidIndex: {},                      // fid -> featureIdx（Leaflet name:idx 兼容）
+      fidIndex: Object.create(null),     // fid -> featureIdx（Leaflet name:idx 兼容）
     };
     features.forEach(function(f, idx) {
       if (f && f.properties && f.properties._fid !== undefined) {
@@ -146,6 +162,7 @@ window.GIS = window.GIS || {};
         style: rec.style,          // 面板侧也要保留完整样式（3D 兜底/工程保存/图例用得到）
         visible: rec.visible,
         source: rec.source,
+        groupId: rec.groupId,
         _rawName: rawName,
         _panelSync: true,   // 防递归：面板 addLayer 见此标记走正常入库，不再桥接回 state
       }, true /* skipRegister：数据来自后端或本模块，无需前端再注册 */);
@@ -155,31 +172,43 @@ window.GIS = window.GIS || {};
     return rec;
   }
 
-  function removeLayer(layerId) {
+  function removeLayer(layerId, silent) {
     var rec = findLayer(layerId);
     if (!rec) return;
     layers.splice(layers.indexOf(rec), 1);
-    if (GIS.map && GIS.map.removeLayer) GIS.map.removeLayer(rec._rawName);
+    var panel = null;
     if (GIS.layers && GIS.layers.removeLayer) {
-      var panel = null;
       (GIS.layers.getLayers ? GIS.layers.getLayers() : []).forEach(function(l) {
         if (l.layer_id === layerId) panel = l;
       });
-      if (panel) GIS.layers.removeLayer(layerId, true);
     }
+    // The panel removal already clears its Leaflet layer. Avoid removing the
+    // same map layer twice, while retaining cleanup for state-only records.
+    if (panel) GIS.layers.removeLayer(layerId, true, !!silent);
+    else if (GIS.map && GIS.map.removeLayer) GIS.map.removeLayer(rec._rawName);
     if (selection && selection.layerId === layerId) clearSelection();
     emit('layer-removed', { layerId: layerId });
   }
 
   function clearAll() {
     var copy = layers.slice();
+    var errors = [];
     copy.forEach(function(rec) {
-      removeLayer(rec.layer_id);
+      try {
+        removeLayer(rec.layer_id, true);
+      } catch (error) {
+        errors.push(error);
+        // Keep clearing other records even if one map/panel cleanup callback fails.
+        var current = findLayer(rec.layer_id);
+        if (current) layers.splice(layers.indexOf(current), 1);
+      }
     });
-    layers = [];
+    // A clear operation must not leave stale shared records for a later panel sync.
+    layers.length = 0;
     drill.stack = [];
     clearSelection();
     emit('drill-changed', { stack: [] });
+    return { ok: errors.length === 0, errors: errors };
   }
 
   function setVisible(layerId, visible) {

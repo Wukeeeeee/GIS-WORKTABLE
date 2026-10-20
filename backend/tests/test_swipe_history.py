@@ -212,6 +212,23 @@ def test_rerun_history_missing_index():
     assert "未找到" in r
 
 
+def test_rerun_history_records_returned_failure_as_failed(monkeypatch):
+    reset_state()
+    index = history_service.record("spatial_buffer", {"layer_name": "测试区", "distance": 500}, True)
+
+    class FailedTool:
+        def invoke(self, _args):
+            return "工具执行失败: 测试用的缓冲区错误"
+
+    monkeypatch.setitem(T._TOOL_REGISTRY, "spatial_buffer", FailedTool())
+    response = _registry()["rerun_history"].invoke({"index": index})
+
+    rerun = next(entry for entry in history_service.list_entries() if entry.get("rerun_of") == index)
+    assert "→ 失败" in response
+    assert rerun["ok"] is False
+    assert "测试用的缓冲区错误" in rerun["error"]
+
+
 def test_rerun_history_never_reruns_itself():
     reset_state()
     _registry()["focus_map"].invoke({"center": "116,39"})  # index 1

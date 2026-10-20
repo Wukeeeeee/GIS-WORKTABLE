@@ -79,7 +79,7 @@ window.GIS = window.GIS || {};
 
   let viewer = null;
   let container3d = null;
-  const dsMap = {};          // layer_id -> GeoJsonDataSource
+  const dsMap = Object.create(null); // layer_id -> GeoJsonDataSource
   let clickHandler = null;
   let basemap = 'satellite'; // 当前 3D 底图：satellite | street | dark
 
@@ -153,8 +153,11 @@ window.GIS = window.GIS || {};
         return;
       }
       const position = Cesium.Cartographic.fromCartesian(point);
-      coordsEl.textContent = 'WGS-84 · 经度 ' + Cesium.Math.toDegrees(position.longitude).toFixed(5) +
-        ' · 纬度 ' + Cesium.Math.toDegrees(position.latitude).toFixed(5);
+      const longitude = Cesium.Math.toDegrees(position.longitude);
+      const latitude = Cesium.Math.toDegrees(position.latitude);
+      coordsEl.textContent = GIS.map && GIS.map.formatWgs84Coordinates
+        ? GIS.map.formatWgs84Coordinates(longitude, latitude)
+        : 'WGS-84 · 经度 ' + longitude.toFixed(5) + ' · 纬度 ' + latitude.toFixed(5);
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
   }
 
@@ -163,21 +166,41 @@ window.GIS = window.GIS || {};
   // ============================================================
 
   // 同一图层的异步加载竞态会让它被加载两次（3D 里表现为粗细两条线叠加）
-  const _syncing = {};
+  const _syncing = Object.create(null);
+  const _syncVersions = Object.create(null);
+  function _layerStyleSignature(style) {
+    style = style || {};
+    return JSON.stringify([style.color, style.fillColor, style.fillOpacity, style.weight, style.radius]);
+  }
+
+  function _clearOpacityBase(ds) {
+    if (!ds || !ds.entities) return;
+    ds.entities.values.forEach(function(e) {
+      delete e._basePolyColor;
+      delete e._baseLineColor;
+      delete e._basePointColor;
+    });
+  }
+
   function syncLayer(rec) {
     if (!viewer || !rec.geojson) return;
     if (rec.layer_id) {
       if (_syncing[rec.layer_id]) return _syncing[rec.layer_id];
       if (dsMap[rec.layer_id]) return Promise.resolve(dsMap[rec.layer_id]);
     }
+    const layerId = rec.layer_id;
+    const syncVersion = layerId ? (_syncVersions[layerId] || 0) : 0;
     const opScale = (rec.style && rec.style.opacity !== undefined) ? rec.style.opacity : 1;
-    const _loadPromise = Cesium.GeoJsonDataSource.load(rec.geojson, {
+    let _loadPromise;
+    _loadPromise = Cesium.GeoJsonDataSource.load(rec.geojson, {
       stroke: Cesium.Color.fromCssColorString((rec.style && rec.style.color) || '#1c1b1b'),
       fill: Cesium.Color.fromCssColorString((rec.style && rec.style.fillColor) || (rec.style && rec.style.color) || '#1c1b1b')
-        .withAlpha(((rec.style && rec.style.fillOpacity !== undefined) ? rec.style.fillOpacity : 0.35) * opScale),
+        .withAlpha((rec.style && rec.style.fillOpacity !== undefined) ? rec.style.fillOpacity : 0.35),
       strokeWidth: (rec.style && rec.style.weight) || 2,
       clampToGround: false,
     }).then(function(ds) {
+      // 清空/删除图层可能发生在 GeoJSON 解析期间；旧请求完成后不能把图层重新挂回地图。
+      if (layerId && (_syncVersions[layerId] || 0) !== syncVersion) return null;
       ds.name = rec.name;
       ds.show = rec.visible !== false;
       ds._gisLayerId = rec.layer_id;
@@ -198,7 +221,7 @@ window.GIS = window.GIS || {};
           e.billboard = undefined;
           e.point = new Cesium.PointGraphics({
             pixelSize: ptSize,
-            color: ptColor.withAlpha(opScale),
+            color: ptColor,
             outlineColor: Cesium.Color.WHITE.withAlpha(0.95),
             outlineWidth: 2,
             heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
@@ -206,7 +229,7 @@ window.GIS = window.GIS || {};
           });
         } else if (e.point) {
           e.point.pixelSize = ptSize;
-          e.point.color = ptColor.withAlpha(opScale);
+          e.point.color = ptColor;
           e.point.outlineColor = Cesium.Color.WHITE.withAlpha(0.95);
           e.point.outlineWidth = 2;
           e.point.heightReference = Cesium.HeightReference.CLAMP_TO_GROUND;
@@ -228,25 +251,58 @@ window.GIS = window.GIS || {};
       viewer.dataSources.add(ds);
       dsMap[rec.layer_id] = ds;
       // 重放该图层已有的颜色/可视化配置（清除 viz 后的重载也走这里）
-      if (rec.featureColors) applyFeatureColors(ds, rec);
-      if (rec.viz) applyViz(ds, rec.viz, rec);
+      if (rec.featureColors) applyFeatureColors(ds, rec, true);
+      if (rec.viz) applyViz(ds, rec.viz, rec, true);
+      ds._gisStyleSignature = _layerStyleSignature(rec.style);
+      applyOpacity(ds, opScale);
       requestRender();
-      if (rec.layer_id) delete _syncing[rec.layer_id];
     }).catch(function(e) {
-      if (rec.layer_id) delete _syncing[rec.layer_id];
-      console.error('[GIS 3D] 图层加载失败:', rec.name, e);
+      if (!layerId || (_syncVersions[layerId] || 0) === syncVersion) {
+        console.error('[GIS 3D] 图层加载失败:', rec.name, e);
+      }
+    }).finally(function() {
+      if (layerId && _syncing[layerId] === _loadPromise) delete _syncing[layerId];
     });
-    if (rec.layer_id) _syncing[rec.layer_id] = _loadPromise;
+    if (layerId) _syncing[layerId] = _loadPromise;
     return _loadPromise;
   }
 
   function desyncLayer(layerId) {
+    if (layerId) {
+      _syncVersions[layerId] = (_syncVersions[layerId] || 0) + 1;
+      delete _syncing[layerId];
+    }
     const ds = dsMap[layerId];
     if (ds && viewer) { viewer.dataSources.remove(ds, true); requestRender(); }
     delete dsMap[layerId];
   }
 
-  function applyViz(ds, viz, rec) {
+  function clearAllLayers() {
+    const knownIds = new Set(Object.keys(_syncing).concat(Object.keys(dsMap)));
+    const errors = [];
+    knownIds.forEach(function(layerId) {
+      try { desyncLayer(layerId); }
+      catch (error) { errors.push(error); }
+    });
+    if (viewer && viewer.dataSources) {
+      for (let i = viewer.dataSources.length - 1; i >= 0; i--) {
+        const ds = viewer.dataSources.get(i);
+        if (!ds || !ds._gisLayerId) continue;
+        try { viewer.dataSources.remove(ds, true); }
+        catch (error) { errors.push(error); }
+      }
+      try { requestRender(); } catch (error) { errors.push(error); }
+      let remainingCount = 0;
+      for (let i = 0; i < viewer.dataSources.length; i++) {
+        const ds = viewer.dataSources.get(i);
+        if (ds && ds._gisLayerId) remainingCount++;
+      }
+      return { ok: remainingCount === 0 && errors.length === 0, remaining: remainingCount, errors: errors };
+    }
+    return { ok: errors.length === 0, remaining: 0, errors: errors };
+  }
+
+  function applyViz(ds, viz, rec, deferOpacity) {
     if (!viewer || !ds) return;
     if (!viz) return;
     const field = viz.field;
@@ -277,6 +333,8 @@ window.GIS = window.GIS || {};
         e.polygon.material = color.withAlpha(0.85);
       }
     });
+    _clearOpacityBase(ds);
+    if (!deferOpacity) applyOpacity(ds, rec && rec.style && rec.style.opacity !== undefined ? rec.style.opacity : 1);
     requestRender();
   }
 
@@ -304,20 +362,21 @@ window.GIS = window.GIS || {};
   }
 
   /** 按要素设色（2D 符号化 → 3D 同步）：fid → 颜色 */
-  function applyFeatureColors(ds, rec) {
+  function applyFeatureColors(ds, rec, deferOpacity) {
     if (!viewer || !ds || !rec.featureColors) return;
     const now = Cesium.JulianDate.now();
-    const opScale = (rec.style && rec.style.opacity !== undefined) ? rec.style.opacity : 1;
     ds.entities.values.forEach(function(e) {
       const fid = e.properties && e.properties._fid
         ? e.properties._fid.getValue(now) : null;
       const hex = fid ? rec.featureColors[fid] : null;
       if (!hex) return;
       const color = Cesium.Color.fromCssColorString(hex);
-      if (e.polygon) e.polygon.material = color.withAlpha(0.85 * opScale);
+      if (e.polygon) e.polygon.material = color.withAlpha(0.85);
       if (e.polyline) e.polyline.material = new Cesium.ColorMaterialProperty(color);
       if (e.point) e.point.color = color;
     });
+    _clearOpacityBase(ds);
+    if (!deferOpacity) applyOpacity(ds, rec.style && rec.style.opacity !== undefined ? rec.style.opacity : 1);
     requestRender();
   }
 
@@ -860,9 +919,21 @@ window.GIS = window.GIS || {};
     });
     GIS.state.on('layer-style', function(rec) {
       const ds = dsMap[rec.layer_id];
-      if (ds && rec.style && rec.style.opacity !== undefined) {
-        applyOpacity(ds, rec.style.opacity);
+      if (!rec.style) return;
+      if (!ds) {
+        if (_syncing[rec.layer_id]) {
+          desyncLayer(rec.layer_id);
+          syncLayer(rec);
+        }
+        return;
       }
+      if (ds._gisStyleSignature !== _layerStyleSignature(rec.style)) {
+        if (highlighted && highlighted._gisLayerId === rec.layer_id) clearHighlight();
+        desyncLayer(rec.layer_id);
+        syncLayer(rec);
+        return;
+      }
+      applyOpacity(ds, rec.style.opacity !== undefined ? rec.style.opacity : 1);
     });
     GIS.state.on('feature-style', function(rec) {
       const ds = dsMap[rec.layer_id];
@@ -920,5 +991,6 @@ window.GIS = window.GIS || {};
     is3D: function() { return mode === '3d'; },
     getViewer: function() { return viewer; },
     flyToBbox: flyToBbox,
+    clearAllLayers: clearAllLayers,
   };
 })();

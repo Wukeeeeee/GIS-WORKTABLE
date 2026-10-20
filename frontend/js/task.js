@@ -26,7 +26,7 @@ window.GIS = window.GIS || {};
 
   // ===== 数据结构：TaskRecord =====
   // id, goal, provider, model, timestamp, completedAt,
-  // status: pending|planning|executing|success|failed,
+  // status: pending|planning|executing|success|failed|cancelled,
   // inputLayers: [{layerId, name, geometryType, featureCount}],
   // plan, code, resultSummary,
   // resultLayers: [{name, geojson, layerId}],
@@ -57,7 +57,8 @@ window.GIS = window.GIS || {};
   function saveToStorage() {
     try {
       var saved = taskRecords.filter(function(t) { return t.saved; });
-      var recent = taskRecords.filter(function(t) { return !t.saved; }).slice(-20);
+      // New tasks are unshifted, so keep the first 20 unsaved records (newest first).
+      var recent = taskRecords.filter(function(t) { return !t.saved; }).slice(0, 20);
       var toStore = saved.concat(recent);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
     } catch(e) {
@@ -199,7 +200,7 @@ window.GIS = window.GIS || {};
   function renderTaskCard(t) {
     var statusLabel = {
       pending: '等待', planning: '规划中', executing: '执行中',
-      success: '成功', failed: '失败',
+      success: '成功', failed: '失败', cancelled: '已取消',
     }[t.status] || t.status;
 
     var resultLayerHtml = '';
@@ -228,7 +229,7 @@ window.GIS = window.GIS || {};
       ? '<div class="task-error">' + escapeHtml(t.error) + '</div>'
       : '';
 
-    var canRerun = t.status === 'success' || t.status === 'failed';
+    var canRerun = t.status === 'success' || t.status === 'failed' || t.status === 'cancelled';
     var isRunning = t.status === 'planning' || t.status === 'executing';
 
     return '<div class="task-card task-status-' + t.status + '" data-task-id="' + t.id + '">' +

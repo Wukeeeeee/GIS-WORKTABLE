@@ -180,7 +180,7 @@ class TestToolRegistration:
             if name == "inspect_satellite_image":
                 desc = getattr(t, 'description', '') or getattr(t, '__doc__', '')
                 assert desc is not None
-                assert "RGB" in desc or "启发式" in desc
+                assert "RGB" in desc or "启发式" in desc or "初筛" in desc
 
 
 class TestErrorHandling:

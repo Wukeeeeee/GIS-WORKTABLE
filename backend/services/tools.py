@@ -532,6 +532,7 @@ def _register_layer(name: str, geojson: dict):
         with _state_lock:
             _registered_layers[name] = {
                 "name": name,
+                "layer_id": uuid.uuid4().hex,
                 "feature_count": len(features),
                 "geometry_types": list(types) if types else ["未知"],
                 "geojson": geojson,
@@ -840,9 +841,21 @@ def _looks_like_junk(text: str) -> bool:
     return False
 
 
+def _normalize_web_url(url: str) -> str:
+    """清理模型偶尔传入的 Markdown 链接，避免把整段链接语法交给抓取器。"""
+    value = str(url or "").strip()
+    match = re.fullmatch(r"\[([^\]]+)\]\((https?://.+)\)", value, re.IGNORECASE)
+    if match:
+        value = match.group(2).strip()
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1].strip()
+    return value
+
+
 def fetch_webpage_impl(url: str, max_length: int = 10000) -> str:
     """获取网页内容的实现（被 search_web 和 fetch_webpage 共用），带同域熔断。"""
     global _domain_fail
+    url = _normalize_web_url(url)
     from urllib.parse import urlparse as _urlparse
     try:
         _host = (_urlparse(url).hostname or "").lower()
@@ -913,7 +926,13 @@ print(result[:int(sys.argv[2])])
         )
         stdout = result.stdout.decode('utf-8', errors='replace')
         if result.returncode != 0:
-            return "错误：" + result.stderr.decode('utf-8', errors='replace')[:300]
+            error_lines = [line.strip() for line in result.stderr.decode('utf-8', errors='replace').splitlines() if line.strip()]
+            detail = next(
+                (line for line in reversed(error_lines)
+                 if not line.startswith(("Traceback ", "File \"", "File '", "~~~~"))),
+                "浏览器抓取子进程异常退出",
+            )
+            return f"错误：网页抓取失败（{detail[:240]}）"
         _text_out = stdout.strip()
         if not _text_out or _looks_like_junk(_text_out):
             print(f'[GIS] fetch_webpage(playwright) 内容疑似错误页，已丢弃: {url}', flush=True)
@@ -949,6 +968,7 @@ def fetch_webpage(url: str) -> str:
 @tool
 def scrape_page(url: str, selector: str = "body") -> str:
     """使用 Scrapling 隐身引擎抓取网页（TLS指纹混淆+真实浏览器UA+Cloudflare绕过），适合反爬严格的网站。比 fetch_webpage 更快更反爬"""
+    url = _normalize_web_url(url)
     try:
         from scrapling.fetchers import Fetcher
         page = Fetcher.get(url, timeout=20)
@@ -963,7 +983,16 @@ def scrape_page(url: str, selector: str = "body") -> str:
             text = text[:8000] + "\n\n...(内容过长，已截断)"
         return text
     except ImportError:
-        return "错误：Scrapling 未安装，请执行 pip install scrapling[fetchers]"
+        # 普通正文抓取可复用现有 Playwright 降级链路；CSS 子选择器仍需
+        # Scrapling，不能在降级时悄悄返回整页并冒充选择器结果。
+        if (selector or "body").strip().lower() not in {"body", "html"}:
+            return "错误：Scrapling 未安装，降级抓取仅支持 selector='body'；请安装 scrapling[fetchers] 后重试该选择器"
+        fallback = fetch_webpage_impl(url, max_length=8000)
+        if fallback is None:
+            return "错误：Scrapling 未安装，且备用网页抓取未能获取正文"
+        if fallback.startswith("错误"):
+            return fallback
+        return "[备用抓取（Scrapling 不可用）]\n\n" + fallback
     except Exception as e:
         return f"错误：[{type(e).__name__}] {str(e)[:200]}"
 
@@ -1252,7 +1281,7 @@ def execute_python(code: str) -> str:
     输出规范：print(GeoJSON) 自动加载到地图（加 name 属性为图层名）；plt.savefig('chart_xxx.png') 自动注册图表。"""
     global _exec_call_count, _exec_log
     _exec_call_count += 1
-    
+
     # 记录执行日志（提取代码前50个字符作为摘要）
     code_summary = code.strip()[:50].replace('\n', ' ')
     _exec_log.append({
@@ -1714,14 +1743,8 @@ def _format_extent(bbox: list) -> str:
     return loc
 
 
-@tool
-def get_registered_layers() -> str:
-    """查看当前地图上所有已加载和已注册的图层列表，包括图层名、要素数量（有几个要素/东西）、几何类型、覆盖范围和属性字段。
-    
-    【适用场景】
-    - 用户询问“现在有几个图层”、“图层有几个东西”、“有哪些图层”、“当前地图有什么数据”
-    - 对图层进行进一步空间分析、筛选或处理前，先查看当前图层状态和要素数
-    """
+def _registered_layers_summary() -> str:
+    """生成当前会话图层摘要，供多个工具入口共享。"""
     if not _registered_layers:
         return "当前地图没有已加载或注册的图层。"
     lines = [f"当前地图共注册了 {len(_registered_layers)} 个图层："]
@@ -1746,10 +1769,21 @@ def get_registered_layers() -> str:
 
 
 @tool
+def get_registered_layers() -> str:
+    """查看当前地图上所有已加载和已注册的图层列表，包括图层名、要素数量（有几个要素/东西）、几何类型、覆盖范围和属性字段。
+
+    【适用场景】
+    - 用户询问“现在有几个图层”、“图层有几个东西”、“有哪些图层”、“当前地图有什么数据”
+    - 对图层进行进一步空间分析、筛选或处理前，先查看当前图层状态和要素数
+    """
+    return _registered_layers_summary()
+
+
+@tool
 def list_layers() -> str:
     """查看当前工作区/地图所有已注册图层及要素数量（有几个要素/东西）、几何类型、覆盖范围、属性字段等详细信息。
     当用户询问“现在图层有几个东西”、“有哪些图层”、“查看图层列表”时调用此工具。"""
-    return get_registered_layers()
+    return _registered_layers_summary()
 
 
 @tool
@@ -2364,7 +2398,7 @@ def get_session_logs(n: int = 20) -> str:
 
 @tool
 def layer_control(action: str, name: str = "", new_name: str = "", color: str = "", opacity: float = 1.0, weight: int = 2, fill_pattern: str = "") -> str:
-    """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) set_style(设置完整样式+color+opacity+weight+fill_pattern) rename(重命名+new_name) fit(缩放至图层)。opacity: 0~1，weight: 线宽像素数，fill_pattern: hatch/crosshatch/dots/grid/diagonal。"""
+    """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) set_style(设置完整样式+color+opacity+weight+fill_pattern) clear_symbology(清除分级/唯一值符号化和图例) rename(重命名+new_name) fit(缩放至图层)。opacity: 0~1，weight: 线宽像素数，fill_pattern: hatch/crosshatch/dots/grid/diagonal。"""
     if action == "remove":
         _pending_layer_ops.append({"action": "remove", "name": name})
         # 同步从后端注册图层中删除，保持前后端状态一致
@@ -2401,6 +2435,9 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
         if "weight" in style: parts.append(f"线宽={style['weight']}")
         if "fillPattern" in style: parts.append(f"填充图案={style['fillPattern']}")
         return f"已标记修改图层样式: {name} → {'，'.join(parts)}"
+    elif action == "clear_symbology":
+        _pending_layer_ops.append({"action": "clear_symbology", "name": name})
+        return f"已标记清除图层「{name}」的分级/唯一值符号化与对应图例"
     elif action == "rename":
         _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
         # 同步更新后端注册图层的名称
@@ -2418,7 +2455,7 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
         _pending_layer_ops.append({"action": "fit", "name": name})
         return f"已标记缩放到图层: {name}"
     else:
-        return f"未知操作: {action}，可选：remove / toggle / set_color / set_style / rename / fit"
+        return f"未知操作: {action}，可选：remove / toggle / set_color / set_style / clear_symbology / rename / fit"
 
 
 # ============================================================
@@ -2507,6 +2544,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
                 _verr.append(f"无法重新读取:{_ve}")
         if _verr:
             return "GeoJSON导出验证失败: " + "; ".join(_verr)
+        record_tool_artifact(fname, path, artifact_type="geojson")
         return f"GeoJSON已生成：/output/{fname}（{_src_count}个Feature）\n如需要 Shapefile 格式，可再次调用 export_layer 并设 format='shp'"
 
     elif format == "shp":
@@ -3324,12 +3362,12 @@ def _layer_to_gdf(layer_name: str) -> tuple:
     return gdf, layer_name
 
 
-def _gdf_to_layer(gdf, name: str):
+def _gdf_to_layer(gdf, name: str, style: dict = None):
     """将 GeoDataFrame 转为 GeoJSON，推送到地图并注册"""
     import json
     geojson_data = json.loads(gdf.to_json())
     geojson_data["name"] = name
-    _push_layer(name, geojson_data)
+    _push_layer(name, geojson_data, style=style)
     _register_layer(name, geojson_data)
 
 
@@ -3419,7 +3457,10 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
             gdf_utm = gpd.GeoDataFrame({"geometry": [gdf_utm.union_all()]}, geometry="geometry", crs=crs_utm)
         gdf_wgs = gdf_utm.to_crs("EPSG:4326")
         result_name = f"{name}_缓冲区"
-        _gdf_to_layer(gdf_wgs, result_name)
+        _gdf_to_layer(gdf_wgs, result_name, style={
+            "color": "#2563eb", "fillColor": "#60a5fa",
+            "weight": 2, "opacity": 0.9, "fillOpacity": 0.06,
+        })
         _note = robust_note(rstats, tier, _cstats)
         return f"已为「{name}」创建{distance}{unit}缓冲区，{len(gdf_wgs)} 个要素，已加载到地图{_note}"
     except Exception as e:
@@ -4375,11 +4416,13 @@ def add_labels(layer_name: str, field: str, font_size: int = 12, color: str = "#
 # ============================================================
 
 @tool
-def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, color_scheme: str = "blues") -> str:
+def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, color_scheme: str = "blues",
+                            method: str = "equal_interval", fill_opacity: float = 0.35) -> str:
     """对图层应用分级色彩渲染（Choropleth），按数值字段将要素分为N个等级，每级用不同颜色显示。
     注意：要求图层包含至少2个要素且数值存在差异。如果是单要素图层（如单个行政区边界），无法分级，请使用 datav_boundary 默认边界在地图展示，并结合指标面板或图表交付。
     layer_name: 图层名；field: 数值字段名；n_classes: 分级数（2-20，默认5）；
-    color_scheme: 色带 ylorrd(黄橙红/暖色)/blues(蓝)/reds(红)/greens(绿)/oranges(橙)/purples(紫)/ylgnbu(黄绿蓝)/spectral(光谱)。"""
+    color_scheme: 色带 ylorrd(黄橙红/暖色)/blues(蓝)/reds(红)/greens(绿)/oranges(橙)/purples(紫)/ylgnbu(黄绿蓝)/spectral(光谱)；
+    method: 分级方法 equal_interval(等间距，默认) 或 quantile(分位数)；fill_opacity: 面填充透明度（0-1，默认0.35）。"""
     try:
         import geopandas as gpd
         gdf, name = _layer_to_gdf(layer_name)
@@ -4401,8 +4444,31 @@ def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, co
         if vmin == vmax:
             return f"字段「{field}」所有值相同（{vmin}）或仅有单个要素，无法进行分级设色。单行政区要素已在地图上展示，建议结合指标面板或统计图表交付专题成果。"
 
-        step = (vmax - vmin) / n_classes
-        breaks = [vmin + i * step for i in range(n_classes + 1)]
+        method_names = {
+            "equal_interval": "equal_interval", "equal interval": "equal_interval", "等间距": "equal_interval",
+            "quantile": "quantile", "分位数": "quantile", "quantiles": "quantile",
+        }
+        method = method_names.get(str(method or "").strip().lower(), "")
+        if not method:
+            return "不支持该分级方法，可选：equal_interval（等间距）或 quantile（分位数）"
+        n_classes = min(n_classes, int(values.nunique()))
+        if n_classes < 2:
+            return f"字段「{field}」的不同数值不足，无法分级设色"
+        if method == "quantile":
+            quantiles = values.quantile([i / n_classes for i in range(n_classes + 1)]).tolist()
+            breaks = [float(v) for v in quantiles]
+            # 重复值可能使部分等级边界相同；保留真实断点并减少重复等级。
+            breaks = sorted(set(breaks))
+            if len(breaks) < 3:
+                return f"字段「{field}」的数值分布无法形成至少两个分位数等级"
+            n_classes = len(breaks) - 1
+        else:
+            step = (vmax - vmin) / n_classes
+            breaks = [vmin + i * step for i in range(n_classes + 1)]
+        try:
+            fill_opacity = max(0.0, min(1.0, float(fill_opacity)))
+        except (TypeError, ValueError):
+            return "面填充透明度必须是 0 到 1 之间的数值"
 
         cs_norm = str(color_scheme or "").strip().lower()
         _scheme_map = {
@@ -4427,11 +4493,15 @@ def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, co
             "field": field,
             "classes": n_classes,
             "scheme": color_scheme,
+            "method": method,
+            "breaks": breaks,
+            "fill_opacity": fill_opacity,
         })
 
         breaks_str = ", ".join(f"{b:.2f}" for b in breaks)
+        method_label = "等间距" if method == "equal_interval" else "分位数"
         return (f"已对「{name}」应用分级色彩渲染，字段：{field}，{n_classes} 级，"
-                f"色带：{color_scheme}，值域：{vmin:.2f} ~ {vmax:.2f}\n"
+                f"方法：{method_label}，色带：{color_scheme}，填充透明度：{fill_opacity:.2f}，值域：{vmin:.2f} ~ {vmax:.2f}\n"
                 f"分界值：{breaks_str}")
     except Exception as e:
         import traceback
@@ -7832,7 +7902,7 @@ def inspect_satellite_image(
     inspection_type: str = "all",
     zoom: int = 14,
 ) -> str:
-    """卫星影像快速巡检（无需下载）。利用 Esri World Imagery 免费瓦片初筛水体/植被/裸地/建筑候选区并上图。
+    """卫星影像快速巡检（无需下载）。利用 Esri World Imagery 免费瓦片进行 RGB 启发式初筛水体/植被/裸地/建筑候选区并上图。
     - place_name: 明确地名（如'武汉市洪山区'，禁止编造），优先裁剪已注册行政边界。
     - bbox: 手动范围 'west,south,east,north'（WGS84），与 place_name 二选一。
     - inspection_type: 巡检类别，'all'(默认) 或 'water,vegetation,bare_ground,built_up' 组合。
@@ -8234,11 +8304,11 @@ def execute_workflow(workflow_json: str) -> str:
 
         wf_data = json.loads(workflow_json)
 
-        # 构建工具注册表（只包含可调用的工具函数）
+        # 保留工具对象本身，让 WorkflowExecutor 通过 invoke 调用并走完整记录链路。
         tool_registry = {}
         for t in tools:
             try:
-                tool_registry[t.name] = t.func
+                tool_registry[t.name] = t
             except Exception:
                 pass
 
@@ -9031,7 +9101,8 @@ def rerun_history(index: int) -> str:
     _t0 = time.time()
     try:
         out = tool_obj.invoke(entry.get("args") or {})
-        ok, err = True, ""
+        ok = not _tool_result_failed(tool_name, out)
+        err = "" if ok else str(out)[:200]
     except Exception as e:
         out = f"重跑失败: {str(e)[:200]}"
         ok, err = False, str(e)
@@ -11373,34 +11444,117 @@ from langchain_core.tools import StructuredTool as _StructuredTool
 
 _TOOL_REGISTRY = {t.name: t for t in tools}
 
+_TOOL_FAILURE_MARKERS = {
+    "spatial_buffer": ("工具执行失败:", "缓冲区分析失败:", "找到多个匹配：", "未找到图层"),
+    "export_layer": ("工具执行失败:", "GeoJSON导出验证失败:", "找到多个匹配：", "未找到图层"),
+    "datav_boundary": ("工具执行失败:", "找到多个匹配：", "未找到", "获取失败:", "查询失败:"),
+    "spatial_graduated_colors": ("分级色彩渲染失败:", "图层「", "不是数值类型", "无有效数值", "不支持该分级方法", "无法分级", "找到多个匹配"),
+    "layer_control": ("未知操作:", "未找到图层"),
+}
+
+
+def _tool_result_failed(tool_name, result):
+    """统一识别以普通返回值表达的工具失败。"""
+    if isinstance(result, dict) and result.get("ok") is False:
+        return True
+    if not isinstance(result, str):
+        return False
+    text = result.strip()
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict) and payload.get("ok") is False:
+                return True
+        except (TypeError, ValueError):
+            pass
+    generic_markers = ("工具执行失败:", "执行失败:", "查询失败:", "获取失败:")
+    markers = generic_markers + _TOOL_FAILURE_MARKERS.get(tool_name, ())
+    return any(text.startswith(marker) for marker in markers)
+
 
 def _recorded(t):
     """包装一个工具：执行后把 名称/参数/成败/产物图层 写入处理历史"""
     def _run_and_record(**kwargs):
         _t0 = time.time()
-        _before = set(_registered_layers.keys())
+        _before = dict(_registered_layers)
+        _run_id = get_current_run_id()
+        _files_before = set()
+        if _run_id:
+            try:
+                from backend.services import storage_service as _ss
+                _files_before = {a.get("artifact_id") for a in (_ss.get_run_artifacts(_run_id) or [])}
+            except Exception:
+                pass
+        _style_action = t.name == "spatial_graduated_colors" or (
+            t.name == "layer_control" and kwargs.get("action") in {"set_color", "set_style"}
+        )
+        _is_gis_op = t.name in {"spatial_buffer", "export_layer", "datav_boundary"} or _style_action
         try:
             out = t.invoke(kwargs)
-            _ok, _err = True, ""
+            _err = ""
+            _ok = not _tool_result_failed(t.name, out)
+            if not _ok:
+                _err = str(out)[:300]
         except Exception as e:
             out = f"工具执行失败: {str(e)[:300]}"
             _ok, _err = False, str(e)
-        _new = [n for n in _registered_layers if n not in _before]
+        _changed_layers = [n for n, info in _registered_layers.items()
+                           if n not in _before or info is not _before[n]]
         # 捕获图片与文件产物（此前历史记录只有图层，图片/文件全丢  用户翻历史找不到图）
         _imgs = peek_pending_images()
         _files = []
         try:
-            _run_id = get_current_run_id()
             if _run_id:
                 from backend.services import storage_service as _ss
                 for a in (_ss.get_run_artifacts(_run_id) or []):
-                    _files.append({"filename": a.get("filename") or a.get("name") or "",
-                                   "path": a.get("rel_path") or a.get("filepath") or ""})
+                    if a.get("artifact_id") not in _files_before:
+                        _files.append({"artifact_id": a.get("artifact_id") or "",
+                                       "filename": a.get("filename") or a.get("name") or "",
+                                       "path": a.get("rel_path") or a.get("filepath") or ""})
         except Exception:
             pass
+        _task_id = get_current_task_id()
+        if _task_id:
+            try:
+                from backend.services import task_manager as _tm
+                _inputs = []
+                for _key in ("layer_name", "clip_layer", "left_layer", "right_layer", "raster_layer"):
+                    _name = kwargs.get(_key)
+                    if _name:
+                        _info = _registered_layers.get(_name) or {}
+                        _inputs.append({"name": _name, "layer_id": _info.get("layer_id", "")})
+                _outputs = [{"name": n, "layer_id": (_registered_layers.get(n) or {}).get("layer_id", "")}
+                            for n in _changed_layers]
+                if _style_action and _ok and not _outputs:
+                    _style_layer = kwargs.get("layer_name") or kwargs.get("name") or ""
+                    _style_info = _registered_layers.get(_style_layer) or {}
+                    if _style_layer and _style_info:
+                        _outputs = [{"name": _style_layer, "layer_id": _style_info.get("layer_id", "")}]
+                _state_ok = _ok
+                if t.name == "spatial_buffer":
+                    _state_ok = _ok and bool(_outputs)
+                    if _ok and not _state_ok:
+                        _err = "缓冲区工具未登记新输出图层"
+                elif t.name == "export_layer":
+                    _state_ok = _ok and bool(_files)
+                    if _ok and not _state_ok:
+                        _err = "导出工具未登记本轮文件产物"
+                elif _style_action:
+                    _state_ok = _ok and bool(_outputs)
+                    if _ok and not _state_ok:
+                        _err = "样式工具未找到有效输入图层"
+                if _is_gis_op:
+                    _ok = _state_ok
+                    _tm.record_gis_operation(
+                        _task_id, t.name, kwargs, input_layers=_inputs,
+                        output_layers=_outputs, output_artifacts=_files,
+                        status="success" if _state_ok else "failed", run_id=_run_id,
+                    )
+            except Exception as _state_error:
+                print(f"[Tools] GIS 任务状态记录失败: {_state_error}", flush=True)
         _history_svc.record(
-            t.name, kwargs, _ok, _new,
-            task_id=get_current_task_id(), error=_err,
+            t.name, kwargs, _ok, _changed_layers,
+            task_id=_task_id, error=_err,
             duration_ms=int((time.time() - _t0) * 1000),
             images=_imgs, file_artifacts=_files,
         )

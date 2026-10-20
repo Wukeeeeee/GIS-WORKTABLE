@@ -161,6 +161,43 @@ def test_executor_all_success():
     assert result["nodes"][1]["outputs"]["result"] == 12  # 6 * 2
 
 
+def test_executor_invokes_langchain_structured_tool():
+    """WorkflowExecutor 应通过 invoke 执行 LangChain StructuredTool。"""
+    from langchain_core.tools import StructuredTool
+
+    calls = []
+
+    def list_layers():
+        """列出当前图层。"""
+        calls.append("called")
+        return "当前地图没有已加载或注册的图层"
+
+    tool = StructuredTool.from_function(list_layers, name="list_layers")
+    wf = new_workflow("图层检查", nodes=[
+        new_node("n1", "检查图层", "list_layers"),
+    ])
+
+    result = WorkflowExecutor({"list_layers": tool}).execute(wf)
+
+    assert calls == ["called"]
+    assert result["status"] == "success"
+    assert result["nodes"][0]["outputs"]["result"] == "当前地图没有已加载或注册的图层"
+
+
+def test_executor_marks_explicit_tool_error_as_failed():
+    """工具显式返回失败文本时不能把 Workflow 节点标记成功。"""
+    wf = new_workflow("失败检查", nodes=[
+        new_node("n1", "调用工具", "broken_tool"),
+    ])
+    result = WorkflowExecutor({
+        "broken_tool": lambda: "工具执行失败: simulated failure",
+    }).execute(wf)
+
+    assert result["status"] == "failed"
+    assert result["nodes"][0]["status"] == "failed"
+    assert "simulated failure" in result["nodes"][0]["error"]
+
+
 def test_executor_upstream_failure_skips_downstream():
     """上游失败应该跳过下游节点"""
     tools = _make_mock_tools()
@@ -237,6 +274,33 @@ def test_execute_workflow_tool_valid():
     result = execute_workflow.func(json.dumps(wf, ensure_ascii=False))
     assert "测试工作流" in result
     assert "amap_geocode" in result
+
+
+def test_execute_workflow_uses_structured_tool_in_registry(monkeypatch):
+    """execute_workflow 应把 LangChain 工具对象交给执行器并通过 invoke 调用。"""
+    import json
+    from langchain_core.tools import StructuredTool
+    import backend.services.tools as gis_tools
+
+    calls = []
+
+    def list_layers():
+        """列出当前图层。"""
+        calls.append("called")
+        return "当前地图没有已加载或注册的图层"
+
+    monkeypatch.setattr(gis_tools, "tools", [
+        StructuredTool.from_function(list_layers, name="list_layers"),
+    ])
+    workflow = {
+        "name": "检查当前图层",
+        "nodes": [{"id": "n1", "name": "列出图层", "tool": "list_layers", "inputs": {}}],
+    }
+
+    result = gis_tools.execute_workflow.func(json.dumps(workflow, ensure_ascii=False))
+
+    assert calls == ["called"]
+    assert "状态: success" in result
 
 
 def test_execute_workflow_tool_invalid_json():

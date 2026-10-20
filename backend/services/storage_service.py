@@ -157,13 +157,13 @@ def record_run_finish(run_id: str, ai_response: str, status: str = "success", gu
         with _LOCK:
             conn = get_connection()
             try:
-                conn.execute("""
+                cur = conn.execute("""
                 UPDATE runs
                 SET ai_response = ?, status = ?, guard_status = ?, finished_at = ?
                 WHERE run_id = ?
                 """, (ai_response, status, guard_status, _now(), run_id))
                 conn.commit()
-                return True
+                return cur.rowcount == 1
             finally:
                 conn.close()
     except Exception as e:
@@ -179,11 +179,19 @@ def register_run_artifact(run_id: str, artifact_id: str, filename: str,
         rel_path = to_relative_path(file_path)
         abs_path = to_absolute_path(rel_path)
         size = 0
-        if os.path.exists(abs_path):
+        is_file = os.path.isfile(abs_path)
+        if is_file:
             try:
                 size = os.path.getsize(abs_path)
             except OSError:
                 size = 0
+
+        # 工具层可能在写文件失败后仍调用登记。保持失败尝试可追溯，
+        # 但不允许缺失/空文件继承默认 PASS 状态。
+        if not is_file or size <= 0:
+            qa_status = "FAIL"
+            reason = "产物文件不存在或为空"
+            qa_details = f"{qa_details}; {reason}" if qa_details else reason
 
         with _LOCK:
             conn = get_connection()

@@ -519,6 +519,46 @@ def update_gis_context(task_id: str, **kwargs):
         _save_task_to_disk(task)
 
 
+def record_gis_operation(task_id: str, tool: str, arguments: dict,
+                        input_layers: list = None, output_layers: list = None,
+                        output_artifacts: list = None, status: str = "success",
+                        run_id: str = "") -> bool:
+    """Record a GIS tool attempt while preserving the latest successful result on failure."""
+    task = get_task(task_id)
+    if not task:
+        return False
+    operation = {
+        "tool": tool,
+        "arguments": dict(arguments or {}),
+        "input_layers": list(input_layers or []),
+        "output_layers": list(output_layers or []),
+        "output_artifacts": list(output_artifacts or []),
+        "status": status,
+        "run_id": run_id or "",
+        "recorded_at": _now(),
+    }
+    # Read/append/write must be one critical section. Otherwise parallel tools can
+    # both copy the same old context and the last writer silently erases the other.
+    with _lock:
+        task = _tasks.get(task_id)
+        if not task:
+            return False
+        gis = dict(task.get("gis_context") or {})
+        recent = list(gis.get("recent_operations") or [])
+        recent.append(operation)
+        gis["recent_operations"] = recent[-20:]
+        gis["current_operation"] = operation
+        if status == "success":
+            gis["last_successful_operation"] = operation
+            outputs = operation["output_layers"] or operation["output_artifacts"]
+            if outputs:
+                gis["last_successful_output"] = outputs[-1]
+        task["gis_context"] = gis
+        task["updated_at"] = _now()
+        _save_task_to_disk(task)
+    return True
+
+
 def get_gis_context(task_id: str) -> dict:
     """获取任务的 GIS 上下文"""
     task = get_task(task_id)
@@ -557,7 +597,30 @@ def build_task_context(task_id: str) -> str:
     if gis:
         parts.append("\n### GIS 数据上下文")
         for k, v in gis.items():
+            if k in {"recent_operations", "current_operation", "last_successful_operation", "last_successful_output"}:
+                continue
             parts.append(f"- {k}: {v}")
+
+    current_op = gis.get("current_operation") or {}
+    last_success = gis.get("last_successful_operation") or {}
+    latest_output = gis.get("last_successful_output")
+    if current_op or last_success or latest_output:
+        parts.append("\n### GIS 最近执行状态（以工具记录为准）")
+        if current_op:
+            parts.append("- 最近尝试: " + json.dumps(current_op, ensure_ascii=False, sort_keys=True))
+        if last_success:
+            parts.append("- 最近成功操作: " + json.dumps(last_success, ensure_ascii=False, sort_keys=True))
+        if latest_output:
+            parts.append("- 最近成功结果: " + json.dumps(latest_output, ensure_ascii=False, sort_keys=True))
+        recent = gis.get("recent_operations") or []
+        if recent:
+            parts.append("- 最近 GIS 操作记录: " + json.dumps(recent[-8:], ensure_ascii=False, sort_keys=True))
+        parts.append(
+            "以上记录中的工具参数和图层标识来自实际执行。用户要修改分析参数时，找到最近成功的同类分析，"
+            "沿用其原始输入与参数，仅修改用户指定的值后重跑；不要把分析输出当成原始输入，除非用户明确要求继续处理输出。"
+            "用户指向刚才结果或要求导出时，使用最近成功结果中的准确图层名/产物。最近尝试失败时保留并使用最近成功结果。"
+            "对象有多个候选时先简短询问。"
+        )
 
     # Artifact 摘要
     art_summary = get_artifact_summary(task_id)

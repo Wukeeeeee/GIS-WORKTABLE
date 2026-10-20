@@ -14,7 +14,7 @@ window.GIS = window.GIS || {};
   let layersTable = null;
   let layersEmpty = null;
   let layerData = [];
-  let groups = {};             // { groupId: {id, name, collapsed} }
+  let groups = Object.create(null); // { groupId: {id, name, collapsed} }
   let _groupIdCounter = 0;
   let _handleSwipeAction = null;
 
@@ -212,7 +212,12 @@ window.GIS = window.GIS || {};
       });
       // 保持原注册行为（AI 后端需按原名可查）
       if (!skipRegister && window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
-        window.GIS.api.registerLayer(bridgeMapName, layer.geojson);
+        var registrationPromise = window.GIS.api.registerLayer(bridgeMapName, layer.geojson);
+        var panelRecord = layerData.find(function(item) { return item.layer_id === bridged.layer_id; });
+        if (panelRecord) {
+          panelRecord._registeredName = bridgeMapName;
+          panelRecord._registrationPromise = registrationPromise;
+        }
       }
       return bridged;
     }
@@ -228,13 +233,18 @@ window.GIS = window.GIS || {};
     }
     // 兜底生成 layer_id：工程恢复等场景可能不带 layer_id，缺失会导致删除按钮 data-id 为空而失效
     var _layerId = layer.layer_id || ('layer_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e6).toString(36));
-    layerData.push({ ...layer, layer_id: _layerId, filename: name, _rawName, visible: true, color });
+    var isVisible = layer.visible !== false;
+    layerData.push({ ...layer, layer_id: _layerId, filename: name, _rawName, visible: isVisible, color });
     if (!layer._panelSync && GIS.map && GIS.map.setLayerColor) GIS.map.setLayerColor(_rawName, color);
+    if (!isVisible && GIS.map && GIS.map.setLayerVisible) GIS.map.setLayerVisible(_rawName, false);
     renderList();
     _syncLayerOrder();
     if (!skipRegister && window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
-      window.GIS.api.registerLayer(name, layer.geojson);
+      var registeredLayer = layerData[layerData.length - 1];
+      registeredLayer._registeredName = name;
+      registeredLayer._registrationPromise = window.GIS.api.registerLayer(name, layer.geojson);
     }
+    return layerData[layerData.length - 1] || null;
   }
 
   // 删除图层：从列表移除 + 从地图清除
@@ -264,7 +274,10 @@ window.GIS = window.GIS || {};
         window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system');
       }
       if (window.GIS.api && typeof window.GIS.api.unregisterLayer === 'function') {
-        window.GIS.api.unregisterLayer(target.filename || target.layer_id || '');
+        var registeredName = target._registeredName || target.filename || target.layer_id || '';
+        Promise.resolve(target._registrationPromise).catch(function() {}).then(function() {
+          return window.GIS.api.unregisterLayer(registeredName);
+        });
       }
     }
   }
@@ -272,14 +285,50 @@ window.GIS = window.GIS || {};
   // 清空所有图层（新建会话/删除工程时调用）：逐个走 removeLayer 保证地图与后端同步清理，默认静默执行不向聊天区灌入冗余系统提示
   function clearAll(silent) {
     if (silent === undefined) silent = true;
-    var ids = layerData.map(function(l) { return l.layer_id; });
-    ids.forEach(function(id) { removeLayer(id, false, silent); });
-    layerData = [];
-    renderList();
-    _hideFloatingLegend();
-    if (GIS.map && typeof GIS.map.clearAll === 'function') {
-      try { GIS.map.clearAll(); } catch(_) {}
+    var panelLayers = layerData.slice();
+    var errors = [];
+    var stateOk = true;
+    // 先清共享状态，避免状态中存在但未显示在图层面板的图层在地图清空后又被重新同步。
+    if (window.GIS.state && typeof window.GIS.state.clearAll === 'function') {
+      try {
+        var stateResult = window.GIS.state.clearAll();
+        if (stateResult) {
+          if (stateResult.ok === false) stateOk = false;
+          if (Array.isArray(stateResult.errors)) errors = errors.concat(stateResult.errors);
+        }
+      } catch(error) { errors.push(error); }
     }
+    panelLayers.forEach(function(layer) {
+      if (!layerData.some(function(current) { return current.layer_id === layer.layer_id; })) return;
+      try { removeLayer(layer.layer_id, true, silent); }
+      catch(error) { errors.push(error); }
+    });
+    layerData = [];
+    groups = Object.create(null);
+    _groupIdCounter = 0;
+    try { renderList(); } catch(error) { errors.push(error); }
+    try { _hideFloatingLegend(); } catch(error) { errors.push(error); }
+    var mapResult = { ok: true, remaining: 0 };
+    if (GIS.map && typeof GIS.map.clearAll === 'function') {
+      try { mapResult = GIS.map.clearAll() || mapResult; }
+      catch(error) { mapResult = { ok: false, remaining: 0, errors: [error] }; }
+    }
+    var rendererResult = { ok: true, remaining: 0, errors: [] };
+    if (GIS.renderers && typeof GIS.renderers.clearAllLayers === 'function') {
+      try { rendererResult = GIS.renderers.clearAllLayers() || rendererResult; }
+      catch(error) { rendererResult = { ok: false, remaining: 0, errors: [error] }; }
+    }
+    var remainingState = window.GIS.state && typeof window.GIS.state.getLayers === 'function'
+      ? window.GIS.state.getLayers().length : 0;
+    var remainingMap = Number(mapResult.remaining) || 0;
+    var remainingRenderer = Number(rendererResult.remaining) || 0;
+    var mapErrors = Array.isArray(mapResult.errors) ? mapResult.errors : [];
+    var rendererErrors = Array.isArray(rendererResult.errors) ? rendererResult.errors : [];
+    errors = errors.concat(mapErrors, rendererErrors);
+    return { ok: stateOk && mapResult.ok !== false && rendererResult.ok !== false && errors.length === 0 &&
+        layerData.length === 0 && remainingState === 0 && remainingMap === 0 && remainingRenderer === 0,
+      removedCount: panelLayers.length, remainingPanel: layerData.length, remainingState: remainingState,
+      remainingMap: remainingMap, remainingRenderer: remainingRenderer, errors: errors };
   }
 
   // 批量切换图层显隐（全部显示 / 全部隐藏）
@@ -304,6 +353,28 @@ window.GIS = window.GIS || {};
 
   function hideAll() {
     setAllVisibility(false);
+  }
+
+  function _moveLayerAtDrop(srcIndex, targetIndex, position) {
+    const moved = layerData[srcIndex];
+    const targetLayer = layerData[targetIndex];
+    if (!moved || !targetLayer) return false;
+
+    layerData.splice(srcIndex, 1);
+    let insertIndex = targetIndex;
+    if (srcIndex < targetIndex) {
+      insertIndex = position === 'before' ? targetIndex - 1 : targetIndex;
+    } else {
+      insertIndex = position === 'before' ? targetIndex : targetIndex + 1;
+    }
+    insertIndex = Math.max(0, Math.min(insertIndex, layerData.length));
+
+    // Dropping on an ungrouped row must also remove the old group assignment.
+    moved.groupId = targetLayer.groupId || null;
+    layerData.splice(insertIndex, 0, moved);
+    renderList();
+    _syncLayerOrder();
+    return true;
   }
 
   // 切换图层显隐
@@ -525,26 +596,9 @@ window.GIS = window.GIS || {};
         dragSrcIndex = null;
         return;
       }
-
-      const [moved] = layerData.splice(dragSrcIndex, 1);
-      // 计算移除元素后目标的新索引
-      let insertIndex = target;
-      if (dragSrcIndex < target) {
-        insertIndex = isInsertBefore ? target - 1 : target;
-      } else {
-        insertIndex = isInsertBefore ? target : target + 1;
-      }
-      if (insertIndex < 0) insertIndex = 0;
-      if (insertIndex > layerData.length) insertIndex = layerData.length;
-
-      const targetLayer = layerData[target] || layerData[insertIndex];
-      if (targetLayer && targetLayer.groupId) {
-        moved.groupId = targetLayer.groupId;
-      }
-      layerData.splice(insertIndex, 0, moved);
-      renderList();
+      const sourceIndex = dragSrcIndex;
       dragSrcIndex = null;
-      _syncLayerOrder();
+      _moveLayerAtDrop(sourceIndex, target, isInsertBefore ? 'before' : 'after');
     });
   }
 
@@ -565,18 +619,33 @@ window.GIS = window.GIS || {};
     var clearAllBtn = document.getElementById('clearAllLayersBtn');
     if (clearAllBtn) {
       clearAllBtn.addEventListener('click', function() {
-        if (!layerData || layerData.length === 0) return;
-        var count = layerData.length;
+        var count = (layerData || []).length;
         var doClear = function() {
-          clearAll();
+          var result = clearAll();
           if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
-            window.GIS.chat.addMessage('已清空全部 ' + count + ' 个图层', 'system', { pill: true });
+            if (result.ok) {
+              window.GIS.chat.addMessage(count
+                ? '已清空全部 ' + count + ' 个图层'
+                : '已清理地图上的残留图层', 'system', { pill: true });
+            } else {
+              var remaining = Math.max(result.remainingPanel, result.remainingState, result.remainingMap, result.remainingRenderer);
+              var detail = remaining
+                ? '仍有 ' + remaining + ' 个图层或地图覆盖层未清除。'
+                : '地图清理未能确认完成，请重试并检查地图显示。';
+              window.GIS.chat.addMessage('清理未完全成功：' + detail, 'system', { pill: true });
+            }
           }
         };
         if (window.GIS.workspace && typeof window.GIS.workspace.confirmModal === 'function') {
-          window.GIS.workspace.confirmModal('清空图层确认', '确定要清空当前地图上的全部 ' + count + ' 个图层吗？此操作不可恢复。', doClear, true);
+          var message = count
+            ? '确定要清空当前地图上的全部 ' + count + ' 个图层吗？此操作不可恢复。'
+            : '图层列表为空。仍要清理地图上的残留图层吗？';
+          window.GIS.workspace.confirmModal('清空图层确认', message, doClear, true);
         } else if (typeof showConfirm === 'function') {
-          showConfirm('清空图层确认', '确定要清空当前地图上的全部 ' + count + ' 个图层吗？此操作不可恢复。', doClear);
+          var fallbackMessage = count
+            ? '确定要清空当前地图上的全部 ' + count + ' 个图层吗？此操作不可恢复。'
+            : '图层列表为空。仍要清理地图上的残留图层吗？';
+          showConfirm('清空图层确认', fallbackMessage, doClear);
         } else if (confirm('确定要清空全部 ' + count + ' 个图层吗？')) {
           doClear();
         }
@@ -656,6 +725,24 @@ window.GIS = window.GIS || {};
       window.GIS.toast.success('已新建分组「' + groupName + '」');
     }
     return gid;
+  }
+
+  function getGroupState() {
+    return Object.keys(groups).map(function(id) {
+      return { id: id, name: groups[id].name, collapsed: !!groups[id].collapsed };
+    });
+  }
+
+  function setGroupState(groupState) {
+    groups = Object.create(null);
+    _groupIdCounter = 0;
+    (Array.isArray(groupState) ? groupState : []).forEach(function(group) {
+      if (!group || typeof group.id !== 'string' || !group.id || typeof group.name !== 'string' || !group.name.trim()) return;
+      groups[group.id] = { id: group.id, name: group.name.trim(), collapsed: !!group.collapsed };
+      var match = group.id.match(/^group_(\d+)$/);
+      if (match) _groupIdCounter = Math.max(_groupIdCounter, Number(match[1]));
+    });
+    renderList();
   }
 
   /** 将图层移入分组 */
@@ -980,40 +1067,7 @@ window.GIS = window.GIS || {};
       if (!nameEl) return;
       var id = nameEl.dataset.id;
       if (!id) return;
-      var layer = layerData.find(function(l) { return l.layer_id === id; });
-      if (!layer) return;
-
-      var oldName = layer.filename || '未命名';
-      var input = document.createElement('input');
-      input.type = 'text';
-      input.value = oldName;
-      input.className = 'layer-rename-input';
-      input.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid var(--ui-gray-400);border-radius:2px;padding:1px 4px;font-size:inherit;font-family:inherit;background:var(--ui-white);color:var(--ui-gray-900);';
-
-      nameEl.textContent = '';
-      nameEl.appendChild(input);
-      input.focus();
-      input.select();
-
-      function commit() {
-        var val = input.value.trim() || oldName;
-        // 检查重名
-        var exists = layerData.some(function(l) { return l !== layer && l.filename === val; });
-        if (exists) {
-          var suffix = 1;
-          while (layerData.some(function(l) { return l !== layer && l.filename === val + '(' + suffix + ')'; })) { suffix++; }
-          val = val + '(' + suffix + ')';
-        }
-        layer.filename = val;
-        nameEl.textContent = val;
-        nameEl.title = '双击重命名';
-      }
-
-      input.addEventListener('blur', commit);
-      input.addEventListener('keydown', function(ke) {
-        if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
-        if (ke.key === 'Escape') { ke.preventDefault(); nameEl.textContent = oldName; }
-      });
+      _triggerRename(id);
     });
   }
 
@@ -1653,7 +1707,7 @@ window.GIS = window.GIS || {};
   // ---- 图层符号化 ----
 
   /** 存储每层的符号化配置 */
-  var _symbologyConfig = {};
+  var _symbologyConfig = Object.create(null);
 
   /** 绑定符号化标签页内的事件 */
   function _bindSymbEvents(layerId, features) {
@@ -1857,12 +1911,19 @@ window.GIS = window.GIS || {};
 
     var scheme = _getColorScheme(colorScheme, classes);
 
+    var previousConfig = _symbologyConfig[layerId];
     _symbologyConfig[layerId] = { type: type, field: field, classes: classes, colorScheme: colorScheme, enabled: true, minSize: minSize || 3, maxSize: maxSize || 20 };
 
     if (type === 'unique') {
-      _applyUniqueValues(layer, gj, features, field, scheme);
+      if (!_applyUniqueValues(layer, gj, features, field, scheme)) {
+        if (previousConfig) _symbologyConfig[layerId] = previousConfig;
+        else delete _symbologyConfig[layerId];
+      }
     } else if (type === 'graduated') {
-      _applyGraduatedColors(layer, gj, features, field, classes, scheme);
+      if (!_applyGraduatedColors(layer, gj, features, field, classes, scheme)) {
+        if (previousConfig) _symbologyConfig[layerId] = previousConfig;
+        else delete _symbologyConfig[layerId];
+      }
     } else if (type === 'graduated-symbol') {
       _applyGraduatedSymbols(layer, gj, features, field, classes, scheme, minSize, maxSize);
     } else if (type === 'proportional') {
@@ -1942,14 +2003,14 @@ window.GIS = window.GIS || {};
 
   /** 唯一值渲染 */
   function _applyUniqueValues(layer, gj, features, field, scheme) {
-    var values = {};
+    var values = Object.create(null);
     features.forEach(function(f, idx) {
       var v = String(f.properties ? f.properties[field] ?? '' : '');
       if (!values[v]) values[v] = [];
       values[v].push(idx);
     });
     var keys = Object.keys(values);
-    var colorMap = {};
+    var colorMap = Object.create(null);
     keys.forEach(function(k, i) { colorMap[k] = scheme[i % scheme.length]; });
 
     var styleMap = {};
@@ -1958,7 +2019,7 @@ window.GIS = window.GIS || {};
       styleMap[idx] = _styleForGeom(f, colorMap[v]);
     });
 
-    _applyStyleToMap(layer, gj, styleMap);
+    if (!_applyStyleToMap(layer, gj, styleMap)) return false;
     _push3dFeatureColors(layer, features, styleMap);
     var defaultColor = scheme[keys.length % scheme.length] || '#1c1b1b';
 
@@ -1969,18 +2030,22 @@ window.GIS = window.GIS || {};
       field: field,
       items: keys.map(function(k) { return { label: k, color: colorMap[k], count: values[k].length }; }),
     };
+    _symbologyConfig[layer.layer_id].type = 'unique';
+    _symbologyConfig[layer.layer_id].field = field;
+    _symbologyConfig[layer.layer_id].enabled = true;
 
     // 符号化信息由 _showLegend 生成可视化图例卡片展示，无需向聊天区倾倒未格式化的十六进制色码
+    return true;
   }
 
   /** 分级色彩渲染 */
-  function _applyGraduatedColors(layer, gj, features, field, classes, scheme) {
+  function _applyGraduatedColors(layer, gj, features, field, classes, scheme, method, suppliedBreaks, fillOpacity) {
     var values = features.map(function(f, idx) {
       return { idx: idx, val: parseFloat(f.properties ? f.properties[field] : 0) };
     }).filter(function(v) { return !isNaN(v.val); });
     if (!values.length) {
       if (window.GIS.chat) window.GIS.chat.addMessage('字段「' + field + '」无有效数值', 'system');
-      return;
+      return false;
     }
 
     var sorted = values.map(function(v) { return v.val; }).sort(function(a, b) { return a - b; });
@@ -1989,14 +2054,40 @@ window.GIS = window.GIS || {};
       // 所有值相同，用单一颜色
       var styleMap = {};
       features.forEach(function(f, idx) { styleMap[idx] = _styleForGeom(f, scheme[0]); });
-      _applyStyleToMap(layer, gj, styleMap);
+      if (!_applyStyleToMap(layer, gj, styleMap)) return false;
       _push3dFeatureColors(layer, features, styleMap);
-      return;
+      if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
+      _symbologyConfig[layer.layer_id].type = 'graduated';
+      _symbologyConfig[layer.layer_id].field = field;
+      _symbologyConfig[layer.layer_id].classes = 1;
+      _symbologyConfig[layer.layer_id].method = method === 'quantile' ? 'quantile' : 'equal_interval';
+      _symbologyConfig[layer.layer_id].breaks = [min, max];
+      _symbologyConfig[layer.layer_id].fillOpacity = isFinite(Number(fillOpacity)) ? Math.max(0, Math.min(1, Number(fillOpacity))) : 0.35;
+      _symbologyConfig[layer.layer_id].legendData = {
+        type: 'graduated', field: field, method: _symbologyConfig[layer.layer_id].method,
+        items: [{ label: min.toFixed(2) + ' - ' + max.toFixed(2), color: scheme[0] }],
+      };
+      return true;
     }
 
-    var step = (max - min) / classes;
-    var breaks = [];
-    for (var i = 0; i <= classes; i++) breaks.push(min + step * i);
+    method = method === 'quantile' ? 'quantile' : 'equal_interval';
+    var breaks = Array.isArray(suppliedBreaks) ? suppliedBreaks.map(Number) : [];
+    if (breaks.length < 3 || breaks.some(function(v, i) { return !isFinite(v) || (i > 0 && v <= breaks[i - 1]); })) {
+      breaks = [];
+      if (method === 'quantile') {
+        for (var q = 0; q <= classes; q++) {
+          var pos = (sorted.length - 1) * q / classes;
+          var lower = Math.floor(pos), upper = Math.ceil(pos);
+          breaks.push(sorted[lower] + (sorted[upper] - sorted[lower]) * (pos - lower));
+        }
+        breaks = breaks.filter(function(v, i) { return i === 0 || v > breaks[i - 1]; });
+      } else {
+        var step = (max - min) / classes;
+        for (var i = 0; i <= classes; i++) breaks.push(min + step * i);
+      }
+    }
+    classes = breaks.length - 1;
+    fillOpacity = isFinite(Number(fillOpacity)) ? Math.max(0, Math.min(1, Number(fillOpacity))) : 0.35;
 
     var styleMap = {};
     features.forEach(function(f, idx) {
@@ -2009,10 +2100,12 @@ window.GIS = window.GIS || {};
         }
       }
       var color = scheme[Math.min(classIdx, scheme.length - 1)];
-      styleMap[idx] = _styleForGeom(f, color);
+      var featureStyle = _styleForGeom(f, color);
+      if (f.geometry && /Polygon/.test(f.geometry.type || '')) featureStyle.fillOpacity = fillOpacity;
+      styleMap[idx] = featureStyle;
     });
 
-    _applyStyleToMap(layer, gj, styleMap);
+    if (!_applyStyleToMap(layer, gj, styleMap)) return false;
     _push3dFeatureColors(layer, features, styleMap);
 
     // 存储图例数据
@@ -2020,6 +2113,7 @@ window.GIS = window.GIS || {};
     _symbologyConfig[layer.layer_id].legendData = {
       type: 'graduated',
       field: field,
+      method: method,
       items: (function() {
         var arr = [];
         for (var j = 0; j < classes; j++) {
@@ -2028,7 +2122,14 @@ window.GIS = window.GIS || {};
         return arr;
       })(),
     };
+    _symbologyConfig[layer.layer_id].type = 'graduated';
+    _symbologyConfig[layer.layer_id].field = field;
+    _symbologyConfig[layer.layer_id].classes = classes;
+    _symbologyConfig[layer.layer_id].method = method;
+    _symbologyConfig[layer.layer_id].breaks = breaks.slice();
+    _symbologyConfig[layer.layer_id].fillOpacity = fillOpacity;
     // 符号化信息由 _showLegend 生成可视化图例卡片展示，无需向聊天区倾倒未格式化的十六进制色码
+    return true;
   }
 
   /** 分级符号渲染（点图层用不同半径，线图层用不同粗细） */
@@ -2127,8 +2228,115 @@ window.GIS = window.GIS || {};
   /** 将样式映射应用到地图图层 */
   function _applyStyleToMap(layer, gj, styleMap) {
     var name = layer._rawName || layer.layer_id;
-    if (!GIS.map || !GIS.map.applySymbology) return;
+    if (!GIS.map || !GIS.map.applySymbology) return false;
+    var config = _symbologyConfig[layer.layer_id] || (_symbologyConfig[layer.layer_id] = {});
+    var features = gj && gj.type === 'FeatureCollection' ? (gj.features || [])
+      : gj && gj.type === 'Feature' ? [gj] : [];
+    var stylesByFid = Object.create(null);
+    var fidCounts = Object.create(null);
+    features.forEach(function(feature) {
+      var fid = feature && feature.properties && feature.properties._fid;
+      if (fid !== undefined && fid !== null && fid !== '') {
+        var stableKey = 'fid:' + String(fid);
+        fidCounts[stableKey] = (fidCounts[stableKey] || 0) + 1;
+      }
+    });
+    features.forEach(function(feature, index) {
+      var fid = feature && feature.properties && feature.properties._fid;
+      var stableKey = fid !== undefined && fid !== null && fid !== '' ? 'fid:' + String(fid) : null;
+      var key = stableKey && fidCounts[stableKey] === 1 ? stableKey : 'index:' + index;
+      if (styleMap && styleMap[index]) stylesByFid[key] = Object.assign({}, styleMap[index]);
+    });
+    config.featureStyles = stylesByFid;
+    config.featureCount = features.length;
+    config.featureStyleCount = Object.keys(stylesByFid).length;
+    config.enabled = true;
     GIS.map.applySymbology(name, gj, styleMap);
+    return true;
+  }
+
+  function _cloneSerializable(value) {
+    if (value === undefined) return undefined;
+    try { return JSON.parse(JSON.stringify(value)); } catch (_) { return null; }
+  }
+
+  function _getSymbologyState(layerId) {
+    var config = _symbologyConfig[layerId];
+    if (!config || !config.enabled || config.featureStyleCount !== config.featureCount) return null;
+    var state = _cloneSerializable(config);
+    if (_lastLegendData && _lastLegendData.layerId === layerId) {
+      var panel = document.getElementById('mapFloatingLegend');
+      var pill = document.getElementById('mapLegendTogglePill');
+      state.legendPresentation = panel && panel.style.display !== 'none' ? 'open'
+        : pill && pill.style.display !== 'none' ? 'collapsed' : 'open';
+    } else {
+      state.legendPresentation = 'hidden';
+    }
+    return state;
+  }
+
+  function _getLegendData(layerId) {
+    var config = _symbologyConfig[layerId];
+    return config && config.enabled && config.legendData ? _cloneSerializable(config.legendData) : null;
+  }
+
+  function _restoreSymbologyState(layerId, snapshot) {
+    if (!snapshot || typeof snapshot !== 'object' || !snapshot.enabled || !snapshot.featureStyles ||
+        snapshot.featureStyleCount !== snapshot.featureCount) return false;
+    var layer = layerData.find(function(item) { return item.layer_id === layerId; });
+    var gj = layer && getLayerGeoJSON(layerId);
+    if (!layer || !gj) return false;
+    var features = gj.type === 'FeatureCollection' ? (gj.features || [])
+      : gj.type === 'Feature' ? [gj] : [];
+    if (!features.length || snapshot.featureCount !== features.length) return false;
+    var fidCounts = Object.create(null);
+    features.forEach(function(feature) {
+      var fid = feature && feature.properties && feature.properties._fid;
+      if (fid !== undefined && fid !== null && fid !== '') {
+        var stableKey = 'fid:' + String(fid);
+        fidCounts[stableKey] = (fidCounts[stableKey] || 0) + 1;
+      }
+    });
+    var styleMap = {};
+    var colorsByFid = Object.create(null);
+    for (var i = 0; i < features.length; i++) {
+      var fid = features[i] && features[i].properties && features[i].properties._fid;
+      var stableKey = fid !== undefined && fid !== null && fid !== '' ? 'fid:' + String(fid) : null;
+      var key = stableKey && fidCounts[stableKey] === 1 ? stableKey : 'index:' + i;
+      var savedStyle = snapshot.featureStyles[key];
+      if (!savedStyle) return false;
+      styleMap[i] = Object.assign({}, savedStyle);
+      if (stableKey && fidCounts[stableKey] === 1 && savedStyle.color) colorsByFid[fid] = savedStyle.color;
+    }
+
+    var previousConfig = _symbologyConfig[layerId];
+    _symbologyConfig[layerId] = _cloneSerializable(snapshot);
+    _symbologyConfig[layerId].enabled = true;
+    try {
+      if (!_applyStyleToMap(layer, gj, styleMap)) throw new Error('地图渲染器不可用');
+    } catch (_) {
+      if (previousConfig) _symbologyConfig[layerId] = previousConfig;
+      else delete _symbologyConfig[layerId];
+      return false;
+    }
+    if (window.GIS.state) {
+      if (typeof window.GIS.state.setFeatureColors === 'function') {
+        window.GIS.state.setFeatureColors(layerId, Object.keys(colorsByFid).length ? colorsByFid : null);
+      }
+      if (typeof window.GIS.state.applyVisualization === 'function') {
+        window.GIS.state.applyVisualization(layerId, snapshot.viz || null);
+      }
+    }
+    if (snapshot.legendData && snapshot.legendPresentation !== 'hidden') {
+      _renderFloatingLegend(layer._rawName || layer.filename || layer.layer_id, snapshot.legendData, layerId);
+      if (snapshot.legendPresentation === 'collapsed') {
+        var panel = document.getElementById('mapFloatingLegend');
+        var pill = document.getElementById('mapLegendTogglePill');
+        if (panel) panel.style.display = 'none';
+        if (pill) pill.style.display = 'inline-flex';
+      }
+    }
+    return true;
   }
 
   /** 把符号化颜色结果按 _fid 推给共享状态（3D 渲染器按 fid 设色） */
@@ -2150,6 +2358,10 @@ window.GIS = window.GIS || {};
   /** 清除符号化，恢复默认样式 */
   function _clearSymbology(layerId) {
     delete _symbologyConfig[layerId];
+    // 清除当前图例的来源样式时，同时移除图例浮层和折叠按钮，避免显示过期分级。
+    if (_lastLegendData && _lastLegendData.layerId === layerId) {
+      _hideFloatingLegend();
+    }
     // 同时清除 3D 拉伸与符号化颜色（同属该图层的可视化配置）
     if (window.GIS.state && typeof window.GIS.state.getLayer === 'function' &&
         window.GIS.state.getLayer(layerId)) {
@@ -2902,7 +3114,7 @@ window.GIS = window.GIS || {};
   }
 
   /** 按照AI layer_op 'symbology' 应用分级色彩 */
-  function _applyGraduatedFromAI(name, field, classes, scheme) {
+  function _applyGraduatedFromAI(name, field, classes, scheme, method, breaks, fillOpacity) {
     var layer = _findLayerByNameOrFuzzy(name);
     if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
     var gj = getLayerGeoJSON(layer.layer_id);
@@ -2912,10 +3124,19 @@ window.GIS = window.GIS || {};
     else if (gj.type === 'Feature') features = [gj];
     if (!features.length) return;
     var colors = _getColorScheme(scheme || 'blues', classes || 5);
-    if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
-    _symbologyConfig[layer.layer_id].enabled = true;
-    _applyGraduatedColors(layer, gj, features, field, classes || 5, colors);
+    var previousConfig = _symbologyConfig[layer.layer_id];
+    _symbologyConfig[layer.layer_id] = Object.assign({}, previousConfig || {}, {
+      type: 'graduated', field: field, classes: classes || 5, colorScheme: scheme || 'blues',
+      method: method === 'quantile' ? 'quantile' : 'equal_interval', breaks: Array.isArray(breaks) ? breaks.slice() : null,
+      fillOpacity: fillOpacity, enabled: true,
+    });
+    if (!_applyGraduatedColors(layer, gj, features, field, classes || 5, colors, method, breaks, fillOpacity)) {
+      if (previousConfig) _symbologyConfig[layer.layer_id] = previousConfig;
+      else delete _symbologyConfig[layer.layer_id];
+      return false;
+    }
     _showLegend(layer.layer_id);
+    return true;
   }
 
   /** 按照AI layer_op 'symbology' 应用唯一值渲染 */
@@ -2928,19 +3149,36 @@ window.GIS = window.GIS || {};
     if (gj.type === 'FeatureCollection') features = gj.features || [];
     else if (gj.type === 'Feature') features = [gj];
     if (!features.length) return;
+    if (!features.some(function(feature) {
+      return feature && feature.properties && Object.prototype.hasOwnProperty.call(feature.properties, field);
+    })) {
+      if (window.GIS.chat) window.GIS.chat.addMessage('字段「' + field + '」不存在，未修改图层样式', 'system');
+      return false;
+    }
     var uniq = features.map(function(f) { return f.properties ? f.properties[field] : null; }).filter(function(v, i, a) { return a.indexOf(v) === i; });
     var colors = _getColorScheme(scheme || 'scheme', Math.min(uniq.length, 10));
-    if (!_symbologyConfig[layer.layer_id]) _symbologyConfig[layer.layer_id] = {};
-    _symbologyConfig[layer.layer_id].enabled = true;
-    _applyUniqueValues(layer, gj, features, field, colors);
+    var previousConfig = _symbologyConfig[layer.layer_id];
+    _symbologyConfig[layer.layer_id] = Object.assign({}, previousConfig || {}, {
+      type: 'unique', field: field, colorScheme: scheme || 'scheme', enabled: true,
+    });
+    if (!_applyUniqueValues(layer, gj, features, field, colors)) {
+      if (previousConfig) _symbologyConfig[layer.layer_id] = previousConfig;
+      else delete _symbologyConfig[layer.layer_id];
+      return false;
+    }
     _showLegend(layer.layer_id);
+    return true;
   }
 
   GIS.layers = {
     init, renderList, addLayer, removeLayer, clearAll, toggleVisibility, showAll, hideAll, setAllVisibility, downloadLayer,
+    getGroupState: getGroupState, setGroupState: setGroupState,
     analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
     syncLayerOrder: _syncLayerOrder,
     getLayers: () => [...layerData],
+    getSymbologyState: _getSymbologyState,
+    getLegendData: _getLegendData,
+    restoreSymbologyState: _restoreSymbologyState,
     nextColor: nextColor,
     /** 返回所有图层名称列表（供网络分析面板使用） */
     getLayerNames: function() {
@@ -2960,6 +3198,18 @@ window.GIS = window.GIS || {};
     applyGraduatedColors: _applyGraduatedFromAI,
     /** AI 自然语言调用：对图层应用唯一值渲染 */
     applyUniqueValues: _applyUniqueFromAI,
+    /** AI 自然语言调用：清除符号化并同步移除该图层的浮动图例 */
+    clearSymbology: function(name) {
+      var layer = _findLayerByNameOrFuzzy(name);
+      if (!layer) {
+        if (window.GIS.chat && window.GIS.chat.addMessage) {
+          window.GIS.chat.addMessage('未找到图层「' + (name || '') + '」，无法清除符号化', 'system');
+        }
+        return false;
+      }
+      _clearSymbology(layer.layer_id);
+      return true;
+    },
     /** AI 自然语言调用：对图层添加属性标注 */
     addLabels: function(name, field) {
       var layer = _findLayerByNameOrFuzzy(name);
@@ -3322,6 +3572,10 @@ window.GIS = window.GIS || {};
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (!layer) return;
     var oldName = layer.filename || '未命名';
+    var oldRegisteredName = layer._registeredName || oldName;
+    var oldMapName = layer._rawName || oldName;
+    var oldRegistrationPromise = layer._registrationPromise;
+    var cancelled = false;
     var input = document.createElement('input');
     input.type = 'text';
     input.value = oldName;
@@ -3332,7 +3586,12 @@ window.GIS = window.GIS || {};
     input.focus();
     input.select();
     function commit() {
+      if (cancelled) return;
       var val = input.value.trim() || oldName;
+      if (val === oldName) {
+        nameEl.textContent = oldName;
+        return;
+      }
       var exists = layerData.some(function(l) { return l !== layer && l.filename === val; });
       if (exists) {
         var suffix = 1;
@@ -3342,25 +3601,32 @@ window.GIS = window.GIS || {};
       layer.filename = val;
       layer._rawName = val;
       nameEl.textContent = val;
-      if (val !== oldName) {
-        if (window.GIS.state && window.GIS.state.renameLayer) {
-          window.GIS.state.renameLayer(layerId, val);
-        }
-        if (window.GIS.map && window.GIS.map.renameLayer) {
-          window.GIS.map.renameLayer(oldName, val);
-        }
-        if (window.GIS.api && window.GIS.api.registerLayer && layer.geojson) {
-          window.GIS.api.registerLayer(val, layer.geojson);
-          if (window.GIS.api.unregisterLayer) {
-            window.GIS.api.unregisterLayer(oldName);
+      if (window.GIS.state && window.GIS.state.renameLayer) {
+        window.GIS.state.renameLayer(layerId, val);
+      }
+      if (window.GIS.map && window.GIS.map.renameLayer) {
+        window.GIS.map.renameLayer(oldMapName, val);
+      }
+      if (window.GIS.api && window.GIS.api.registerLayer && layer.geojson) {
+        var nextRegistrationPromise = Promise.resolve(oldRegistrationPromise).catch(function() {}).then(function() {
+          return window.GIS.api.registerLayer(val, layer.geojson);
+        });
+        layer._registrationPromise = nextRegistrationPromise.then(function() {
+          if (window.GIS.api.unregisterLayer && oldRegisteredName !== val) {
+            return window.GIS.api.unregisterLayer(oldRegisteredName);
           }
-        }
+        });
+        layer._registeredName = val;
       }
     }
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', function(ke) {
       if (ke.key === 'Enter') { ke.preventDefault(); input.blur(); }
-      if (ke.key === 'Escape') { ke.preventDefault(); nameEl.textContent = oldName; }
+      if (ke.key === 'Escape') {
+        ke.preventDefault();
+        cancelled = true;
+        nameEl.textContent = oldName;
+      }
     });
   }
 })();

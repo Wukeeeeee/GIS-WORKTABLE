@@ -37,11 +37,11 @@ def test_system_prompt_contains_core_thematic_rules():
     """
     # 主提示词：全部核心规则
     p = SYSTEM_PROMPT
-    assert "严格继承前序实体" in p            # 1. 严格上下文继承
+    assert "继承对象与字段" in p              # 1. 上下文继承依赖会话状态
     assert "问卷式选项" in p                  # 2. 严禁过度追问与问卷
     assert "手动打字回复特定格式" in p        # 3. 严禁要求用户手动打字回复特定格式
     assert "索要本地" in p                    # 4. 严禁索要用户本地 shp
-    assert "单区域" in p and "多区域" in p    # 5. 单要素与多要素专题图明确分流
+    assert "按当前请求注入的 `cartography` 知识处理" in p  # 5. 制图细则按需注入
     # GLM 提示词：通用红线子集
     g = SYSTEM_PROMPT_GLM
     assert "问卷式选项" in g

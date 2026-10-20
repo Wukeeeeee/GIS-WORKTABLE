@@ -58,5 +58,19 @@ def test_stop_ignores_foreign_services(monkeypatch):
     monkeypatch.setattr(launcher, "probe", lambda port: None)
     kill = MagicMock()
     monkeypatch.setattr(launcher.os, "kill", kill)
-    launcher.main()
+    with pytest.raises(SystemExit) as exit_info:
+        launcher.main()
+    assert exit_info.value.code == 0
     kill.assert_not_called()
+
+
+def test_abandoned_startup_lock_is_stale(tmp_path):
+    lock_file = tmp_path / "start.lock"
+    lock_file.write_text("", encoding="ascii")
+    assert launcher._startup_lock_is_stale(lock_file, grace_seconds=0)
+
+
+def test_active_startup_lock_is_not_stale(tmp_path):
+    lock_file = tmp_path / "start.lock"
+    lock_file.write_text(str(launcher.os.getpid()), encoding="ascii")
+    assert not launcher._startup_lock_is_stale(lock_file)

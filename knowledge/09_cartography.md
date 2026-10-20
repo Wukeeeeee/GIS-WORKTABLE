@@ -92,7 +92,7 @@
 - **自然断点（Jenks/Natural Breaks）**：类内差异最小、类间差异最大，适合有自然聚类的数据
 - **标准差（Standard Deviation）**：以均值为中心分级，适合正态分布数据
 
-项目 spatial_graduated_colors 默认使用分位数法（pandas qcut），适合大多数 GIS 数据。
+项目 `spatial_graduated_colors` 默认使用等间距法；需要按要素数量均分等级时传 `method="quantile"`。重复数值可能导致实际等级数少于请求等级数，应以工具返回的断点为准。
 
 ### 颜色方案选择
 

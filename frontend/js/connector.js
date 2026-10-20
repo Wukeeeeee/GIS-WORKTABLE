@@ -214,7 +214,7 @@
     var typeEl = document.getElementById('onlineType');
     var urlEl = document.getElementById('onlineUrl');
     var btn = document.getElementById('onlineLoadBtn');
-    if (!urlEl || !btn) return;
+    if (!urlEl || !btn || btn.disabled) return;
     var source = (urlEl.value || '').trim();
     if (!source) {
       alert('请先粘贴数据 URL 或本地路径');
@@ -229,12 +229,23 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ source: source, type: type }),
     })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        return r.json().then(function (result) {
+          if (!r.ok) {
+            throw new Error((result && (result.detail || result.error || result.message)) || r.statusText || ('HTTP ' + r.status));
+          }
+          return result;
+        });
+      })
       .then(function (result) {
         btn.disabled = false;
         btn.textContent = oldText;
         if (result.error) {
           alert('加载失败: ' + result.error);
+          return;
+        }
+        if (!result || (!result.raster_info && !result.geojson)) {
+          alert('加载失败: 服务未返回可加载的图层数据');
           return;
         }
         applyOnlineResult(result);

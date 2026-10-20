@@ -17,8 +17,11 @@ WORKSPACE = os.path.normcase(str(PROJECT_ROOT))
 
 
 def health_identity():
-    from backend.services.cn_profile import get_profile
-    return {"status": "ok", "service": SERVICE, "workspace": WORKSPACE, "pid": os.getpid(), "profile": get_profile()}
+    # The international checkout does not ship the CN-only profile service.
+    # Preserve an explicit profile marker when configured, while keeping the
+    # default launcher independent from that optional module.
+    profile = os.environ.get("GISWTB_PROFILE", "default").strip().lower() or "default"
+    return {"status": "ok", "service": SERVICE, "workspace": WORKSPACE, "pid": os.getpid(), "profile": profile}
 
 
 def probe(port):
@@ -42,6 +45,36 @@ def port_available(port):
             return True
         except OSError:
             return False
+
+
+def _process_is_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The process exists, but this launcher cannot inspect it.
+        return True
+    except OSError:
+        return False
+
+
+def _startup_lock_is_stale(lock_file, grace_seconds=120):
+    """Recognize abandoned locks written by this launcher and old empty locks."""
+    try:
+        stat = lock_file.stat()
+        owner = lock_file.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+
+    if owner.isdigit():
+        return not _process_is_alive(int(owner))
+    # Older launchers created empty lock files. Their startup wait is capped at
+    # 90 seconds, so an empty lock older than this grace period is abandoned.
+    return time.time() - stat.st_mtime > grace_seconds
 
 
 def candidate_ports():
@@ -84,12 +117,19 @@ def start_backend(port):
     while time.monotonic() < deadline:
         try:
             lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            os.write(lock_fd, str(os.getpid()).encode("ascii"))
+            os.fsync(lock_fd)
             break
         except FileExistsError:
             time.sleep(0.5)
             if probe(port):
                 print(f"GIS-WORKTABLE was started on port {port} by concurrent launcher.")
                 return 0
+            if _startup_lock_is_stale(lock_file):
+                try:
+                    lock_file.unlink()
+                except FileNotFoundError:
+                    pass
         except OSError:
             time.sleep(0.5)
 

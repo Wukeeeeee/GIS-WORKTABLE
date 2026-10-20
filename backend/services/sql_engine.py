@@ -138,7 +138,35 @@ def execute_layer_sql(sql: str, registered_layers: dict,
                 props = f.get("properties") or {}
                 all_fields.update(props.keys())
 
-            field_list = sorted(list(all_fields))
+            # _fid and _geom_json are reserved engine columns. SQLite resolves
+            # identifiers case-insensitively, so their property aliases must be
+            # filtered case-insensitively as well. _fid is already
+            # materialized from the feature id (or the injected property), and
+            # _geom_json is populated from geometry; duplicating either source
+            # property in the CREATE TABLE statement causes duplicate-column
+            # errors for otherwise valid layers.
+            reserved_fields = {"_fid", "_geom_json"}
+            field_list = []
+            fields_by_folded_name = {}
+            for field in sorted(all_fields, key=lambda value: (str(value).casefold(), str(value))):
+                if not isinstance(field, str):
+                    return {
+                        "ok": False,
+                        "error": f"图层「{layer_name}」包含非文本字段名，无法用于 SQL 查询",
+                        "row_count": 0, "rows": [], "markdown_table": "",
+                    }
+                folded_name = field.casefold()
+                if folded_name in reserved_fields:
+                    continue
+                previous = fields_by_folded_name.get(folded_name)
+                if previous is not None and previous != field:
+                    return {
+                        "ok": False,
+                        "error": f"图层「{layer_name}」包含大小写冲突字段「{previous}」和「{field}」，SQLite 查询无法区分它们",
+                        "row_count": 0, "rows": [], "markdown_table": "",
+                    }
+                fields_by_folded_name[folded_name] = field
+                field_list.append(field)
             # 过滤掉以数字开头的非法列名
             safe_cols = []
             for col in field_list:

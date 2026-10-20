@@ -4,6 +4,11 @@
   const GIS = window.GIS = window.GIS || {};
   const _toolTasks = {};
   const paths = {"home":"/assets/ui-icons/workspace-home.png","map":"/assets/ui-icons/workspace-map.png","folder":"/assets/ui-icons/workspace-folder.png","layers":"/assets/ui-icons/workspace-layers.png","tool":"/assets/ui-icons/workspace-tool.png","ai":"/assets/ui-icons/workspace-ai.png","globe":"/assets/ui-icons/workspace-globe.png","upload":"/assets/ui-icons/workspace-upload.png","history":"/assets/ui-icons/workspace-history.png","settings":"/assets/ui-icons/workspace-settings.png","close":"/assets/ui-icons/workspace-close.png","chevron":"/assets/ui-icons/workspace-chevron.png"};
+  function escapeMarkup(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  }
   function icon(name) {
     return '<span class="ui-icon" aria-hidden="true" style="--ui-icon-image:url(' + (paths[name] || '') + ')"></span>';
   }
@@ -113,9 +118,9 @@
     overlay.className = 'workspace-modal-overlay';
     overlay.innerHTML =
       '<div class="workspace-modal-dialog" role="dialog" aria-modal="true">' +
-        '<div class="workspace-modal-title">' + (title || '请输入') + '</div>' +
-        (desc ? '<div class="workspace-modal-desc">' + desc + '</div>' : '') +
-        '<input type="text" class="workspace-modal-input" value="' + (defaultValue || '').replace(/"/g, '&quot;') + '" />' +
+        '<div class="workspace-modal-title">' + escapeMarkup(title || '请输入') + '</div>' +
+        (desc ? '<div class="workspace-modal-desc">' + escapeMarkup(desc) + '</div>' : '') +
+        '<input type="text" class="workspace-modal-input" value="' + escapeMarkup(defaultValue || '') + '" />' +
         '<div class="workspace-modal-actions">' +
           '<button type="button" class="workspace-modal-btn cancel">取消</button>' +
           '<button type="button" class="workspace-modal-btn primary">确定</button>' +
@@ -146,8 +151,8 @@
     overlay.className = 'workspace-modal-overlay';
     overlay.innerHTML =
       '<div class="workspace-modal-dialog" role="dialog" aria-modal="true">' +
-        '<div class="workspace-modal-title">' + (title || '确认操作') + '</div>' +
-        (desc ? '<div class="workspace-modal-desc">' + desc + '</div>' : '') +
+        '<div class="workspace-modal-title">' + escapeMarkup(title || '确认操作') + '</div>' +
+        (desc ? '<div class="workspace-modal-desc">' + escapeMarkup(desc) + '</div>' : '') +
         '<div class="workspace-modal-actions">' +
           '<button type="button" class="workspace-modal-btn cancel">取消</button>' +
           '<button type="button" class="workspace-modal-btn ' + (isDanger ? 'danger' : 'primary') + '">确定</button>' +
@@ -172,7 +177,7 @@
         '<div class="workspace-modal-title">保存工程</div>' +
         '<div class="workspace-modal-desc">可将工程记录保存至本地工作台数据库，或直接打包导出为 .giswork 独立工程文件。</div>' +
         '<label style="display:block;font-size:12px;color:var(--on-surface-variant);margin-bottom:6px;">工程名称</label>' +
-        '<input type="text" class="workspace-modal-input" id="saveProjNameInput" value="' + (currentName || '未命名工程').replace(/"/g, '&quot;') + '" />' +
+        '<input type="text" class="workspace-modal-input" id="saveProjNameInput" value="' + escapeMarkup(currentName || '未命名工程') + '" />' +
         '<div class="workspace-modal-actions">' +
           '<button type="button" class="workspace-modal-btn cancel">取消</button>' +
           '<button type="button" class="workspace-modal-btn" id="saveProjExportBtn">导出本地文件</button>' +
@@ -208,28 +213,31 @@
     const nameEl = document.getElementById('workspaceCurrentProjectName');
     const curName = (nameEl ? nameEl.textContent : '未命名工程').trim() || '未命名工程';
     saveProjectModal(curName, function(saveName) {
-      if (nameEl) nameEl.textContent = saveName;
-      if (GIS.project && GIS.project.save) {
-        GIS.project.save(saveName).then(function(res) {
-          if (res && res.id) {
-            renderRecentProjects();
-            if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已保存工程「' + (res.name || saveName) + '」', 'system');
-          }
-        }).catch(function(err) {
-          if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 保存工程失败: ' + (err.message || err), 'system');
-        });
-      }
+      if (!GIS.project || !GIS.project.save) return;
+      GIS.project.save(saveName).then(function(res) {
+        if (!res || !res.id) throw new Error('保存工程未返回工程编号');
+        if (nameEl) nameEl.textContent = res.name || saveName;
+        renderRecentProjects();
+        if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已保存工程「' + escapeMarkup(res.name || saveName) + '」', 'system');
+      }).catch(function(err) {
+        if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 保存工程失败: ' + escapeMarkup(err.message || err), 'system');
+      });
     }, function(exportName) {
-      if (nameEl) nameEl.textContent = exportName;
-      if (GIS.project && GIS.project.save) {
-        GIS.project.save(exportName).then(function(res) {
-          if (res && res.id) {
-            renderRecentProjects();
-            if (GIS.project.exportCurrent) GIS.project.exportCurrent(res.id, exportName);
-            if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已导出工程文件: ' + exportName + '.giswork', 'system');
-          }
-        });
-      }
+      if (!GIS.project || !GIS.project.save) return;
+      var saved = false;
+      GIS.project.save(exportName).then(function(res) {
+        if (!res || !res.id) throw new Error('保存工程未返回工程编号');
+        saved = true;
+        if (nameEl) nameEl.textContent = res.name || exportName;
+        renderRecentProjects();
+        if (!GIS.project.exportCurrent) throw new Error('工程导出功能不可用');
+        return GIS.project.exportCurrent(res.id, exportName);
+      }).then(function() {
+        if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已开始下载工程文件: ' + escapeMarkup(exportName) + '.giswork', 'system');
+      }).catch(function(err) {
+        var message = saved ? '工程已保存，但导出文件失败: ' : '保存工程失败: ';
+        if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> ' + message + escapeMarkup(err.message || err), 'system');
+      });
     });
   }
   function loadProjectModal() {
@@ -285,7 +293,7 @@
             if (res && res.id && GIS.project && GIS.project.loadProject) {
               GIS.project.loadProject(res.id);
             } else if (res && res.name) {
-              if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已导入工程「' + res.name + '」', 'system');
+              if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> 已导入工程「' + escapeMarkup(res.name) + '」', 'system');
               renderRecentProjects();
             }
           }).catch(function(err) {
@@ -318,8 +326,8 @@
           
           item.innerHTML =
             '<div style="overflow:hidden;padding-right:8px;">' +
-              '<div style="font-size:13px;font-weight:600;color:var(--on-surface);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (GIS.utils ? GIS.utils.escapeHtml(name) : name) + '</div>' +
-              '<div style="font-size:11px;color:var(--on-surface-variant);margin-top:2px;">' + metaStr + '</div>' +
+              '<div style="font-size:13px;font-weight:600;color:var(--on-surface);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeMarkup(name) + '</div>' +
+              '<div style="font-size:11px;color:var(--on-surface-variant);margin-top:2px;">' + escapeMarkup(metaStr) + '</div>' +
             '</div>' +
             '<button type="button" class="workspace-btn" style="flex-shrink:0;padding:4px 10px;font-size:11px;background:var(--surface-container-high);border-radius:4px;">恢复</button>';
           
@@ -334,7 +342,7 @@
           listContainer.appendChild(item);
         });
       }).catch(function(err) {
-        listContainer.innerHTML = '<div style="padding:24px;text-align:center;color:var(--error,#d32f2f);font-size:12px;">加载失败: ' + (err.message || err) + '</div>';
+        listContainer.innerHTML = '<div style="padding:24px;text-align:center;color:var(--error,#d32f2f);font-size:12px;">加载失败: ' + escapeMarkup(err.message || err) + '</div>';
       });
     }
   }
@@ -443,7 +451,7 @@
     const panel = document.getElementById(panelId);
     if (!panel) return;
     panel.setAttribute('aria-busy', 'false');
-    panel.querySelectorAll('.spatial-run-btn, .spatial-tab').forEach(function(btn) { btn.disabled=false; });
+    panel.querySelectorAll('.spatial-run-btn, .spatial-tab, input, select, textarea').forEach(function(btn) { btn.disabled=false; });
     const task = _toolTasks[panelId] || {};
     if (task.timer) { clearInterval(task.timer); task.timer = null; }
     const duration = task.startTime ? ((Date.now() - task.startTime) / 1000).toFixed(1) : null;
@@ -465,9 +473,9 @@
 
     let html = '<strong>' + (failed ? '执行未完成 ' + durText : (count ? '已完成 · 新增 ' + count + ' 个图层 ' + durText : '结果已返回 ' + durText)) + '</strong>';
     if (result && result.layers && result.layers.length) {
-      html += '<div class="workspace-feedback-artifacts">产物图层：' + result.layers.map(function(l) { return '<span class="workspace-artifact-badge">' + (typeof l === 'string' ? l : (l.name || l.filename || '图层')) + '</span>'; }).join(' ') + '</div>';
+      html += '<div class="workspace-feedback-artifacts">产物图层：' + result.layers.map(function(l) { return '<span class="workspace-artifact-badge">' + escapeMarkup(typeof l === 'string' ? l : (l.name || l.filename || '图层')) + '</span>'; }).join(' ') + '</div>';
     }
-    html += '<p>' + message + '</p>';
+    html += '<p>' + escapeMarkup(message) + '</p>';
     if (failed && task.btn && typeof task.btn.click === 'function') {
       html += '<div class="workspace-feedback-actions"><button type="button" class="workspace-retry-btn" data-action="retry">重试此操作</button></div>';
     }
@@ -524,15 +532,17 @@
       cancelBtn.onclick = function() {
         if (task.timer) clearInterval(task.timer);
         task.cancelled = true;
-        panel.setAttribute('aria-busy', 'false');
-        panel.querySelectorAll('.spatial-run-btn, .spatial-tab').forEach(function(b) { b.disabled=false; });
+        // This stops the UI wait only; the request has no cancellation signal and may still
+        // complete. Keep run buttons locked so a late result cannot overwrite a newer task.
+        panel.setAttribute('aria-busy', 'true');
+        panel.querySelectorAll('.spatial-tab').forEach(function(b) { b.disabled=false; });
         output.dataset.state = 'cancelled';
-        output.innerHTML = '<strong>已取消界面等待</strong><p>已恢复面板输入并保留当前参数。注意：对于已发送到后端的耗时任务，服务器线程可能在后台继续完成。</p>';
+        output.innerHTML = '<strong>已停止等待提示</strong><p>当前操作仍在后台执行，参数与运行按钮暂时锁定；任务返回后可继续修改。</p>';
       };
     }
 
     panel.setAttribute('aria-busy', 'true');
-    panel.querySelectorAll('.spatial-run-btn, .spatial-tab').forEach(function(b) { b.disabled=true; });
+    panel.querySelectorAll('.spatial-run-btn, .spatial-tab, input, select, textarea').forEach(function(b) { b.disabled=true; });
   }
   function expandPanel(panelId) {
     const panel = document.getElementById(panelId);
@@ -688,14 +698,15 @@
         return;
       }
       container.innerHTML = list.map(function(p) {
-        const title = (p.name || '未命名工程').replace(/[<>&"]/g, '');
-        const time = (p.updatedAt || '').slice(0, 16).replace('T', ' ');
+        const title = String(p.name || '未命名工程');
+        const time = String(p.updatedAt || '').slice(0, 16).replace('T', ' ');
+        const count = String(p.layerCount || 0);
         return '<div class="workspace-recent-item">' +
           '<div class="workspace-recent-info">' +
-            '<strong>' + title + '</strong>' +
-            '<small>' + (p.layerCount || 0) + ' 个图层 · ' + time + '</small>' +
+            '<strong>' + escapeMarkup(title) + '</strong>' +
+            '<small>' + escapeMarkup(count) + ' 个图层 · ' + escapeMarkup(time) + '</small>' +
           '</div>' +
-          '<button type="button" class="workspace-recent-btn" data-project-id="' + p.id + '">打开</button>' +
+          '<button type="button" class="workspace-recent-btn" data-project-id="' + escapeMarkup(p.id) + '">打开</button>' +
         '</div>';
       }).join('');
       container.querySelectorAll('.workspace-recent-btn, .workspace-recent-item').forEach(function(el) {
@@ -752,7 +763,7 @@
         setTimeout(function() { if (feedback) feedback.textContent = ''; }, 4000);
       })
       .catch(function(err) {
-        if (feedback) feedback.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 加载失败: ' + err.message;
+        if (feedback) feedback.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 加载失败: ' + escapeMarkup(err.message || err);
       });
   }
   function button(action, label, glyph, detail) {
@@ -900,16 +911,15 @@
     });
 
     let initialTab = 'home';
+    let isClosed = false;
     try {
       const savedTab = localStorage.getItem('gis_workspace_active_tab');
       if (savedTab && ['home', 'browser', 'layers', 'tools'].indexOf(savedTab) >= 0) {
         initialTab = savedTab;
       }
+      isClosed = localStorage.getItem('gis_workspace_dock_closed') === 'true';
     } catch (_) {}
     setTab(initialTab);
-
-    let isClosed = false;
-    try { isClosed = localStorage.getItem('gis_workspace_dock_closed') === 'true'; } catch (_) {}
     if (isClosed) closeDock();
 
     toggleAI(false);
@@ -933,17 +943,16 @@
     }
     else if (action === 'new-project') {
       confirmModal('新建工程确认', '新建工程将清空当前所有图层与会话记录。请确认重要成果已保存，是否继续？', function() {
-        if (GIS.project && GIS.project.resetSession) GIS.project.resetSession();
-        else if (GIS.project && GIS.project.setCurrentProjectId) GIS.project.setCurrentProjectId(null);
-        const nameEl = document.getElementById('workspaceCurrentProjectName');
-        if (nameEl) nameEl.textContent = '未命名工程';
-        if (GIS.state && typeof GIS.state.clearAll === 'function') { try { GIS.state.clearAll(); } catch(_) {} }
-        if (GIS.layers && GIS.layers.clearAll) GIS.layers.clearAll(true);
-        if (GIS.map && GIS.map.clearAll) { try { GIS.map.clearAll(); } catch(_) {} }
-        if (GIS.map && GIS.map.resetView) { try { GIS.map.resetView(); } catch(_) {} }
-        if (GIS.chat && GIS.chat.clear) GIS.chat.clear();
-        if (GIS.chat && GIS.chat.clearSession) GIS.chat.clearSession();
-        if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('已开启新工程', 'system');
+        var clearPromise = GIS.chat && typeof GIS.chat.clearSession === 'function'
+          ? GIS.chat.clearSession()
+          : Promise.resolve(false);
+        Promise.resolve(clearPromise).then(function(cleared) {
+          if (cleared === false) return;
+          if (GIS.map && GIS.map.resetView) { try { GIS.map.resetView(); } catch(_) {} }
+          if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('已开启新工程', 'system');
+        }).catch(function(err) {
+        if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('新建工程失败: ' + escapeMarkup(err.message || err), 'system');
+        });
       }, true);
     }
     else if (action === 'data') GIS.geosource.show();
@@ -953,8 +962,9 @@
       document.getElementById(action === 'connector' ? 'connectorBtn' : 'settingsBtn').click();
     } else if (action === 'search') {
       document.getElementById('geosourceKeyword').value = document.getElementById('workspaceDataSearch').value;
+      // This entry point starts its own search; avoid show()'s empty-state auto-search.
+      GIS.geosource.show(true);
       GIS.geosource.doSearch(1);
-      GIS.geosource.show();
     } else if (action === 'projects') { toggleAI(true); document.getElementById('historyBtn').click(); }
     else if (action === 'spatial') GIS.spatial.toggle();
     else if (action === 'network') GIS.network.toggle();

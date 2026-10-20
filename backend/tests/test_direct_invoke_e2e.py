@@ -9,6 +9,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import json
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +17,9 @@ from fastapi.testclient import TestClient
 os.environ.pop("PROJ_LIB", None)
 os.environ.pop("PROJ_DATA", None)
 
+from backend import main as main_module
 from backend.main import app
+from backend.services import tools as tool_service, history_service
 
 client = TestClient(app)
 
@@ -84,6 +87,34 @@ def test_e2e_register_layer_via_api():
     # 图层名出现在 /api/layers/names
     names = client.get("/api/layers/names").json()["names"]
     assert "e2e_地块" in names
+
+
+def test_e2e_duplicate_geojson_uploads_keep_distinct_files_and_layers(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "_TEMP_OUTPUT_DIR", str(tmp_path))
+    name = f"duplicate-{uuid.uuid4().hex}.geojson"
+    west = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-74.04, 40.70]},
+         "properties": {"name": "west"}},
+    ]}
+    east = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-73.93, 40.79]},
+         "properties": {"name": "east"}},
+    ]}
+
+    first = client.post("/api/upload", files={"file": (name, json.dumps(west), "application/geo+json")})
+    second = client.post("/api/upload", files={"file": (name, json.dumps(east), "application/geo+json")})
+
+    assert first.status_code == second.status_code == 200
+    first_data, second_data = first.json(), second.json()
+    expected_second_name = name[:-8] + "_1.geojson"
+    assert first_data["name"] == name
+    assert second_data["name"] == expected_second_name
+    upload_dir = tmp_path / "uploads"
+    assert (upload_dir / name).is_file()
+    assert (upload_dir / expected_second_name).is_file()
+    registered = {item["filename"]: item["geojson"] for item in tool_service.get_registered_layers_snapshot()}
+    assert registered[name]["features"][0]["properties"]["name"] == "west"
+    assert registered[expected_second_name]["features"][0]["properties"]["name"] == "east"
 
 
 def test_e2e_buffer_then_clip_chain():
@@ -157,6 +188,27 @@ def test_e2e_swipe_and_history_rerun():
     assert rerun.status_code == 200
     rdata = rerun.json()
     assert "已重跑" in rdata["response"]
+    assert rdata["ok"] is True
+
+
+def test_e2e_history_rerun_exposes_returned_failure(monkeypatch, tmp_path):
+    history_service.set_history_file(str(tmp_path / "history.json"))
+    try:
+        index = history_service.record("spatial_buffer", {"layer_name": "测试区", "distance": 500}, True)
+
+        class FailedTool:
+            def invoke(self, _args):
+                return {"ok": False, "error": "受控失败"}
+
+        monkeypatch.setitem(tool_service._TOOL_REGISTRY, "spatial_buffer", FailedTool())
+        response = client.post("/api/history/rerun", json={"index": index})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is False
+        assert "受控失败" in data["error"]
+    finally:
+        history_service.set_history_file(None)
 
 
 def test_e2e_unknown_tool_404():

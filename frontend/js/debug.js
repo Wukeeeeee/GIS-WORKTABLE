@@ -115,6 +115,14 @@ window.GIS = window.GIS || {};
     return opt ? opt.text : '\u672a\u77e5';
   }
 
+  function escapeMarkup(value) {
+    var text = String(value == null ? '' : value);
+    if (GIS.utils && typeof GIS.utils.escapeHtml === 'function') return GIS.utils.escapeHtml(text);
+    return text.replace(/[&<>"']/g, function(ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  }
+
   function refresh() {
     if (!panel || !visible) return;
     document.getElementById('debugModel').textContent = getModel();
@@ -134,6 +142,7 @@ window.GIS = window.GIS || {};
       var html = '';
       layers.forEach(function(l) {
         var name = l.name || l.filename || l.layer_id || '\u672a\u547d\u540d';
+        var safeName = escapeMarkup(name);
         var gj = l.geojson;
         var fc = gj && gj.features ? gj.features.length : '?';
         var types = {};
@@ -146,8 +155,8 @@ window.GIS = window.GIS || {};
         var typeStr = Object.keys(types).map(function(t) { return types[t] + ' ' + t; }).join(', ');
         html += '<div class="debug-layer-item">';
         html += '  <div class="debug-layer-info">';
-        html += '    <div class="debug-layer-name" title="' + name.replace(/"/g,'&quot;') + '">' + name + '</div>';
-        html += '    <div class="debug-layer-meta">' + fc + ' \u8981\u7d20' + (typeStr ? ' \u00b7 ' + typeStr : '') + '</div>';
+        html += '    <div class="debug-layer-name" title="' + safeName + '">' + safeName + '</div>';
+        html += '    <div class="debug-layer-meta">' + escapeMarkup(fc) + ' \u8981\u7d20' + (typeStr ? ' \u00b7 ' + escapeMarkup(typeStr) : '') + '</div>';
         html += '  </div>';
         html += '</div>';
       });

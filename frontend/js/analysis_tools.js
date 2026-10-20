@@ -627,9 +627,16 @@ window.GIS = window.GIS || {};
     sel.innerHTML = '<option value="">-- 选择字段 --</option>';
     if (!layerName || !GIS.layers || !GIS.layers.getLayerByName) return;
     var layer = GIS.layers.getLayerByName(layerName);
-    var props = layer && layer.geojson && layer.geojson.features && layer.geojson.features[0]
-      ? layer.geojson.features[0].properties : {};
-    Object.keys(props).forEach(function (k) {
+    var features = layer && layer.geojson && Array.isArray(layer.geojson.features)
+      ? layer.geojson.features : [];
+    var fields = new Set();
+    features.forEach(function (feature) {
+      var props = feature && feature.properties;
+      if (props && typeof props === 'object') {
+        Object.keys(props).forEach(function (key) { fields.add(key); });
+      }
+    });
+    fields.forEach(function (k) {
       if (!k || k === '_fid') return;
       var opt = document.createElement('option');
       opt.value = k;

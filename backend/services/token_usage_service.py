@@ -47,25 +47,35 @@ def extract_and_record_token_usage(
         # 英文 schema（4 chars/token）都偏差大。现按 CJK / 非 CJK 分别计数：
         #   CJK 字符  1 token/字；非 CJK 字符  4 chars/token（OpenAI 实测近似）
         usage_type = "estimate"
-        input_chars = schema_chars
-        output_chars = 0
+        def _count_cjk_other(s: str) -> tuple:
+            if not s:
+                return 0, 0
+            cjk = sum(1 for ch in s if '\u4e00' <= ch <= '\u9fff')
+            return cjk, len(s) - cjk
+
+        input_cjk = 0
+        input_other = int(schema_chars or 0)
+        output_cjk = 0
+        output_other = 0
+
         for m in messages:
             content = getattr(m, "content", "")
             if isinstance(content, str):
+                cjk, other = _count_cjk_other(content)
                 if isinstance(m, AIMessage):
-                    output_chars += len(content)
+                    output_cjk += cjk
+                    output_other += other
                 else:
-                    input_chars += len(content)
+                    input_cjk += cjk
+                    input_other += other
 
-        def _est_tokens(s: str) -> int:
-            if not s:
+        def _calc_tokens(cjk: int, other: int) -> int:
+            if cjk == 0 and other == 0:
                 return 0
-            cjk = sum(1 for ch in s if '\u4e00' <= ch <= '\u9fff')
-            other = len(s) - cjk
             return max(1, int(cjk * 1.0 + other / 4.0))
 
-        total_input = _est_tokens(input_chars)
-        total_output = _est_tokens(output_chars)
+        total_input = _calc_tokens(input_cjk, input_other)
+        total_output = _calc_tokens(output_cjk, output_other)
 
     usage_record = {
         "timestamp": datetime.datetime.now().isoformat(),

@@ -112,6 +112,12 @@ class TestLayerControl:
         assert len(_pending_layer_ops) == 1
         assert _pending_layer_ops[0]["action"] == "set_color"
 
+    def test_clear_symbology(self):
+        _setup("lc1", _SQUARE)
+        r = layer_control.invoke({"action": "clear_symbology", "name": "lc1"})
+        assert "清除" in r
+        assert _pending_layer_ops == [{"action": "clear_symbology", "name": "lc1"}]
+
 
 
 

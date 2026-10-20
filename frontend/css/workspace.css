@@ -507,6 +507,28 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
 .workbench .chat-messages { padding: 18px 16px; background: var(--surface-container-lowest); }
 .workbench .chat-messages-empty { padding: 8px; color: var(--on-surface-variant); height: 100%; display: flex; align-items: center; justify-content: center; }
 
+/* AI task execution cards remain in the transcript after the loading message is removed. */
+.workbench .ai-execution-cards { display: grid; gap: 8px; margin: 2px 0 10px 38px; min-width: 0; color: var(--on-surface); }
+.workbench .ai-step-card { min-width: 0; padding: 10px 11px; border: 1px solid var(--outline-variant); border-radius: 8px; background: var(--surface-container-low); }
+.workbench .ai-step-heading { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.workbench .ai-step-icon { display: inline-flex; flex: 0 0 16px; width: 16px; height: 16px; color: var(--on-surface-variant); }
+.workbench .ai-step-icon svg { width: 100%; height: 100%; }
+.workbench .ai-step-title { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
+.workbench .ai-step-status { flex: 0 0 auto; color: var(--on-surface-variant); font-size: 10px; }
+.workbench .ai-step-running .ai-step-icon { animation: ai-step-pulse 1.2s ease-in-out infinite; }
+.workbench .ai-step-success .ai-step-icon { color: var(--on-surface); }
+.workbench .ai-step-failed .ai-step-icon, .workbench .ai-step-interrupted .ai-step-icon, .workbench .ai-step-cancelled .ai-step-icon { color: var(--on-surface-variant); }
+.workbench .ai-step-progress { min-width: 0; margin: 5px 0 0 23px; color: var(--on-surface-variant); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.workbench .ai-step-records { margin: 6px 0 0 23px; color: var(--on-surface-variant); font-size: 10px; }
+.workbench .ai-step-records summary { width: fit-content; cursor: pointer; user-select: none; }
+.workbench .ai-step-record-list { display: grid; gap: 6px; margin: 6px 0 0; padding: 0; list-style: none; }
+.workbench .ai-tool-record { min-width: 0; padding: 6px 7px; border: 1px solid var(--outline-variant); border-radius: 5px; background: var(--surface-container-lowest); overflow-wrap: anywhere; }
+.workbench .ai-tool-record strong { color: var(--on-surface); font-size: 10px; }
+.workbench .ai-tool-args { max-width: 100%; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 10px/1.5 var(--font-body); }
+.workbench .ai-tool-result { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; line-height: 1.5; }
+.workbench .ai-tool-failed .ai-tool-result { text-decoration: underline dotted; text-underline-offset: 2px; }
+@keyframes ai-step-pulse { 50% { opacity: .45; } }
+
 /* 简约空聊天状态与未配置提示 */
 .workbench .chat-empty-state {
   display: flex;
@@ -683,6 +705,81 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
   line-height: 1.6;
 }
 .workbench .message-bubble-ai::after { display: none; }
+
+/* Message metadata stays in normal flow, including in narrow chat panels. */
+.workbench .message-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px 24px;
+  align-items: start;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--on-surface-variant);
+  font-size: 11px;
+}
+.workbench .message-footer .btn-quote-ai,
+.workbench .message-footer .btn-copy-ai {
+  position: static;
+  opacity: .7;
+  color: inherit;
+}
+.workbench .message-footer .btn-quote-ai { grid-column: 2; }
+.workbench .message-footer .btn-copy-ai { grid-column: 3; }
+.workbench .message-usage { min-width: 0; }
+.workbench .message-usage[open] { grid-column: 1 / -1; }
+.workbench .message-usage summary,
+.workbench .result-audit-box summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  width: fit-content;
+  max-width: 100%;
+  cursor: pointer;
+  list-style: none;
+  color: var(--on-surface-variant);
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 3px;
+}
+.workbench .message-usage summary::-webkit-details-marker,
+.workbench .result-audit-box summary::-webkit-details-marker { display: none; }
+.workbench .message-usage summary::after,
+.workbench .result-audit-box summary::after {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg);
+  margin: -3px 3px 0 2px;
+  flex-shrink: 0;
+}
+.workbench .message-usage[open] > summary::after,
+.workbench .result-audit-box[open] > summary::after { transform: rotate(225deg); margin-top: 3px; }
+.workbench .message-usage summary:focus-visible,
+.workbench .result-audit-box summary:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.workbench .result-audit-box {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--outline-variant);
+}
+.workbench .result-audit-box.is-error > summary { color: var(--error, #b3261e); }
+.workbench .message-meta-panel {
+  padding: 8px 10px;
+  margin-top: 6px;
+  background: var(--surface-container);
+  border: 1px solid var(--outline-variant);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--on-surface-variant);
+  overflow-wrap: anywhere;
+}
+.workbench .message-meta-panel p { margin: 0 0 6px; }
+.workbench .message-meta-panel ul { margin: 0; padding-left: 16px; }
+.workbench .message-meta-panel dl { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; margin: 0; }
+.workbench .message-meta-panel dt, .workbench .message-meta-panel dd { margin: 0; }
+.workbench .message-meta-panel dd { font-variant-numeric: tabular-nums; }
 .workbench .message-bubble-user {
   background: var(--surface-container-high);
   border: 1px solid var(--outline-variant);

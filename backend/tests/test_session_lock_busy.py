@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -87,6 +88,42 @@ def test_run_agent_stream_marks_busy_event(monkeypatch):
         assert '"busy": true' in lines[0]
     finally:
         tools.release_session_lock(sid)
+
+
+def test_run_agent_stream_releases_lock_when_initialization_fails(monkeypatch):
+    from backend.services import graph
+
+    sid = "test-stream-init-failure"
+
+    def fail_build_llm(_cfg):
+        raise RuntimeError("model initialization failed")
+
+    monkeypatch.setattr(graph, "build_llm", fail_build_llm)
+    stream = graph.run_agent_stream(messages=[], cfg=None, session_id=sid)
+    with pytest.raises(RuntimeError, match="model initialization failed"):
+        next(stream)
+
+    assert tools.acquire_session_lock(sid) is True
+    tools.release_session_lock(sid)
+
+
+def test_run_agent_stream_releases_lock_when_consumer_disconnects(monkeypatch):
+    from backend.services import graph
+
+    sid = "test-stream-disconnect"
+
+    def one_event(**_kwargs):
+        yield "data: {\"type\":\"thinking\"}\n\n"
+
+    monkeypatch.setattr(graph, "_run_agent_stream_impl", one_event)
+    stream = graph.run_agent_stream(messages=[], cfg=None, session_id=sid)
+    assert next(stream).startswith("data:")
+    stream.close()
+
+    assert tools.acquire_session_lock(sid) is True
+    tools.release_session_lock(sid)
+
+
 def test_contract_guards_across_backend_and_frontend():
     """一条链路的静态护栏：等待锁 -> busy 标记 -> 不写成历史 -> 前端不当事正文。"""
     import io

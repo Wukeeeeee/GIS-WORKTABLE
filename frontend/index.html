@@ -882,7 +882,7 @@
             <button class="map-zoom-btn map-draw-btn" data-tool="feature-info" data-shortcut-group="tools" title="选择要素（点击地图要素查看属性）">
               <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-8db12d869a0f.png')"></span>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="delete" data-shortcut-group="tools" title="删除要素（点击即删）">
+            <button class="map-zoom-btn map-draw-btn" data-tool="delete" data-shortcut-group="tools" title="删除绘制要素（点击地图上已绘制的图形；不清空数据图层）" aria-label="删除绘制要素；不清空数据图层">
               <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-7a438f2a2604.png')"></span>
             </button>
             <button class="map-zoom-btn map-draw-btn" data-tool="network-analysis" data-shortcut-group="tools" title="网络分析（路径/服务区/最近设施）">
@@ -916,7 +916,7 @@
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-d87541636149.png')"></span>
                   全关
                 </button>
-                <button class="map-layer-btn" id="clearAllLayersBtn" title="清空全部图层">
+                <button class="map-layer-btn" id="clearAllLayersBtn" title="清空全部数据图层和绘制要素（保留底图）">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-cac4fc89d2be.png')"></span>
                   清空
                 </button>
@@ -1573,6 +1573,7 @@
   <script src="js/api.js"></script>
   <script src="js/gis_state.js"></script>
   <script src="js/map.js"></script>
+  <script src="js/execution_cards.js"></script>
   <script src="js/chat.js"></script>
   <script src="js/layers.js"></script>
   <script src="js/renderer_cesium.js"></script>

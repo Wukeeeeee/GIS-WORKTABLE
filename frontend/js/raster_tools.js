@@ -235,9 +235,8 @@ window.GIS = window.GIS || {};
     document.getElementById('rtWeightField').style.display = op.extra === 'weight' ? '' : 'none';
     var isFieldOp = op.extra === 'field' || op.extra === 'split';
     document.getElementById('rtFieldField').style.display = isFieldOp ? '' : 'none';
-    if (op.extra === 'split') {
-      document.getElementById('rtFieldSel').parentElement.querySelector('label').textContent = '拆分字段';
-    }
+    var fieldLabel = document.getElementById('rtFieldSel').parentElement.querySelector('label');
+    if (fieldLabel) fieldLabel.textContent = op.id === 'split' ? '拆分字段' : '插值字段（数值）';
     // 栅格类工具按文件名找 uploads 里的 tif，选择器之外保留手输名
     var isRaster = ['slope', 'aspect', 'hillshade', 'contour', 'ndvi', 'rastercalc', 'hydrology'].indexOf(op.id) >= 0;
     document.getElementById('rtLayerText').style.display = isRaster ? '' : 'none';
@@ -267,12 +266,15 @@ window.GIS = window.GIS || {};
       })
       .catch(function () {
         var sel = document.getElementById('rtLayer');
+        var cur = sel.value;
         sel.innerHTML = '<option value="">-- 请选择图层 --</option>';
         feNames.forEach(function (n) {
           var opt = document.createElement('option');
           opt.value = n; opt.textContent = n;
+          if (n === cur) opt.selected = true;
           sel.appendChild(opt);
         });
+        _refreshFieldSel();
       });
   }
 
@@ -284,31 +286,46 @@ window.GIS = window.GIS || {};
       var wCur = weightSel.value;
       weightSel.innerHTML = '<option value="">-- 无权重（按点密度） --</option>';
       if (wName && GIS.layers && GIS.layers.getLayerByName) {
-        var wl = GIS.layers.getLayerByName(wName);
-        var wProps = wl && wl.geojson && wl.geojson.features && wl.geojson.features[0]
-          ? wl.geojson.features[0].properties : {};
-        Object.keys(wProps).forEach(function (k) {
-          if (k === '_fid' || typeof wProps[k] !== 'number') return;
+        _getLayerFeatures(GIS.layers.getLayerByName(wName)).forEach(function (feature) {
+          var wProps = feature && feature.properties || {};
+          Object.keys(wProps).forEach(function (k) {
+            if (k === '_fid' || typeof wProps[k] !== 'number' || !isFinite(wProps[k]) ||
+                weightSel.options.some(function (option) { return option.value === k; })) return;
           var o = document.createElement('option');
           o.value = k; o.textContent = k;
           if (k === wCur) o.selected = true;
           weightSel.appendChild(o);
+          });
         });
       }
+      if (wCur && weightSel.options.some(function (option) { return option.value === wCur; })) weightSel.value = wCur;
     }
     if (!fieldSel) return;
     var layerName = document.getElementById('rtLayer').value;
+    var currentField = fieldSel.value;
     fieldSel.innerHTML = '<option value="">-- 选择字段 --</option>';
     if (!layerName || !GIS.layers || !GIS.layers.getLayerByName) return;
     var layer = GIS.layers.getLayerByName(layerName);
-    var props = layer && layer.geojson && layer.geojson.features && layer.geojson.features[0]
-      ? layer.geojson.features[0].properties : {};
-    Object.keys(props).forEach(function (k) {
-      if (k === '_fid' || typeof props[k] !== 'number') return;
-      var opt = document.createElement('option');
-      opt.value = k; opt.textContent = k;
-      fieldSel.appendChild(opt);
+    var op = _opById(document.getElementById('rtOp').value);
+    var numericOnly = !!op && op.id === 'interpolate';
+    var seenFields = {};
+    _getLayerFeatures(layer).forEach(function (feature) {
+      var props = feature && feature.properties || {};
+      Object.keys(props).forEach(function (k) {
+        if (k === '_fid' || seenFields[k] || (numericOnly && !(typeof props[k] === 'number' && isFinite(props[k])))) return;
+        seenFields[k] = true;
+        var opt = document.createElement('option');
+        opt.value = k; opt.textContent = k;
+        fieldSel.appendChild(opt);
+      });
     });
+    if (currentField && seenFields[currentField]) fieldSel.value = currentField;
+  }
+
+  function _getLayerFeatures(layer) {
+    if (!layer || !layer.geojson) return [];
+    if (layer.geojson.type === 'FeatureCollection') return layer.geojson.features || [];
+    return layer.geojson.type === 'Feature' ? [layer.geojson] : [];
   }
 
   function _clampToMapArea(container, left, top) {

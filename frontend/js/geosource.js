@@ -16,6 +16,7 @@
   var _totalCount = 0;
   var _totalPages = 1;
   var _isLoading = false;
+  var _searchRequestId = 0;
   var _arcgisBusy = false;
 
   function openWorldMap() {
@@ -432,8 +433,10 @@
 
         offset += batchFeatures.length;
 
-        // 如果服务端返回要素少于每页容量，或服务端明确标记未超过上限，说明已到最后一页
-        if (batchFeatures.length < pageSize || data.exceededTransferLimit === false || fetchMode !== 'all') {
+        // 服务端明确标记仍有超限数据时，即使返回短页也要继续按 offset 拉取。
+        // 只有明确未超限，或未提供该标记且短于请求页大小时，才能结束全量分页。
+        if (fetchMode !== 'all' || data.exceededTransferLimit === false ||
+            (data.exceededTransferLimit !== true && batchFeatures.length < pageSize)) {
           hasMore = false;
         }
 
@@ -608,13 +611,13 @@
     loadStats();
   }
 
-  function show() {
+  function show(skipInitialSearch) {
     if (!_modal) _modal = document.getElementById('geosourceModal');
     if (!_modal) return;
     _modal.style.display = 'flex';
     var kwInput = document.getElementById('geosourceKeyword');
     if (kwInput) kwInput.focus();
-    if (_lastResults.length === 0) {
+    if (!skipInitialSearch && _lastResults.length === 0) {
       doSearch(1);
     }
   }
@@ -661,8 +664,8 @@
   }
 
   function doSearch(targetPage) {
-    if (_isLoading) return;
-    _currentPage = typeof targetPage === 'number' ? targetPage : 1;
+    var requestId = ++_searchRequestId;
+    var requestedPage = typeof targetPage === 'number' ? targetPage : 1;
 
     var kw = (document.getElementById('geosourceKeyword') || {}).value || '';
     var proto = (document.getElementById('geosourceProtocol') || {}).value || '';
@@ -683,22 +686,26 @@
       category: category.trim(),
       need_no_key: noKey ? true : null,
       is_free: isFree ? true : null,
-      page: _currentPage,
+      page: requestedPage,
       page_size: _pageSize
     };
 
     _isLoading = true;
 
     window.GIS.api.geosourceSearch(params).then(function (res) {
+      if (requestId !== _searchRequestId) return;
       _isLoading = false;
       _lastResults = res.results || [];
       _totalCount = typeof res.total === 'number' ? res.total : _lastResults.length;
       _totalPages = typeof res.total_pages === 'number' ? res.total_pages : 1;
-      _currentPage = typeof res.page === 'number' ? res.page : _currentPage;
+      // Commit pagination only when the request succeeds. A failed page must
+      // remain retryable from the last page actually displayed to the user.
+      _currentPage = typeof res.page === 'number' ? res.page : requestedPage;
 
       renderResults(_lastResults);
       renderPagination();
     }).catch(function (err) {
+      if (requestId !== _searchRequestId) return;
       _isLoading = false;
       if (listEl) {
         listEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--error,#ba1a1a);font-size:13px;">检索失败: ' + window.GIS.utils.escapeHtml(err.message || String(err)) + '</div>';
@@ -722,12 +729,11 @@
     var html = '';
     results.forEach(function (s, index) {
       var proto = (s.protocol || '通用').trim();
-      var isWms = /WMS/i.test(proto);
-      var isXyz = /XYZ/i.test(proto) || /\{[xyz]\}/i.test(s.service_url || '');
-      var isRest = /ArcGIS/i.test(proto) || /\/(?:FeatureServer|MapServer)(?:\/|$)/i.test(s.service_url || '') || /\/rest\/services(?:\/|$)/i.test(s.service_url || '');
-      var isGeoJson = (s.format && /geojson/i.test(s.format)) || /\.geojson(?:\?|$)/i.test(s.service_url || '');
-      var isStac = /STAC/i.test(proto);
-      var isWmts = /WMTS/i.test(proto);
+      var capability = classifyService(s);
+      var isWms = capability.isWms;
+      var isXyz = capability.isXyz;
+      var isRest = capability.isRest;
+      var isStac = capability.isStac;
 
       var protoClass = 'badge-def';
       if (isWms) protoClass = 'badge-wms';
@@ -735,7 +741,7 @@
       else if (isRest) protoClass = 'badge-rest';
       else if (isStac) protoClass = 'badge-stac';
 
-      var canLoad = isWms || isXyz || isRest || isGeoJson;
+      var canLoad = capability.canLoad;
 
       html += '<div class="geosource-card" data-idx="' + index + '">';
       html += '  <div class="geosource-card-header">';
@@ -782,7 +788,7 @@
       html += '    </button>';
       if (canLoad && s.service_url) {
         html += '    <button class="geosource-action-btn btn-primary" onclick="window.GIS.geosource.loadService(' + index + ', this)">';
-        html += '      ' + UI_ICONS.mapPlus + ' <span>' + (/ArcGIS/i.test(s.protocol || '') ? '浏览并接入' : '加载图层') + '</span>';
+        html += '      ' + UI_ICONS.mapPlus + ' <span>' + (isRest ? '浏览并接入' : '加载图层') + '</span>';
         html += '    </button>';
       }
       if (s.official_url || s.docs_url) {
@@ -798,6 +804,24 @@
 
     listEl.innerHTML = html;
     listEl.scrollTop = 0;
+  }
+
+  function classifyService(service) {
+    var protocol = (service && service.protocol || '').trim();
+    var url = (service && service.service_url) || '';
+    var isWms = /WMS/i.test(protocol);
+    var isXyz = /XYZ/i.test(protocol) || /\{[xyz]\}/i.test(url);
+    var isRest = /ArcGIS/i.test(protocol) || /\/(?:FeatureServer|MapServer)(?:\/|$)/i.test(url) || /\/rest\/services(?:\/|$)/i.test(url);
+    var isGeoJson = !!((service && service.format) && /geojson/i.test(service.format)) || /\.geojson(?:\?|$)/i.test(url);
+    var isStac = /STAC/i.test(protocol);
+    return {
+      isWms: isWms,
+      isXyz: isXyz,
+      isRest: isRest,
+      isGeoJson: isGeoJson,
+      isStac: isStac,
+      canLoad: isWms || isXyz || isRest || isGeoJson,
+    };
   }
 
   function renderPagination() {
@@ -923,7 +947,7 @@
     if (!s || !s.service_url) return;
 
     var name = s.service_name || s.service_id;
-    var proto = s.protocol || '';
+    var capability = classifyService(s);
 
     // 按钮反馈与防止重复点击
     var origText = '';
@@ -943,14 +967,14 @@
       }
     }
 
-    if (/ArcGIS/i.test(proto) || /\/(?:FeatureServer|MapServer)(?:\/|$)/i.test(s.service_url) || /\/rest\/services(?:\/|$)/i.test(s.service_url)) {
+    if (capability.isRest) {
       restoreBtn();
       browseArcgis(s.service_url, name);
       return;
     }
 
     // 1. OGC WMS 服务
-    if (/WMS/i.test(proto)) {
+    if (capability.isWms) {
       window.GIS.api.geosourceDetail(s.service_id).then(function (det) {
         restoreBtn();
         var layerName = '';
@@ -966,7 +990,7 @@
     }
 
     // 2. XYZ 瓦片服务
-    if (/XYZ/i.test(proto) || /\{[xyz]\}/i.test(s.service_url)) {
+    if (capability.isXyz) {
       restoreBtn();
       loadXyzLayer(s.service_url, name);
       return;
@@ -1056,7 +1080,7 @@
     notifySuccess(name);
   }
 
-  function loadWmsSublayer(encUrl, encLayerName, encName) {
+  function loadWmsSublayer(encUrl, encLayerName, encName, groupId) {
     var rawUrl = decodeURIComponent(encUrl);
     var layerName = decodeURIComponent(encLayerName);
     var name = decodeURIComponent(encName);
@@ -1075,7 +1099,8 @@
           geometry_type: 'WMS',
           crs: 'EPSG:3857/4326',
           source: 'geosource',
-          visible: true
+          visible: true,
+          groupId: groupId || null
         }, true);
       }
       notifySuccess(name);

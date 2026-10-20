@@ -25,6 +25,10 @@ def main():
         for module in ('uvicorn', 'fastapi', 'multipart', 'cryptography', 'geopandas',
                        'rasterio', 'pyproj', 'pyarrow', 'langgraph', 'langchain_openai'):
             importlib.import_module(module)
+        # Scrapling exposes Fetcher lazily; importing scrapling.fetchers alone can
+        # succeed even when its required fetcher backend (for example curl_cffi) is absent.
+        fetchers = importlib.import_module('scrapling.fetchers')
+        getattr(fetchers, 'Fetcher')
     except Exception as exc:
         print(f'Runtime needs installation or repair: {exc}')
         return 1

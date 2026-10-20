@@ -150,6 +150,7 @@ def save_project(
     map_state: dict,
     messages: list,
     layers: list,
+    layer_groups: list | None = None,
 ) -> dict:
     _ensure_dirs()
     now = _now_str()
@@ -178,9 +179,12 @@ def save_project(
         else:
             blob = None
         layer_refs.append({
+            "layer_id": layer.get("layer_id") if isinstance(layer.get("layer_id"), str) and layer.get("layer_id").strip() else None,
             "name": layer.get("filename") or layer.get("name", "未命名"),
             "blob": blob,
             "color": layer.get("color", "#1c1b1b"),
+            "style": layer.get("style") if isinstance(layer.get("style"), dict) else {},
+            "symbology": layer.get("symbology") if isinstance(layer.get("symbology"), dict) else None,
             "visible": layer.get("visible", True) if layer.get("visible") is not False else False,
             "geometry_type": layer.get("geometry_type", "未知"),
             "source": layer.get("source", "ai"),
@@ -189,7 +193,15 @@ def save_project(
             "service_type": layer.get("service_type") or layer.get("protocol") or "",
             "sublayer": layer.get("sublayer") or layer.get("sublayer_name") or "",
             "crs": layer.get("crs") or "WGS-84",
+            "groupId": layer.get("groupId") or None,
         })
+
+    saved_layer_groups = [
+        {"id": group["id"], "name": group["name"], "collapsed": bool(group.get("collapsed", False))}
+        for group in (layer_groups or [])
+        if isinstance(group, dict) and isinstance(group.get("id"), str) and group.get("id")
+        and isinstance(group.get("name"), str) and group.get("name", "").strip()
+    ]
 
     # 规范化并清洗工程名
     sanitized_name = extract_clean_title(name, max_len=30) if name and ("[" in name or len(name) > 30) else (name or f"工程 {pid[:4]}")
@@ -205,6 +217,7 @@ def save_project(
         "mapState": map_state,
         "messages": messages,
         "layers": layer_refs,
+        "layerGroups": saved_layer_groups,
     }
 
     _save_project_data(pid, proj_data)
@@ -395,7 +408,11 @@ def import_project(zip_bytes: bytes) -> dict:
     _rebuild_refcount()
     return {"id": pid, "name": proj_data.get("name", "导入工程")}
 
-def auto_save(session_id: str = "default", provider: str = "", map_state: dict = None, project_id: str = None):
+def auto_save(
+    session_id: str = "default", provider: str = "", map_state: dict = None,
+    project_id: str = None, layer_groups: list | None = None,
+    layer_assignments: list | None = None,
+):
     """由 ai_service 或前端在每轮对话后调用，自动保存当前会话"""
     from backend.services.ai_service import conversation_history
     from backend.services.tools import _registered_layers
@@ -404,6 +421,7 @@ def auto_save(session_id: str = "default", provider: str = "", map_state: dict =
     if not messages:
         return None
 
+    existing_proj = None
     layers = []
     for name, info in _registered_layers.items():
         layers.append({
@@ -424,10 +442,50 @@ def auto_save(session_id: str = "default", provider: str = "", map_state: dict =
                 existing_pid = pid
                 break
 
+    if existing_pid:
+        existing_proj = _load_project_data(existing_pid)
+    existing_layers_by_name = {
+        layer.get("name"): layer for layer in (existing_proj or {}).get("layers", []) if layer.get("name")
+    }
+    assignments_by_name = {}
+    for assignment in layer_assignments or []:
+        if not isinstance(assignment, dict):
+            continue
+        for alias in assignment.get("names", []):
+            if isinstance(alias, str) and alias:
+                assignments_by_name[alias] = {
+                    "groupId": assignment.get("groupId") or None,
+                    "visible": assignment.get("visible") if isinstance(assignment.get("visible"), bool) else None,
+                    "layer_id": assignment.get("layer_id") if isinstance(assignment.get("layer_id"), str) and assignment.get("layer_id").strip() else None,
+                    "style": assignment.get("style") if isinstance(assignment.get("style"), dict) else None,
+                    "symbology": assignment.get("symbology") if isinstance(assignment.get("symbology"), dict) else None,
+                    "has_symbology": "symbology" in assignment,
+                }
+    for layer in layers:
+        layer_name = layer.get("name")
+        if layer_name in assignments_by_name:
+            assignment = assignments_by_name[layer_name]
+            layer["groupId"] = assignment["groupId"]
+            if assignment["visible"] is not None:
+                layer["visible"] = assignment["visible"]
+            previous = existing_layers_by_name.get(layer_name)
+            layer["layer_id"] = assignment["layer_id"] or (previous or {}).get("layer_id")
+            layer["style"] = assignment["style"] if assignment["style"] is not None else (previous or {}).get("style", {})
+            if assignment["has_symbology"]:
+                layer["symbology"] = assignment["symbology"]
+            elif previous and previous.get("symbology"):
+                layer["symbology"] = previous["symbology"]
+        else:
+            previous = existing_layers_by_name.get(layer_name)
+            if previous:
+                layer["groupId"] = previous.get("groupId")
+                layer["layer_id"] = previous.get("layer_id")
+                layer["style"] = previous.get("style", {})
+                layer["symbology"] = previous.get("symbology")
+
     # 取工程名：如果已有工程名则保留已有名称；否则用第一条用户消息的真实提问文本
     name = "未命名工程"
     if existing_pid:
-        existing_proj = _load_project_data(existing_pid)
         if existing_proj and existing_proj.get("name"):
             name = existing_proj["name"]
     if name == "未命名工程":
@@ -444,6 +502,7 @@ def auto_save(session_id: str = "default", provider: str = "", map_state: dict =
         map_state=map_state or {},
         messages=messages,
         layers=layers,
+        layer_groups=layer_groups if layer_groups is not None else (existing_proj or {}).get("layerGroups", []),
     )
 
 # 启动时重建引用计数

@@ -25,6 +25,7 @@ if (typeof marked !== 'undefined') {
   /** @type {HTMLElement} */
   let messagesContainer = null;
   let followOutput = true;
+  let _sendGeneration = 0;
   function _currentSessionIdSafe() {
   // 统一的会话 ID 解析（模块级，任何闭包可安全调用）
   try {
@@ -203,9 +204,11 @@ function scrollMessages() {
           return;
         }
         window._aiRunning = false;
+        _sendGeneration++;
         // 先发取消请求到后端（keepalive 确保页面卸载时也能发送），再中断 SSE 连接
         fetch(window.GIS.api.BASE_URL + '/api/cancel?session_id=' + encodeURIComponent(_currentSessionIdSafe()), { method: 'POST', keepalive: true }).catch(function(){});
         if (window._aiAbortController) window._aiAbortController.abort('user-cancel');
+        window._aiAbortController = null;
         _resetUIAfterStop();
         const loadingEl = document.getElementById('ai-loading-msg');
         if (loadingEl) {
@@ -216,7 +219,7 @@ function scrollMessages() {
         addMessage('操作已取消', 'system');
         // 更新任务状态
         if (window.GIS.task && window._currentTaskId) {
-          window.GIS.task.updateTask(window._currentTaskId, { status: 'failed', error: '用户取消', completedAt: Date.now() });
+          window.GIS.task.updateTask(window._currentTaskId, { status: 'cancelled', error: '用户取消', completedAt: Date.now() });
         }
       });
     }
@@ -508,6 +511,9 @@ function scrollMessages() {
    * 替代原来 inline script 里的重复实现
    */
   async function clearSession() {
+    var oldSessionId = _currentSessionIdSafe();
+    _sendGeneration++;
+    var cancelRequest = null;
     // 1. 中止 AI 请求
     if (window._aiRunning) {
       window._aiRunning = false;
@@ -515,7 +521,7 @@ function scrollMessages() {
         window._aiAbortController.abort();
         window._aiAbortController = null;
       }
-      fetch(window.GIS.api.BASE_URL + '/api/cancel?session_id=' + encodeURIComponent(_currentSessionIdSafe()), { method: 'POST' }).catch(function(){});
+      cancelRequest = fetch(window.GIS.api.BASE_URL + '/api/cancel?session_id=' + encodeURIComponent(oldSessionId), { method: 'POST' }).catch(function(){});
       var loadingEl = document.getElementById('ai-loading-msg');
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
@@ -524,6 +530,28 @@ function scrollMessages() {
       }
     }
     _resetUIAfterStop();
+    if (cancelRequest) await cancelRequest;
+
+    // 保存当前会话时必须先收集原有聊天和图层，不能在清空后覆盖成空工程。
+    var hasConversation = messagesContainer && Array.prototype.some.call(
+      messagesContainer.querySelectorAll('.message'), function(row) {
+        return !row.classList.contains('message-system') && row.id !== 'ai-loading-msg';
+      });
+    var hasLayers = window.GIS.layers && typeof window.GIS.layers.getLayers === 'function' &&
+      window.GIS.layers.getLayers().length > 0;
+    var hasProject = window.GIS.project && typeof window.GIS.project.getCurrentProjectId === 'function' &&
+      !!window.GIS.project.getCurrentProjectId();
+    if (window.GIS.project && typeof window.GIS.project.save === 'function' &&
+        (hasConversation || hasLayers || hasProject)) {
+      try {
+        await window.GIS.project.save();
+      } catch (saveError) {
+        if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+          window.GIS.chat.addMessage('保存当前会话失败，未清空工作区: ' + (saveError.message || saveError), 'system');
+        }
+        return false;
+      }
+    }
 
     // 2. 清除图层（静默清除，避免图层删除提示回灌进空会话）
     if (window.GIS.layers && typeof window.GIS.layers.clearAll === 'function') {
@@ -557,23 +585,22 @@ function scrollMessages() {
       updateGreeting();
     }
 
-    // 6. 异步调 API（等待清除完成，避免用户发消息时看到旧历史）
-    var oldSessionId = (window.GIS.project && window.GIS.project.getCurrentSessionId)
-      ? window.GIS.project.getCurrentSessionId()
-      : 'default';
+    // 6. 归档旧会话后再切换 ID，并清理对应的后端记忆。
     if (window.GIS.project) {
-      window.GIS.project.save().catch(function() {});
       if (window.GIS.project.resetSession) {
         window.GIS.project.resetSession();
       } else {
         window.GIS.project.setCurrentProjectId(null);
       }
+      var projectNameEl = document.getElementById('workspaceCurrentProjectName');
+      if (projectNameEl) projectNameEl.textContent = '未命名工程';
     }
     try {
       await window.GIS.api.clearMemory(oldSessionId);
     } catch (e) {
       console.warn('清除记忆失败:', e);
     }
+    return true;
   }
 
   async function send(text, displayOpt) {
@@ -584,25 +611,6 @@ function scrollMessages() {
     if (!text) return;
     if (GIS.workspace) GIS.workspace.toggleAI(true);
     followOutput = true;
-
-    // 如果有正在跑的 AI 请求，先取消
-    if (window._aiRunning) {
-      if (window._aiAbortController) {
-        window._aiAbortController.abort('user-cancel');
-      }
-      // 修复：此行位于 currentSessionId 声明之前（var 提升值 undefined），
-      // 会向后端发 session_id=undefined。改为即时解析当前会话 ID。
-      var _cancelSid = (window.GIS.project && window.GIS.project.getCurrentSessionId)
-        ? window.GIS.project.getCurrentSessionId()
-        : 'default';
-      fetch(window.GIS.api.BASE_URL + '/api/cancel?session_id=' + encodeURIComponent(_cancelSid), { method: 'POST' }).catch(function(){});
-      var oldLoading = document.getElementById('ai-loading-msg');
-      if (oldLoading) {
-        if (oldLoading._timerInterval) clearInterval(oldLoading._timerInterval);
-        if (oldLoading._phaseTimer) clearTimeout(oldLoading._phaseTimer);
-        oldLoading.remove();
-      }
-    }
 
     // 解析第二个参数：字符串=displayText，对象={displayText, badge, provider}
     const displayText = typeof displayOpt === 'string' ? displayOpt : (displayOpt ? displayOpt.displayText : null);
@@ -617,12 +625,30 @@ function scrollMessages() {
     if (!hasKey) {
         const modelName = _prov && _prov.name ? _prov.name : curProvider;
         addMessage(modelName + ' 未配置 API Key，请点击齿轮按钮设置', 'system');
-      // 恢复输入框（placeholder 还没被改过，不需要还原）
-      if (inputEl) inputEl.disabled = false;
-      if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = '1'; }
-      const modelBar2 = document.querySelector('.chat-input-model-bar');
-      if (modelBar2) modelBar2.classList.remove('is-disabled');
+      // 请求已在运行时，验证失败不能解锁它占用的输入控件。
+      if (!window._aiRunning) {
+        if (inputEl) inputEl.disabled = false;
+        if (sendBtn) { sendBtn.disabled = false; sendBtn.style.opacity = '1'; }
+        const modelBar2 = document.querySelector('.chat-input-model-bar');
+        if (modelBar2) modelBar2.classList.remove('is-disabled');
+      }
       return;
+    }
+
+    var sendGeneration = ++_sendGeneration;
+    // 只在新请求配置有效后替换旧请求，避免无效模型配置中断正在运行的任务。
+    if (window._aiRunning) {
+      if (window._aiAbortController) window._aiAbortController.abort('user-cancel');
+      var _cancelSid = (window.GIS.project && window.GIS.project.getCurrentSessionId)
+        ? window.GIS.project.getCurrentSessionId()
+        : 'default';
+      fetch(window.GIS.api.BASE_URL + '/api/cancel?session_id=' + encodeURIComponent(_cancelSid), { method: 'POST' }).catch(function(){});
+      var oldLoading = document.getElementById('ai-loading-msg');
+      if (oldLoading) {
+        if (oldLoading._timerInterval) clearInterval(oldLoading._timerInterval);
+        if (oldLoading._phaseTimer) clearTimeout(oldLoading._phaseTimer);
+        oldLoading.remove();
+      }
     }
 
     // 捕获当前 chips、待发送的图层附件和被引用的回复
@@ -682,8 +708,19 @@ function scrollMessages() {
 
     // 添加"模型名 思考中..."占位气泡，让用户知道 AI 正在处理
     const isRouted = (providerOverride === 'deepseek-routed' || providerOverride === 'glm-routed' || providerOverride === 'agnes');
-    const loadingMsg = addMessage(modelDisplayName + ' 思考中...', 'ai', { noMarkdown: true });
+    var loadingMsg = addMessage(modelDisplayName + ' 思考中...', 'ai', { noMarkdown: true });
     if (loadingMsg) loadingMsg.id = 'ai-loading-msg';
+    // Errors can happen before the stream timers are initialized; keep outer cleanup callable.
+    var _clearAllTimeouts = function() {};
+    var executionCards = null;
+    var abortController = null;
+    if (loadingMsg && GIS.executionCards && GIS.executionCards.create) {
+      var executionRow = document.createElement('div');
+      executionRow.className = 'message message-ai-execution';
+      executionRow.style.cssText = 'display:block;margin:0 0 4px;';
+      loadingMsg.insertAdjacentElement('afterend', executionRow);
+      executionCards = GIS.executionCards.create(executionRow);
+    }
 
     // 路由模式：先显示路由阶段，再切换到执行阶段
     if (isRouted && loadingMsg) {
@@ -711,9 +748,8 @@ function scrollMessages() {
     let phaseTimer = null;
     if (isRouted) {
       phaseTimer = setTimeout(function() {
-        const el = document.getElementById('ai-loading-msg');
-        if (el) {
-          const c = el.querySelector('.message-bubble > div');
+        if (loadingMsg) {
+          const c = loadingMsg.querySelector('.message-bubble > div');
           if (c) c.textContent = modelDisplayName + ' 执行中...';
         }
       }, 1500);
@@ -750,7 +786,8 @@ function scrollMessages() {
       // === 流式执行：通过 SSE 实时获取 Agent 进度 ===
       var result = null;
       var streamUrl = GIS.api.BASE_URL + '/api/chat/stream';
-      window._aiAbortController = new AbortController();
+      abortController = new AbortController();
+      window._aiAbortController = abortController;
       // 超时保护（双层）：
       // - 总时长上限 gis_timeout（默认 900s，0=不限时）
       // - 空闲看门狗：连续 90s 收不到任何 SSE 事件才判死；收到事件即重置  长任务只要在干活就不会被误杀
@@ -762,8 +799,8 @@ function scrollMessages() {
       var _armIdleWatchdog = function() {
         if (_idleTimeout) clearTimeout(_idleTimeout);
         _idleTimeout = setTimeout(function() {
-          if (window._aiAbortController && !window._aiAbortController.signal.aborted) {
-            window._aiAbortController.abort('timeout');
+          if (abortController && !abortController.signal.aborted) {
+            abortController.abort('timeout');
             window._idleKilled = true;
             console.warn('[GIS Chat] SSE 流空闲超 ' + (_idleLimitMs/1000) + 's 无响应，判定卡死，已终止');
           }
@@ -776,8 +813,8 @@ function scrollMessages() {
       };
       if (_timeoutMs < Infinity) {
         _streamTimeout = setTimeout(function() {
-          if (window._aiAbortController && !window._aiAbortController.signal.aborted) {
-            window._aiAbortController.abort('timeout');
+          if (abortController && !abortController.signal.aborted) {
+            abortController.abort('timeout');
             console.warn('[GIS Chat] SSE 流总时长超限（' + (_timeoutMs/1000) + 's），已强制终止');
           }
         }, _timeoutMs);
@@ -814,7 +851,7 @@ function scrollMessages() {
         const streamRes = await fetch(streamUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: window._aiAbortController.signal,
+          signal: abortController.signal,
           body: JSON.stringify({
             message: text,
             session_id: currentSessionId,
@@ -836,23 +873,53 @@ function scrollMessages() {
         });
         if (!streamRes.ok) throw new Error('Stream API error: ' + streamRes.status);
 
-        // 实时进度：保留模型名 + 流光，下方累积工具步骤
-        var stepLog = document.createElement('div');
-        stepLog.className = 'step-log';
-        stepLog.style.cssText = 'margin-top:4px;font-size:11px;line-height:1.7;';
-        if (loadingBubble) loadingBubble.insertBefore(stepLog, loadingBubble.lastChild);
-
         var reader = streamRes.body.getReader();
         var decoder = new TextDecoder();
         var buffer = '';
-        var lastStepEl = null;
         var _receivedDone = false;
+        var _streamMayHaveExecutedTools = false;
+        var _processSseLine = function(line) {
+          if (!line.startsWith('data: ')) return;
+          _armIdleWatchdog(); // 收到任何 SSE 事件即证明 Agent 仍在干活，重置空闲看门狗
+          var evt;
+          try { evt = JSON.parse(line.slice(6)); } catch (parseErr) {
+            console.warn('[GIS Chat] 流式数据解析失败，跳过:', line.slice(0, 80));
+            return;
+          }
+          // error/cancelled 必须在事件处理的容错区外抛出，避免被吞掉。
+          if (evt.type === 'error') throw new Error(evt.message || 'Agent 执行失败');
+          if (evt.type === 'cancelled') throw new Error('__USER_CANCELLED__');
+          if (evt.type === 'tool_start' || evt.type === 'tool_end' ||
+              evt.type === 'layer_ops_delta' || evt.type === 'waiting_choice') {
+            // 工具一旦开始，断流时无法确认它是否产生了副作用；禁止自动重放整轮任务。
+            _streamMayHaveExecutedTools = true;
+          }
+          try {
+            if (evt.type === 'tool_start' || evt.type === 'tool_end' || evt.type === 'layer_ops_delta' || evt.type === 'waiting_choice') {
+              if (executionCards) executionCards.handle(evt);
+              scrollMessages();
+            } else if (evt.type === 'done') {
+              _receivedDone = true;
+              result = evt;
+              if (executionCards) executionCards.finish(evt.confirm_pending ? 'waiting' : 'success');
+              _clearAllTimeouts();
+            }
+          } catch (parseErr) {
+            console.warn('[GIS Chat] SSE 事件处理异常:', parseErr);
+          }
+        };
 
         while (true) {
           var chunk = await reader.read();
           if (chunk.done) {
+            // The final SSE data line is allowed to end at EOF without a newline.
+            buffer += decoder.decode();
+            if (buffer) {
+              _processSseLine(buffer);
+              buffer = '';
+            }
             // P0-3: SSE 连接中断但未收到 done 事件，不重复执行 Agent
-            if (!_receivedDone && !window._aiAbortController.signal.aborted) {
+            if (!_receivedDone && !abortController.signal.aborted) {
               throw new Error('__SSE_INTERRUPTED__');
             }
             break;
@@ -862,66 +929,7 @@ function scrollMessages() {
           var lines = buffer.split('\n');
           buffer = lines.pop() || '';
           for (var _i = 0; _i < lines.length; _i++) {
-            var line = lines[_i];
-            if (!line.startsWith('data: ')) continue;
-            _armIdleWatchdog(); // 收到任何 SSE 事件即证明 Agent 仍在干活，重置空闲看门狗
-            var evt;
-            try { evt = JSON.parse(line.slice(6)); } catch (parseErr) {
-              console.warn('[GIS Chat] 流式数据解析失败，跳过:', line.slice(0, 80));
-              continue;
-            }
-            // error/cancelled 必须在内层 try 之外处理，否则空 catch 会吞掉
-            if (evt.type === 'error') {
-              throw new Error(evt.message || 'Agent 执行失败');
-            } else if (evt.type === 'cancelled') {
-              throw new Error('__USER_CANCELLED__');
-            }
-            try {
-              if (evt.type === 'tool_start') {
-                var toolLabel = evt.name + (evt.input ? '(' + evt.input.slice(0, 60) + ')' : '');
-                var stepEl = document.createElement('div');
-                stepEl.className = 'step-item step-running';
-                stepEl.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"vertical-align:-2px;margin-right:4px;;width:11px;height:11px;--ui-icon-image:url('/assets/ui-icons/icon-a53011a6a003.png')\"></span><strong>" + GIS.utils.escapeHtml(toolLabel) + '</strong>';
-                stepLog.appendChild(stepEl);
-                scrollMessages();
-                lastStepEl = stepEl;
-              } else if (evt.type === 'tool_end') {
-                if (lastStepEl) {
-                  lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg></span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
-                  lastStepEl.style.fontWeight = 'normal';
-                  lastStepEl.style.color = 'var(--ui-gray-400)';
-                }
-              } else if (evt.type === 'verifying') {
-                if (lastStepEl) {
-                  lastStepEl.innerHTML = '<span style="color:var(--ui-gray-400);display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg></span> <span style="color:var(--ui-gray-500);">' + GIS.utils.escapeHtml(evt.name) + ' 完成</span>';
-                  lastStepEl.style.fontWeight = 'normal';
-                  lastStepEl.style.color = 'var(--ui-gray-400)';
-                }
-                var verifyEl = document.createElement('div');
-                verifyEl.className = 'step-item step-running';
-                verifyEl.innerHTML = '<span style="color:#ff9800;display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></span> <strong>校验结果...</strong>';
-                stepLog.appendChild(verifyEl);
-                lastStepEl = verifyEl;
-                scrollMessages();
-              } else if (evt.type === 'done') {
-                _receivedDone = true;
-                result = evt;
-                _clearAllTimeouts();
-                if (stepLog && stepLog.children.length > 1) {
-                  stepLog.style.maxHeight = '44px';
-                  stepLog.style.overflow = 'hidden';
-                  stepLog.style.cursor = 'pointer';
-                  stepLog.style.transition = 'max-height 0.25s';
-                  stepLog.title = '点击展开执行步骤';
-                  stepLog.addEventListener('click', function toggleLog() {
-                    var isCollapsed = stepLog.style.maxHeight === '44px';
-                    stepLog.style.maxHeight = isCollapsed ? stepLog.scrollHeight + 'px' : '44px';
-                  });
-                }
-              }
-            } catch (parseErr) {
-              console.warn('[GIS Chat] SSE 事件处理异常:', parseErr);
-            }
+            _processSseLine(lines[_i]);
           }
         }
       } catch (streamErr) {
@@ -930,30 +938,44 @@ function scrollMessages() {
         // P0-3: 明确区分异常类型
         var _errMsg = streamErr.message || '';
         if (_errMsg === '__USER_CANCELLED__') {
+          if (executionCards) executionCards.finish('cancelled', '用户已取消当前任务');
           throw new Error('__USER_CANCELLED__');
         }
         if (_errMsg === '__SSE_INTERRUPTED__') {
+          if (executionCards) executionCards.finish('interrupted', '连接中断，已保留此前完成的步骤');
           throw new Error('AI 连接中断，未收到完整结果。请检查网络后重试。');
         }
         if (streamErr.name === 'AbortError') {
-          var _abortReason = window._aiAbortController ? window._aiAbortController.signal.reason : undefined;
+          var _abortReason = abortController ? abortController.signal.reason : undefined;
           if (_abortReason === 'user-cancel') {
+            if (executionCards) executionCards.finish('cancelled', '用户已取消当前任务');
             throw new Error('__USER_CANCELLED__');
           }
+          if (executionCards) executionCards.finish('interrupted', '请求超时，已保留此前完成的步骤');
           throw new Error('AI 请求' + (window._idleKilled ? '长时间无响应（90s 未收到任何进度）' : '总时长超限（' + (_timeoutMs === Infinity ? '不限时' : _timeoutMs/1000 + 's') + '）') + '，请简化操作或重试');
         }
         // 其他流式错误：降级到普通 API（仅当未收到任何有效结果时）
         if (!result) {
+          if (_streamMayHaveExecutedTools) {
+            var _partialErr = 'AI 连接中断；部分工具步骤可能已经执行，已保留步骤记录且未自动重跑。请检查地图结果后再决定是否重试。';
+            if (executionCards) executionCards.finish('interrupted', _partialErr);
+            throw new Error(_partialErr);
+          }
+          if (executionCards) executionCards.finish('failed', _errMsg || '流式连接失败');
           console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
           result = await GIS.api.chat(text, currentSessionId, sendProv, forceSkills, window.GIS.chat.getMode());
         }
       }
 
+      // A replaced request may finish after the new one starts; it must not render
+      // stale output or remove the newer request's loading state.
+      if (sendGeneration !== _sendGeneration) return;
+
       // 发送后清除 chip 标签（已消费）
       _skillChips = [];
       _renderChips();
       // 移除"思考中"占位气泡
-      const loadingEl = document.getElementById('ai-loading-msg');
+      const loadingEl = loadingMsg;
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
         if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
@@ -1381,6 +1403,7 @@ function scrollMessages() {
       if (result.layer_ops && result.layer_ops.length > 0) {
         var _opLayerNames = [];
         result.layer_ops.forEach(function(op) {
+          if (executionCards && op && executionCards.hasAppliedMapOp(op._stream_id)) return;
           if (op && op.name && _opLayerNames.indexOf(op.name) < 0) _opLayerNames.push(op.name);
         });
         var _panelNow = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
@@ -1427,7 +1450,7 @@ function scrollMessages() {
       if (result.layer_ops && result.layer_ops.length > 0) {
         console.log('[GIS Chat] 收到图层操作指令:', result.layer_ops.length, '条');
         // 关键时序优化：symbology（分级渲染）必须优先于 legend（图例卡片）执行，确保图例计算已有数据
-        var opOrder = { 'remove': 1, 'rename': 2, 'set_color': 3, 'set_style': 4, 'symbology': 5, 'legend': 6, 'labels': 7, 'fit': 8, 'center': 9, 'drill': 10 };
+        var opOrder = { 'remove': 1, 'rename': 2, 'clear_symbology': 3, 'set_color': 4, 'set_style': 5, 'symbology': 6, 'legend': 7, 'labels': 8, 'fit': 9, 'center': 10, 'drill': 11 };
         var sortedOps = [...result.layer_ops].sort(function(a, b) {
           return (opOrder[a.action] || 99) - (opOrder[b.action] || 99);
         });
@@ -1438,6 +1461,7 @@ function scrollMessages() {
         });
 
         sortedOps.forEach(function(op) {
+          if (executionCards && op && executionCards.hasAppliedMapOp(op._stream_id)) return;
           if (op.action === 'legend' && op.name && symbologyApplied.has(op.name)) {
             return;
           }
@@ -1468,16 +1492,22 @@ function scrollMessages() {
                 GIS.map.setLayerStyle(target._rawName || target.layer_id, op.style || {});
               }
               break;
+            case 'clear_symbology':
+              if (target && window.GIS.layers && window.GIS.layers.clearSymbology) {
+                window.GIS.layers.clearSymbology(target._rawName || target.filename || target.layer_id);
+              }
+              break;
             case 'rename':
               if (target && window.GIS.layers) {
                 var oldN = target.filename || target._rawName;
+                var oldMapName = target._rawName || oldN;
                 target.filename = op.new_name;
                 target._rawName = op.new_name;
                 if (window.GIS.state && window.GIS.state.renameLayer) {
                   window.GIS.state.renameLayer(target.layer_id, op.new_name);
                 }
                 if (window.GIS.map && window.GIS.map.renameLayer) {
-                  window.GIS.map.renameLayer(oldN, op.new_name);
+                  window.GIS.map.renameLayer(oldMapName, op.new_name);
                 }
                 window.GIS.layers.renderList();
               }
@@ -1532,7 +1562,7 @@ function scrollMessages() {
             case 'symbology':
               if (window.GIS.layers) {
                 if (op.symbology_type === 'graduated') {
-                  window.GIS.layers.applyGraduatedColors(op.name, op.field, op.classes, op.scheme);
+                  window.GIS.layers.applyGraduatedColors(op.name, op.field, op.classes, op.scheme, op.method, op.breaks, op.fill_opacity);
                 } else if (op.symbology_type === 'unique') {
                   window.GIS.layers.applyUniqueValues(op.name, op.field, op.scheme);
                 }
@@ -1641,94 +1671,48 @@ function scrollMessages() {
         }, 200);
       }
 
-      // === 结果真实性与 GIS 质量自检徽标（中文可信度徽标与折叠审计） ===
-      if (msgEl && (result.result_check || (result.qa_warnings && result.qa_warnings.length > 0))) {
-        try {
-          var bubbleEl = msgEl.querySelector('.message-bubble') || msgEl;
-          var rc = result.result_check || {};
-          var qa = result.qa_warnings || [];
-          var isOk = rc.ok !== false && qa.length === 0;
-          var hasWarn = rc.ok !== false && qa.length > 0;
-          var hasError = rc.ok === false;
-
-          var badgeContainer = document.createElement('div');
-          badgeContainer.className = 'result-audit-box';
-          badgeContainer.style.cssText = 'margin-top:10px;padding-top:8px;border-top:1px dashed var(--ui-gray-200,#e5e7eb);font-size:12px;';
-
-          var pill = document.createElement('div');
-          pill.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;cursor:pointer;user-select:none;font-weight:500;transition:all 0.15s;';
-
-          var detailPanel = document.createElement('div');
-          detailPanel.style.cssText = 'display:none;margin-top:8px;padding:8px 12px;border-radius:6px;font-size:11px;line-height:1.6;background:var(--ui-gray-50,#f9fafb);border:1px solid var(--ui-gray-200,#e5e7eb);color:var(--ui-gray-700,#374151);';
-
-          // 精致轻量 SVG 图标
-          var svgCheck = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>';
-          var svgWarn = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>';
-          var svgAlert = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>';
-          var svgChevron = '<svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;transition:transform 0.2s;"><polyline points="6 9 12 15 18 9"></polyline></svg>';
-          var svgDoc = '<svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>';
-
-          if (hasError) {
-            pill.style.background = '#fef2f2';
-            pill.style.color = '#dc2626';
-            pill.style.border = '1px solid #fecaca';
-            pill.innerHTML = '<span>' + svgAlert + ' 产物核验异常</span> <span style="font-size:10px;color:#ef4444;display:inline-flex;align-items:center;gap:2px;">查看明细 ' + svgChevron + '</span>';
-          } else if (hasWarn) {
-            pill.style.background = '#fffbeb';
-            pill.style.color = '#d97706';
-            pill.style.border = '1px solid #fde68a';
-            pill.innerHTML = '<span>' + svgWarn + ' 产物已落盘 · 存在几何提示</span> <span style="font-size:10px;color:#f59e0b;display:inline-flex;align-items:center;gap:2px;">查看明细 ' + svgChevron + '</span>';
-          } else {
-            pill.style.background = '#f0fdf4';
-            pill.style.color = '#16a34a';
-            pill.style.border = '1px solid #bbf7d0';
-            pill.innerHTML = '<span>' + svgCheck + ' 真实性已核验 · 产物已落盘</span> <span style="font-size:10px;color:#22c55e;display:inline-flex;align-items:center;gap:2px;">审计 ' + svgChevron + '</span>';
-          }
-
-          var detailHtml = '<div style="font-weight:600;margin-bottom:6px;color:var(--ui-gray-900,#111827);display:flex;align-items:center;">' + svgDoc + ' 结果确定性核验报告</div>';
-          if (rc.artifact_checks && rc.artifact_checks.length > 0) {
-            detailHtml += '<div style="margin-bottom:4px;"><b>产物三方核实：</b><ul style="margin:2px 0 4px 16px;padding:0;">';
-            rc.artifact_checks.forEach(function(c) {
-              var stText = c.status === 'VERIFIED' ? '<span style="color:#16a34a;">已生成并落盘 (通过)</span>'
-                         : c.status === 'MISSING' ? '<span style="color:#dc2626;">磁盘文件不存在 (缺失)</span>'
-                         : c.status === 'UNREGISTERED' ? '<span style="color:#dc2626;">历史残留/未在本次执行登记</span>'
-                         : c.status;
-              detailHtml += '<li><code>' + (c.path || '') + '</code>: ' + stText + '</li>';
-            });
-            detailHtml += '</ul></div>';
-          }
-
-          if (rc.issues && rc.issues.length > 0) {
-            detailHtml += '<div style="color:#dc2626;margin-bottom:4px;"><b>发现问题：</b><ul style="margin:2px 0 4px 16px;padding:0;">';
-            rc.issues.forEach(function(iss) { detailHtml += '<li>' + iss + '</li>'; });
-            detailHtml += '</ul></div>';
-          }
-
-          if (qa && qa.length > 0) {
-            detailHtml += '<div style="color:#d97706;margin-bottom:4px;"><b>GIS 几何检查提示：</b><ul style="margin:2px 0 4px 16px;padding:0;">';
-            qa.forEach(function(q) { detailHtml += '<li>图层「' + (q.layer || '') + '」: ' + (q.warning || '') + '</li>'; });
-            detailHtml += '</ul></div>';
-          }
-
-          if (result.run_id) {
-            detailHtml += '<div style="color:var(--ui-gray-400,#9ca3af);font-size:10px;margin-top:4px;">执行轮次 Run ID: <code>' + result.run_id + '</code> | 存储: 本地 SQLite</div>';
-          }
-
-          detailPanel.innerHTML = detailHtml;
-
-          pill.onclick = function() {
-            var isHidden = detailPanel.style.display === 'none';
-            detailPanel.style.display = isHidden ? 'block' : 'none';
-            var chev = pill.querySelector('svg:last-child');
-            if (chev) {
-              chev.style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
-            }
-          };
-
-          badgeContainer.appendChild(pill);
-          badgeContainer.appendChild(detailPanel);
-          bubbleEl.appendChild(badgeContainer);
-        } catch (e) { console.warn('[GIS Chat] 渲染可信度徽标失败:', e); }
+      // 执行检查只说明工具及产物记录，不替代数据内容或结论的真实性判断。
+      if (msgEl && (result.result_check || (result.qa_warnings && result.qa_warnings.length))) {
+        const bubbleEl = msgEl.querySelector('.message-bubble') || msgEl;
+        const rc = result.result_check || {};
+        const qa = result.qa_warnings || [];
+        const checks = rc.artifact_checks || [];
+        const issues = rc.issues || [];
+        const hasError = rc.ok === false;
+        const hasWarning = qa.length > 0 || issues.length > 0;
+        const audit = document.createElement('details');
+        audit.className = 'result-audit-box' + (hasError ? ' is-error' : hasWarning ? ' is-warning' : '');
+        const summary = document.createElement('summary');
+        summary.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (hasError || hasWarning ? '<circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/>' : '<path d="M9 12l2 2 4-4"/><path d="M12 3l8 4v5c0 5-8 9-8 9s-8-4-8-9V7z"/>') + '</svg>';
+        const label = document.createElement('span');
+        label.textContent = hasError ? '执行检查发现异常' : hasWarning ? '执行检查有提示' : rc.ok === true ? '执行检查通过' : '查看执行检查';
+        summary.appendChild(label);
+        audit.appendChild(summary);
+        const panel = document.createElement('div');
+        panel.className = 'message-meta-panel';
+        const note = document.createElement('p');
+        note.textContent = '检查工具返回与产物记录，不代表数据内容或分析结论已核实。';
+        panel.appendChild(note);
+        const list = document.createElement('ul');
+        checks.forEach(function(check) {
+          const item = document.createElement('li');
+          const status = { VERIFIED: '文件已生成并登记', MISSING: '文件缺失', UNREGISTERED: '未在本次执行中登记' };
+          item.textContent = (check.path || '产物') + '：' + (status[check.status] || check.status || '状态未知');
+          list.appendChild(item);
+        });
+        issues.forEach(function(issue) {
+          const item = document.createElement('li');
+          item.textContent = String(issue);
+          list.appendChild(item);
+        });
+        qa.forEach(function(warning) {
+          const item = document.createElement('li');
+          item.textContent = (warning.layer ? warning.layer + '：' : '') + (warning.warning || '质量检查提示');
+          list.appendChild(item);
+        });
+        panel.appendChild(list);
+        audit.appendChild(panel);
+        bubbleEl.insertBefore(audit, bubbleEl.querySelector('.message-footer'));
       }
 
       // 处理历史面板：打开状态下随每轮结果自动刷新（新工具执行记录到达）
@@ -1770,7 +1754,7 @@ function scrollMessages() {
       // 清除超时计时器
       _clearAllTimeouts();
       // 移除"思考中"占位气泡
-      const loadingEl = document.getElementById('ai-loading-msg');
+      const loadingEl = loadingMsg;
       if (loadingEl) {
         if (loadingEl._timerInterval) clearInterval(loadingEl._timerInterval);
         if (loadingEl._phaseTimer) clearTimeout(loadingEl._phaseTimer);
@@ -1778,11 +1762,17 @@ function scrollMessages() {
       }
       // 用户主动取消：不显示"请求失败"，stopBtn 已提示"操作已取消"、任务状态已更新
       if (err && err.message === '__USER_CANCELLED__') {
+        if (executionCards) executionCards.finish('cancelled', '用户已取消当前任务');
+        if (taskId && window.GIS.task) {
+          window.GIS.task.updateTask(taskId, { status: 'cancelled', error: '用户取消', completedAt: Date.now() });
+          if (window._currentTaskId === taskId) window._currentTaskId = null;
+        }
         return;
       }
+      if (executionCards) executionCards.finish(/连接中断|网络|NetworkError|Failed to fetch/i.test(err.message || '') ? 'interrupted' : 'failed', err.message || '任务执行失败');
       // 更新任务状态为失败
       if (taskId && window.GIS.task) {
-        window._currentTaskId = null;
+        if (window._currentTaskId === taskId) window._currentTaskId = null;
         window.GIS.task.updateTask(taskId, { status: 'failed', error: err.message, completedAt: Date.now() });
       }
       // 显示错误消息
@@ -1797,18 +1787,21 @@ function scrollMessages() {
     } finally {
       // 清除超时计时器
       _clearAllTimeouts();
-      _resetUIAfterStop();
-      if (inputEl) {
-        inputEl.placeholder = '输入指令或查询...';
-        inputEl.focus();
+      if (sendGeneration === _sendGeneration) {
+        if (window._aiAbortController === abortController) window._aiAbortController = null;
+        _resetUIAfterStop();
+        if (inputEl) {
+          inputEl.placeholder = '输入指令或查询...';
+          inputEl.focus();
+        }
+        // 恢复模型选择器显示名：一律取 Provider 列表里的 name，避免硬编码映射对不上
+        var selEl = document.getElementById('modelSelector');
+        var valEl = document.getElementById('modelSelectValue');
+        var _restoreProv = window.GIS.api && window.GIS.api.resolveProvider(selEl ? selEl.value : null);
+        if (valEl && _restoreProv && _restoreProv.name) valEl.textContent = _restoreProv.name;
+        const modelBar = document.querySelector('.chat-input-model-bar');
+        if (modelBar) modelBar.classList.remove('is-disabled');
       }
-      // 恢复模型选择器显示名：一律取 Provider 列表里的 name，避免硬编码映射对不上
-      var selEl = document.getElementById('modelSelector');
-      var valEl = document.getElementById('modelSelectValue');
-      var _restoreProv = window.GIS.api && window.GIS.api.resolveProvider(selEl ? selEl.value : null);
-      if (valEl && _restoreProv && _restoreProv.name) valEl.textContent = _restoreProv.name;
-      const modelBar = document.querySelector('.chat-input-model-bar');
-      if (modelBar) modelBar.classList.remove('is-disabled');
     }
   }
 
@@ -2014,7 +2007,8 @@ function scrollMessages() {
           bubble.innerHTML = text;
         }
       }
-      row.appendChild(bubble);
+      if (type === 'ai' && !options.noMarkdown) bubble.appendChild(footer);
+    row.appendChild(bubble);
       messagesContainer.appendChild(row);
       scrollMessages();
       return row;
@@ -2093,21 +2087,34 @@ function scrollMessages() {
       bubble.appendChild(codeBlock);
     }
 
-    // AI 消息：展示 Token 计量角标（带 tooltip）
+    const footer = document.createElement('div');
+    footer.className = 'message-footer';
+
+    // 用量按需展开，常态只保留简短入口；估算与接口计量明确区分。
     if (type === 'ai' && !options.noMarkdown && options.tokenUsage) {
       const u = options.tokenUsage;
       const isEst = u.type === 'estimate';
-      const badge = document.createElement('div');
-      badge.className = 'token-usage-badge' + (isEst ? ' estimate' : '');
-      const inStr = u.input_tokens >= 1000 ? (u.input_tokens / 1000).toFixed(1) + 'k' : u.input_tokens;
-      const outStr = u.output_tokens >= 1000 ? (u.output_tokens / 1000).toFixed(1) + 'k' : u.output_tokens;
-      badge.innerHTML = (isEst ? '≈' : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>') + ' ↑' + inStr + ' ↓' + outStr + ' tok';
-      badge.title = (isEst ? '【估算 Token (字符÷3.0)】' : '【真实 API Token】') +
-        '\n• 输入 (Prompt): ' + u.input_tokens + ' tok' +
-        '\n• 输出 (Completion): ' + u.output_tokens + ' tok' +
-        '\n• 绑定工具: ' + (u.tool_count || 0) + ' 个 (Schema ' + (u.schema_chars || 0) + ' 字符)' +
-        '\n• 来源: ' + (isEst ? '模型未回传 usage，本地校准估算' : '接口官方回传 usage_metadata');
-      bubble.appendChild(badge);
+      const usage = document.createElement('details');
+      usage.className = 'message-usage';
+      const summary = document.createElement('summary');
+      summary.textContent = isEst ? '用量 · 估算' : '用量';
+      usage.appendChild(summary);
+      const panel = document.createElement('div');
+      panel.className = 'message-meta-panel';
+      const counts = document.createElement('dl');
+      [['输入 Token', u.input_tokens], ['输出 Token', u.output_tokens]].forEach(function(entry) {
+        const term = document.createElement('dt');
+        term.textContent = entry[0];
+        const value = document.createElement('dd');
+        value.textContent = Number.isFinite(Number(entry[1])) && Number(entry[1]) >= 0 ? Number(entry[1]).toLocaleString('zh-CN') : '未提供';
+        counts.append(term, value);
+      });
+      panel.appendChild(counts);
+      const note = document.createElement('p');
+      note.textContent = isEst ? '模型未返回用量，以下为本地估算。' : '按模型接口返回的用量统计。';
+      panel.prepend(note);
+      usage.appendChild(panel);
+      footer.appendChild(usage);
     }
 
     // AI 消息右下角引用按钮（复制按钮左侧，跳过加载气泡）
@@ -2122,7 +2129,7 @@ function scrollMessages() {
         _showQuoteBar(plainText);
         if (inputEl) inputEl.focus();
       });
-      bubble.appendChild(quoteBtn);
+      footer.appendChild(quoteBtn);
 
       // AI 消息右下角复制按钮（跳过加载气泡）
       const copyBtn = document.createElement('button');
@@ -2150,9 +2157,10 @@ function scrollMessages() {
           document.body.removeChild(ta);
         });
       });
-      bubble.appendChild(copyBtn);
+      footer.appendChild(copyBtn);
     }
 
+    if (type === 'ai' && !options.noMarkdown) bubble.appendChild(footer);
     row.appendChild(bubble);
     messagesContainer.appendChild(row);
 
@@ -2331,6 +2339,9 @@ function scrollMessages() {
         case 'set_style':
           if (GIS.map.setLayerStyle) GIS.map.setLayerStyle(op.name, op.style || {});
           break;
+        case 'clear_symbology':
+          if (GIS.layers && GIS.layers.clearSymbology) GIS.layers.clearSymbology(op.name);
+          break;
         case 'toggle':
           if (GIS.layers && GIS.layers.toggleVisibility) {
             const t = (GIS.layers.getLayers() || []).find(l => l._rawName === op.name || l.filename === op.name);
@@ -2354,7 +2365,7 @@ function scrollMessages() {
           break;
         case 'symbology':
           if (GIS.layers) {
-            if (op.symbology_type === 'graduated') GIS.layers.applyGraduatedColors(op.name, op.field, op.classes, op.scheme);
+            if (op.symbology_type === 'graduated') GIS.layers.applyGraduatedColors(op.name, op.field, op.classes, op.scheme, op.method, op.breaks, op.fill_opacity);
             else if (op.symbology_type === 'unique') GIS.layers.applyUniqueValues(op.name, op.field, op.scheme);
           }
           break;

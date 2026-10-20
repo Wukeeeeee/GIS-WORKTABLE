@@ -45,6 +45,101 @@ def test_sql_query_aggregation():
     assert "秦淮区" in res["markdown_table"]
 
 
+def test_sql_query_with_reserved_fid_property():
+    """图层已注入 _fid 时仍可查询属性列和空间列。"""
+    fake_layers = {
+        "长沙市": {
+            "geojson": {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "id": "p:430100",
+                        "geometry": {"type": "Point", "coordinates": [112.9, 28.2]},
+                        "properties": {"_fid": "p:430100", "name": "长沙市", "pop": 100, "pop_wan": 1000, "label": "长沙"},
+                    }
+                ],
+            }
+        }
+    }
+
+    res = execute_layer_sql(
+        'SELECT name, pop, pop_wan, label FROM "长沙市" ORDER BY pop_wan DESC',
+        fake_layers,
+    )
+
+    assert res["ok"] is True
+    assert res["row_count"] == 1
+    assert res["rows"][0]["name"] == "长沙市"
+
+
+def test_query_spatial_sql_tool_handles_registered_layer_fid():
+    """从工具入口验证自动注入的 _fid 不会破坏用户属性查询。"""
+    from backend.services import tools
+
+    tools.reset_state()
+    tools._register_layer("长沙市", {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [112.9, 28.2]},
+            "properties": {"name": "长沙市", "pop_wan": 1000},
+        }],
+    })
+    try:
+        result = tools.query_spatial_sql.func(
+            sql='SELECT name, pop_wan FROM "长沙市" ORDER BY pop_wan DESC'
+        )
+    finally:
+        tools.reset_state()
+
+    assert "SQL 执行成功" in result
+    assert "长沙市" in result
+    assert "1000" in result
+
+
+@pytest.mark.parametrize("reserved_name", ["_FID", "_Geom_Json"])
+def test_sql_reserved_engine_columns_are_filtered_case_insensitively(reserved_name):
+    fake_layers = {
+        "case_reserved": {
+            "geojson": {
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "id": "stable-id",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "properties": {reserved_name: "business-value", "name": "feature"},
+                }],
+            }
+        }
+    }
+
+    result = execute_layer_sql('SELECT _fid, name FROM "case_reserved"', fake_layers)
+
+    assert result["ok"] is True
+    assert result["rows"] == [{"_fid": "stable-id", "name": "feature"}]
+
+
+def test_sql_reports_case_only_duplicate_business_columns():
+    fake_layers = {
+        "case_collision": {
+            "geojson": {
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [0, 0]},
+                    "properties": {"Name": "A", "name": "a"},
+                }],
+            }
+        }
+    }
+
+    result = execute_layer_sql('SELECT * FROM "case_collision"', fake_layers)
+
+    assert result["ok"] is False
+    assert "大小写冲突字段" in result["error"]
+
+
 def test_sql_query_to_layer_derivation():
     # 包含 _geom_json 时自动生成新图层 GeoJSON
     fake_layers = {

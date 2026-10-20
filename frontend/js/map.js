@@ -637,6 +637,14 @@ var _undoSkip = false;
   function removeLayer(name) {
     // 卷帘参与者被删除时自动结束卷帘，避免残留死 pane / 空分割线
     if (_swipe && _isSwipeLayer(name)) stopSwipeSilent();
+    delete _labelConfigs[name];
+    delete _layerScaleRanges[name];
+    // 热力图会注册 zoomend 监听以便缩放时自动显隐；图层删除时必须同时解绑，
+    // 否则清空后下一次缩放会把已删除的旧热力图重新加回地图。
+    if (layers[name] && layers[name]._zoomHandler && mapInstance) {
+      mapInstance.off('zoomend', layers[name]._zoomHandler);
+      delete layers[name]._zoomHandler;
+    }
     if (_rasterLayers[name]) {
       mapInstance.removeLayer(_rasterLayers[name]);
       delete _rasterLayers[name];
@@ -659,29 +667,59 @@ var _undoSkip = false;
 
   /** 清空地图上所有业务图层与绘制要素（底图除外） */
   function clearAll() {
-    if (_swipe) stopSwipeSilent();
+    var cleanupErrors = [];
+    if (_swipe) {
+      try { stopSwipeSilent(); } catch(error) { cleanupErrors.push(error); }
+    }
+    if (mapInstance && mapInstance._drawHandler) {
+      try { mapInstance._drawHandler.disable(); } catch(error) { cleanupErrors.push(error); }
+      mapInstance._drawHandler = null;
+    }
+    _exitDeleteMode();
+    _setFeatureInfoActive(false);
+    document.querySelectorAll('.map-draw-btn').forEach(function(button) { button.classList.remove('active'); });
+    if (mapInstance && mapInstance.getContainer) mapInstance.getContainer().style.cursor = '';
     if (drawnItems) {
-      try { drawnItems.clearLayers(); } catch(_) {}
+      try { drawnItems.clearLayers(); } catch(error) { cleanupErrors.push(error); }
     }
     Object.keys(_rasterLayers).forEach(function(name) {
-      try { mapInstance.removeLayer(_rasterLayers[name]); } catch(_) {}
+      try { mapInstance.removeLayer(_rasterLayers[name]); } catch(error) { cleanupErrors.push(error); }
     });
     _rasterLayers = {};
     Object.keys(layers).forEach(function(name) {
-      try { mapInstance.removeLayer(layers[name]); } catch(_) {}
+      try { removeLayer(name); } catch(error) { cleanupErrors.push(error); }
     });
-    layers = {};
-    geoStore = {};
+    Object.keys(layers).forEach(function(name) { delete layers[name]; });
+    Object.keys(geoStore).forEach(function(name) { delete geoStore[name]; });
+    Object.keys(_labelConfigs).forEach(function(name) { delete _labelConfigs[name]; });
+    Object.keys(_layerScaleRanges).forEach(function(name) { delete _layerScaleRanges[name]; });
     _featureMap = {};
+    _undoStack.length = 0;
+    _redoStack.length = 0;
     window._drawingTargetLayerId = null;
     clearHighlight();
     if (mapInstance) {
+      // 先复制图层列表再删除。Leaflet 的 eachLayer 遍历内部注册表，遍历期间删除
+      // 当前项可能跳过后续覆盖层，导致“清空”后仍有图层留在地图上。
+      var remainingLayers = [];
       mapInstance.eachLayer(function(l) {
-        if (l !== baseLayer && l !== drawnItems && !(l instanceof L.TileLayer)) {
-          try { mapInstance.removeLayer(l); } catch(_) {}
-        }
+        // 只保留当前底图和绘制容器。业务 XYZ/WMS 图层同样可能是 TileLayer。
+        if (l !== baseLayer && l !== drawnItems) remainingLayers.push(l);
+      });
+      remainingLayers.forEach(function(l) {
+        try {
+          if (!mapInstance.hasLayer || mapInstance.hasLayer(l)) mapInstance.removeLayer(l);
+        } catch(error) { cleanupErrors.push(error); }
       });
     }
+    var remainingBusinessLayers = [];
+    if (mapInstance) {
+      mapInstance.eachLayer(function(l) {
+        if (l !== baseLayer && l !== drawnItems) remainingBusinessLayers.push(l);
+      });
+    }
+    return { ok: remainingBusinessLayers.length === 0, remaining: remainingBusinessLayers.length,
+      errors: cleanupErrors };
   }
 
   /** 图层比例尺范围（ArcMap 风格：最小缩放与最大缩放可见范围） */
@@ -757,6 +795,14 @@ var _undoSkip = false;
     if (geoStore[oldName]) {
       geoStore[newName] = geoStore[oldName];
       delete geoStore[oldName];
+    }
+    if (_labelConfigs[oldName]) {
+      _labelConfigs[newName] = _labelConfigs[oldName];
+      delete _labelConfigs[oldName];
+    }
+    if (_layerScaleRanges[oldName]) {
+      _layerScaleRanges[newName] = _layerScaleRanges[oldName];
+      delete _layerScaleRanges[oldName];
     }
     if (_rasterLayers[oldName]) {
       _rasterLayers[newName] = _rasterLayers[oldName];
@@ -988,8 +1034,17 @@ var _undoSkip = false;
     return true;
   }
 
+  function formatWgs84Coordinates(lng, lat) {
+    lng = Number(lng);
+    lat = Number(lat);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+      return 'WGS-84 · 坐标超出有效范围';
+    }
+    return 'WGS-84 · 经度 ' + lng.toFixed(5) + ' · 纬度 ' + lat.toFixed(5);
+  }
+
   function onMouseMove(e) {
-    if (_coordsEl) _coordsEl.textContent = 'WGS-84 · 经度 ' + e.latlng.lng.toFixed(5) + ' · 纬度 ' + e.latlng.lat.toFixed(5);
+    if (_coordsEl) _coordsEl.textContent = formatWgs84Coordinates(e.latlng.lng, e.latlng.lat);
   }
 
   function onZoomEnd() {
@@ -1850,6 +1905,176 @@ var _undoSkip = false;
     _exitEditMode();
   }
 
+  function _drawCanvasElement(ctx, element, mapRect) {
+    if (!element || !element.width || !element.height) return;
+    var rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    ctx.drawImage(element, rect.left - mapRect.left, rect.top - mapRect.top, rect.width, rect.height);
+  }
+
+  function _drawMapTextOverlay(ctx, element, mapRect, background, drawText) {
+    if (!element || !element.getBoundingClientRect) return;
+    var style = window.getComputedStyle(element);
+    if (style.display === 'none' || style.visibility === 'hidden') return;
+    var rect = element.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    var x = rect.left - mapRect.left, y = rect.top - mapRect.top;
+    ctx.save();
+    if (background) {
+      ctx.fillStyle = style.backgroundColor && style.backgroundColor !== 'rgba(0, 0, 0, 0)'
+        ? style.backgroundColor : '#fff';
+      ctx.strokeStyle = style.borderColor || 'rgba(0,0,0,0.2)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x, y, rect.width, rect.height, 6);
+      else ctx.rect(x, y, rect.width, rect.height);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.rect(x, y, rect.width, rect.height);
+    ctx.clip();
+    ctx.font = style.font || '12px sans-serif';
+    ctx.fillStyle = style.color || '#334155';
+    var pad = parseFloat(style.paddingLeft) || 6;
+    var lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) || 14;
+    var label = (element.innerText || element.textContent || '').trim();
+    if (drawText !== false && label) ctx.fillText(label, x + pad, y + Math.min(rect.height - 2, lineHeight + 2), Math.max(1, rect.width - pad * 2));
+    ctx.restore();
+  }
+
+  /** 以屏幕实际位置合成当前底图、矢量图层、地图标注、比例尺和图例。 */
+  function _drawMapComposition(ctx, mapEl, w, h) {
+    var mapRect = mapEl.getBoundingClientRect();
+    ctx.fillStyle = '#f8f8f8';
+    ctx.fillRect(0, 0, w, h);
+
+    mapEl.querySelectorAll('.leaflet-tile-loaded img, .leaflet-tile img, .leaflet-image-layer').forEach(function(img) {
+      if (!img.complete || (img instanceof HTMLImageElement && !img.naturalWidth)) return;
+      try {
+        var rect = img.getBoundingClientRect();
+        if (rect.width && rect.height) {
+          ctx.drawImage(img, rect.left - mapRect.left, rect.top - mapRect.top, rect.width, rect.height);
+        }
+      } catch(_) {}
+    });
+
+    // 按 Leaflet pane 中的 DOM 顺序绘制 Canvas/SVG，既包含矢量面，也保留图层叠放顺序。
+    return _drawLeafletVectorLayers(ctx, mapEl, mapRect).then(function() {
+      _drawMapOverlays(ctx, mapEl, mapRect);
+    });
+  }
+
+  function _drawLeafletVectorLayers(ctx, mapEl, mapRect) {
+    var vectorNodes = Array.from(mapEl.querySelectorAll('.leaflet-pane svg, .leaflet-pane canvas'));
+    if (!vectorNodes.length) {
+      try {
+        var renderer = mapInstance && mapInstance.getRenderer && mapInstance.getRenderer();
+        if (renderer && renderer._container) _drawCanvasElement(ctx, renderer._container, mapRect);
+      } catch (_) {}
+      return Promise.resolve();
+    }
+    return vectorNodes.reduce(function(chain, node) {
+      return chain.then(function() {
+        if (String(node.tagName || '').toLowerCase() === 'svg') return _drawSvgOverlay(ctx, mapEl, mapRect, [node]);
+        try { _drawCanvasElement(ctx, node, mapRect); } catch (_) {}
+      });
+    }, Promise.resolve());
+  }
+
+  function _drawMapOverlays(ctx, mapEl, mapRect) {
+    mapEl.querySelectorAll('.leaflet-tooltip, .north-arrow-container').forEach(function(el) {
+      _drawMapTextOverlay(ctx, el, mapRect, true);
+    });
+
+    mapEl.querySelectorAll('.leaflet-control-scale-line').forEach(function(el) {
+      var rect = el.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      var x = rect.left - mapRect.left, y = rect.top - mapRect.top;
+      ctx.save();
+      ctx.fillStyle = '#fff'; ctx.strokeStyle = '#222'; ctx.lineWidth = 1;
+      ctx.fillRect(x, y, rect.width, rect.height); ctx.strokeRect(x, y, rect.width, rect.height);
+      ctx.font = window.getComputedStyle(el).font || '11px sans-serif';
+      ctx.fillStyle = '#222'; ctx.fillText((el.innerText || '').trim(), x + 3, y + Math.min(rect.height - 2, 12));
+      ctx.restore();
+    });
+
+    var legend = document.getElementById('mapFloatingLegend');
+    if (legend && window.getComputedStyle(legend).display !== 'none') {
+      _drawMapTextOverlay(ctx, legend, mapRect, true, false);
+      legend.querySelectorAll('.map-legend-swatch, .map-legend-label, .map-legend-title, .map-legend-field').forEach(function(el) {
+        var style = window.getComputedStyle(el), rect = el.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        var x = rect.left - mapRect.left, y = rect.top - mapRect.top;
+        if (el.classList.contains('map-legend-swatch')) {
+          ctx.fillStyle = style.backgroundColor || '#fff';
+          ctx.strokeStyle = style.borderColor || 'rgba(0,0,0,0.2)';
+          ctx.fillRect(x, y, rect.width, rect.height); ctx.strokeRect(x, y, rect.width, rect.height);
+        } else {
+          ctx.save(); ctx.beginPath(); ctx.rect(x, y, rect.width, rect.height); ctx.clip();
+          ctx.font = style.font || '11px sans-serif'; ctx.fillStyle = style.color || '#334155';
+          ctx.fillText((el.innerText || el.textContent || '').trim(), x, y + Math.min(rect.height - 1, (parseFloat(style.fontSize) || 11) + 2), rect.width);
+          ctx.restore();
+        }
+      });
+    }
+  }
+
+  function _drawSvgOverlay(ctx, mapEl, mapRect, svgNodes) {
+    var svgs = svgNodes || Array.from(mapEl.querySelectorAll('.leaflet-pane svg'));
+    if (!svgs.length) return Promise.resolve();
+    if (typeof XMLSerializer === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) {
+      return Promise.reject(new Error('当前浏览器无法序列化地图矢量图层'));
+    }
+    return Promise.all(svgs.map(function(svg) {
+      var rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height || window.getComputedStyle(svg).display === 'none') return Promise.resolve();
+      return new Promise(function(resolve, reject) {
+        var clone = svg.cloneNode(true);
+        clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        clone.setAttribute('width', String(svg.clientWidth || rect.width) + 'px');
+        clone.setAttribute('height', String(svg.clientHeight || rect.height) + 'px');
+        clone.style.transform = 'none';
+        var paintProperties = ['fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-width',
+          'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'stroke-dasharray',
+          'stroke-dashoffset', 'opacity', 'display', 'visibility'];
+        var originals = [svg].concat(Array.from(svg.querySelectorAll('*')));
+        var clones = [clone].concat(Array.from(clone.querySelectorAll('*')));
+        originals.forEach(function(original, index) {
+          var target = clones[index];
+          if (!target) return;
+          var style = window.getComputedStyle(original);
+          paintProperties.forEach(function(property) {
+            var value = style.getPropertyValue(property);
+            if (value) target.setAttribute(property, value);
+          });
+        });
+        var blobUrl;
+        var image = new Image();
+        image.onload = function() {
+          try {
+            ctx.drawImage(image, rect.left - mapRect.left, rect.top - mapRect.top, rect.width, rect.height);
+            URL.revokeObjectURL(blobUrl);
+            resolve();
+          } catch (error) {
+            URL.revokeObjectURL(blobUrl);
+            reject(error);
+          }
+        };
+        image.onerror = function() {
+          URL.revokeObjectURL(blobUrl);
+          reject(new Error('地图矢量图层无法绘制到导出图片'));
+        };
+        try {
+          blobUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml;charset=utf-8' }));
+          image.src = blobUrl;
+        } catch (error) {
+          reject(error);
+        }
+      });
+    }));
+  }
+
   /** 导出地图为图片 */
   function exportMap(format) {
     if (!mapInstance) return;
@@ -1866,48 +2091,25 @@ var _undoSkip = false;
     var ctx = canvas.getContext('2d');
     ctx.scale(2, 2);
 
-    ctx.fillStyle = '#f8f8f8';
-    ctx.fillRect(0, 0, w, h);
+    return _drawMapComposition(ctx, mapEl, w, h).then(function() {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, h - 20, w, 20);
+      ctx.fillStyle = '#fff';
+      ctx.font = '11px sans-serif';
+      ctx.fillText('GIS WorkTable · ' + new Date().toISOString().slice(0, 10), 8, h - 7);
 
-    try {
-      var tiles = mapEl.querySelectorAll('.leaflet-tile-loaded img, .leaflet-tile img');
-      tiles.forEach(function(img) {
-        if (!img.complete || !img.naturalWidth) return;
-        var left = parseInt(img.style.left) || 0;
-        var top = parseInt(img.style.top) || 0;
-        ctx.drawImage(img, left, top, img.naturalWidth, img.naturalHeight);
-      });
-    } catch(e) {}
-
-    try {
-      var renderer = mapInstance.getRenderer();
-      if (renderer && renderer._container) {
-        ctx.drawImage(renderer._container, 0, 0);
-      }
-    } catch(e) {}
-
-    try {
-      if (drawnItems) {
-        drawnItems.eachLayer(function(l) {
-          if (l._container && l._container instanceof HTMLCanvasElement) {
-            ctx.drawImage(l._container, 0, 0);
-          }
-        });
-      }
-    } catch(e) {}
-
-    ctx.fillStyle = 'rgba(0,0,0,0.45)';
-    ctx.fillRect(0, h - 20, w, 20);
-    ctx.fillStyle = '#fff';
-    ctx.font = '11px sans-serif';
-    ctx.fillText('GIS WorkTable · ' + new Date().toISOString().slice(0, 10), 8, h - 7);
-
-    var mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
-    var dataUrl = canvas.toDataURL(mime, 0.92);
-    var link = document.createElement('a');
-    link.download = 'map_export_' + Date.now() + '.' + format;
-    link.href = dataUrl;
-    link.click();
+      var mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
+      var dataUrl = canvas.toDataURL(mime, 0.92);
+      var link = document.createElement('a');
+      link.download = 'map_export_' + Date.now() + '.' + format;
+      link.href = dataUrl;
+      link.click();
+      if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('已生成当前地图下载：' + escapeHtml(link.download), 'system');
+      return { ok: true, filename: link.download };
+    }).catch(function(error) {
+      if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('地图导出失败：' + escapeHtml(error.message || error), 'system');
+      return { ok: false, error: error.message || String(error) };
+    });
   }
 
   /** 导出地图为 PDF（通过浏览器打印布局） */
@@ -1917,16 +2119,49 @@ var _undoSkip = false;
     var mapEl = document.getElementById('map');
     if (!mapEl) return;
 
-    var mapData = _captureMapCanvas();
-    if (!mapData) return;
+    var printWindow = window.open('', '_blank', 'width=900,height=700');
+    if (!printWindow) {
+      if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('PDF 导出失败：浏览器拦截了打印窗口', 'system');
+      return { ok: false, error: '打印窗口被拦截' };
+    }
 
-    var now = new Date();
-    var dateStr = now.toLocaleDateString('zh-CN');
-    var center = mapInstance.getCenter();
-    var zoom = mapInstance.getZoom();
-    var layers = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
+    var legendPanel = document.getElementById('mapFloatingLegend');
+    var oldLegendDisplay = legendPanel ? legendPanel.style.display : null;
+    if (legendPanel) legendPanel.style.display = 'none';
+    var capture = _captureMapCanvas();
+    if (!capture) {
+      if (legendPanel) legendPanel.style.display = oldLegendDisplay;
+      printWindow.close();
+      return { ok: false, error: '地图区域为空' };
+    }
 
-    var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+    return capture.then(function(mapData) {
+      if (legendPanel) legendPanel.style.display = oldLegendDisplay;
+      if (!mapData) throw new Error('未能生成地图图像');
+
+      var now = new Date();
+      var dateStr = now.toLocaleDateString('zh-CN');
+      var center = mapInstance.getCenter();
+      var zoom = mapInstance.getZoom();
+      var layers = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
+      var themeLegends = layers.filter(function(layer) { return layer.visible !== false; }).map(function(layer) {
+        var data = window.GIS.layers && window.GIS.layers.getLegendData
+          ? window.GIS.layers.getLegendData(layer.layer_id) : null;
+        return data ? { layer: layer, data: data } : null;
+      }).filter(Boolean);
+      var legendHtml = themeLegends.map(function(entry) {
+        var data = entry.data;
+        var items = (data.items || []).map(function(item) {
+          var color = /^#[0-9a-f]{3,8}$/i.test(String(item.color || '')) ? item.color : '#888888';
+          return '<div class="legend-row"><i style="background:' + color + '"></i><span>' + escapeHtml(item.label || '') +
+            (item.count !== undefined ? ' (' + Number(item.count) + ')' : '') + '</span></div>';
+        }).join('');
+        return '<section class="theme-legend"><strong>' + escapeHtml(entry.layer.filename || entry.layer.name || '图层') +
+          '</strong><div class="legend-field">' + escapeHtml(data.field || '') + ' · ' +
+          (data.type === 'graduated' ? '分级设色' : '唯一值') + '</div>' + items + '</section>';
+      }).join('');
+
+      var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
       '<title>' + escapeHtml(title) + '</title>' +
       '<style>' +
       '@page { size: A4 landscape; margin: 20mm; }' +
@@ -1937,7 +2172,9 @@ var _undoSkip = false;
       '.map-container { border: 1px solid #ccc; page-break-inside: avoid; }' +
       '.map-container img { width: 100%; height: auto; display: block; }' +
       '.footer { display: flex; justify-content: space-between; margin-top: 14px; font-size: 11px; color: #666; }' +
-      '.footer .legend { flex: 1; }' +
+      '.footer .legend { flex: 1; } .theme-legends { display:flex; flex-wrap:wrap; gap:16px; margin-top:8px; }' +
+      '.theme-legend { min-width:150px; } .legend-field { font-size:10px;color:#666;margin:3px 0; }' +
+      '.legend-row { display:flex;align-items:center;gap:6px;font-size:10px;margin:2px 0; } .legend-row i { display:inline-block;width:12px;height:12px;border:1px solid #999; }' +
       '.footer .scale { text-align: right; }' +
       '.north-arrow { display: inline-block; font-size: 28px; color: #c0392b; margin-right: 12px; line-height: 1; }' +
       '@media print { body { padding: 0; } }' +
@@ -1946,47 +2183,38 @@ var _undoSkip = false;
       '<div class="meta">' + dateStr + ' | 中心: ' + center.lat.toFixed(4) + ', ' + center.lng.toFixed(4) + ' | 缩放: ' + zoom + '</div></div>' +
       '<div class="map-container"><img src="' + mapData + '" alt="地图"></div>' +
       '<div class="footer"><div class="legend">' +
-      (layers.length ? '<strong>图层:</strong> ' + layers.map(function(l) { return l.filename; }).join(' · ') : '') +
+      (layers.length ? '<strong>图层:</strong> ' + layers.filter(function(l) { return l.visible !== false; }).map(function(l) { return escapeHtml(l.filename || l.name || '图层'); }).join(' · ') : '') +
+      (legendHtml ? '<div class="theme-legends">' + legendHtml + '</div>' : '') +
       '</div><div class="scale"><span class="north-arrow">&#x2191;</span> N</div></div>' +
       '<script>window.onload=function(){setTimeout(function(){window.print()},500)}<' + '/script>' +
       '</body></html>';
 
-    var win = window.open('', '_blank', 'width=900,height=700');
-    if (win) {
-      win.document.write(html);
-      win.document.close();
-    }
+      printWindow.document.write(html);
+      printWindow.document.close();
+      if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('已打开 PDF 打印布局，请在打印窗口中选择“另存为 PDF”', 'system');
+      return { ok: true };
+    }).catch(function(error) {
+      if (legendPanel) legendPanel.style.display = oldLegendDisplay;
+      printWindow.close();
+      if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('PDF 导出失败：' + escapeHtml(error.message || error), 'system');
+      return { ok: false, error: error.message || String(error) };
+    });
   }
 
   /** 内部：捕获地图 Canvas 数据 */
   function _captureMapCanvas() {
     var mapEl = document.getElementById('map');
-    if (!mapEl) return null;
+    if (!mapEl) return Promise.resolve(null);
     var w = mapEl.clientWidth, h = mapEl.clientHeight;
-    if (!w || !h) return null;
+    if (!w || !h) return Promise.resolve(null);
     var canvas = document.createElement('canvas');
     canvas.width = w * 2;
     canvas.height = h * 2;
     var ctx = canvas.getContext('2d');
     ctx.scale(2, 2);
-    ctx.fillStyle = '#f8f8f8';
-    ctx.fillRect(0, 0, w, h);
-    try {
-      mapEl.querySelectorAll('.leaflet-tile-loaded img, .leaflet-tile img').forEach(function(img) {
-        if (!img.complete || !img.naturalWidth) return;
-        ctx.drawImage(img, parseInt(img.style.left) || 0, parseInt(img.style.top) || 0, img.naturalWidth, img.naturalHeight);
-      });
-    } catch(e) {}
-    try {
-      var renderer = mapInstance.getRenderer();
-      if (renderer && renderer._container) ctx.drawImage(renderer._container, 0, 0);
-    } catch(e) {}
-    try {
-      if (drawnItems) drawnItems.eachLayer(function(l) {
-        if (l._container && l._container instanceof HTMLCanvasElement) ctx.drawImage(l._container, 0, 0);
-      });
-    } catch(e) {}
-    return canvas.toDataURL('image/png', 0.95);
+    return _drawMapComposition(ctx, mapEl, w, h).then(function() {
+      return canvas.toDataURL('image/png', 0.95);
+    });
   }
 
   /** 快照当前所有地图状态到撤销栈 */
@@ -2263,6 +2491,7 @@ var _undoSkip = false;
 
   GIS.map = {
     init: init,
+    formatWgs84Coordinates: formatWgs84Coordinates,
     loadGeoJSON: loadGeoJSON,
     getBounds: function() { return mapInstance ? mapInstance.getBounds() : null; },
     switchBaseMap: switchBaseMap,

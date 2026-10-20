@@ -12,6 +12,8 @@
   var _panel = null;
   var _body = null;
   var _entries = [];
+  var _refreshRequestId = 0;
+  var _clearInFlight = false;
 
   function init() {
     _panel = document.getElementById('historyPanel');
@@ -39,9 +41,26 @@
 
     if (clearBtn) {
       clearBtn.addEventListener('click', function () {
+        if (_clearInFlight) return;
+        _clearInFlight = true;
+        var requestId = ++_refreshRequestId;
+        clearBtn.disabled = true;
         fetch(BASE() + '/api/history', { method: 'DELETE' })
-          .then(function () { render([]); })
-          .catch(function () {});
+          .then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            if (requestId === _refreshRequestId) render([]);
+          })
+          .catch(function (err) {
+            if (requestId !== _refreshRequestId) return;
+            if (GIS.chat && GIS.chat.addMessage) {
+              GIS.chat.addMessage('清空处理历史失败: ' + (err.message || err), 'system');
+            }
+          })
+          .finally(function () {
+            if (requestId !== _refreshRequestId) return;
+            _clearInFlight = false;
+            clearBtn.disabled = false;
+          });
       });
     }
   }
@@ -51,11 +70,18 @@
   }
 
   function refresh() {
-    if (!_body) return;
+    if (!_body || _clearInFlight) return;
+    var requestId = ++_refreshRequestId;
     fetch(BASE() + '/api/history?limit=50')
-      .then(function (r) { return r.json(); })
-      .then(function (data) { render(data.history || []); })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        if (requestId === _refreshRequestId) render(data.history || []);
+      })
       .catch(function () {
+        if (requestId !== _refreshRequestId) return;
         _body.innerHTML = '<div class="toolhist-empty">加载历史失败（后端未连接？）</div>';
       });
   }
@@ -204,6 +230,13 @@
       .then(function (r) { return r.json(); })
       .then(function (result) {
         if (btn) { btn.disabled = false; btn.textContent = '重跑'; }
+        if (result && result.ok === false) {
+          if (GIS.chat && GIS.chat.addMessage) {
+            GIS.chat.addMessage('重跑失败: ' + (result.error || result.response || '工具未成功完成'), 'system');
+          }
+          refresh();
+          return;
+        }
         applyRerunResult(result);
       })
       .catch(function (err) {

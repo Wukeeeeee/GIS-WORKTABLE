@@ -11,12 +11,14 @@ window.GIS = window.GIS || {};
   'use strict';
 
   const GIS = window.GIS;
+  var initialized = false;
 
   /**
    * 初始化所有模块
    * DOMContentLoaded 后自动调用
    */
   function init() {
+    if (initialized || document.readyState === 'loading') return;
     console.log('[GIS] 应用初始化...');
 
     // 启动超时检测（10秒后检查关键模块是否就绪）
@@ -102,6 +104,7 @@ window.GIS = window.GIS || {};
     bindGlobalEvents();
 
     console.log('[GIS] 应用初始化完成');
+    initialized = true;
   }
 
   /**

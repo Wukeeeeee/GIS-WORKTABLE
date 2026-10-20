@@ -67,6 +67,43 @@ window.GIS = window.GIS || {};
     });
   }
 
+  function _parseCsvPreview(content) {
+    var text = String(content || '').replace(/^\uFEFF/, '');
+    var rows = [];
+    var row = [];
+    var field = '';
+    var quoted = false;
+    for (var i = 0; i < text.length; i++) {
+      var char = text[i];
+      if (quoted) {
+        if (char === '"' && text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else if (char === '"') {
+          quoted = false;
+        } else {
+          field += char;
+        }
+      } else if (char === '"' && field === '') {
+        quoted = true;
+      } else if (char === ',') {
+        row.push(field);
+        field = '';
+      } else if (char === '\n' || char === '\r') {
+        if (char === '\r' && text[i + 1] === '\n') i++;
+        row.push(field);
+        field = '';
+        if (row.some(function(value) { return value.trim() !== ''; })) rows.push(row);
+        row = [];
+      } else {
+        field += char;
+      }
+    }
+    row.push(field);
+    if (row.some(function(value) { return value.trim() !== ''; })) rows.push(row);
+    return rows;
+  }
+
   // 文件格式校验
   function handleFiles(files) {
     Array.from(files).forEach(async function (file) {
@@ -110,10 +147,9 @@ window.GIS = window.GIS || {};
         var content = reader.result;
         var html = '';
         if (ext === '.csv') {
-          var lines = content.split('\n').filter(function(l) { return l.trim(); });
-          var header = lines[0] || '无列名';
-          var cols = header.split(',').map(function(c) { return c.trim(); });
-          var previewRows = lines.slice(1, 4);
+          var csvRows = _parseCsvPreview(content);
+          var cols = (csvRows[0] || ['无列名']).map(function(c) { return c.trim(); });
+          var previewRows = csvRows.slice(1, 4);
           html = '<div class="preview-dialog">' +
             '<div class="preview-dialog-title">数据预览</div>' +
             '<div class="preview-dialog-file">' + escapeHtml(file.name) + ' (' + (file.size / 1024).toFixed(1) + ' KB)</div>' +
@@ -122,8 +158,7 @@ window.GIS = window.GIS || {};
             '<div class="preview-dialog-section"><div class="preview-dialog-label">前 ' + Math.min(previewRows.length, 3) + ' 行预览</div>' +
             '<table class="preview-table"><thead><tr>' + cols.map(function(c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') + '</tr></thead>' +
             '<tbody>' + previewRows.map(function(row) {
-              var cells = row.split(',').map(function(c) { return c.trim(); });
-              return '<tr>' + cells.map(function(c) { return '<td>' + escapeHtml(c) + '</td>'; }).join('') + '</tr>';
+              return '<tr>' + row.map(function(c) { return '<td>' + escapeHtml(c.trim()) + '</td>'; }).join('') + '</tr>';
             }).join('') + '</tbody></table></div>' +
             '<div class="preview-dialog-actions">' +
             '<button class="preview-btn preview-btn-cancel">取消</button>' +
@@ -174,7 +209,10 @@ window.GIS = window.GIS || {};
           if (e.target === overlay) { document.body.removeChild(overlay); resolve(false); }
         });
       };
-      reader.onerror = function() { resolve(true); };
+      reader.onerror = function() {
+        showUploadToast('error', '无法读取文件预览，文件未上传：' + file.name);
+        resolve(false);
+      };
       // 只读取前 64KB 用于预览（CSV取前几行，GeoJSON 完全解析需要读全部但限制大小）
       var blob = (ext === '.csv') ? file.slice(0, 64 * 1024) : file;
       reader.readAsText(blob);
@@ -182,11 +220,10 @@ window.GIS = window.GIS || {};
   }
 
   async function startUpload(file) {
-    showUploadToast('importing', file.name);
-
-    // 可取消：每个文件独立 AbortController，防止并发上传互相覆盖
+    const uploadId = 'upload_' + (++_uploadIdCounter);
     var controller = new AbortController();
-    _uploadAbortControllers.set(file.name, controller);
+    _uploadAbortControllers.set(uploadId, controller);
+    showUploadToast('importing', file.name, uploadId);
     var signal = controller.signal;
 
     try {
@@ -194,13 +231,13 @@ window.GIS = window.GIS || {};
 
       // 后端返回了错误信息
       if (result.error) {
-        return showUploadToast('error', result.error);
+        return showUploadToast('error', result.error, uploadId);
       }
 
       // ===== CSV 文件：保存后让 AI 处理 =====
       if (result.csv_info) {
         const info = result.csv_info;
-        showUploadToast('success', `${info.filename} 已保存`);
+        showUploadToast('success', `${info.filename} 已保存`, uploadId);
         setTimeout(() => {
           if (GIS.chat && GIS.chat.sendMessage) {
             const msg = `读取 output/${info.filename}，识别坐标列，转成GeoJSON显示到地图`;
@@ -226,7 +263,7 @@ window.GIS = window.GIS || {};
           raster: info,
         }, true);
 
-        showUploadToast('success', name);
+        showUploadToast('success', name, uploadId);
         return;
       }
 
@@ -251,30 +288,28 @@ window.GIS = window.GIS || {};
         GIS.chat.addMessage(`[文件上传] ${result.name} → output/uploads/`, 'system', { hidden: true });
       }
 
-      showUploadToast('success', result.name);
+      showUploadToast('success', result.name, uploadId);
     } catch (err) {
       if (err.name === 'AbortError') return; // 用户取消，不显示错误
-      showUploadToast('error', err.message);
+      showUploadToast('error', err.message, uploadId);
     } finally {
-      _uploadAbortControllers.delete(file.name);
+      _uploadAbortControllers.delete(uploadId);
     }
   }
 
   // ---- 上传状态气泡（显示在 AI 对话区，无头像，像 AI 消息样式） ----
 
-  var _uploadMsgEl = null;
-  var _uploadStatusTimer = null;
   var _uploadAbortControllers = new Map();
-  var _currentFileName = '';
+  var _uploadRows = new Map();
+  var _uploadStatusTimers = new Map();
+  var _uploadIdCounter = 0;
 
-  function showUploadToast(status, msg) {
-    if (_uploadStatusTimer) { clearTimeout(_uploadStatusTimer); _uploadStatusTimer = null; }
-
+  function showUploadToast(status, msg, uploadId) {
+    uploadId = uploadId || ('notice_' + (++_uploadIdCounter));
     var container = document.getElementById('chatMessages');
     if (!container) return;
 
     if (status === 'importing') {
-      _currentFileName = msg || '文件';
       var row = document.createElement('div');
       row.style.cssText = 'display:flex;justify-content:center;width:100%;padding:4px 0;box-sizing:border-box;opacity:0;transition:opacity 0.2s;';
 
@@ -282,34 +317,32 @@ window.GIS = window.GIS || {};
       bubble.className = 'system-pill';
       bubble.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:3px 12px;line-height:1.4;';
       bubble.innerHTML =
-        "<span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span style=\"font-weight:500;\">导入中: " + escapeHtml(_currentFileName) + '</span>' +
-        '<button class="upload-cancel-btn" id="uploadCancelBtn" style="margin-left:6px;font-size:10px;padding:1px 6px;border:1px solid var(--outline-variant);border-radius:3px;background:none;cursor:pointer;color:var(--on-surface-variant);white-space:nowrap;">取消</button>';
+        "<span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span style=\"font-weight:500;\">导入中: " + escapeHtml(msg || '文件') + '</span>' +
+        '<button class="upload-cancel-btn" style="margin-left:6px;font-size:10px;padding:1px 6px;border:1px solid var(--outline-variant);border-radius:3px;background:none;cursor:pointer;color:var(--on-surface-variant);white-space:nowrap;">取消</button>';
       row.appendChild(bubble);
       container.appendChild(row);
       requestAnimationFrame(function() { row.style.opacity = '1'; });
       container.scrollTop = container.scrollHeight;
 
-      _uploadMsgEl = row;
+      _uploadRows.set(uploadId, row);
 
       var iconEl = row.querySelector('.upload-msg-icon');
       if (iconEl) iconEl.style.animation = 'upload-bounce 0.6s ease-in-out infinite alternate';
 
-      var cancelBtn = row.querySelector('#uploadCancelBtn');
+      var cancelBtn = row.querySelector('.upload-cancel-btn');
       if (cancelBtn) {
         cancelBtn.addEventListener('click', function() {
-          var ctrl = _uploadAbortControllers.get(_currentFileName);
-          if (ctrl) ctrl.abort();
-          _uploadAbortControllers.delete(_currentFileName);
-          var bubbleDiv = cancelBtn.closest('div');
-          if (bubbleDiv) {
-            bubbleDiv.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">导入已取消</span>';
-          }
-          _uploadMsgEl = null;
+          var ctrl = _uploadAbortControllers.get(uploadId);
+          if (!ctrl) return;
+          ctrl.abort();
+          bubble.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">' +
+            escapeHtml(msg || '文件') + ' 导入已取消</span>';
+          _scheduleUploadRowRemoval(uploadId, 3000);
         });
       }
 
     } else {
-      var targetRow = _uploadMsgEl;
+      var targetRow = _uploadRows.get(uploadId);
       if (!targetRow) {
         targetRow = document.createElement('div');
         targetRow.style.cssText = 'display:flex;justify-content:center;width:100%;padding:4px 0;box-sizing:border-box;opacity:0;transition:opacity 0.2s;';
@@ -320,7 +353,7 @@ window.GIS = window.GIS || {};
         container.appendChild(targetRow);
         requestAnimationFrame(function() { targetRow.style.opacity = '1'; });
         container.scrollTop = container.scrollHeight;
-        _uploadMsgEl = targetRow;
+        _uploadRows.set(uploadId, targetRow);
       }
 
       var contentDiv = targetRow.querySelector('.system-pill') || targetRow.querySelector('div:last-child');
@@ -332,20 +365,28 @@ window.GIS = window.GIS || {};
         }
         contentDiv.innerHTML =
           "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-ae6516c4f98b.png')\"></span><span style=\"color:#2e7d32;font-weight:500;\">上传成功" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>';
-        _uploadStatusTimer = setTimeout(function() {
-          if (_uploadMsgEl) { _uploadMsgEl.remove(); _uploadMsgEl = null; }
-        }, 3000);
+        _scheduleUploadRowRemoval(uploadId, 3000);
       } else if (status === 'error') {
         if (window.GIS.toast && typeof window.GIS.toast.error === 'function') {
           window.GIS.toast.error('上传失败' + (msg ? ': ' + msg : ''));
         }
         contentDiv.innerHTML =
           "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-22ff8b401bb5.png')\"></span><span style=\"color:#d32f2f;font-weight:500;\">上传失败" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>';
-        _uploadStatusTimer = setTimeout(function() {
-          if (_uploadMsgEl) { _uploadMsgEl.remove(); _uploadMsgEl = null; }
-        }, 5000);
+        _scheduleUploadRowRemoval(uploadId, 5000);
       }
     }
+  }
+
+  function _scheduleUploadRowRemoval(uploadId, delay) {
+    var previousTimer = _uploadStatusTimers.get(uploadId);
+    if (previousTimer) clearTimeout(previousTimer);
+    var timer = setTimeout(function() {
+      var row = _uploadRows.get(uploadId);
+      if (row && row.parentNode) row.parentNode.removeChild(row);
+      _uploadRows.delete(uploadId);
+      _uploadStatusTimers.delete(uploadId);
+    }, delay);
+    _uploadStatusTimers.set(uploadId, timer);
   }
 
   function escapeHtml(str) {

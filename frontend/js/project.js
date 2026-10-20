@@ -7,6 +7,13 @@ window.GIS = window.GIS || {};
 
   let _currentProjectId = null;
   let _currentSessionId = _createSessionId();
+  let _loadGeneration = 0;
+
+  function _escapeMarkup(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
+  }
 
   function _createSessionId() {
     return 'session_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 7);
@@ -68,9 +75,28 @@ window.GIS = window.GIS || {};
   function _getMapState() {
     if (GIS.map && typeof GIS.map.getState === 'function') {
       const s = GIS.map.getState();
-      return { lng: s.center ? s.center.lng : 0, lat: s.center ? s.center.lat : 0, zoom: s.zoom || 10 };
+      return { lng: s.center ? s.center.lng : 0, lat: s.center ? s.center.lat : 0, zoom: Number.isFinite(s.zoom) ? s.zoom : 10 };
     }
     return {};
+  }
+
+  function _readSavedMapView(mapState) {
+    if (!mapState || typeof mapState !== 'object') return null;
+    var center = mapState.center;
+    var latValue = mapState.lat;
+    var lngValue = mapState.lng;
+    if (latValue === undefined || latValue === null) {
+      latValue = Array.isArray(center) ? center[0] : center && center.lat;
+    }
+    if (lngValue === undefined || lngValue === null) {
+      lngValue = Array.isArray(center) ? center[1] : center && center.lng;
+    }
+    if ((typeof latValue === 'string' && !latValue.trim()) || (typeof lngValue === 'string' && !lngValue.trim())) return null;
+    var lat = Number(latValue);
+    var lng = Number(lngValue);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+    var zoom = mapState.zoom === undefined || mapState.zoom === null ? 10 : Number(mapState.zoom);
+    return { center: [lat, lng], zoom: Number.isFinite(zoom) ? zoom : 10 };
   }
 
   function _collectMessages() {
@@ -93,7 +119,18 @@ window.GIS = window.GIS || {};
 
   function _collectLayers() {
     if (GIS.layers && typeof GIS.layers.getLayers === 'function') {
-      return GIS.layers.getLayers();
+      return GIS.layers.getLayers().map(function(layer) {
+        var shared = GIS.state && typeof GIS.state.getLayer === 'function'
+          ? GIS.state.getLayer(layer.layer_id) : null;
+        var style = Object.assign({}, layer.color ? { color: layer.color } : {}, layer.style || {});
+        if (layer.opacity !== undefined) style.opacity = layer.opacity;
+        // Shared state replaces its style object when controls change it; the
+        // panel may still reference the original object from layer creation.
+        Object.assign(style, shared && shared.style || {});
+        var symbology = GIS.layers && typeof GIS.layers.getSymbologyState === 'function'
+          ? GIS.layers.getSymbologyState(layer.layer_id) : null;
+        return Object.assign({}, layer, { style: style, symbology: symbology });
+      });
     }
     return [];
   }
@@ -127,7 +164,7 @@ window.GIS = window.GIS || {};
           var preview = p.msgPreview ? GIS.utils.escapeHtml(p.msgPreview) : '空会话';
           var timeStr = _formatTime(p.updatedAt);
           var name = GIS.utils.escapeHtml(p.name || '未命名工程');
-          return '<div class="history-item" data-id="' + p.id + '">' +
+          return '<div class="history-item" data-id="' + _escapeMarkup(p.id) + '">' +
             '<div class="history-item-main" data-action="load">' +
               '<div class="history-item-name">' + name + '</div>' +
               '<div class="history-item-preview">' + preview + '</div>' +
@@ -172,7 +209,11 @@ window.GIS = window.GIS || {};
           if (action === 'load') _loadProject(pid);
           else if (action === 'rename') _promptRename(pid, item);
           else if (action === 'delete') _deleteProject(pid, item);
-          else if (action === 'export') _exportProject(pid);
+          else if (action === 'export') {
+            _exportProject(pid).catch(function(err) {
+              GIS.chat.addMessage('导出失败: ' + _escapeMarkup(err.message || err), 'system');
+            });
+          }
           return;
         }
         var main = e.target.closest('[data-action="load"]');
@@ -195,10 +236,12 @@ window.GIS = window.GIS || {};
   }
 
   function _loadProject(pid) {
-    GIS.api.loadProject(pid).then(function(data) {
+    var loadGeneration = ++_loadGeneration;
+    return GIS.api.loadProject(pid).then(function(data) {
+      if (loadGeneration !== _loadGeneration) return false;
       if (!data || data.error) {
         GIS.chat.addMessage('加载工程失败', 'system');
-        return;
+        return false;
       }
       _currentProjectId = data.id;
       _currentSessionId = data.sessionId || ('proj_' + data.id);
@@ -216,10 +259,13 @@ window.GIS = window.GIS || {};
       if (GIS.map && typeof GIS.map.clearAll === 'function') {
         try { GIS.map.clearAll(); } catch(_) {}
       }
+      if (GIS.layers && typeof GIS.layers.setGroupState === 'function') {
+        GIS.layers.setGroupState(data.layerGroups || []);
+      }
       GIS.chat.clear();
       if (data.messages) {
         data.messages.forEach(function(msg) {
-          if (msg.role === 'user') GIS.chat.addMessage(msg.content, 'user');
+          if (msg.role === 'user') GIS.chat.addMessage(_escapeMarkup(msg.content), 'user');
           else if (msg.role === 'assistant') GIS.chat.addMessage(msg.content, 'ai');
         });
       }
@@ -234,37 +280,50 @@ window.GIS = window.GIS || {};
           if (layer.geojson && GIS.map && GIS.map.loadGeoJSON) {
             try { GIS.map.loadGeoJSON(layer.geojson, layerName); } catch(_) {}
             if (GIS.layers && GIS.layers.addLayer) {
-              GIS.layers.addLayer({
-                layer_id: layer.layer_id || (layerName + '_' + Date.now()),
+              var restoredLayer = GIS.layers.addLayer({
+                // Missing IDs are generated by the layer/state registry so multiple legacy
+                // layers restored in the same millisecond still receive distinct identities.
+                layer_id: layer.layer_id,
                 filename: layerName,
                 _rawName: layerName,
                 geojson: layer.geojson,
                 geometry_type: layer.geometry_type || 'Vector',
                 crs: layer.crs || 'WGS-84',
                 color: layerColor,
+                style: layer.style || { color: layerColor },
                 visible: isVis,
                 source: layer.source || 'ai',
+                groupId: layer.groupId || null,
               });
               if (!isVis && GIS.layers.toggleVisibility) {
                 // 若添加后为显示状态，调整为隐藏
                 var cur = GIS.layers.getLayers().find(function(l) { return l.filename === layerName; });
                 if (cur && cur.visible) GIS.layers.toggleVisibility(cur.layer_id);
               }
+              if (layer.symbology && typeof GIS.layers.restoreSymbologyState === 'function') {
+                GIS.layers.restoreSymbologyState(
+                  restoredLayer && restoredLayer.layer_id || layer.layer_id,
+                  layer.symbology
+                );
+              }
             }
           } else if (serviceUrl && proto.indexOf('wms') >= 0 && GIS.geosource && GIS.geosource.loadWmsSublayer) {
-            GIS.geosource.loadWmsSublayer(encodeURIComponent(serviceUrl), encodeURIComponent(layer.sublayer || ''), encodeURIComponent(layerName));
+            GIS.geosource.loadWmsSublayer(
+              encodeURIComponent(serviceUrl), encodeURIComponent(layer.sublayer || ''),
+              encodeURIComponent(layerName), layer.groupId || null
+            );
           } else if (serviceUrl && (proto.indexOf('xyz') >= 0 || /\{[xyz]\}/i.test(serviceUrl)) && GIS.map && GIS.map.addTileLayer) {
             GIS.map.addTileLayer(serviceUrl, layerName);
             if (GIS.layers && GIS.layers.addLayer) {
               GIS.layers.addLayer({
-                layer_id: 'xyz_' + Date.now(),
                 filename: layerName,
                 geometry_type: 'XYZ瓦片',
                 crs: 'WebMercator',
                 source: 'geosource',
                 url: serviceUrl,
                 service_type: 'XYZ',
-                visible: isVis
+                visible: isVis,
+                groupId: layer.groupId || null
               }, true);
             }
           }
@@ -273,23 +332,22 @@ window.GIS = window.GIS || {};
           GIS.layers.syncLayerOrder();
         }
       }
-      if (data.mapState && (data.mapState.lng !== undefined || data.mapState.lat !== undefined) && GIS.map && GIS.map.setView) {
-        var centerLat = data.mapState.lat || (data.mapState.center && data.mapState.center.lat) || 0;
-        var centerLng = data.mapState.lng || (data.mapState.center && data.mapState.center.lng) || 0;
-        var zoomLevel = data.mapState.zoom || 10;
-        if (centerLat || centerLng) {
-          try { GIS.map.setView([centerLat, centerLng], zoomLevel); } catch(_) {}
-        }
+      var savedMapView = _readSavedMapView(data.mapState);
+      if (savedMapView && GIS.map && GIS.map.setView) {
+        try { GIS.map.setView(savedMapView.center, savedMapView.zoom); } catch(_) {}
       }
       var displayProjName = (data.name || '').replace(/^\[用户引用了上一条回复.*?\]\s*/s, '').replace(/^\[附图层:.*?\]\s*/s, '').trim();
       if (!displayProjName || displayProjName === '未命名工程') displayProjName = data.name || '未命名工程';
       if (displayProjName.length > 25) displayProjName = displayProjName.slice(0, 25) + '…';
-      GIS.chat.addMessage('已恢复工程: ' + displayProjName, 'system', { pill: true });
+      GIS.chat.addMessage('已恢复工程: ' + _escapeMarkup(displayProjName), 'system', { pill: true });
       if (GIS.workspace && GIS.workspace.renderRecentProjects) {
         try { GIS.workspace.renderRecentProjects(); } catch(_) {}
       }
+      return true;
     }).catch(function(err) {
-      GIS.chat.addMessage('加载工程失败: ' + err.message, 'system');
+      if (loadGeneration !== _loadGeneration) return false;
+      GIS.chat.addMessage('加载工程失败: ' + _escapeMarkup(err.message || err), 'system');
+      return false;
     });
   }
 
@@ -301,12 +359,14 @@ window.GIS = window.GIS || {};
       if (pid === _currentProjectId) {
         _currentProjectId = null;
         _currentSessionId = _createSessionId();
+        var currentNameEl = document.getElementById('workspaceCurrentProjectName');
+        if (currentNameEl) currentNameEl.textContent = '未命名工程';
         if (GIS.layers && typeof GIS.layers.clearAll === 'function') GIS.layers.clearAll(true);
         GIS.chat.clear();
         if (GIS.map && typeof GIS.map.resetView === 'function') { try { GIS.map.resetView(); } catch(_) {} }
       }
     }).catch(function(err) {
-      GIS.chat.addMessage('删除失败: ' + err.message, 'system');
+      GIS.chat.addMessage('删除失败: ' + _escapeMarkup(err.message || err), 'system');
     });
   }
 
@@ -323,7 +383,7 @@ window.GIS = window.GIS || {};
           if (topCapsule) topCapsule.textContent = newName.trim();
         }
       }).catch(function(err) {
-        GIS.chat.addMessage('重命名失败: ' + err.message, 'system');
+        GIS.chat.addMessage('重命名失败: ' + _escapeMarkup(err.message || err), 'system');
       });
     }
     if (window.GIS.workspace && typeof window.GIS.workspace.promptModal === 'function') {
@@ -335,7 +395,7 @@ window.GIS = window.GIS || {};
   }
 
   function _exportProject(pid, customName) {
-    GIS.api.exportProject(pid).then(function(blob) {
+    return GIS.api.exportProject(pid).then(function(blob) {
       var url = URL.createObjectURL(blob);
       var a = document.createElement('a');
       a.href = url;
@@ -344,8 +404,6 @@ window.GIS = window.GIS || {};
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    }).catch(function(err) {
-      GIS.chat.addMessage('导出失败: ' + err.message, 'system');
     });
   }
 
@@ -393,7 +451,7 @@ window.GIS = window.GIS || {};
         _refreshList();
         GIS.chat.addMessage('已删除全部历史会话', 'system');
       }).catch(function(err) {
-        GIS.chat.addMessage('删除失败: ' + err.message, 'system');
+        GIS.chat.addMessage('删除失败: ' + _escapeMarkup(err.message || err), 'system');
       });
     });
   }
@@ -411,19 +469,36 @@ window.GIS = window.GIS || {};
         map_state: _getMapState(),
         messages: _collectMessages(),
         layers: _collectLayers(),
+        layer_groups: GIS.layers && typeof GIS.layers.getGroupState === 'function'
+          ? GIS.layers.getGroupState() : [],
       }).then(function(res) {
         if (res && res.id) _currentProjectId = res.id;
         return res;
       });
     },
     autoSave: function() {
-      return GIS.api.autoSaveProject(_currentSessionId, _currentProjectId).then(function(res) {
+      var currentLayers = _collectLayers();
+      var layerAssignments = currentLayers.map(function(layer) {
+        return {
+          layer_id: layer.layer_id || null,
+          style: layer.style || (layer.color ? { color: layer.color } : null),
+          symbology: layer.symbology || null,
+          names: [layer._registeredName, layer._rawName, layer.filename].filter(function(name, index, all) {
+            return !!name && all.indexOf(name) === index;
+          }),
+          groupId: layer.groupId || null,
+          visible: layer.visible !== false,
+        };
+      });
+      var layerGroups = GIS.layers && typeof GIS.layers.getGroupState === 'function'
+        ? GIS.layers.getGroupState() : [];
+      return GIS.api.autoSaveProject(_currentSessionId, _currentProjectId, layerGroups, layerAssignments).then(function(res) {
         if (res && res.id) _currentProjectId = res.id;
         return res;
       }).catch(function() {});
     },
     exportCurrent: function(pid, customName) {
-      _exportProject(pid || _currentProjectId, customName);
+      return _exportProject(pid || _currentProjectId, customName);
     },
     showHistory: _showHistory,
     hideHistory: _hideHistory,

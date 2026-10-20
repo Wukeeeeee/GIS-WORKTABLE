@@ -259,6 +259,19 @@ def topological_sort(nodes: List[Dict]) -> List[str]:
 # 执行引擎
 # ============================================================
 
+def _tool_failure_message(result: Any) -> Optional[str]:
+    """将工具返回的显式失败也标记为失败，避免只因返回了字符串就显示成功。"""
+    if isinstance(result, dict) and result.get("ok") is False:
+        return str(result.get("error") or result.get("message") or "工具返回 ok=false")
+    if isinstance(result, str):
+        text = result.strip()
+        failure_prefixes = (
+            "工具执行失败:", "执行失败:", "工作流执行失败:", "Workflow 执行失败:",
+        )
+        if text.startswith(failure_prefixes):
+            return text
+    return None
+
 class WorkflowExecutor:
     """Workflow 执行引擎，调用现有 Tool Registry"""
 
@@ -323,6 +336,9 @@ class WorkflowExecutor:
 
             try:
                 result = self._execute_node(node, upstream_outputs)
+                failure = _tool_failure_message(result)
+                if failure:
+                    raise RuntimeError(failure)
                 node["outputs"] = result if isinstance(result, dict) else {"result": result}
                 node["status"] = "success"
                 node["_finished_ts"] = time.time()
@@ -388,14 +404,20 @@ class WorkflowExecutor:
         if tool_name not in self.tool_registry:
             raise ValueError(f"工具不存在: {tool_name}")
 
-        tool_fn = self.tool_registry[tool_name]
+        tool = self.tool_registry[tool_name]
         inputs = dict(node.get("inputs", {}))
 
         # 解析上游输出引用：格式为 "${node_id.output_key}"
         resolved = self._resolve_inputs(inputs, upstream_outputs)
 
-        # 调用工具
-        result = tool_fn(**resolved)
+        # LangChain StructuredTool 必须通过 invoke 调用；普通 Python 函数继续兼容。
+        invoke = getattr(tool, "invoke", None)
+        if callable(invoke):
+            result = invoke(resolved)
+        elif callable(tool):
+            result = tool(**resolved)
+        else:
+            raise TypeError(f"工具注册项不可执行: {tool_name}")
         return result
 
     def _resolve_inputs(self, inputs: Dict, upstream_outputs: Dict) -> Dict:
@@ -412,6 +434,7 @@ class WorkflowExecutor:
             else:
                 resolved[key] = val
         return resolved
+
 
     def _auto_register_layer(self, node: Dict):
         """如果节点输出包含 GeoJSON，自动注册为图层"""

@@ -58,12 +58,31 @@ def test_run_and_artifact_lifecycle(tmp_path):
     stats = SS.get_db_stats()
     assert stats["runs_count"] == 1
     assert stats["artifacts_count"] == 1
+    assert SS.record_run_finish("unknown_run", "无对应执行轮次", "success", "PASS") is False
+
+
+def test_missing_or_empty_artifacts_cannot_be_marked_pass(tmp_path):
+    run_id = "run_missing_artifact"
+    assert SS.record_run_start(run_id, "session_1", "测试失败产物登记")
+
+    missing = tmp_path / "missing.png"
+    empty = tmp_path / "empty.png"
+    empty.write_bytes(b"")
+
+    # 登记动作本身成功，但事实台账必须明确记为失败，不能冒充已生成。
+    assert SS.register_run_artifact(run_id, "art_missing", "missing.png", str(missing))
+    assert SS.register_run_artifact(run_id, "art_empty", "empty.png", str(empty))
+    artifacts = SS.get_run_artifacts(run_id)
+    assert [a["qa_status"] for a in artifacts] == ["FAIL", "FAIL"]
+    assert all(not a["exists"] for a in artifacts)
+    assert all("不存在或为空" in a["qa_details"] for a in artifacts)
 
 
 def test_run_isolation():
     # 验证 run_1 的产物不会漏给 run_2
     SS.record_run_start("run_1", "sess", "user 1")
     SS.register_run_artifact("run_1", "a1", "f1.png", "output/f1.png")
+    assert SS.get_run_artifacts("run_1")[0]["qa_status"] == "FAIL"
 
     SS.record_run_start("run_2", "sess", "user 2")
     arts_2 = SS.get_run_artifacts("run_2")

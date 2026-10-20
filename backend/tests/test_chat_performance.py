@@ -79,3 +79,40 @@ def test_stream_prompt_routing_leaves_event_loop_available(monkeypatch):
             await task
 
     asyncio.run(check())
+
+
+def test_stream_endpoint_emits_error_event_when_agent_initialization_fails(monkeypatch):
+    import json
+    import backend.main as main
+    import backend.services.ai_service as ai_service
+    import backend.services.graph as graph
+    import backend.services.pending_action as pending_action
+
+    monkeypatch.setattr(main, "resolve_llm_config", lambda *args: None)
+    monkeypatch.setattr(ai_service, "_build_system_content", lambda *args: ("system", "", "mock"))
+    monkeypatch.setattr(ai_service, "_get_or_create_history", lambda *args: [])
+    monkeypatch.setattr(ai_service, "_build_langgraph_messages", lambda *args: [])
+    monkeypatch.setattr(ai_service, "_try_handle_confirm_command", lambda *args: None)
+    monkeypatch.setattr(pending_action, "build_choice_backfill", lambda *args: "")
+    monkeypatch.setattr(pending_action, "clear_pending_action", lambda *args: None)
+
+    def broken_stream(**_kwargs):
+        raise RuntimeError("model init failed")
+        yield  # Keep this a generator so failure occurs while the SSE body is consumed.
+
+    monkeypatch.setattr(graph, "run_agent_stream", broken_stream)
+
+    async def consume():
+        request = main.ChatRequest(message="做一个缓冲区", session_id="stream-init-error")
+        response = await main.chat_stream(request)
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    payload = asyncio.run(consume())
+    events = [json.loads(line[6:]) for line in payload.splitlines() if line.startswith("data: ")]
+    assert events == [{
+        "type": "error",
+        "message": "AI 流式执行失败，请检查服务状态后重试。",
+    }]

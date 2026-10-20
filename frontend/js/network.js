@@ -25,6 +25,8 @@ window.GIS = window.GIS || {};
   var _n = 3;
   var _panelLeft = NaN;
   var _panelTop = NaN;
+  var _solveRequestId = 0;
+  var _inputRequestId = 0;
 
   var BASE_URL = GIS.api ? GIS.api.BASE_URL || '' : '';
   var PANEL_WIDTH = 300;
@@ -162,6 +164,8 @@ window.GIS = window.GIS || {};
     });
 
     document.getElementById('networkLayerSelect').addEventListener('change', function() {
+      _cancelPointInput();
+      _invalidatePendingSolve();
       _clearNetworkResult();
     });
 
@@ -254,6 +258,8 @@ window.GIS = window.GIS || {};
 
   // ===== 模式切换 =====
   function _switchType(type) {
+    _cancelPointInput();
+    _invalidatePendingSolve();
     _mode = type;
     _clearNetworkResult();
     _clearNetworkMarkers();
@@ -360,6 +366,8 @@ window.GIS = window.GIS || {};
 
   // ===== 输入模式 =====
   function _startInputMode(target) {
+    _cancelPointInput();
+    _invalidatePendingSolve();
     var map = _getMap();
     console.log('[Network] _startInputMode, target:', target, 'map:', !!map);
     if (!map) { _setStatus('获取地图失败'); return; }
@@ -383,11 +391,13 @@ window.GIS = window.GIS || {};
   function onMapClick(e) {
     console.log('[Network] onMapClick, active:', _active, 'inputMode:', _inputMode);
     if (!_active || !_inputMode) return;
+    var target = _inputMode;
+    var requestId = ++_inputRequestId;
     var latlng = e.latlng;
     var point = [latlng.lng, latlng.lat];
     var map = _getMap();
 
-    if (_inputMode === 'waypoint') {
+    if (target === 'waypoint') {
       _addWaypoint(point);
       _inputMode = '';
       if (map) map.getContainer().style.cursor = '';
@@ -395,7 +405,7 @@ window.GIS = window.GIS || {};
       return;
     }
 
-    if (_inputMode === 'manual_facility') {
+    if (target === 'manual_facility') {
       _addManualFacility(point);
       _inputMode = '';
       if (map) map.getContainer().style.cursor = '';
@@ -404,6 +414,7 @@ window.GIS = window.GIS || {};
     }
 
     _doSnap(point, function(snapped, dist, errMsg) {
+      if (requestId !== _inputRequestId || !_active || _inputMode !== target) return;
       console.log('[Network] snap callback, snapped:', !!snapped, 'dist:', dist, 'err:', errMsg);
       if (!snapped) {
         _inputMode = '';
@@ -413,9 +424,9 @@ window.GIS = window.GIS || {};
       }
       var snapLatLng = L.latLng(snapped[1], snapped[0]);
       var coordStr = snapped[0].toFixed(5) + ', ' + snapped[1].toFixed(5);
-      console.log('[Network] setting point, mode:', _inputMode, 'coord:', coordStr);
+      console.log('[Network] setting point, mode:', target, 'coord:', coordStr);
 
-      if (_inputMode === 'origin') {
+      if (target === 'origin') {
         _origin = snapped;
         var el = document.getElementById('networkOriginCoord');
         if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
@@ -423,7 +434,7 @@ window.GIS = window.GIS || {};
         if (btn) { btn.classList.add('done'); btn.querySelector('span').innerHTML = '已设置 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg>'; }
         _clearMarkersByType('origin');
         _addMarker(snapLatLng, '#e74c3c', '起');
-      } else if (_inputMode === 'destination') {
+      } else if (target === 'destination') {
         _destination = snapped;
         var el = document.getElementById('networkDestCoord');
         if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
@@ -431,7 +442,7 @@ window.GIS = window.GIS || {};
         if (btn) { btn.classList.add('done'); btn.querySelector('span').innerHTML = '已设置 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg>'; }
         _clearMarkersByType('dest');
         _addMarker(snapLatLng, '#2ecc71', '终');
-      } else if (_inputMode === 'facility') {
+      } else if (target === 'facility') {
         _facility = snapped;
         var el = document.getElementById('networkFacilityCoord');
         if (el) { el.textContent = coordStr + (dist > 10 ? ' (~' + dist.toFixed(0) + 'm)' : ''); el.classList.remove('unset'); }
@@ -471,7 +482,6 @@ window.GIS = window.GIS || {};
     var timeoutId = setTimeout(function() {
       controller.abort();
       console.warn('[Network] snap 请求超时，使用原始坐标');
-      if (map) map.getContainer().style.cursor = '';
       callback(point, 0);
     }, 10000);
 
@@ -487,7 +497,6 @@ window.GIS = window.GIS || {};
     })
     .then(function(data) {
       clearTimeout(timeoutId);
-      if (map) map.getContainer().style.cursor = '';
       console.log('[Network] snap 响应:', data.found ? '已吸附' : '未找到', '距离:', data.distance_m);
       if (data.snapped) {
         callback(data.snapped, data.distance_m);
@@ -499,7 +508,6 @@ window.GIS = window.GIS || {};
     })
     .catch(function(err) {
       clearTimeout(timeoutId);
-      if (map) map.getContainer().style.cursor = '';
       if (err.name === 'AbortError') {
         // timeout 已经 callback 过了，不再重复
         return;
@@ -646,6 +654,21 @@ window.GIS = window.GIS || {};
   }
 
 
+  function _invalidatePendingSolve() {
+    _solveRequestId++;
+    _showLoader(false);
+    var solveButton = document.getElementById('networkSolveBtn');
+    if (solveButton) solveButton.disabled = false;
+  }
+
+  function _cancelPointInput() {
+    _inputRequestId++;
+    _inputMode = '';
+    var map = _getMap();
+    if (map) map.getContainer().style.cursor = '';
+  }
+
+
   // ===== 求解 =====
   function solve() {
     var map = _getMap();
@@ -732,17 +755,25 @@ window.GIS = window.GIS || {};
 
     _showLoader(true);
     _setStatus('正在求解...');
-    document.getElementById('networkSolveBtn').disabled = true;
+    var solveButton = document.getElementById('networkSolveBtn');
+    if (solveButton) solveButton.disabled = true;
+    var requestId = ++_solveRequestId;
 
     fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
     })
-    .then(function(res) { return res.json(); })
+    .then(function(res) {
+      return res.json().then(function(data) {
+        if (!res.ok && data && !data.error) data.error = 'HTTP ' + res.status;
+        return data;
+      });
+    })
     .then(function(data) {
+      if (requestId !== _solveRequestId) return;
       _showLoader(false);
-      document.getElementById('networkSolveBtn').disabled = false;
+      if (solveButton) solveButton.disabled = false;
       if (data.error) {
         _setStatus('求解失败: ' + data.error);
         return;
@@ -750,8 +781,9 @@ window.GIS = window.GIS || {};
       _displayResult(data);
     })
     .catch(function(err) {
+      if (requestId !== _solveRequestId) return;
       _showLoader(false);
-      document.getElementById('networkSolveBtn').disabled = false;
+      if (solveButton) solveButton.disabled = false;
       _setStatus('请求失败: ' + err.message);
     });
   }
@@ -1033,6 +1065,8 @@ window.GIS = window.GIS || {};
   function deactivate() {
     if (!_active) return;
     _active = false;
+    _cancelPointInput();
+    _invalidatePendingSolve();
     var map = _getMap();
     if (map) {
       map.off('click', onMapClick);
@@ -1042,7 +1076,6 @@ window.GIS = window.GIS || {};
     if (panel) panel.style.display = 'none';
     _clearNetworkMarkers();
     _clearResultLayers();
-    _inputMode = '';
     _origin = null;
     _destination = null;
     _facility = null;

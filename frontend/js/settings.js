@@ -417,25 +417,59 @@ window.GIS = window.GIS || {};
         } else {
           cred = { type: 'account', username: (userEl ? userEl.value : '').trim(), password: passEl ? passEl.value : '' };
         }
-        GIS.api.setGeoCredential(svc, cred);
-        updateGeoCredStatus(svc, cred);
-        // 同时保存到后端加密存储（Agent 登录时从后端读取，密码不进入 LLM）
-        if (cred.type === 'account' && cred.username && cred.password) {
-          fetch(GIS.api.BASE_URL + '/api/geo-credentials', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ service: svc, username: cred.username, password: cred.password }),
-          }).catch(function(e) { console.warn('后端凭据保存失败:', e); });
-        } else if (cred.type === 'key' && cred.api_key) {
-          fetch(GIS.api.BASE_URL + '/api/geo-credentials', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ service: svc, username: 'api_key', password: cred.api_key }),
-          }).catch(function(e) { console.warn('后端凭据保存失败:', e); });
-        }
         var msg = document.querySelector('.geo-cred-msg[data-cred="' + svc + '"]');
-        if (msg) { msg.textContent = '已保存（加密存储）'; msg.className = 'modal-test-result modal-test-success'; }
-        setTimeout(function() { if (msg) { msg.textContent = ''; msg.className = 'modal-test-result'; } }, 2000);
+        var hasCredential = isKey ? !!cred.api_key : !!(cred.username && cred.password);
+        if (!isKey && (!!cred.username !== !!cred.password)) {
+          if (msg) {
+            msg.textContent = '请同时填写用户名和密码，或清空两项后删除';
+            msg.className = 'modal-test-result modal-test-error';
+          }
+          return;
+        }
+
+        if (hasCredential) {
+          GIS.api.setGeoCredential(svc, cred);
+        } else {
+          var allCredentials = GIS.api.getGeoCredentials();
+          delete allCredentials[svc];
+          GIS.api.setGeoCredentials(allCredentials);
+        }
+        updateGeoCredStatus(svc, hasCredential ? cred : {});
+        btn.disabled = true;
+        if (msg) {
+          msg.textContent = hasCredential ? '正在保存…' : '正在删除…';
+          msg.className = 'modal-test-result';
+        }
+
+        var endpoint = GIS.api.BASE_URL + '/api/geo-credentials' + (hasCredential ? '' : '/' + encodeURIComponent(svc));
+        var request = hasCredential ? fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ service: svc, username: isKey ? 'api_key' : cred.username, password: isKey ? cred.api_key : cred.password }),
+          }) : fetch(endpoint, { method: 'DELETE' });
+        request.then(function(response) {
+          return response.json().then(function(data) {
+            if (!response.ok || !data || data.status !== 'ok') {
+              throw new Error((data && data.message) || ('HTTP ' + response.status));
+            }
+            return data;
+          });
+        }).then(function() {
+          if (msg) {
+            msg.textContent = hasCredential ? '已保存（后端加密存储）' : '已从本地与后端清除';
+            msg.className = 'modal-test-result modal-test-success';
+          }
+        }).catch(function() {
+          if (msg) {
+            msg.textContent = hasCredential ? '本地已保存，后端加密保存失败' : '本地已清除，后端删除失败，请重试';
+            msg.className = 'modal-test-result modal-test-error';
+          }
+        }).finally(function() {
+          btn.disabled = false;
+          setTimeout(function() {
+            if (msg && !btn.disabled) { msg.textContent = ''; msg.className = 'modal-test-result'; }
+          }, 3000);
+        });
       });
     });
     // 密码显隐切换

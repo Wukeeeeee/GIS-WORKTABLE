@@ -125,6 +125,24 @@ try {
         if ($systemPython -and $systemPython.Source -notlike '*\WindowsApps\*' -and (Test-Python $systemPython.Source)) {
             $basePython = $systemPython.Source
         }
+
+        # Python may be installed and registered with the Windows Python Launcher
+        # without adding python.exe to PATH. Reuse it before attempting a download.
+        if (-not $basePython) {
+            $pythonLauncher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue
+            if ($pythonLauncher) {
+                foreach ($version in @('3.13', '3.12', '3.11')) {
+                    try {
+                        $candidate = (& $pythonLauncher.Source "-$version" -c 'import sys; print(sys.executable)' 2>$null | Out-String).Trim()
+                        if ($candidate -and (Test-Python $candidate)) {
+                            $basePython = $candidate
+                            Write-Host "[INFO] Using Python $version from Windows Launcher: $basePython"
+                            break
+                        }
+                    } catch {}
+                }
+            }
+        }
     }
 
     if (-not $basePython) {
