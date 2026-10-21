@@ -427,6 +427,7 @@ var _undoSkip = false;
       var layer = new L.TileLayer('', {
         attribution: '&copy; Microsoft, 必应地图',
         maxZoom: 19,
+        crossOrigin: true,
       });
       layer.getTileUrl = function(coords) {
         return TILE_URL.replace('{q}', toQuadkey(coords.x, coords.y, coords.z));
@@ -439,6 +440,7 @@ var _undoSkip = false;
       maxZoom: 19,
       maxNativeZoom: 18,
       tileSize: 256,
+      crossOrigin: true,
     });
   }
 
@@ -508,10 +510,11 @@ var _undoSkip = false;
   }
 
   /** 加载 GeoJSON 到地图 */
-  function loadGeoJSON(geojson, name, style) {
+  function loadGeoJSON(geojson, name, style, options) {
     if (!mapInstance || !geojson) return null;
     name = name || 'layer';
     style = style || {};
+    options = options || {};
 
     if (layers[name]) mapInstance.removeLayer(layers[name]);
 
@@ -628,9 +631,11 @@ var _undoSkip = false;
   layers[name] = layer;
   geoStore[name] = { geojson: geojson, style: style };
   // 自动缩放到图层范围
-  try {
-    mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 });
-  } catch(e) {}
+  if (options.fitBounds !== false) {
+    try {
+      mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 });
+    } catch(e) {}
+  }
   return layer;
   }
 
@@ -968,10 +973,8 @@ var _undoSkip = false;
   }
 
   function toggleLayer(name) {
-    if (!layers[name]) return;
-    if (mapInstance.hasLayer(layers[name])) mapInstance.removeLayer(layers[name]);
-    else mapInstance.addLayer(layers[name]);
-    if (_swipe) _applySwipeClip(_swipe.ratio);
+    if (!mapInstance || !layers[name]) return;
+    setLayerVisible(name, layers[name]._userVisible === false);
   }
 
   function flyTo(center, zoom) {
@@ -1037,9 +1040,14 @@ var _undoSkip = false;
   function formatWgs84Coordinates(lng, lat) {
     lng = Number(lng);
     lat = Number(lat);
-    if (!Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90) {
-      return 'WGS-84 · 坐标超出有效范围';
-    }
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return 'WGS-84 · 无法读取坐标';
+    // Leaflet may report longitudes outside [-180, 180] when the world wraps.
+    // Normalize those equivalent positions before displaying geographic coordinates.
+    lng = ((lng + 180) % 360 + 360) % 360 - 180;
+    // The basemap uses Web Mercator, whose rendered world ends at ±85.0511°.
+    // At a global zoom, the cursor can sit beyond that projected world edge;
+    // this does not mean that the loaded geographic data is invalid.
+    if (Math.abs(lat) > 85.0511287798) return 'WGS-84 · 鼠标位置超出 Web Mercator 显示范围';
     return 'WGS-84 · 经度 ' + lng.toFixed(5) + ' · 纬度 ' + lat.toFixed(5);
   }
 
@@ -1296,7 +1304,8 @@ var _undoSkip = false;
       '1. 地貌与地形特征（海拔、坡度特征、主要山川河流走势）\n' +
       '2. 区域气候与生态水文特征\n' +
       '3. 所在行政区划与空间规划/用地特征\n' +
-      '4. 请使用精简规范的 Markdown 表格与要点呈现分析结论。';
+      '4. 请使用精简规范的 Markdown 表格与要点呈现分析结论。\n' +
+      '重要：这是只读的位置分析请求，不是绘图或图层管理请求。可以查询信息，但不得创建、加载、注册、删除、重命名或修改任何地图图层；不得为了清理临时数据而删除图层。若某项分析必须修改地图图层才能完成，请跳过该项并说明限制。';
 
     var selEl = document.getElementById('modelSelector');
     var curProvider = selEl ? selEl.value : 'glm-routed';
@@ -1313,7 +1322,11 @@ var _undoSkip = false;
     var valEl = document.getElementById('modelSelectValue');
     if (valEl && _prov && _prov.name) valEl.textContent = _prov.name;
     try {
-      window.GIS.chat.send(msg, { displayText: displayMsg || undefined, provider: curProvider });
+      window.GIS.chat.send(msg, {
+        displayText: displayMsg || undefined,
+        provider: curProvider,
+        readOnlyLocationAnalysis: true,
+      });
     } catch(_e) {
       if (window.GIS.chat && window.GIS.chat.addMessage)
         window.GIS.chat.addMessage('触发异常: ' + (_e.message || _e), 'system');
@@ -1573,6 +1586,7 @@ var _undoSkip = false;
   /** 应用符号化样式（按要素索引的样式映射） */
   function applySymbology(name, geojson, styleMap) {
     if (!mapInstance || !layers[name]) return;
+    var userVisible = layers[name]._userVisible !== false;
 
     // 重新加载 GeoJSON 并应用每要素样式
     var features = [];
@@ -1645,9 +1659,10 @@ var _undoSkip = false;
         });
       },
     });
-    layer.addTo(mapInstance);
+    layer._userVisible = userVisible;
     layers[name] = layer;
     geoStore[name] = { geojson: geojson, style: null };
+    _updateScaleVisibility(name);
     // 缩放到图层范围
     try { mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 }); } catch(e) {}
     // 重应用标注
@@ -1944,12 +1959,12 @@ var _undoSkip = false;
   }
 
   /** 以屏幕实际位置合成当前底图、矢量图层、地图标注、比例尺和图例。 */
-  function _drawMapComposition(ctx, mapEl, w, h) {
+  function _drawMapComposition(ctx, mapEl, w, h, includeGraticule) {
     var mapRect = mapEl.getBoundingClientRect();
     ctx.fillStyle = '#f8f8f8';
     ctx.fillRect(0, 0, w, h);
 
-    mapEl.querySelectorAll('.leaflet-tile-loaded img, .leaflet-tile img, .leaflet-image-layer').forEach(function(img) {
+    mapEl.querySelectorAll('.leaflet-tile-loaded, .leaflet-tile, .leaflet-image-layer').forEach(function(img) {
       if (!img.complete || (img instanceof HTMLImageElement && !img.naturalWidth)) return;
       try {
         var rect = img.getBoundingClientRect();
@@ -1959,10 +1974,75 @@ var _undoSkip = false;
       } catch(_) {}
     });
 
+    if (includeGraticule !== false) _drawMapGraticule(ctx, w, h);
+
     // 按 Leaflet pane 中的 DOM 顺序绘制 Canvas/SVG，既包含矢量面，也保留图层叠放顺序。
     return _drawLeafletVectorLayers(ctx, mapEl, mapRect).then(function() {
       _drawMapOverlays(ctx, mapEl, mapRect);
     });
+  }
+
+  function _drawMapGraticule(ctx, w, h) {
+    if (!mapInstance || !mapInstance.getBounds) return;
+    var bounds = mapInstance.getBounds();
+    if (!bounds) return;
+    var north = Number(bounds.getNorth ? bounds.getNorth() : bounds._northEast && bounds._northEast.lat);
+    var south = Number(bounds.getSouth ? bounds.getSouth() : bounds._southWest && bounds._southWest.lat);
+    var east = Number(bounds.getEast ? bounds.getEast() : bounds._northEast && bounds._northEast.lng);
+    var west = Number(bounds.getWest ? bounds.getWest() : bounds._southWest && bounds._southWest.lng);
+    if (![north, south, east, west].every(Number.isFinite) || east <= west || north <= south) return;
+
+    var niceStep = function(span) {
+      var raw = span / 5;
+      var power = Math.pow(10, Math.floor(Math.log10(raw)));
+      var scaled = raw / power;
+      return (scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10) * power;
+    };
+    var mercatorY = function(lat) {
+      var radians = Math.max(-85.05112878, Math.min(85.05112878, lat)) * Math.PI / 180;
+      return Math.log(Math.tan(Math.PI / 4 + radians / 2));
+    };
+    var northY = mercatorY(north), southY = mercatorY(south);
+    var labels = [];
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, w, h);
+    ctx.clip();
+    ctx.beginPath();
+    ctx.strokeStyle = 'rgba(35, 55, 75, 0.48)';
+    ctx.lineWidth = 1;
+    if (ctx.setLineDash) ctx.setLineDash([5, 5]);
+
+    var lonStep = niceStep(east - west);
+    for (var lon = Math.ceil(west / lonStep) * lonStep, lonCount = 0; lon < east && lonCount < 12; lon += lonStep, lonCount++) {
+      if (lon <= west + lonStep * 0.05) continue;
+      var x = (lon - west) / (east - west) * w;
+      ctx.moveTo(x, 0); ctx.lineTo(x, h);
+      labels.push({ text: Math.abs(lon).toFixed(3) + '\u00b0' + (lon < 0 ? 'W' : lon > 0 ? 'E' : ''), x: x, y: 3, align: 'center' });
+    }
+    var latStep = niceStep(north - south);
+    for (var lat = Math.ceil(south / latStep) * latStep, latCount = 0; lat < north && latCount < 12; lat += latStep, latCount++) {
+      if (lat <= south + latStep * 0.05) continue;
+      var y = (northY - mercatorY(lat)) / (northY - southY) * h;
+      ctx.moveTo(0, y); ctx.lineTo(w, y);
+      labels.push({ text: Math.abs(lat).toFixed(3) + '\u00b0' + (lat < 0 ? 'S' : lat > 0 ? 'N' : ''), x: 4, y: y, align: 'left' });
+    }
+    ctx.stroke();
+    if (ctx.setLineDash) ctx.setLineDash([]);
+
+    ctx.font = '10px sans-serif';
+    ctx.textBaseline = 'top';
+    labels.forEach(function(label) {
+      var textWidth = ctx.measureText ? ctx.measureText(label.text).width : label.text.length * 6;
+      var textX = label.align === 'center' ? label.x - textWidth / 2 : label.x;
+      textX = Math.max(2, Math.min(w - textWidth - 5, textX));
+      var textY = Math.max(2, Math.min(h - 14, label.y));
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillRect(textX - 2, textY - 1, textWidth + 4, 13);
+      ctx.fillStyle = '#243746';
+      ctx.fillText(label.text, textX, textY);
+    });
+    ctx.restore();
   }
 
   function _drawLeafletVectorLayers(ctx, mapEl, mapRect) {
@@ -2078,7 +2158,13 @@ var _undoSkip = false;
   /** 导出地图为图片 */
   function exportMap(format) {
     if (!mapInstance) return;
-    format = format || 'png';
+    format = String(format || 'png').trim().toLowerCase().replace(/^\./, '');
+    if (format === 'jpeg') format = 'jpg';
+    if (format !== 'png' && format !== 'jpg') {
+      var formatError = '不支持的图片格式：' + format + '（仅支持 PNG/JPG）';
+      if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage(formatError, 'system');
+      return { ok: false, error: formatError };
+    }
     var mapEl = document.getElementById('map');
     if (!mapEl) return;
     var w = mapEl.clientWidth;
@@ -2092,20 +2178,32 @@ var _undoSkip = false;
     ctx.scale(2, 2);
 
     return _drawMapComposition(ctx, mapEl, w, h).then(function() {
-      ctx.fillStyle = 'rgba(0,0,0,0.45)';
-      ctx.fillRect(0, h - 20, w, 20);
-      ctx.fillStyle = '#fff';
-      ctx.font = '11px sans-serif';
-      ctx.fillText('GIS WorkTable · ' + new Date().toISOString().slice(0, 10), 8, h - 7);
-
       var mime = format === 'jpg' ? 'image/jpeg' : 'image/png';
-      var dataUrl = canvas.toDataURL(mime, 0.92);
-      var link = document.createElement('a');
-      link.download = 'map_export_' + Date.now() + '.' + format;
-      link.href = dataUrl;
-      link.click();
-      if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('已生成当前地图下载：' + escapeHtml(link.download), 'system');
-      return { ok: true, filename: link.download };
+      return new Promise(function(resolve, reject) {
+        try {
+          canvas.toBlob(function(blob) {
+            if (!blob) { reject(new Error('无法生成地图图片')); return; }
+            var objectUrl;
+            try {
+              objectUrl = URL.createObjectURL(blob);
+              var link = document.createElement('a');
+              link.download = 'map_export_' + Date.now() + '.' + format;
+              link.href = objectUrl;
+              if (document.body) document.body.appendChild(link);
+              link.click();
+              if (link.parentNode) link.parentNode.removeChild(link);
+              setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 1000);
+              if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('已发起当前地图下载（若未自动保存，请查看浏览器下载栏）：' + escapeHtml(link.download), 'system');
+              resolve({ ok: true, filename: link.download });
+            } catch (error) {
+              if (objectUrl) URL.revokeObjectURL(objectUrl);
+              reject(error);
+            }
+          }, mime, 0.92);
+        } catch (error) {
+          reject(error);
+        }
+      });
     }).catch(function(error) {
       if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('地图导出失败：' + escapeHtml(error.message || error), 'system');
       return { ok: false, error: error.message || String(error) };
@@ -2113,7 +2211,7 @@ var _undoSkip = false;
   }
 
   /** 导出地图为 PDF（通过浏览器打印布局） */
-  function exportPdf(title) {
+  function exportPdf(title, rotationDegrees) {
     if (!mapInstance) return;
     title = title || '地图导出';
     var mapEl = document.getElementById('map');
@@ -2143,6 +2241,111 @@ var _undoSkip = false;
       var dateStr = now.toLocaleDateString('zh-CN');
       var center = mapInstance.getCenter();
       var zoom = mapInstance.getZoom();
+      var rotation = Number(rotationDegrees);
+      rotation = Number.isFinite(rotation) ? ((rotation % 360) + 360) % 360 : 0;
+      if (rotation > 180) rotation -= 360;
+      var radians = rotation * Math.PI / 180;
+      var mapWidth = mapEl.clientWidth, mapHeight = mapEl.clientHeight;
+      var rotatedWidth = Math.abs(mapWidth * Math.cos(radians)) + Math.abs(mapHeight * Math.sin(radians));
+      var rotatedHeight = Math.abs(mapHeight * Math.cos(radians)) + Math.abs(mapWidth * Math.sin(radians));
+      var mapRatio = rotatedWidth / Math.max(1, rotatedHeight);
+      var cssPixelsPerMm = 96 / 25.4;
+      var printMapWidth = Math.min(120 * mapRatio * cssPixelsPerMm, (297 - 40) * cssPixelsPerMm - 40);
+      var printMapHeight = printMapWidth / mapRatio;
+      var mapBounds = mapInstance.getBounds && mapInstance.getBounds();
+      var cornerCoordinates = [];
+      if (mapBounds) {
+        var north = mapBounds.getNorth ? mapBounds.getNorth() : mapBounds._northEast && mapBounds._northEast.lat;
+        var south = mapBounds.getSouth ? mapBounds.getSouth() : mapBounds._southWest && mapBounds._southWest.lat;
+        var east = mapBounds.getEast ? mapBounds.getEast() : mapBounds._northEast && mapBounds._northEast.lng;
+        var west = mapBounds.getWest ? mapBounds.getWest() : mapBounds._southWest && mapBounds._southWest.lng;
+        if ([north, south, east, west].every(function(value) { return Number.isFinite(Number(value)); })) {
+          var fmt = function(value, positive, negative) {
+            value = Number(value);
+            return Math.abs(value).toFixed(5) + '°' + (value < 0 ? negative : positive);
+          };
+          cornerCoordinates = [
+            { x: -mapWidth / 2, y: -mapHeight / 2, label: fmt(west, 'E', 'W') + ' · ' + fmt(north, 'N', 'S') },
+            { x: mapWidth / 2, y: -mapHeight / 2, label: fmt(east, 'E', 'W') + ' · ' + fmt(north, 'N', 'S') },
+            { x: -mapWidth / 2, y: mapHeight / 2, label: fmt(west, 'E', 'W') + ' · ' + fmt(south, 'N', 'S') },
+            { x: mapWidth / 2, y: mapHeight / 2, label: fmt(east, 'E', 'W') + ' · ' + fmt(south, 'N', 'S') },
+          ];
+        }
+      }
+      var mapPointPosition = function(x, y) {
+        var rotatedX = x * Math.cos(radians) - y * Math.sin(radians);
+        var rotatedY = x * Math.sin(radians) + y * Math.cos(radians);
+        return {
+          left: ((rotatedWidth / 2 + rotatedX) / rotatedWidth * 100).toFixed(2),
+          top: ((rotatedHeight / 2 + rotatedY) / rotatedHeight * 100).toFixed(2),
+        };
+      };
+      var coordinateLabels = cornerCoordinates.map(function(point) {
+        var position = mapPointPosition(point.x, point.y);
+        return '<span class="coordinate" style="left:' + position.left + '%;top:' + position.top + '%">' + escapeHtml(point.label) + '</span>';
+      }).join('');
+      var graticuleSvg = '', graticuleLabels = '';
+      var gridLabelCandidates = [];
+      var labelBox = function(label, position, kind) {
+        // Collision checks must use the printed map size: label font sizes stay
+        // fixed in CSS pixels while the map artwork is scaled to the page.
+        // Leave room for real font metrics and browser rounding. Edge labels
+        // that barely fit by character-count estimates can still touch in print.
+        var width = label.length * (kind === 'coordinate' ? 6.2 : 5.5) + (kind === 'coordinate' ? 18 : 12);
+        var height = kind === 'coordinate' ? 18 : 16;
+        var x = Number(position.left) / 100 * printMapWidth;
+        var y = Number(position.top) / 100 * printMapHeight;
+        return { left: x - width / 2, right: x + width / 2, top: y - height / 2, bottom: y + height / 2 };
+      };
+      var cornerLabelBoxes = cornerCoordinates.map(function(point) {
+        return labelBox(point.label, mapPointPosition(point.x, point.y), 'coordinate');
+      });
+      var overlaps = function(a, b) {
+        var gap = 4;
+        return a.left < b.right + gap && a.right + gap > b.left && a.top < b.bottom + gap && a.bottom + gap > b.top;
+      };
+      if (mapBounds && [north, south, east, west].every(function(value) { return Number.isFinite(Number(value)); }) && east > west && north > south) {
+        var niceStep = function(span) {
+          var raw = span / 5;
+          var power = Math.pow(10, Math.floor(Math.log10(raw)));
+          var scaled = raw / power;
+          return (scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10) * power;
+        };
+        var mercatorY = function(lat) {
+          var clamped = Math.max(-85.05112878, Math.min(85.05112878, lat));
+          var radians = clamped * Math.PI / 180;
+          return Math.log(Math.tan(Math.PI / 4 + radians / 2));
+        };
+        var gridLines = [];
+        var lonStep = niceStep(east - west);
+        for (var lon = Math.ceil(west / lonStep) * lonStep, lonCount = 0; lon < east && lonCount < 12; lon += lonStep, lonCount++) {
+          if (lon <= west + lonStep * 0.05) continue;
+          var x = (lon - west) / (east - west) * 1000;
+          gridLines.push('<line x1="' + x.toFixed(2) + '" y1="0" x2="' + x.toFixed(2) + '" y2="1000"/>');
+          var longitudePosition = mapPointPosition((x / 1000 - 0.5) * mapWidth, -mapHeight / 2);
+          gridLabelCandidates.push({ label: fmt(lon, 'E', 'W'), position: longitudePosition, className: 'longitude-label' });
+        }
+        var northY = mercatorY(Number(north)), southY = mercatorY(Number(south));
+        var latStep = niceStep(Number(north) - Number(south));
+        for (var lat = Math.ceil(Number(south) / latStep) * latStep, latCount = 0; lat < Number(north) && latCount < 12; lat += latStep, latCount++) {
+          if (lat <= Number(south) + latStep * 0.05) continue;
+          var y = (northY - mercatorY(lat)) / (northY - southY) * 1000;
+          gridLines.push('<line x1="0" y1="' + y.toFixed(2) + '" x2="1000" y2="' + y.toFixed(2) + '"/>');
+          var latitudePosition = mapPointPosition(-mapWidth / 2, (y / 1000 - 0.5) * mapHeight);
+          gridLabelCandidates.push({ label: fmt(lat, 'N', 'S'), position: latitudePosition, className: 'latitude-label' });
+        }
+        if (gridLines.length) graticuleSvg = '<svg class="graticule" stroke="currentColor" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true">' + gridLines.join('') + '</svg>';
+      }
+      var placedGridLabels = cornerLabelBoxes.slice();
+      graticuleLabels = gridLabelCandidates.filter(function(candidate) {
+        var box = labelBox(candidate.label, candidate.position, 'grid');
+        if (placedGridLabels.some(function(placed) { return overlaps(box, placed); })) return false;
+        placedGridLabels.push(box);
+        return true;
+      }).map(function(candidate) {
+        return '<span class="grid-label ' + candidate.className + '" style="left:' + candidate.position.left + '%;top:' + candidate.position.top + '%">' + escapeHtml(candidate.label) + '</span>';
+      }).join('');
+      var artworkWidth = mapWidth / Math.max(1, rotatedWidth) * 100;
       var layers = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
       var themeLegends = layers.filter(function(layer) { return layer.visible !== false; }).map(function(layer) {
         var data = window.GIS.layers && window.GIS.layers.getLegendData
@@ -2151,6 +2354,9 @@ var _undoSkip = false;
       }).filter(Boolean);
       var legendHtml = themeLegends.map(function(entry) {
         var data = entry.data;
+        var legendTypeLabel = data.type === 'graduated' ? '分级设色'
+          : data.type === 'graduated-symbol' ? '分级符号'
+          : data.type === 'proportional' ? '比例符号' : '唯一值';
         var items = (data.items || []).map(function(item) {
           var color = /^#[0-9a-f]{3,8}$/i.test(String(item.color || '')) ? item.color : '#888888';
           return '<div class="legend-row"><i style="background:' + color + '"></i><span>' + escapeHtml(item.label || '') +
@@ -2158,7 +2364,7 @@ var _undoSkip = false;
         }).join('');
         return '<section class="theme-legend"><strong>' + escapeHtml(entry.layer.filename || entry.layer.name || '图层') +
           '</strong><div class="legend-field">' + escapeHtml(data.field || '') + ' · ' +
-          (data.type === 'graduated' ? '分级设色' : '唯一值') + '</div>' + items + '</section>';
+          legendTypeLabel + '</div>' + items + '</section>';
       }).join('');
 
       var html = '<!DOCTYPE html><html><head><meta charset="utf-8">' +
@@ -2169,23 +2375,28 @@ var _undoSkip = false;
       '.header { text-align: center; margin-bottom: 16px; }' +
       '.header h1 { font-size: 22px; margin: 0 0 4px 0; font-weight: 600; }' +
       '.header .meta { font-size: 12px; color: #888; }' +
-      '.map-container { border: 1px solid #ccc; page-break-inside: avoid; }' +
-      '.map-container img { width: 100%; height: auto; display: block; }' +
+      '.map-container { position:relative; width:min(100%, ' + (120 * mapRatio).toFixed(2) + 'mm); aspect-ratio:' + rotatedWidth.toFixed(2) + '/' + rotatedHeight.toFixed(2) + '; margin:0 auto; border:1px solid #ccc; background:#fff; page-break-inside:avoid; overflow:visible; }' +
+      '.map-artwork { position:absolute; left:50%; top:50%; width:' + artworkWidth.toFixed(4) + '%; transform:translate(-50%,-50%) rotate(' + rotation.toFixed(2) + 'deg); transform-origin:center; }' +
+      '.map-artwork img { width:100%; height:auto; display:block; }' +
+      '.graticule { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; color:#344054; filter:drop-shadow(0 0 1px rgba(255,255,255,.9)); } .graticule line { stroke:currentColor; stroke-opacity:.62; stroke-width:1; stroke-dasharray:6 5; vector-effect:non-scaling-stroke; }' +
+      '.grid-label,.coordinate { position:absolute; z-index:2; transform:translate(-50%,-50%); background:rgba(255,255,255,.94); border:1px solid #ddd; border-radius:2px; color:#333; white-space:nowrap; } .grid-label { padding:1px 3px; font:9px Arial,sans-serif; }' +
+      '.coordinate { padding:2px 4px; font:10px Arial,sans-serif; }' +
       '.footer { display: flex; justify-content: space-between; margin-top: 14px; font-size: 11px; color: #666; }' +
       '.footer .legend { flex: 1; } .theme-legends { display:flex; flex-wrap:wrap; gap:16px; margin-top:8px; }' +
       '.theme-legend { min-width:150px; } .legend-field { font-size:10px;color:#666;margin:3px 0; }' +
       '.legend-row { display:flex;align-items:center;gap:6px;font-size:10px;margin:2px 0; } .legend-row i { display:inline-block;width:12px;height:12px;border:1px solid #999; }' +
       '.footer .scale { text-align: right; }' +
-      '.north-arrow { display: inline-block; font-size: 28px; color: #c0392b; margin-right: 12px; line-height: 1; }' +
-      '@media print { body { padding: 0; } }' +
+      '.north-arrow { display:inline-block; font-size:28px; color:#c0392b; margin-right:12px; line-height:1; transform:rotate(' + rotation.toFixed(2) + 'deg); transform-origin:center; }' +
+      '@media print { body { padding: 0; } .map-container { display:flex; align-items:center; justify-content:center; } .map-artwork { position:relative; left:auto; top:auto; transform:' + (rotation ? 'rotate(' + rotation.toFixed(2) + 'deg)' : 'none') + '; margin:auto; } }' +
       '</style></head><body>' +
       '<div class="header"><h1>' + escapeHtml(title) + '</h1>' +
       '<div class="meta">' + dateStr + ' | 中心: ' + center.lat.toFixed(4) + ', ' + center.lng.toFixed(4) + ' | 缩放: ' + zoom + '</div></div>' +
-      '<div class="map-container"><img src="' + mapData + '" alt="地图"></div>' +
+      '<div class="map-container"><div class="map-artwork"><img src="' + mapData + '" alt="地图">' + graticuleSvg + '</div>' + graticuleLabels + coordinateLabels + '</div>' +
       '<div class="footer"><div class="legend">' +
       (layers.length ? '<strong>图层:</strong> ' + layers.filter(function(l) { return l.visible !== false; }).map(function(l) { return escapeHtml(l.filename || l.name || '图层'); }).join(' · ') : '') +
       (legendHtml ? '<div class="theme-legends">' + legendHtml + '</div>' : '') +
-      '</div><div class="scale"><span class="north-arrow">&#x2191;</span> N</div></div>' +
+      '</div><div class="scale"><span class="north-arrow" aria-label="图上北方向">&#x2191;</span> 图上北' +
+      (rotation ? ' · ' + (rotation > 0 ? '顺时针' : '逆时针') + '旋转 ' + Math.abs(rotation).toFixed(0) + '°' : '') + '</div></div>' +
       '<script>window.onload=function(){setTimeout(function(){window.print()},500)}<' + '/script>' +
       '</body></html>';
 
@@ -2212,7 +2423,7 @@ var _undoSkip = false;
     canvas.height = h * 2;
     var ctx = canvas.getContext('2d');
     ctx.scale(2, 2);
-    return _drawMapComposition(ctx, mapEl, w, h).then(function() {
+    return _drawMapComposition(ctx, mapEl, w, h, false).then(function() {
       return canvas.toDataURL('image/png', 0.95);
     });
   }
@@ -2269,11 +2480,11 @@ var _undoSkip = false;
 
   /** 修改 loadGeoJSON 以支持撤销快照（在加载前保存状态） */
   var _origLoadGeoJSON = loadGeoJSON;
-  loadGeoJSON = function(geojson, name, style) {
+  loadGeoJSON = function(geojson, name, style, options) {
     if (!_undoSkip && name && geoStore[name]) {
       _saveUndoSnap();
     }
-    return _origLoadGeoJSON(geojson, name, style);
+    return _origLoadGeoJSON(geojson, name, style, options);
   };
 
   /** 键盘快捷键（CTRL+Z / CTRL+SHIFT+Z） */

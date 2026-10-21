@@ -27,7 +27,10 @@ function loadRendererWithPendingLayer(layerId = 'pending-layer') {
   const noop = () => {};
   const elements = {
     map: { style: {}, parentNode: null },
-    mapZoomControls: { classList: { add: noop, remove: noop } },
+    mapZoomControls: {
+      classList: { add: noop, remove: noop },
+      appendChild(element) { elements[element.id] = element; },
+    },
     toggle3dBtn: { classList: { add: noop, remove: noop }, setAttribute: noop },
     drillBreadcrumb: {}, featurePanel: {}, mapCoords: {},
   };
@@ -146,6 +149,8 @@ test('clearing a state-backed layer empties shared state, panel, 2D map and 3D r
   });
   assert.equal(window.GIS.state.getLayers().length, 1);
   assert.equal(window.GIS.layers.getLayers().length, 1);
+  assert.equal(window.GIS.state.getLayers()[0].name, 'State backed');
+  assert.equal(window.GIS.state.getLayers()[0]._rawName, 'map-state-backed');
 
   const result = window.GIS.layers.clearAll();
 
@@ -192,7 +197,7 @@ test('execution cards mark existing Chinese and English tool error strings as fa
     output: '搜索结果说明“查询失败”的排查方法，网页已成功读取。' });
   assert.equal(container.children[0].children.length, 4);
   for (const card of container.children[0].children) {
-    const status = card.children[0].children[2].textContent;
+    const status = card.children[0].children[2].children[1].textContent;
     if (card.dataset.taskKind === 'search') assert.equal(status, '已完成');
     else {
       assert.match(card.className, /ai-step-failed/);

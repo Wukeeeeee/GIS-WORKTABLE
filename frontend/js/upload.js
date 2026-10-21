@@ -250,12 +250,13 @@ window.GIS = window.GIS || {};
       // ===== GeoTIFF 栅格文件 =====
       if (result.raster_info) {
         const info = result.raster_info;
-        const layerId = 'raster_' + Date.now();
+        const layerId = 'raster_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
         const name = result.name || file.name.replace(/\.(tif|tiff)$/i, '');
 
         GIS.map.addImageOverlay(info.url, info.bounds, name, layerId);
         GIS.layers.addLayer({
           layer_id: layerId,
+          _rawName: layerId,
           filename: name,
           geometry_type: 'Raster',
           crs: 'WGS-84',

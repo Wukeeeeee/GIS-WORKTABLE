@@ -13,6 +13,7 @@ GIS WorkTable — AI 服务层
 
 import os, time, tempfile, json, datetime, re, subprocess
 from typing import Optional
+from urllib.parse import urlsplit
 
 # ---- 临时输出目录 ----
 _TEMP_OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "gis_worktable_output")
@@ -271,10 +272,12 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
   - **当用户要求获取数据、加载图层、画图时，必须在同一次回复中完成所有工具调用**（不要分两轮，前端只保留最后一轮数据）。
   - 需要多个省的数据时一次性调多次 datav_boundary，需要同时画线和加载边界时一次性调完所有工具。
   - **交付边界红线（绝对禁止行为）**：
-    ① **严禁自称“无法直接生成PNG/PDF图片”**：平台完全支持通过 `execute_python`（matplotlib）生成高分辨率 PNG 专题图并保存至 `output/` 目录（前端会自动识别并渲染展示可下载图片），或通过 `create_chart` 生成图表。**严禁对用户声称“我不能直接生成图片文件”或“没有图形渲染能力”！**
+    ① **严禁自称“无法直接生成PNG/PDF图片”**：平台完全支持通过 `execute_python`（matplotlib）生成高分辨率 PNG 独立静态分析图/统计图并保存至 `output/` 目录（不含当前交互地图的卫星底图，前端会自动识别并渲染展示可下载图片），或通过 `create_chart` 生成图表。需要保留卫星底图的地图图片时调用 `export_map`。**严禁对用户声称“我不能直接生成图片文件”或“没有图形渲染能力”！**
     ② **严禁输出纯文本 XML/SVG 代码让用户手动保存**：严禁把 `<svg>...</svg>` 代码直接扔在正文中让用户“存成 .svg 双击看”！需要图件必须调用工具真实生成图片或图表。
     ③ **严禁向用户索要本地 SHP/GeoJSON 文件路径**：中国各级行政区划边界系统内置了完整的 DataV 矢量数据源（调用 `datav_boundary` 即可一键获取真实边界并在交互地图上展示）。严禁声称“我不给你画假轮廓，你手上有shp给我路径”这类卸责推脱话术！
     ④ 制图先复用当前会话中有效的图层和分析结果：面向交互地图的专题图在地图上设置符号化与图例；只有用户要求图片/PDF文件时才调用相应导出。只改颜色、分级、标题或图例时保留原图层、字段和分析结果，不重复取数或重做分析。缺少可用数据或字段时说明缺项；多个候选图层无法判断时只问一个简短问题。
+  - **卫星底图出图**：图层专题表达先渲染到现有 Leaflet 交互地图，卫星影像来自当前底图服务，不要用 matplotlib/execute_python 下载瓦片或拼接卫星影像。用户要图片时调用 export_map 导出当前底图和图层；要 PDF 布局、经纬网、比例尺、指北针或旋转时调用 export_pdf。execute_python 只生成独立图表/静态矢量图，不含当前交互地图底图。
+  - **引用历史任务继续修改**：收到带有 task_id 的引用回复时，优先读取该任务注入的代码、图层和文件产物，在那份任务上继续修改；不得只凭聊天文字猜测旧结果，也不得混用其他任务的数据。
 
  ## 分析报告规范（复杂GIS任务必须遵守）
   当用户要求分析、评估、巡检、统计等复杂任务时，最终回复必须包含以下结构（用Markdown）：
@@ -290,7 +293,10 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
   简单问题不需要完整报告，直接回答即可。
 
  ## 工具使用优先级（必须遵守）
+  - **空间分析按算法复用，不按业务对象造工具**：医院、麦当劳等名称应解析为当前注册图层或属性筛选条件；先用 get_registered_layers 确认实际图层，再选择已有分析工具。相同分析动作必须适用于不同名称、图层和数据；只有操作类型本身尚无实现时才新增算法能力。
   - **地铁线路查询用 metro_line（支持全国城市与国际主要城市）/ 优先用专用工具**：amap_geocode / amap_poi_search / datav_boundary / network_analysis / download_road_network / cn_aoi_search / cn_aoi_extract / create_heatmap / create_chart / field_calculate / measure_area / measure_distance / layer_control
+  - **POI 多源兜底**：国内地点可优先使用高德；高德 Key 缺失、无效、服务失败或无结果时，必须自动回退到免 Key 的 OSM/Overpass 等公开来源并说明来源。国外地点优先 OSM，禁止因高德不可用而直接终止。
+  - **最近要素对必须调用 nearest_pair**：用户询问同一图层或两个图层之间最近的一对时，先从当前已注入的注册图层及属性样例识别图层；若对象在样例中无法确定，调用 get_registered_layers(keyword="对象名") 按属性内容检索。随后调用 nearest_pair：跨图层传 layer_name 和 target_layer，同层留空 target_layer；限定类别或名称时分别传 feature_filter、target_filter。不得为医院、麦当劳等对象创建专用工具，也不得用 get_layer_detail 的前三条预览或 execute_python 代替。
   - **栅格分析优先用专用工具**：raster_reclassify / raster_focal_stats / euclidean_distance / raster_extract_by_mask / surface_volumes / feature_to_raster / raster_to_feature / cost_distance / least_cost_path
   - **矢量与属性分析优先用专用工具**：join_field / geometry_attributes / minimum_bounding_geometry / points_to_line / generate_points_along_lines / create_fishnet
   - **空间统计优先用专用工具**：spatial_weights_matrix / spatial_regression / directional_distribution / central_tendency / od_cost_matrix
@@ -428,7 +434,7 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
   不要只返回原始数据或说"已完成"，要给出专业解读。
 
  ### 国外地点
-  - 国外边界用 execute_python 调 osmnx（Overpass 镜像）获取
+  - 国外边界调用 fetch_osm_boundary_or_features(query="国家或地区", feature_type="boundary")；execute_python 沙箱禁止用户代码联网导入 requests/urllib，禁止在被拦截后改用内省或其他导入方式绕过。
   - 搜索国外内容时用当地语言和英文搜关键词
   - 不要用高德 POI 搜索国外地点（只覆盖中国）
 
@@ -464,7 +470,10 @@ SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
  - **交付红线**：严禁自称“无法生成PNG图片”（平台支持 execute_python/matplotlib 输出 PNG，前端会自动识别并展示）；严禁在正文输出裸 <svg> 代码让用户保存；严禁向用户索要本地 shp/geojson 路径（国内边界一律用 datav_boundary 内置数据）；必须在地图上展示边界并交付图件。
 
 ## 工具使用优先级
+  - 空间分析工具按算法复用，不按业务对象（如医院、麦当劳）分别造工具；先用 get_registered_layers 确认实际图层，再将业务名称作为图层选择或属性筛选条件传给已有工具。只有系统尚不支持的分析动作才需要新增算法能力。
   - 优先使用专用工具（amap_geocode / amap_poi_search / datav_boundary / network_analysis / measure_area / measure_distance 等），execute_python 是最后选择
+  - POI 搜索采用多源兜底：国外优先 OSM；国内高德缺失或失败时自动回退到公开 OSM/Overpass 来源，并在结果中说明数据源与覆盖限制。
+  - 同一图层或两个图层之间最近的一对要素必须调用 nearest_pair；先读当前注册图层摘要和属性样例，仍无法判断对象在哪个图层时调用 get_registered_layers(keyword="对象名") 搜索属性内容。跨图层传 layer_name 和 target_layer，同层留空 target_layer；限定类别或名称时分别传 feature_filter、target_filter。不得为具体对象创建专用工具、用 get_layer_detail 的前三条预览代替全量检索，或编造未注册图层。
   - 栅格/矢量/统计优先用专用工具：raster_reclassify / raster_focal_stats / euclidean_distance / raster_extract_by_mask / surface_volumes / join_field / geometry_attributes / minimum_bounding_geometry / points_to_line / generate_points_along_lines / spatial_weights_matrix / spatial_regression / directional_distribution / central_tendency / od_cost_matrix / feature_to_raster / raster_to_feature / create_fishnet / cost_distance / least_cost_path
   - 属性字段连接用 join_field，空间关系连接用 spatial_join；重分类用 raster_reclassify；代价面用 cost_distance / least_cost_path，路网用 network_analysis / od_cost_matrix
   - 计算图层面积必须直接调用 measure_area 工具，测距调用 measure_distance；严禁只口头输出“请稍等/我来调用工具”而不真实调用工具
@@ -474,7 +483,9 @@ SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
   - **严禁在最终回复里粘贴你已经执行过的源码**（复述也不行）：代码跑完后只是执行细节，不是交付物，正文只写"做了什么→结果是什么→结论是什么"；只有用户明确索要代码时才展示源码。
   - **图表/地图制图规范（强制执行）**：使用 matplotlib 生成任何图表或地图时：**中文字体不许重置**（严禁 `plt.rcdefaults()`/`plt.style.use()` 或改写 `font.*`，否则中文全变方框）；①标题明确规范（无多余废话）；②必须带标准图例或色条（注明指标与单位），遥感分类图必须标明类别对应颜色；③**注记严禁相互堆叠重叠**：长三角、珠三角等密集区域必须使用 `adjustText`（已预装：`from adjustText import adjust_text; adjust_text(texts, arrowprops=dict(arrowstyle='->', color='#666', lw=0.6))`）或引出线避让，文字简练（如“上海\n4.7万亿”），边框浅灰细线，严禁挤成黑块；④保存必须用 `bbox_inches='tight', dpi=150`。生成后在回复中说明主要图例与结论。
 
-  - **专题地图处理流程**：先从已加载图层中确认空间对象、几何类型和字段；复用合适图层，缺少边界时再取边界数据。连续数值字段用分级设色，分类字段用唯一值渲染；单要素或无有效数值时不强行分级。样式修改沿用最近成功制图的图层和字段，只执行必要的样式工具。交互地图需求交付地图渲染，明确要求导出文件时再导出；地图/图层候选不唯一或关键字段缺失时简短询问，不猜字段或对象。
+  - **专题地图与卫星底图**：交互地图先把图层渲染到现有 Leaflet 地图，卫星影像来自当前地图底图服务，不要让 matplotlib/execute_python 去下载瓦片或拼接卫星影像。用户明确要求图片时调用 export_map 导出当前地图（保留当前底图与图层）；要求 PDF/比例尺/经纬网/指北针/旋转时调用 export_pdf。execute_python 生成的是独立图表/静态矢量图，不含当前交互地图底图；不要把它说成卫星专题地图。
+  - **引用历史任务继续修改**：收到带有 task_id 的引用回复时，优先读取该任务注入的代码、图层和文件产物，在那份任务上继续修改；不得只凭聊天文字猜测旧结果，也不得混用其他任务的数据。
+  - **任务引用与继续修改**：如果当前消息引用了旧回复并附带历史任务上下文，先读取其中 task_id、代码、图层与产物记录，在该任务上继续修改；不要只依赖聊天文字猜测旧文件或结果。若引用上下文没有可用任务记录，则说明无法定位的具体产物。
 
 每个工具的具体使用规则（参数、约束、最佳实践）见各工具的 description，不必事先记忆。
 
@@ -710,7 +721,8 @@ def _get_or_create_history(session_id: str, message: str) -> list:
     return history
 
 
-def _build_system_content(cfg, message: str, session_id: str = "default", force_skills: list = None) -> tuple:
+def _build_system_content(cfg, message: str, session_id: str = "default", force_skills: list = None,
+                          task_id: str = None) -> tuple:
     """构建 system prompt，返回 (system_content, skill_text, model_display)
 
     cfg: LLMConfig
@@ -811,10 +823,13 @@ def _build_system_content(cfg, message: str, session_id: str = "default", force_
                     _fields_str = f"，字段：{', '.join(sorted(_fields)[:8])}"
                     if len(_fields) > 8:
                         _fields_str += f" 等{len(_fields)}个"
+                _examples = _lyr.get("property_examples", [])
+                _examples_str = f"，属性样例：{_examples}" if _examples else ""
                 _lyr_name = _lyr.get('filename') or _lyr.get('name', '未知')
-                _layer_lines.append(f"  - {_lyr_name}：{_cnt} 个 {_typ}{_ext}{_fields_str}")
+                _layer_lines.append(f"  - {_lyr_name}：{_cnt} 个 {_typ}{_ext}{_fields_str}{_examples_str}")
             appendix_parts.append("## 当前已加载的图层\n" + "\n".join(_layer_lines) +
                 "\n重要：如果已有图层，优先使用现有图层做分析，严禁重复下载。"
+                "\n需要按医院、麦当劳等对象定位图层时，先根据图层名、字段与属性样例判断；样例不足时用 get_registered_layers(keyword=...) 在注册要素属性中检索，再将匹配结果用于通用空间分析工具。"
                 "\n提示：当用户询问当前有几个图层、图层有几个要素/东西、图层内容时，直接清晰列出图层及要素数量并给出概览；若需最新动态信息或图层有变更，可主动调用 get_registered_layers 或 list_layers 工具，绝不能回答没有拿到图层实时数据。")
         else:
             appendix_parts.append("## 当前已加载的图层\n当前地图尚未注册任何图层。如果用户询问图层或要求处理图层，可提醒用户先在工作区导入数据或在地图上绘制图层；亦可调用 get_registered_layers 工具实时确认。")
@@ -828,11 +843,16 @@ def _build_system_content(cfg, message: str, session_id: str = "default", force_
     # 新会话第一条消息会被注入旧会话的任务目标/上一轮源码/执行历史，
     # 模型直接把旧话题（如广东GDP排名）当作当前任务复述 → 跨会话幻觉污染。
     try:
-        from backend.services.task_manager import find_active_task_for_session, build_task_context
-        _tid = find_active_task_for_session(session_id)
+        from backend.services.task_manager import find_active_task_for_session, build_task_context, get_task
+        _referenced_task = get_task(str(task_id)) if task_id else None
+        _tid = (str(task_id) if _referenced_task else None) if task_id else find_active_task_for_session(session_id)
+        if task_id and not _referenced_task:
+            appendix_parts.append("## 历史任务引用不可用\n用户引用的 GIS 任务记录已不存在或已删除。不要把当前会话的其他任务当成该任务继续修改；请说明无法定位原任务产物。")
         if _tid:
             _task_ctx = build_task_context(_tid)
             if _task_ctx:
+                if task_id and _tid == str(task_id):
+                    appendix_parts.append("## 用户明确引用的历史 GIS 任务\n以下代码、图层与产物属于用户引用的任务。用户要求修改或继续时，先基于这些真实记录操作；不得把其他任务的结果混入。")
                 appendix_parts.append(_task_ctx)
     except Exception:
         pass
@@ -935,7 +955,7 @@ def _try_handle_confirm_command(session_id: str, message: str) -> dict | None:
 
 def chat_with_ai(message: str, session_id: str = "default", cfg=None,
                  force_skills: list = None, amap_key: str = None,
-                 provider: str = "", mode: str = "full") -> dict:
+                 provider: str = "", mode: str = "full", task_id: str = None) -> dict:
     """
     调用 AI 进行对话（使用 LangGraph Agent）
 
@@ -989,7 +1009,7 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     # 获取或创建历史记录
     history = _get_or_create_history(session_id, message)
 
-    system_content, skill_text, model_display = _build_system_content(cfg, message, session_id, force_skills)
+    system_content, skill_text, model_display = _build_system_content(cfg, message, session_id, force_skills, task_id)
 
     # 构建消息列表（LangGraph 用 BaseMessage 格式，assistant + reasoning 一并带回）
     langgraph_messages = _build_langgraph_messages(system_content, history)
@@ -1010,6 +1030,7 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
             skill_text=skill_text,
             original_message=message,
             session_id=session_id,
+            task_id=task_id,
         )
     finally:
         # 异常路径也释放会话锁（run_agent 内部正常路径已释放，重复释放无害）
@@ -1170,8 +1191,8 @@ def _http_request_ctx(e: Exception) -> Optional[str]:
     """从 SDK 抛出的 HTTP 异常链里取出「实际发出的请求」上下文。
 
     只读异常对象上的 request.method / request.url / status_code，不碰
-    header/body，绝不包含 API Key。作用：把 405/404 这类「到底 POST 到了哪个
-    URL、服务器回了什么状态码」暴露给用户，方便核对「接口地址」填得对不对。
+    header/body；URL 中的用户信息、查询参数和片段也会被移除。作用：把 405/404
+    这类「请求到了哪个主机/路径、服务器回了什么状态码」暴露给用户，方便核对接口。
     返回形如 “POST http://host/v1/chat/completions → HTTP 405”。
     """
     cur = e
@@ -1183,8 +1204,18 @@ def _http_request_ctx(e: Exception) -> Optional[str]:
         req = getattr(resp, "request", None) if resp is not None else None
         if req is not None:
             method = (getattr(req, "method", None) or "POST").upper()
-            url = str(getattr(req, "url", ""))
-            return f"{method} {url} → HTTP {status}"
+            raw_url = str(getattr(req, "url", ""))
+            try:
+                parts = urlsplit(raw_url)
+                host = parts.hostname or ""
+                if ":" in host and not host.startswith("["):
+                    host = f"[{host}]"
+                if parts.port:
+                    host = f"{host}:{parts.port}"
+                safe_url = f"{parts.scheme}://{host}{parts.path}" if parts.scheme else parts.path
+            except ValueError:
+                safe_url = "<接口地址>"
+            return f"{method} {safe_url or '<接口地址>'} → HTTP {status}"
         if status:
             return f"HTTP {status}"
         cur = getattr(cur, "__cause__", None)
@@ -1220,7 +1251,7 @@ def test_key(cfg) -> tuple:
             )
         if "connection error" in low or "connecterror" in low:
             return False, "无法连接模型服务。请检查接口地址、代理端口是否正常，以及 DNS / TLS 连接；这不一定是密钥错误。"
-        return False, f"连接失败: {err_msg[:200]}"
+        return False, "连接失败。请检查接口地址、模型名和服务状态。"
 
 
 # ============================================================

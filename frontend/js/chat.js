@@ -148,7 +148,7 @@ function scrollMessages() {
   let _skillChips = [];         // [{name, label, prompt}]
   // ---- 图层附件（分析按钮→暂存到输入框上方） ----
   let _pendingLayer = null;     // { name, type, coords, count, geojson, ... }
-  let _quotedMessage = null;     // { text, time } 用户点击"引用"暂存的 AI 回复，随下一条消息发送
+  let _quotedMessage = null;     // { text, time, task_id } 引用回复并可绑定其后端 GIS 任务
 
   /**
    * 初始化聊天模块
@@ -251,7 +251,7 @@ function scrollMessages() {
     const cursor = inputEl.selectionStart;
     // 获取光标前的文本，检测是否以 / 开头且没有空格（表示正在输入命令名）
     const textBefore = val.substring(0, cursor);
-    if (/^\/([a-zA-Z]*)$/.test(textBefore)) {
+    if (/^\/([a-zA-Z0-9_-]*)$/.test(textBefore)) {
       const query = textBefore.substring(1).toLowerCase();
       _slashFiltered = SLASH_COMMANDS.filter(function(c) {
         return c.name.indexOf(query) === 0 || c.label.indexOf(query) === 0;
@@ -363,7 +363,7 @@ function scrollMessages() {
     _slashActive = false;
     if (!inputEl) return;
     // 移除输入框中的 /命令名（只保留用户已输入的其他文字）
-    inputEl.value = inputEl.value.replace(/^\/[a-zA-Z]*/, '');
+    inputEl.value = inputEl.value.replace(/^\/[a-zA-Z0-9_-]*/, '');
     // /help 直接打开操作手册，不添加 chip
     if (cmd.name === 'help') {
       if (window.GIS && window.GIS.map && window.GIS.map._openManual) {
@@ -484,6 +484,15 @@ function scrollMessages() {
     _quotedMessage = null;
     var bar = document.getElementById('quoteAttachBar');
     if (bar) bar.style.display = 'none';
+  }
+
+  function setTaskReference(taskId, label) {
+    if (!taskId) return false;
+    var text = '历史 GIS 任务：' + String(label || '未命名任务').slice(0, 300);
+    _quotedMessage = { text: text, time: Date.now(), task_id: String(taskId) };
+    _showQuoteBar(text);
+    if (inputEl) inputEl.focus();
+    return true;
   }
 
   function _resetUIAfterStop() {
@@ -612,10 +621,11 @@ function scrollMessages() {
     if (GIS.workspace) GIS.workspace.toggleAI(true);
     followOutput = true;
 
-    // 解析第二个参数：字符串=displayText，对象={displayText, badge, provider}
+    // 解析第二个参数：字符串=displayText，对象={displayText, badge, provider, readOnlyLocationAnalysis}
     const displayText = typeof displayOpt === 'string' ? displayOpt : (displayOpt ? displayOpt.displayText : null);
     const badge = displayOpt && displayOpt.badge ? displayOpt.badge : null;
     const providerOverride = displayOpt && displayOpt.provider ? displayOpt.provider : null;
+    const readOnlyLocationAnalysis = !!(displayOpt && displayOpt.readOnlyLocationAnalysis);
 
     // 检查当前选中的模型是否已配置 API Key（优先用 providerOverride）
     const selModel = document.getElementById('modelSelector');
@@ -826,15 +836,22 @@ function scrollMessages() {
         try {
           const allLayers = (window.GIS.layers && typeof window.GIS.layers.getLayers === 'function')
             ? window.GIS.layers.getLayers() : [];
+          const groupNamesById = Object.create(null);
+          const groupState = (window.GIS.layers && typeof window.GIS.layers.getGroupState === 'function')
+            ? window.GIS.layers.getGroupState() : [];
+          groupState.forEach(function(group) {
+            if (group && group.id) groupNamesById[group.id] = group.name || '';
+          });
           const registerPromises = [];
           for (const lyr of allLayers) {
             const lname = lyr.filename || lyr.name || lyr.layer_id;
             if (lname && lyr.geojson) {
+              const groupName = lyr.groupId ? (groupNamesById[lyr.groupId] || '') : '';
               registerPromises.push(
                 fetch(window.GIS.api.BASE_URL + '/api/layer/register', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ name: lname, geojson: lyr.geojson }),
+                  body: JSON.stringify({ name: lname, geojson: lyr.geojson, group_name: groupName }),
                 }).catch(function() {})
               );
             }
@@ -869,6 +886,8 @@ function scrollMessages() {
               geojson: layerSnapshot.geojson,
             } : undefined,
             quoted: quotedSnapshot ? quotedSnapshot.text : undefined,
+            task_id: quotedSnapshot ? quotedSnapshot.task_id : undefined,
+            read_only_location_analysis: readOnlyLocationAnalysis,
           }),
         });
         if (!streamRes.ok) throw new Error('Stream API error: ' + streamRes.status);
@@ -996,6 +1015,7 @@ function scrollMessages() {
           resultLayers.push({ name: result.layerName, geojson: result.geojson, layerId: 'task_result_' + Date.now() });
         }
         taskUpdate.resultLayers = resultLayers;
+        taskUpdate.backendTaskId = result.task_id || taskUpdate.backendTaskId || '';
 
         // 提取 AI 回复中的代码块作为执行代码
         var codeMatch = result.response && result.response.match(/```(?:python)?\s*([\s\S]*?)```/);
@@ -1028,7 +1048,11 @@ function scrollMessages() {
           _retryBtn.textContent = '重试这条分析';
           _retryBtn.onclick = function () {
             _busyBar.remove();
-            window.GIS.chat.sendMessage(text, displayText ? { displayText: displayText, provider: providerOverride } : undefined);
+            window.GIS.chat.sendMessage(text, displayText ? {
+              displayText: displayText,
+              provider: providerOverride,
+              readOnlyLocationAnalysis: readOnlyLocationAnalysis,
+            } : undefined);
           };
           var _dismissBtn = document.createElement('button');
           _dismissBtn.type = 'button';
@@ -1052,6 +1076,7 @@ function scrollMessages() {
       const msgEl = addMessage(result.response || '(空响应)', 'ai', {
         mode: result.mode || 'full',
         tokenUsage: result.token_usage || null,
+        task_id: result.task_id || '',
       });
 
       // 折叠「思考过程」块：reasoning 开启时后端在 done 事件带 reasoning（不进正文）
@@ -1467,9 +1492,7 @@ function scrollMessages() {
           }
           var allLayers = window.GIS.layers && window.GIS.layers.getLayers ? window.GIS.layers.getLayers() : [];
           var target = allLayers.find(function(l) {
-            return l._rawName === op.name || l.filename === op.name || l.layer_id === op.name
-              || (l.filename && l.filename.indexOf(op.name) === 0)
-              || (l._rawName && l._rawName.indexOf(op.name) === 0);
+            return l._rawName === op.name || l.filename === op.name || l.layer_id === op.name;
           });
           switch (op.action) {
             case 'remove':
@@ -1503,6 +1526,7 @@ function scrollMessages() {
                 var oldMapName = target._rawName || oldN;
                 target.filename = op.new_name;
                 target._rawName = op.new_name;
+                target._registeredName = op.new_name;
                 if (window.GIS.state && window.GIS.state.renameLayer) {
                   window.GIS.state.renameLayer(target.layer_id, op.new_name);
                 }
@@ -1605,7 +1629,7 @@ function scrollMessages() {
               break;
             case 'export_pdf':
               if (window.GIS.map && window.GIS.map.exportPdf) {
-                window.GIS.map.exportPdf(op.title || '地图导出');
+                window.GIS.map.exportPdf(op.title || '地图导出', op.rotation_degrees);
               }
               break;
             case 'undo':
@@ -2125,7 +2149,7 @@ function scrollMessages() {
       quoteBtn.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-b335f3f42caa.png')\"></span>";
       quoteBtn.addEventListener('click', function() {
         const plainText = content.textContent || content.innerText || text;
-        _quotedMessage = { text: plainText.slice(0, 3000), time: Date.now() };
+        _quotedMessage = { text: plainText.slice(0, 3000), time: Date.now(), task_id: options.task_id || '' };
         _showQuoteBar(plainText);
         if (inputEl) inputEl.focus();
       });
@@ -2416,5 +2440,5 @@ function scrollMessages() {
     }
   }
 
-  GIS.chat = { init, send, addMessage, clear, setPendingLayer, sendMessage: send, clearSession, _resetUIAfterStop, SLASH_COMMANDS, triggerSlash, getMode, setMode, applyToolResult };
+  GIS.chat = { init, send, addMessage, clear, setPendingLayer, setTaskReference, sendMessage: send, clearSession, _resetUIAfterStop, SLASH_COMMANDS, triggerSlash, getMode, setMode, applyToolResult };
 })();

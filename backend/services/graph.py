@@ -71,6 +71,20 @@ _cached_graphs = {}
 _force_exec_lock = threading.Lock()
 _force_exec_done = set()
 
+# The map context-menu location analysis is read-only. Keep its capability set
+# explicit so the model cannot create/remove layers even if it ignores prompt text.
+_READ_ONLY_LOCATION_TOOL_NAMES = frozenset({
+    "reverse_geocode",
+    "search_web",
+    "fetch_weather_data",
+})
+
+
+def _tools_for_request(read_only_location_analysis: bool = False):
+    if not read_only_location_analysis:
+        return tools
+    return [tool for tool in tools if getattr(tool, "name", "") in _READ_ONLY_LOCATION_TOOL_NAMES]
+
 def set_cached_graph(session_id: str, agent) -> None:
     sid = session_id or "default"
     with _graph_lock:
@@ -101,49 +115,29 @@ def _force_exec_clear(key: str) -> None:
         _force_exec_done.discard(key)
 
 
-_LAYER_QUERY_KEYWORDS = (
-    "图层", "layer", "几个", "多少", "东西", "要素", "列表", "查看", "有哪些", "有什么",
-    "数据", "当前", "统计", "属性", "字段", "记录", "数量", "信息", "处理",
-)
-_GIS_ACTION_KEYWORDS = (
-    "搜索", "搜一下", "查一下", "画", "制图", "加载", "地图", "生成", "计算", "算一下", "执行",
-    "边界", "提取", "POI", "AOI", "热力", "标记", "导出", "下载", "道路", "建筑", "水系", "影像",
-    "遥感", "DEM", "要素", "缓冲区", "叠加", "裁剪", "插值", "聚类", "回归", "继续", "确认", "取消",
-    "接着", "对图层", "对这个图层", "天气", "降水", "气温", "地震", "震中", "风速", "湿度", "预报",
-    "巡检", "卫星图", "地物", "覆被", "在哪里", "在哪", "坐标", "经纬度", "定位", "位置", "哪儿",
-    "什么地方", "距离", "直线距离", "有多远", "千米", "公里", "测距", "导航", "路线", "地铁", "公交",
-    "铁路", "高铁", "线路", "站点", "车站", "机场", "航班", "轮渡",
-)
-_MISSING_RESULT_KEYWORDS = (
-    "没标", "没有标", "没显示", "没有显示", "没看到", "没出来", "不出来", "没画", "没生成", "没加载", "没上图",
-)
-_TASK_CONTINUATION_KEYWORDS = (
-    "它", "这个", "那个", "刚才", "上一步", "上次", "上一轮", "结果", "改成", "改为", "公里", "米", "缓冲",
-    "换成", "换个", "颜色", "分级", "分位数", "等间距", "浅一点", "浅一些", "变浅", "深一点",
-    "改色", "图例", "图名", "导出刚才", "这张图", "只显示",
+_PLAIN_CHAT_PATTERN = re.compile(
+    r"(?:你好(?:呀|啊|哇)?|您好|嗨|哈喽|hello|hi|hey|早上好|晚上好|"
+    r"谢谢(?:你)?|多谢|感谢|好的|好|收到|明白了|再见|拜拜|"
+    r"你是谁(?:呀|啊)?|你叫什么(?:名字)?|介绍一下你自己)[\s!！?？。,.，~～]*",
+    re.IGNORECASE,
 )
 
 
 def _should_use_agent(messages: list, session_id: str, start_registered=None) -> bool:
     """Shared tool-routing decision for streamed and non-streamed requests."""
-    if not messages or len(messages) <= 1:
+    if not messages:
         return False
     last = messages[-1]
     content = getattr(last, "content", last if isinstance(last, str) else "")
     if not isinstance(content, str):
         content = str(content or "")
-    needs_tools = any(kw in content for kw in (
-        _GIS_ACTION_KEYWORDS + _LAYER_QUERY_KEYWORDS + _TASK_CONTINUATION_KEYWORDS
-    ))
-    complaint = any(kw in content for kw in _MISSING_RESULT_KEYWORDS)
     try:
         has_pending = bool(pending_action.get_pending_action(session_id or "default"))
     except Exception:
         has_pending = False
-    has_contextual_layer_query = bool(start_registered) and any(
-        kw in content for kw in ("图层", "要素", "东西", "数据", "查看")
-    )
-    return needs_tools or complaint or has_pending or len(content) > 150 or has_contextual_layer_query
+    # 只有明确的闲聊才能省略工具。任务是否需要工具交给绑定了工具的模型判断，
+    # 避免自然表达（如“把两点连上线”）因漏掉关键词而彻底失去工具能力。
+    return has_pending or not bool(_PLAIN_CHAT_PATTERN.fullmatch(content.strip()))
 
 
 # ============================================================
@@ -250,12 +244,12 @@ def _clean_ai_text(text: str) -> str:
 
 
 def _last_ai_text(msgs: list):
-    """返回 (最后一条非空 AI 文本, 它的 reasoning/None)"""
+    """取本轮最后一条 AI 回复，不能把历史回复或早先的计划当成空响应的结果。"""
     for msg in reversed(msgs):
-        if isinstance(msg, AIMessage) and msg.content:
-            text = _clean_ai_text(msg.content)
-            if text:
-                return text, get_message_reasoning(msg)
+        if isinstance(msg, HumanMessage):
+            break
+        if isinstance(msg, AIMessage):
+            return _clean_ai_text(msg.content or ""), get_message_reasoning(msg)
     return "", None
 
 
@@ -470,6 +464,22 @@ def _has_tool_messages(msgs: list) -> bool:
     return any(isinstance(m, ToolMessage) for m in (msgs or []))
 
 
+def _empty_response_diagnostic(msgs: list) -> str:
+    """记录空响应的可观测原因，不记录推理正文或密钥。"""
+    for msg in reversed(msgs or []):
+        if not isinstance(msg, AIMessage):
+            continue
+        metadata = getattr(msg, "response_metadata", {}) or {}
+        reasoning = msg.additional_kwargs.get("reasoning_content")
+        return (
+            f"finish_reason={metadata.get('finish_reason', 'unknown')}, "
+            f"content_chars={len(str(msg.content or ''))}, "
+            f"has_reasoning={bool(reasoning)}, "
+            f"tool_calls={len(getattr(msg, 'tool_calls', None) or [])}"
+        )
+    return "no_ai_message"
+
+
 # 强制补执行时注入的纠错指令（非流式/流式共用，抽为常量便于测试回归）
 _RECOVERY_PROMPT_CODE_DUMP = (
     "系统提示：平台完全具备直接执行 Python 并渲染图件的能力，严禁向用户声称“无法直接出图”或让用户复制代码去本地/Jupyter运行！"
@@ -479,6 +489,58 @@ _RECOVERY_PROMPT_NO_ACTION = (
     "你刚才只是说“开始执行”，但实际没有调用任何工具。"
     "请现在就调用合适工具真正完成你承诺的任务，不要再只做口头承诺。"
 )
+_RECOVERY_PROMPT_EMPTY = (
+    "上一轮没有返回用户可见的正文，也没有产生真实工具调用。请回到最初的用户请求继续完成任务："
+    "需要查询数据或操作图层时，直接发出已绑定工具的结构化调用并根据工具结果回答；"
+    "不要只在文字中描述工具计划，也不要输出内部思考过程。纯知识问题则直接简洁回答。"
+)
+
+
+def _invoke_empty_response_recovery(agent, messages: list, recursion_limit: int = 60,
+                                    cfg: LLMConfig = None, available_tools: list = None,
+                                    recovery_prompt: str = _RECOVERY_PROMPT_EMPTY):
+    """空正文/空口承诺时，关闭推理并强制发出结构化工具调用，再执行 ReAct 循环。"""
+    recovery_agent = agent
+    fallback_agent = agent
+    if cfg is not None and available_tools:
+        try:
+            # 思考内容只是 AIMessage 元数据，不会触发 LangGraph 工具节点。
+            # DeepSeek 思考模式不接受 tool_choice=required；恢复调用关闭 reasoning，
+            # 明确要求模型至少选择一个工具，避免仅重复生成 reasoning 后再次空响应。
+            recovery_llm = build_llm(disable_reasoning(cfg))
+            fallback_agent = create_react_agent(recovery_llm, available_tools)
+            auto_llm = recovery_llm.bind_tools(available_tools)
+            required_llm = recovery_llm.bind_tools(available_tools, tool_choice="required")
+
+            def select_recovery_model(state, runtime):
+                # 只强制恢复后的第一步选择工具；工具返回后恢复 auto，允许模型正常总结。
+                last = state["messages"][-1]
+                return required_llm if isinstance(last, HumanMessage) else auto_llm
+
+            recovery_agent = create_react_agent(select_recovery_model, available_tools)
+        except Exception as bind_error:
+            recovery_agent = fallback_agent
+            print(f"[GIS] 无法启用强制工具调用恢复，退回关闭推理的普通工具模式: {bind_error}", flush=True)
+
+    payload = {"messages": list(messages) + [HumanMessage(content=recovery_prompt)]}
+    try:
+        return recovery_agent.invoke(payload, {"recursion_limit": recursion_limit})
+    except Exception as recovery_error:
+        if recovery_agent is fallback_agent:
+            raise
+        # Provider 可能不支持 tool_choice=required。保留有界回退，至少重试一次普通工具模式。
+        print(f"[GIS] 强制工具调用恢复失败，退回普通工具调用: {recovery_error}", flush=True)
+        return fallback_agent.invoke(payload, {"recursion_limit": recursion_limit})
+
+
+def _tool_result_fallback(msgs: list) -> str:
+    """工具已执行但模型未总结时，返回最近一条工具结果，避免伪造成功或空回复。"""
+    for msg in reversed(msgs or []):
+        if isinstance(msg, ToolMessage):
+            content = str(msg.content or "").strip()
+            if content:
+                return "工具已执行，但模型没有生成总结。工具返回：\n" + content[:3000]
+    return ""
 
 
 def _auto_promote_pending(session_id: str, start_registered: set, pushed_names: list):
@@ -528,6 +590,7 @@ def run_agent(
     skill_text: str = "",
     original_message: str = "",
     session_id: str = "default",
+    task_id: str = None,
 ) -> dict:
     """运行 LangGraph Agent + 自校验
 
@@ -587,7 +650,7 @@ def run_agent(
     _start_registered = set(getattr(_tools_mod, "_registered_layers", {}).keys())
 
     # === Task Manager: 解析/创建任务，绑定到 tools ===
-    _task_id = task_manager.find_or_create_task(session_id or "default", original_message or "")
+    _task_id = task_manager.find_or_create_task(session_id or "default", original_message or "", task_id=task_id)
     set_current_task(_task_id)
     print(f"[GIS] Task ID: {_task_id}", flush=True)
 
@@ -623,7 +686,7 @@ def run_agent(
                 except Exception:
                     pass
                 return {
-                    "response": _quick_text,
+                    "response": _quick_text or "模型本轮没有返回可见答复，请重试。",
                     "reasoning": get_message_reasoning(_resp),
                     "layers": [], "images": [], "heatmap": None,
                     "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
@@ -781,24 +844,34 @@ def run_agent(
                 final_text = (final_text or "") + "\n\n[注意] 模型服务资源不足，回复可能不完整，请稍后重试。"
             break
 
-    # 空响应处理：content 为空且无工具调用时，重试一次
-    if not final_text and not _has_tool_messages(final_messages):
-        print("[GIS] 空响应，重试一次", flush=True)
+    # 空响应处理：此前会追加“不要调用工具”，可能直接压掉模型原本要执行的 GIS 请求。
+    if not final_text and not _has_tool_messages(final_messages) and _count_tool_calls(final_messages) == 0:
+        print(f"[GIS] 空响应且没有工具调用（{_empty_response_diagnostic(final_messages)}），关闭推理并强制调用工具重试", flush=True)
         try:
-            _retry = agent.invoke(
-                {"messages": list(messages) + [HumanMessage(content="请直接回答用户的问题，不要调用工具。")]},
-                {"recursion_limit": 30},
-            )
+            _retry = _invoke_empty_response_recovery(
+                agent, messages, recursion_limit=60, cfg=cfg, available_tools=tools)
             _retry_msgs = _retry.get("messages", [])
             _retry_text, _retry_reasoning = _last_ai_text(_retry_msgs)
+            _retry_tools = _count_tool_calls(_retry_msgs) > 0 or _has_tool_messages(_retry_msgs)
             if _retry_text:
                 final_text = _retry_text
                 final_reasoning = _retry_reasoning
                 final_messages = _retry_msgs
+            elif _retry_tools:
+                final_messages = _retry_msgs
+                final_text = _tool_result_fallback(_retry_msgs)
+            if _retry_tools:
+                _invoke_pending = get_pending_state()
         except Exception as _re:
-            print(f"[GIS] 空响应重试失败: {_re}", flush=True)
+            print(f"[GIS] 空响应执行重试失败: {_re}", flush=True)
         if not final_text:
-            final_text = "AI 未返回有效响应，请重试或更换模型。"
+            final_text = "模型本轮没有生成答复，也没有实际调用工具；已自动重试但仍未完成。这次没有完成计算，请重试该请求。"
+    if not final_text:
+        final_text = _tool_result_fallback(final_messages) or (
+            "模型提出了工具调用，但工具没有返回结果；本次操作未确认完成，请检查工具记录后重试。"
+            if _count_tool_calls(final_messages) else
+            "AI 未返回有效响应，请重试或更换模型。"
+        )
 
     # 收集本轮产生的共享状态
     # The successful invoke snapshot is already consumed from shared state; carry it
@@ -833,10 +906,9 @@ def run_agent(
                 if _is_unexecuted_code_or_disclaimer(final_text, final_messages)
                 else _RECOVERY_PROMPT_NO_ACTION
             )
-            _forced = agent.invoke(
-                {"messages": list(final_messages) + [HumanMessage(content=_prompt_text)]},
-                {"recursion_limit": 60},
-            )
+            _forced = _invoke_empty_response_recovery(
+                agent, final_messages, recursion_limit=60, cfg=cfg,
+                available_tools=tools, recovery_prompt=_prompt_text)
             _fm = _forced.get("messages", [])
             if _fm:
                 # 检查强制执行是否真的调用了工具
@@ -1021,6 +1093,8 @@ def _run_agent_stream_impl(
     original_message: str = "",
     session_id: str = "default",
     mode: str = "full",
+    read_only_location_analysis: bool = False,
+    task_id: str = None,
 ):
     """运行 Agent 并逐步 yield 事件（供 SSE 端点使用）
 
@@ -1037,6 +1111,7 @@ def _run_agent_stream_impl(
         {"type":"done","response":"...","reasoning":...,"layers":[...],...}
     """
     reset_state(amap_key)
+    available_tools = _tools_for_request(read_only_location_analysis)
     _tools_mod.set_last_user_message(original_message or "")
     # 提取最近多轮上下文（供工具层消歧与实体复用）
     _ctx_texts = []
@@ -1062,7 +1137,7 @@ def _run_agent_stream_impl(
     _run_started_at = time.time()
     _run_id = uuid.uuid4().hex[:12]
     _tools_mod.set_current_run(_run_id)
-    _task_id = task_manager.find_or_create_task(session_id or "default", original_message or "")
+    _task_id = task_manager.find_or_create_task(session_id or "default", original_message or "", task_id=task_id)
     set_current_task(_task_id)
     print(f"[GIS] 流式 run_id={_run_id} Task ID: {_task_id} mode={mode}", flush=True)
 
@@ -1088,7 +1163,7 @@ def _run_agent_stream_impl(
                 pass
             yield "data: {\"type\":\"thinking\"}\n\n"
             result = {
-                "response": _quick_text,
+                "response": _quick_text or "模型本轮没有返回可见答复，请重试。",
                 "reasoning": get_message_reasoning(_resp),
                 "layers": [], "images": [], "heatmap": None,
                 "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
@@ -1097,13 +1172,13 @@ def _run_agent_stream_impl(
             yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
             return
 
-    agent = create_react_agent(llm, tools)
+    agent = create_react_agent(llm, available_tools)
 
     set_cached_graph(session_id or "default", agent)
 
     # 预算用：本轮工具 schema 字符数（粗估，不重复 JSON 序列化）
     try:
-        _schema_chars_est = len(json.dumps([convert_to_openai_tool(t) for t in tools], ensure_ascii=False))
+        _schema_chars_est = len(json.dumps([convert_to_openai_tool(t) for t in available_tools], ensure_ascii=False))
     except Exception:
         _schema_chars_est = 60000
 
@@ -1374,6 +1449,75 @@ def _run_agent_stream_impl(
     except Exception:
         pass
 
+    # 流式模型有时只返回 reasoning 或空正文，ReAct 因而没有发出工具调用；收尾前自动按原请求重试。
+    if (not final_text and not _ai_waiting_choice
+            and not _has_tool_messages(msgs) and _count_tool_calls(msgs) == 0):
+        print(f"[GIS] 流式空响应且没有工具调用（{_empty_response_diagnostic(msgs)}），关闭推理并强制调用工具重试", flush=True)
+        note = json.dumps({"type": "note", "message": "本轮没有收到可见答复，正在按原请求自动重试。"}, ensure_ascii=False)
+        yield f"data: {note}\n\n"
+        try:
+            _retry = _invoke_empty_response_recovery(
+                agent, messages, recursion_limit=60, cfg=cfg, available_tools=available_tools)
+            _retry_msgs = _retry.get("messages", [])
+            _retry_text, _retry_reasoning = _last_ai_text(_retry_msgs)
+            _retry_tools = _count_tool_calls(_retry_msgs) > 0 or _has_tool_messages(_retry_msgs)
+            if _retry_text:
+                msgs = _retry_msgs
+                final_text, final_reasoning = _retry_text, _retry_reasoning
+            elif _retry_tools:
+                msgs = _retry_msgs
+                final_text = _tool_result_fallback(_retry_msgs)
+
+            if _retry_tools:
+                # 恢复调用在主流循环之后运行，仍把真实工具调用和结果记录到前端。
+                _retry_step_ids = {}
+                _retry_call_steps = {}
+                for _retry_msg in _retry_msgs:
+                    if isinstance(_retry_msg, AIMessage) and _retry_msg.tool_calls:
+                        for _tc in _retry_msg.tool_calls:
+                            _tool_name = _tc.get("name", "?")
+                            _tool_args = _tc.get("args", {}) if isinstance(_tc.get("args"), dict) else {}
+                            _step_key, _step_label, _step_kind = _stream_step_descriptor(
+                                _tool_name, _tool_args, original_message or "", _stream_active_web
+                            )
+                            _step_id = _retry_step_ids.setdefault(_step_key, "step-" + uuid.uuid4().hex[:12])
+                            _call_id = str(_tc.get("id") or ("legacy-" + uuid.uuid4().hex[:12]))
+                            _retry_call_steps[_call_id] = (_step_id, _step_label, _tool_name)
+                            event = json.dumps({
+                                "type": "tool_start", "name": _tool_name, "input": str(_tool_args)[:1200],
+                                "tool_call_id": _call_id, "step_id": _step_id, "step_label": _step_label,
+                            }, ensure_ascii=False)
+                            yield f"data: {event}\n\n"
+                    elif isinstance(_retry_msg, ToolMessage):
+                        _tool_name = getattr(_retry_msg, "name", None) or "工具"
+                        _call_id = str(getattr(_retry_msg, "tool_call_id", "") or "")
+                        _step_id, _step_label, _ = _retry_call_steps.pop(_call_id, ("", "", _tool_name))
+                        if not _step_id:
+                            _step_key, _step_label, _ = _stream_step_descriptor(
+                                _tool_name, {}, original_message or "", _stream_active_web
+                            )
+                            _step_id = _retry_step_ids.setdefault(_step_key, "step-" + uuid.uuid4().hex[:12])
+                        event = json.dumps({
+                            "type": "tool_end", "name": _tool_name,
+                            "output": str(_retry_msg.content or "")[:1200],
+                            "tool_call_id": _call_id,
+                            "step_id": _step_id, "step_label": _step_label,
+                            "status": "error" if getattr(_retry_msg, "status", None) == "error" else "success",
+                        }, ensure_ascii=False)
+                        yield f"data: {event}\n\n"
+                pending = get_pending_state()
+                _ensure_ops_layers_present(pending)
+        except Exception as _re:
+            print(f"[GIS] 流式空响应执行重试失败: {_re}", flush=True)
+        if not final_text:
+            final_text = "模型本轮没有生成答复，也没有实际调用工具；已自动重试但仍未完成。这次没有完成计算，请重试该请求。"
+    if not final_text:
+        final_text = _tool_result_fallback(msgs) or (
+            "模型提出了工具调用，但工具没有返回结果；本次操作未确认完成，请检查工具记录后重试。"
+            if _count_tool_calls(msgs) else
+            "AI 未返回有效响应，请重试或更换模型。"
+        )
+
     # === P0-2: 流式版本 finish_reason 检查 ===
     # 保守：对所有 AIMessage 做截断类 finish_reason 日志；仅当最后一条也截断时才提示给用户
     _any_truncation = False
@@ -1415,10 +1559,9 @@ def _run_agent_stream_impl(
                 if _is_unexecuted_code_or_disclaimer(final_text, msgs)
                 else _RECOVERY_PROMPT_NO_ACTION
             )
-            _forced = agent.invoke(
-                {"messages": list(msgs) + [HumanMessage(content=_prompt_text)]},
-                {"recursion_limit": 60},
-            )
+            _forced = _invoke_empty_response_recovery(
+                agent, msgs, recursion_limit=60, cfg=cfg,
+                available_tools=available_tools, recovery_prompt=_prompt_text)
             _fm = _forced.get("messages", [])
             if _fm:
                 # 检查强制执行是否真的调用了工具
@@ -1472,12 +1615,12 @@ def _run_agent_stream_impl(
 
     # === Token 计量基建：提取与持久化 ===
     _dur_ms = int((time.time() - _run_started_at) * 1000)
-    _schema_chars = len(json.dumps([convert_to_openai_tool(t) for t in tools], ensure_ascii=False))
+    _schema_chars = len(json.dumps([convert_to_openai_tool(t) for t in available_tools], ensure_ascii=False))
     _token_usage = extract_and_record_token_usage(
         messages=msgs,
         model_name=cfg.model,
         task_id=_task_id,
-        tool_count=len(tools),
+        tool_count=len(available_tools),
         schema_chars=_schema_chars,
         duration_ms=_dur_ms,
     )
@@ -1512,6 +1655,8 @@ def run_agent_stream(
     original_message: str = "",
     session_id: str = "default",
     mode: str = "full",
+    read_only_location_analysis: bool = False,
+    task_id: str = None,
 ):
     """运行流式 Agent，并在正常结束、异常或客户端断开时释放会话锁。"""
     sid = session_id or "default"
@@ -1535,6 +1680,8 @@ def run_agent_stream(
             original_message=original_message,
             session_id=sid,
             mode=mode,
+            read_only_location_analysis=read_only_location_analysis,
+            task_id=task_id,
         )
     finally:
         _tools_mod.release_session_lock(sid)

@@ -215,7 +215,14 @@ window.GIS = window.GIS || {};
     var rec = findLayer(layerId);
     if (!rec) return;
     rec.visible = !!visible;
-    if (GIS.map && GIS.map.setLayerVisible) GIS.map.setLayerVisible(rec._rawName, rec.visible);
+    if (GIS.map) {
+      var mapLayer = GIS.map.getLayer ? GIS.map.getLayer(rec._rawName) : null;
+      if (rec.visible && !mapLayer && GIS.map.getLayer && GIS.map.loadGeoJSON && rec.geojson) {
+        GIS.map.loadGeoJSON(rec.geojson, rec._rawName, rec.style || {}, { fitBounds: false });
+      } else if (GIS.map.setLayerVisible) {
+        GIS.map.setLayerVisible(rec._rawName, rec.visible);
+      }
+    }
     emit('layer-visible', rec);
   }
 

@@ -95,34 +95,37 @@ test('loading a project renders project names and saved user messages as text', 
 
 test('restoring legacy same-name layers without IDs delegates unique ID creation to the layer registry', async () => {
   const addedLayers = [];
+  const mapNames = [];
+  const hiddenMapNames = [];
   const payload = {
     id: 'legacy-project', name: '旧工程', messages: [], mapState: {},
     layers: [
       { name: '行政区', geojson: { type: 'FeatureCollection', features: [] } },
-      { name: '行政区', geojson: { type: 'FeatureCollection', features: [] } },
+      { name: '行政区', visible: false, geojson: { type: 'FeatureCollection', features: [] } },
     ],
   };
-  class FixedDate extends Date { static now() { return 123456789; } }
   const window = { GIS: {
     api: { loadProject() { return Promise.resolve(payload); } },
     chat: { clear() {}, addMessage() {} },
-    map: { clearAll() {}, loadGeoJSON() {} },
+    map: { clearAll() {}, loadGeoJSON(_geojson, name) { mapNames.push(name); },
+      setLayerVisible(name, visible) { if (!visible) hiddenMapNames.push(name); } },
     layers: {
       setGroupState() {}, clearAll() {}, syncLayerOrder() {},
-      addLayer(layer) {
-        const id = layer.layer_id || ('generated_' + (addedLayers.length + 1));
-        addedLayers.push({ ...layer, layer_id: id });
-      },
+      addLayer(layer) { addedLayers.push({ ...layer }); },
     },
   } };
   const document = { getElementById() { return null; } };
   const sourcePath = path.resolve(__dirname, '../js/project.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
-    window, document, Promise, Date: FixedDate, Math, Number, String, Object, Array, JSON,
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
   }, { filename: sourcePath });
 
   assert.equal(await window.GIS.project.loadProject('legacy-project'), true);
-  assert.deepEqual(addedLayers.map(layer => layer.layer_id), ['generated_1', 'generated_2']);
+  assert.deepEqual(mapNames, ['project_legacy-project_layer_0', 'project_legacy-project_layer_1']);
+  assert.deepEqual(addedLayers.map(layer => layer.layer_id), mapNames);
+  assert.deepEqual(addedLayers.map(layer => layer._rawName), mapNames);
+  assert.deepEqual(addedLayers.map(layer => layer.filename), ['行政区', '行政区']);
+  assert.deepEqual(hiddenMapNames, [mapNames[1]], 'only the saved hidden layer should be hidden');
 });
 
 test('autosave sends stable layer IDs alongside names and display state', async () => {
@@ -151,7 +154,35 @@ test('autosave sends stable layer IDs alongside names and display state', async 
     names: ['registered', 'raw', 'display'],
     groupId: 'group_2', visible: false,
     symbology: null,
+    name: 'display', raster: null,
   }]);
+});
+
+test('autosave waits for the latest layer registration and skips saving stale data on sync failure', async () => {
+  let resolveSync;
+  let saveCalls = 0;
+  const layer = { layer_id: 'layer-1', filename: 'places', geojson: { type: 'FeatureCollection', features: [] },
+    _registrationPromise: new Promise(resolve => { resolveSync = resolve; }) };
+  const window = { GIS: {
+    api: { autoSaveProject() { saveCalls++; return Promise.resolve({ id: 'saved' }); } },
+    layers: { getLayers() { return [layer]; }, getGroupState() { return []; } },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON, console,
+  }, { filename: sourcePath });
+
+  const pendingSave = window.GIS.project.autoSave();
+  await Promise.resolve();
+  assert.equal(saveCalls, 0, 'automatic persistence must wait until current feature data is registered');
+  resolveSync(true);
+  await pendingSave;
+  assert.equal(saveCalls, 1);
+
+  layer._registrationPromise = Promise.resolve(false);
+  await window.GIS.project.autoSave();
+  assert.equal(saveCalls, 1, 'failed registration must not persist the older backend copy');
 });
 
 test('project restore forwards saved layer style to the layer registry', async () => {
@@ -176,6 +207,44 @@ test('project restore forwards saved layer style to the layer registry', async (
 
   assert.equal(await window.GIS.project.loadProject('styled-project'), true);
   assert.deepEqual({ ...addedLayers[0].style }, payload.layers[0].style);
+});
+
+test('project restore recreates saved raster overlays and their layer-panel visibility', async () => {
+  const overlays = [];
+  const opacities = [];
+  const hiddenMapNames = [];
+  const addedLayers = [];
+  const raster = { url: '/api/projects/raster-project/assets/abc.png', project_id: 'raster-project',
+    asset: 'abc.png', bounds: [100, 30, 101, 31], width: 512, height: 256 };
+  const payload = { id: 'raster-project', name: '栅格工程', messages: [], mapState: {},
+    layers: [{ layer_id: 'raster-layer', name: '高程', geometry_type: 'Raster', visible: false,
+      style: { opacity: 0.4 }, raster }] };
+  const window = { GIS: {
+    api: { loadProject() { return Promise.resolve(payload); } },
+    chat: { clear() {}, addMessage() {} },
+    map: { clearAll() {}, addImageOverlay(...args) { overlays.push(args); },
+      setLayerVisible(...args) { if (args[1] === false) hiddenMapNames.push(args); },
+      setLayerOpacity(...args) { opacities.push(args); } },
+    layers: { setGroupState() {}, clearAll() {},
+      addLayer(layer) { addedLayers.push({ ...layer }); }, syncLayerOrder() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  assert.equal(await window.GIS.project.loadProject('raster-project'), true);
+  const mapLayerName = 'project_raster-project_layer_0';
+  assert.deepEqual(overlays[0], [raster.url, raster.bounds, mapLayerName, mapLayerName]);
+  assert.deepEqual(hiddenMapNames, [[mapLayerName, false]]);
+  assert.deepEqual(opacities[0], [mapLayerName, 0.4]);
+  assert.equal(addedLayers[0].filename, '高程');
+  assert.equal(addedLayers[0].layer_id, 'raster-layer');
+  assert.equal(addedLayers[0]._rawName, mapLayerName);
+  assert.equal(addedLayers[0].visible, false);
+  assert.equal(addedLayers[0].opacity, 0.4);
+  assert.deepEqual({ ...addedLayers[0].raster }, raster);
 });
 
 test('project restore reapplies saved thematic symbology after registering the layer', async () => {
@@ -245,4 +314,43 @@ test('manual and automatic saves capture style changes from the real shared stat
   assert.deepEqual(Array.from(manual.layers[0].symbology.breaks), [10, 20, 30]);
   assert.deepEqual(JSON.parse(JSON.stringify(automatic[0].symbology)), JSON.parse(JSON.stringify(manual.layers[0].symbology)));
   assert.equal(window.GIS.layers.getLayers()[0].style.color, '#111111', 'saving must not mutate the panel record');
+});
+
+test('project export keeps its object URL alive until the browser can start the download', async () => {
+  const events = [];
+  const timers = [];
+  const anchor = {
+    href: '',
+    download: '',
+    click() { events.push('click'); },
+  };
+  const document = {
+    readyState: 'loading',
+    addEventListener() {},
+    createElement(tag) { assert.equal(tag, 'a'); return anchor; },
+    body: {
+      appendChild(element) { assert.equal(element, anchor); events.push('append'); },
+      removeChild(element) { assert.equal(element, anchor); events.push('remove'); },
+    },
+  };
+  const window = { GIS: { api: { exportProject() { return Promise.resolve({ type: 'application/zip' }); } } } };
+  const URL = {
+    createObjectURL(blob) { assert.equal(blob.type, 'application/zip'); return 'blob:project-export'; },
+    revokeObjectURL(url) { events.push('revoke:' + url); },
+  };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, URL, Promise, Date, Math, Number, String, Object, Array, JSON,
+    setTimeout(callback, delay) { timers.push({ callback, delay }); },
+  }, { filename: sourcePath });
+
+  await window.GIS.project.exportCurrent('project-1', '样式工程');
+
+  assert.equal(anchor.href, 'blob:project-export');
+  assert.equal(anchor.download, '样式工程.giswork');
+  assert.deepEqual(events, ['append', 'click', 'remove']);
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0].delay, 1000);
+  timers[0].callback();
+  assert.deepEqual(events, ['append', 'click', 'remove', 'revoke:blob:project-export']);
 });

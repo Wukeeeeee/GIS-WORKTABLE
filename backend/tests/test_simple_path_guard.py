@@ -38,6 +38,27 @@ def test_transit_request_hits_agent_keywords():
     assert _should_use_agent(messages, "test-metro-routing") is True
 
 
+def test_natural_action_requests_keep_tools_without_keyword_or_layer_name_matches(monkeypatch):
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from backend.services import graph
+
+    monkeypatch.setattr(graph.pending_action, "get_pending_action", lambda sid: None)
+    for message in (
+        "将2个最近的医院之间连上线将2个将最近的医院跟麦当劳直接连上线",
+        "把相邻的两家店连起来",
+        "找挨得最近的两个",
+        "connect the closest pair",
+        "甲组与乙组找最接近的组合",
+    ):
+        for registered in (set(), {"hospitals_test", "mcdonalds_test"}):
+            assert graph._should_use_agent(
+                [SystemMessage(content="system"), HumanMessage(content=message)],
+                "natural-action-routing", registered,
+            ) is True
+
+    assert graph._should_use_agent([HumanMessage(content="把点连起来")], "single-message") is True
+
+
 def test_both_fast_paths_reject_hollow_promise():
     src = io.open(GRAPH, encoding="utf-8").read()
     assert src.count("_looks_like_incomplete_promise(_quick_text)") == 2, \
@@ -110,6 +131,17 @@ def test_normal_chat_reply_uses_fast_path_and_closes_ledger(monkeypatch):
     assert len(finished) == 1, "快速通道也必须把 run 标记完成，否则台账一直显示 running"
     run_id, text, status, guard = finished[0]
     assert text == reply and status == "success" and guard == "BYPASS"
+
+
+def test_empty_smalltalk_response_is_never_forwarded_as_empty(monkeypatch):
+    import json
+
+    graph, _tools_mod, _finished = _patch_stream_env(monkeypatch, "")
+    events = [json.loads(line[6:]) for line in _stream(graph, "你好", "empty-smalltalk")
+              if line.startswith("data: ")]
+    done = next(event for event in events if event.get("type") == "done")
+    assert done["response"].strip()
+    assert "没有返回可见答复" in done["response"]
 
 
 def test_metro_request_routes_straight_to_agent(monkeypatch):

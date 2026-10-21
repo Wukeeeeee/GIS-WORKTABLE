@@ -659,13 +659,23 @@ def find_active_task_for_session(session_id: str) -> Optional[str]:
     return None
 
 
-def find_or_create_task(session_id: str, user_message: str) -> str:
+def find_or_create_task(session_id: str, user_message: str, task_id: str = None) -> str:
     """查找当前活跃任务或创建新任务
 
     策略：
-    1. 如果有活跃任务 → 复用（多轮对话继续同一任务）
-    2. 如果没有活跃任务 → 创建新任务
+    1. 用户明确引用已有任务时，优先继续该任务
+    2. 如果有活跃任务 → 复用（多轮对话继续同一任务）
+    3. 如果没有活跃任务 → 创建新任务
     """
+    if task_id:
+        referenced = get_task(str(task_id))
+        if referenced:
+            with _lock:
+                _session_active[session_id or "default"] = str(task_id)
+            return str(task_id)
+        # Explicit reference must never silently fall back to an unrelated active task.
+        return create_task(user_message, session_id)
+
     existing = find_active_task_for_session(session_id)
     if existing:
         return existing

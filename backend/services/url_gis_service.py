@@ -15,7 +15,9 @@ import re
 import json
 import time
 import zipfile
+import ntpath
 import urllib.parse
+from pathlib import PurePosixPath
 from typing import Dict, Any, Optional, List, Tuple
 import requests
 
@@ -52,6 +54,20 @@ def _get_output_dir() -> str:
     d = os.path.join(_temp_output_dir, "downloads")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _is_safe_zip_member(name: str) -> bool:
+    raw_name = str(name or "")
+    normalized = raw_name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    drive, _ = ntpath.splitdrive(raw_name)
+    return bool(normalized) and not drive and not path.is_absolute() and ".." not in path.parts
+
+
+def _safe_extract_zip(archive: zipfile.ZipFile, destination: str) -> None:
+    if any(not _is_safe_zip_member(member.filename) for member in archive.infolist()):
+        raise UrlGisError("ZIP 压缩包包含不安全的文件路径")
+    archive.extractall(destination)
 
 
 # ============================================================
@@ -549,7 +565,7 @@ def _inspect_zip_shapefile(url: str) -> dict:
     with open(zip_path, "wb") as f:
         f.write(resp.content)
     with zipfile.ZipFile(zip_path, "r") as z:
-        z.extractall(out_dir)
+        _safe_extract_zip(z, out_dir)
 
     shp_files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.lower().endswith(".shp")]
     if not shp_files:
@@ -674,7 +690,7 @@ def fetch_gis_data_url(
         with open(zip_path, "wb") as f:
             f.write(resp.content)
         with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(out_temp)
+            _safe_extract_zip(z, out_temp)
         shp_files = [os.path.join(out_temp, f) for f in os.listdir(out_temp) if f.lower().endswith(".shp")]
         gdf = gpd.read_file(shp_files[0])
         if limit and len(gdf) > limit:

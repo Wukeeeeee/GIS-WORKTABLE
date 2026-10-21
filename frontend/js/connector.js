@@ -263,13 +263,14 @@
     var name = result.name || result.message || '在线数据';
     if (result.raster_info) {
       var info = result.raster_info;
-      var layerId = 'raster_' + Date.now();
+      var layerId = 'raster_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
       if (window.GIS.map && GIS.map.addImageOverlay) {
         GIS.map.addImageOverlay(info.url, info.bounds, name, layerId);
       }
       if (window.GIS.layers && GIS.layers.addLayer) {
         GIS.layers.addLayer({
           layer_id: layerId,
+          _rawName: layerId,
           filename: name,
           geometry_type: 'Raster',
           crs: 'WGS-84',

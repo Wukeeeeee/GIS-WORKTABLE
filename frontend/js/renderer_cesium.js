@@ -505,6 +505,25 @@ window.GIS = window.GIS || {};
         toolbar.insertBefore(bb, btn.nextSibling);
       }
     }
+    // Keep the national boundary entry point with the map tools instead of
+    // covering the center of the map before a drill-down has started.
+    if (toolbar && !document.getElementById('loadCountryLevelBtn')) {
+      const countryBtn = document.createElement('button');
+      countryBtn.id = 'loadCountryLevelBtn';
+      countryBtn.className = 'map-zoom-btn m3d-keep';
+      countryBtn.title = '加载全国省级行政区';
+      countryBtn.setAttribute('aria-label', countryBtn.title);
+      countryBtn.style.display = 'none';
+      countryBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
+      countryBtn.addEventListener('click', function() {
+        GIS.state.initCountryLevel().catch(function(e) {
+          if (GIS.chat && GIS.chat.addMessage) {
+            GIS.chat.addMessage('加载全国省界失败：' + (e.message || e), 'system');
+          }
+        });
+      });
+      toolbar.appendChild(countryBtn);
+    }
     // 面包屑
     if (!document.getElementById('drillBreadcrumb')) {
       const crumb = document.createElement('div');
@@ -537,18 +556,13 @@ window.GIS = window.GIS || {};
     if (!crumb) return;
     const stack = GIS.state.getDrillStack();
     if (!stack.length) {
-      crumb.style.display = 'flex';
-      crumb.innerHTML = '<span id="crumbInit" style="cursor:pointer;opacity:0.85;display:inline-flex;align-items:center;gap:4px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> 加载全国省级行政区</span>';
-      const initBtn = document.getElementById('crumbInit');
-      if (initBtn) initBtn.addEventListener('click', function() {
-        GIS.state.initCountryLevel().catch(function(e) {
-          if (GIS.chat && GIS.chat.addMessage) {
-            GIS.chat.addMessage('加载全国省界失败：' + (e.message || e), 'system');
-          }
-        });
-      });
+      crumb.style.display = 'none';
+      const countryBtn = document.getElementById('loadCountryLevelBtn');
+      if (countryBtn) countryBtn.style.display = 'flex';
       return;
     }
+    const countryBtn = document.getElementById('loadCountryLevelBtn');
+    if (countryBtn) countryBtn.style.display = 'none';
     crumb.style.display = 'flex';
     let html = '<span style="opacity:0.55;font-size:11px;">下钻层级</span>' +
       '<span style="opacity:0.3;">|</span>' +
@@ -979,6 +993,7 @@ window.GIS = window.GIS || {};
     if (!GIS.state) { setTimeout(boot, 100); return; }
     ensureUI();
     bindState();
+    renderBreadcrumb();
   }
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);

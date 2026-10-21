@@ -50,6 +50,7 @@ NON_TOOL_IDENTIFIERS = {
     "ax_map", "ax_table", "ax_list",  # 示例子图变量
     "choice_key", "region_disambiguation",  # ask_user_choice 参数/取值
     "layer_name", "place_name", "sub_district", "min_samples",  # 工具参数
+    "feature_filter", "feature_type", "target_filter", "target_layer", "task_id",  # 新增工具参数/任务上下文
     "points_data",      # 示例变量
 }
 

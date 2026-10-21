@@ -22,9 +22,11 @@ function makeElement() {
   };
 }
 
-function loadUploadModule(readFailure) {
+function loadUploadModule(readFailure, uploadResponse) {
   const overlays = [];
   const uploadCalls = [];
+  const rasterOverlays = [];
+  const layerAdds = [];
   const elements = new Map();
   elements.set('chatMessages', makeElement());
   const document = {
@@ -51,13 +53,16 @@ function loadUploadModule(readFailure) {
   }
   const window = { GIS: {
     utils: { escapeHtml: value => String(value) },
-    api: { upload(file) { uploadCalls.push(file.name); return Promise.resolve({ error: 'test upload' }); } },
+    api: { upload(file) { uploadCalls.push(file.name); return Promise.resolve(uploadResponse || { error: 'test upload' }); } },
+    map: { addImageOverlay(...args) { rasterOverlays.push(args); } },
+    layers: { addLayer(...args) { layerAdds.push(args); } },
   } };
   const context = { window, document, FileReader, console, Promise, Map, Set, Array, Object, String, Number, Date, Math, RegExp,
-    requestAnimationFrame(callback) { callback(); }, setTimeout() { return 1; }, clearTimeout() {} };
+    AbortController, requestAnimationFrame(callback) { callback(); }, setTimeout() { return 1; }, clearTimeout() {} };
   const sourcePath = path.resolve(__dirname, '../js/upload.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
-  return { upload: window.GIS.upload, overlays, uploadCalls, chatMessages: elements.get('chatMessages') };
+  return { upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, layerAdds,
+    chatMessages: elements.get('chatMessages') };
 }
 
 test('CSV upload preview preserves quoted commas, escaped quotes, and embedded newlines', async () => {
@@ -83,4 +88,21 @@ test('CSV preview read failure stops instead of implicitly confirming upload', a
 
   assert.deepEqual(harness.uploadCalls, []);
   assert.match(harness.chatMessages.children[0].children[0].innerHTML, /无法读取文件预览，文件未上传/);
+});
+
+test('uploaded raster layers use a stable map identity for independent visibility controls', async () => {
+  const harness = loadUploadModule(false, { raster_info: {
+    url: '/output/uploads/elevation.png', bounds: [100, 30, 101, 31],
+  } });
+  harness.upload.handleFiles([{ name: 'elevation.tif', size: 10 }]);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(harness.rasterOverlays.length, 1);
+  assert.equal(harness.layerAdds.length, 1);
+  const [, , displayName, mapLayerId] = harness.rasterOverlays[0];
+  const [layer] = harness.layerAdds[0];
+  assert.equal(displayName, 'elevation');
+  assert.match(mapLayerId, /^raster_\d+_[a-z0-9]+$/);
+  assert.equal(layer.layer_id, mapLayerId);
+  assert.equal(layer._rawName, mapLayerId);
 });

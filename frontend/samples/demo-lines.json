@@ -1,0 +1,8 @@
+{
+  "type": "FeatureCollection",
+  "name": "demo-lines",
+  "features": [
+    { "type": "Feature", "properties": { "name": "示例道路 1", "class": "主干路" }, "geometry": { "type": "LineString", "coordinates": [[120.143, 30.248], [120.150, 30.249], [120.157, 30.250], [120.162, 30.254]] } },
+    { "type": "Feature", "properties": { "name": "示例道路 2", "class": "次干路" }, "geometry": { "type": "LineString", "coordinates": [[120.148, 30.242], [120.151, 30.249], [120.154, 30.256], [120.158, 30.260]] } }
+  ]
+}

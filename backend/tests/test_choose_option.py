@@ -102,6 +102,8 @@ def test_build_choice_backfill_returns_none_when_context_empty():
 
 def test_datav_boundary_disambiguation():
     """datav_boundary 遇到多地重名区县（如鼓楼区）时应自动调用 ask_user_choice 并设置 pending"""
+    registered_layers = tools.get_registered_layers_snapshot()
+    tools.reset_registered_layers([])
     tools.reset_state()
     pa.clear_pending_action("test_disambig")
     pa.set_active_session("test_disambig")
@@ -119,3 +121,4 @@ def test_datav_boundary_disambiguation():
     finally:
         pa.clear_pending_action("test_disambig")
         tools.reset_state()
+        tools.reset_registered_layers(registered_layers)

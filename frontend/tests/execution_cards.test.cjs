@@ -40,3 +40,47 @@ test('Scrapling page reads count as completed reads in execution progress', () =
   const card = container.children[0].children[0];
   assert.match(card.children[1].textContent, /已读取1个网页/);
 });
+
+test('running cards show an indeterminate progress cue and a distinct status icon', () => {
+  const { cards, container } = createCards();
+  cards.handle({ type: 'tool_start', step_id: 'running-step', name: 'execute_python', tool_call_id: 'call-1' });
+
+  const card = container.children[0].children[0];
+  const badge = card.children[0].children[2];
+  assert.match(card.className, /ai-step-running/);
+  assert.equal(badge.children[1].textContent, '执行中');
+  assert.match(badge.children[0].innerHTML, /stroke-dasharray/);
+  assert.equal(card.children[2].hidden, false);
+});
+
+test('partial tool results finish with the warning status and stop the progress cue', () => {
+  const { cards, container } = createCards();
+  cards.handle({ type: 'tool_start', step_id: 'partial-step', name: 'execute_python', tool_call_id: 'call-2' });
+  cards.handle({ type: 'tool_end', step_id: 'partial-step', name: 'execute_python', tool_call_id: 'call-2',
+    output: JSON.stringify({ success: true, partial: true, warnings: ['跳过1个无效要素'] }) });
+
+  const card = container.children[0].children[0];
+  const badge = card.children[0].children[2];
+  assert.match(card.className, /ai-step-warning/);
+  assert.match(badge.children[1].textContent, /部分完成/);
+  assert.match(badge.children[0].innerHTML, /M10\.3/);
+  assert.equal(card.children[2].hidden, true);
+});
+
+test('execution failure, waiting, and cancellation each expose a matching status', () => {
+  const { cards, container } = createCards();
+  cards.handle({ type: 'tool_start', step_id: 'failed-step', name: 'execute_python', tool_call_id: 'call-3' });
+  cards.handle({ type: 'tool_end', step_id: 'failed-step', name: 'execute_python', tool_call_id: 'call-3', is_error: true, output: '执行失败' });
+  cards.handle({ type: 'waiting_choice', step_id: 'waiting-step', step_label: '选择图层' });
+  const waitingCard = container.children[0].children[1];
+  assert.match(waitingCard.className, /ai-step-waiting/);
+  assert.equal(waitingCard.children[0].children[2].children[1].textContent, '等待选择');
+  cards.handle({ type: 'tool_start', step_id: 'cancelled-step', name: 'execute_python', tool_call_id: 'call-4' });
+  cards.finish('cancelled', '用户已取消');
+
+  const steps = container.children[0].children;
+  assert.match(steps[0].className, /ai-step-failed/);
+  assert.equal(steps[0].children[0].children[2].children[1].textContent, '步骤失败');
+  assert.match(steps[2].className, /ai-step-cancelled/);
+  assert.equal(steps[2].children[0].children[2].children[1].textContent, '已取消');
+});

@@ -3,6 +3,7 @@
   'use strict';
   const GIS = window.GIS = window.GIS || {};
   const _toolTasks = {};
+  let sampleLoadSequence = 0;
   const paths = {"home":"/assets/ui-icons/workspace-home.png","map":"/assets/ui-icons/workspace-map.png","folder":"/assets/ui-icons/workspace-folder.png","layers":"/assets/ui-icons/workspace-layers.png","tool":"/assets/ui-icons/workspace-tool.png","ai":"/assets/ui-icons/workspace-ai.png","globe":"/assets/ui-icons/workspace-globe.png","upload":"/assets/ui-icons/workspace-upload.png","history":"/assets/ui-icons/workspace-history.png","settings":"/assets/ui-icons/workspace-settings.png","close":"/assets/ui-icons/workspace-close.png","chevron":"/assets/ui-icons/workspace-chevron.png"};
   function escapeMarkup(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
@@ -732,9 +733,9 @@
   }
   function loadSample(sampleName) {
     const sampleFiles = {
-      buffer: { path: '/samples/polygons.geojson', name: '样例_多边形地块', hint: '多边形地块' },
-      points: { path: '/samples/points.geojson', name: '样例_POI实心点', hint: 'POI实心圆点' },
-      network: { path: '/samples/line.geojson', name: '样例_道路路网', hint: '道路网络线' }
+      buffer: { path: '/samples/demo-polygons.json', name: '样例_多边形地块', hint: '多边形地块' },
+      points: { path: '/samples/demo-points.json', name: '样例_POI实心点', hint: 'POI实心圆点' },
+      network: { path: '/samples/demo-lines.json', name: '样例_道路路网', hint: '道路网络线' }
     };
     const info = sampleFiles[sampleName];
     if (!info) return;
@@ -750,7 +751,7 @@
         if (GIS.map && GIS.map.loadGeoJSON) GIS.map.loadGeoJSON(gj, info.name);
         if (GIS.layers && GIS.layers.addLayer) {
           GIS.layers.addLayer({
-            layer_id: 'sample_' + sampleName + '_' + Date.now(),
+            layer_id: 'sample_' + sampleName + '_' + Date.now() + '_' + (++sampleLoadSequence),
             filename: info.name,
             geometry_type: gj.type || 'Vector',
             crs: 'WGS-84',
@@ -840,6 +841,13 @@
           '</div>' +
         '</div>' +
         '<div id="workspaceRecentProjectsList" class="workspace-recent-list"></div>' +
+        '<p class="workspace-section-label">快速体验</p>' +
+        '<div class="workspace-sample-cards">' +
+          '<div class="workspace-sample-card"><strong>多边形地块</strong><p>加载地块示例，可用于查看图层样式和空间分析。</p><button type="button" class="workspace-sample-btn" data-action="load-sample" data-sample="buffer">加载样例</button></div>' +
+          '<div class="workspace-sample-card"><strong>POI 点</strong><p>加载点位示例，查看点图层和属性。</p><button type="button" class="workspace-sample-btn" data-action="load-sample" data-sample="points">加载样例</button></div>' +
+          '<div class="workspace-sample-card"><strong>道路路网</strong><p>加载道路示例，查看线图层样式。</p><button type="button" class="workspace-sample-btn" data-action="load-sample" data-sample="network">加载样例</button></div>' +
+        '</div>' +
+        '<div id="workspaceSampleStatus" class="workspace-sample-status" role="status" aria-live="polite"></div>' +
       '</section>' +
       '<section data-dock-pane="browser" class="workspace-browser" hidden><p class="workspace-pane-intro">从数据获取开始，在地图上检查分析结果。</p><button class="workspace-discovery" data-workspace-action="world"><span class="workspace-discovery-heading">'+icon('globe')+'<strong>全球数据</strong></span><span class="workspace-discovery-detail">按国家和地区探索数据源，选择服务接入工作台。</span><span class="workspace-discovery-link">打开数据地图 '+icon('chevron')+'</span></button><div class="workspace-search"><input id="workspaceDataSearch" type="search" placeholder="按关键词检索数据" aria-label="搜索空间数据源"><button data-workspace-action="search" title="检索数据">'+icon('chevron')+'</button></div><p class="workspace-section-label">接入工作台</p>'+button('upload','导入本地文件','upload','GeoJSON、Shapefile、栅格等')+button('data','目录检索','layers','按主题、地区和协议筛选')+button('connector','数据源连接器','settings','配置账号或添加在线地址')+'<p class="workspace-section-label">继续工作</p>'+button('projects','会话与项目','history','回到已有工作')+'</section><section data-dock-pane="layers" class="workspace-layers" hidden></section><section data-dock-pane="tools" class="workspace-tools" hidden><p class="workspace-pane-intro">选取工具，设置参数后执行。计算结果会回到地图和图层列表。</p>'+button('spatial','空间分析','layers','缓冲、裁剪、叠置')+button('network','网络分析','tool','路径、服务区、最近设施')+button('statistics','空间统计','tool','统计与空间分布')+button('raster','栅格处理','map','地形、波段与栅格计算')+button('history','处理历史','history','查看执行记录并重跑')+'</section>';
     layerPanel.classList.remove('collapsed');
@@ -875,7 +883,7 @@
     if (connector) document.body.appendChild(connector);
     const status = document.createElement('div');
     status.className = 'workspace-statusbar';
-    status.innerHTML = '<span class="workspace-status-dot"></span><span>本地工作台</span><span class="workspace-status-hint" id="workspaceVersionHint" title="版本信息">Git ' + '6697f27' + '</span>';
+    status.innerHTML = '<span class="workspace-status-dot"></span><span>本地工作台</span><span class="workspace-status-hint" id="workspaceVersionHint" title="版本信息">Git …</span>';
     const coords = document.getElementById('mapCoords');
     if (coords) {
       coords.textContent = 'WGS-84 · 经度 -- · 纬度 --';

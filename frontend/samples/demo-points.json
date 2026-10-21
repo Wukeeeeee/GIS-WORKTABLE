@@ -1,0 +1,10 @@
+{
+  "type": "FeatureCollection",
+  "name": "demo-points",
+  "features": [
+    { "type": "Feature", "properties": { "name": "点位 1", "type": "公园", "score": 92 }, "geometry": { "type": "Point", "coordinates": [120.147, 30.247] } },
+    { "type": "Feature", "properties": { "name": "点位 2", "type": "商店", "score": 78 }, "geometry": { "type": "Point", "coordinates": [120.154, 30.248] } },
+    { "type": "Feature", "properties": { "name": "点位 3", "type": "公交站", "score": 85 }, "geometry": { "type": "Point", "coordinates": [120.157, 30.253] } },
+    { "type": "Feature", "properties": { "name": "点位 4", "type": "公园", "score": 67 }, "geometry": { "type": "Point", "coordinates": [120.149, 30.255] } }
+  ]
+}

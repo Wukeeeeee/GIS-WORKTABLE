@@ -54,3 +54,40 @@ test('task history persistence retains the newest 20 unsaved tasks', () => {
   assert.ok(goals.includes('任务 6'), 'the 20th latest task must be retained');
   assert.equal(goals.includes('任务 5'), false, 'older unsaved tasks should fall outside the retention window');
 });
+
+test('saved task cards can attach the backend task reference to the next chat message', () => {
+  let clickHandler;
+  const taskList = {
+    innerHTML: '',
+    addEventListener(name, handler) { if (name === 'click') clickHandler = handler; },
+  };
+  const storage = new Map();
+  const localStorage = {
+    getItem(key) { return storage.get(key) || null; },
+    setItem(key, value) { storage.set(key, value); },
+  };
+  const references = [];
+  const window = { GIS: {
+    api: { resolveProvider() { return null; } },
+    chat: { setTaskReference(id, label) { references.push([id, label]); } },
+  } };
+  const sourcePath = path.resolve(__dirname, '../js/task.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document: { getElementById(id) { return id === 'historyList' ? taskList : null; } },
+    localStorage, Date, Math, JSON, String, Number, Array, Object, console: { warn() {} },
+  }, { filename: sourcePath });
+
+  window.GIS.task.init();
+  const task = window.GIS.task.createTask('卫星底图专题图', 'test', []);
+  window.GIS.task.updateTask(task.id, { status: 'success', backendTaskId: 'backend-task-7' });
+  assert.match(taskList.innerHTML, /task-reference/);
+
+  const referenceButton = {};
+  clickHandler({ target: { closest(selector) {
+    if (selector === '.task-card') return { dataset: { taskId: task.id } };
+    if (selector === '.task-reference') return referenceButton;
+    return null;
+  } } });
+
+  assert.deepEqual(references, [['backend-task-7', '卫星底图专题图']]);
+});

@@ -92,16 +92,31 @@ window.GIS = window.GIS || {};
       span.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + taskIconPath(kind) + '</svg>';
       return span;
     }
+    function statusIconPath(status) {
+      return ({
+        running: '<circle cx="12" cy="12" r="8" stroke-dasharray="34 16"/>',
+        success: '<circle cx="12" cy="12" r="9"/><path d="m8 12 2.5 2.5L16.5 9"/>',
+        failed: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>',
+        waiting: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+        warning: '<path d="M10.3 4.4 2.8 17.2A2 2 0 0 0 4.5 20h15a2 2 0 0 0 1.7-2.8L13.7 4.4a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 3h.01"/>',
+        cancelled: '<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>',
+        interrupted: '<path d="M12 3 2.8 19h18.4L12 3Z"/><path d="M12 9v4m0 3h.01"/>'
+      })[status] || '<circle cx="12" cy="12" r="8"/>';
+    }
     function setStatus(card, status, label) {
       card.status = status;
       card.row.className = 'ai-step-card ai-step-' + status;
-      card.statusText.textContent = label || ({running: '执行中', success: '已完成', failed: '失败', cancelled: '已取消', interrupted: '连接中断', waiting: '等待选择'})[status] || '执行中';
+      var labels = {running: '执行中', success: '已完成', failed: '执行失败', cancelled: '已取消', interrupted: '连接中断', waiting: '等待确认', warning: '部分完成 / 警告'};
+      card.statusText.textContent = label || labels[status] || '执行中';
+      card.statusIcon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + statusIconPath(status) + '</svg>';
+      card.statusBadge.setAttribute('aria-label', card.statusText.textContent);
+      card.progressTrack.hidden = status !== 'running';
     }
     function ensureCard(stepId, label, toolName, input) {
       var key = stepId || ('legacy-' + (cards.size + 1));
       var card = cards.get(key);
       if (card) return card;
-      card = { id: key, status: 'running', inFlight: 0, counts: {search: 0, read: 0}, outputs: [], pendingMapOps: 0, retries: 0 };
+      card = { id: key, status: 'running', inFlight: 0, counts: {search: 0, read: 0}, outputs: [], pendingMapOps: 0, retries: 0, warning: false };
       card.row = document.createElement('article');
       card.row.className = 'ai-step-card ai-step-running';
       var heading = document.createElement('div'); heading.className = 'ai-step-heading';
@@ -109,9 +124,13 @@ window.GIS = window.GIS || {};
       card.icon = icon(task.kind); heading.appendChild(card.icon);
       card.row.dataset.taskKind = task.kind;
       card.title = text('strong', 'ai-step-title', task.title); heading.appendChild(card.title);
-      card.statusText = text('span', 'ai-step-status', '执行中'); heading.appendChild(card.statusText);
+      card.statusBadge = document.createElement('span'); card.statusBadge.className = 'ai-step-status';
+      card.statusIcon = document.createElement('span'); card.statusIcon.className = 'ai-step-status-icon'; card.statusIcon.setAttribute('aria-hidden', 'true'); card.statusBadge.appendChild(card.statusIcon);
+      card.statusText = text('span', 'ai-step-status-text', '执行中'); card.statusBadge.appendChild(card.statusText); heading.appendChild(card.statusBadge);
       card.row.appendChild(heading);
       card.progress = text('div', 'ai-step-progress', '正在处理'); card.row.appendChild(card.progress);
+      card.progressTrack = document.createElement('div'); card.progressTrack.className = 'ai-step-progress-track'; card.progressTrack.setAttribute('aria-hidden', 'true');
+      card.progressIndicator = document.createElement('span'); card.progressIndicator.className = 'ai-step-progress-indicator'; card.progressTrack.appendChild(card.progressIndicator); card.row.appendChild(card.progressTrack);
       card.records = document.createElement('details'); card.records.className = 'ai-step-records';
       card.recordsSummary = text('summary', '', '工具记录'); card.records.appendChild(card.recordsSummary);
       card.recordList = document.createElement('ol'); card.recordList.className = 'ai-step-record-list'; card.records.appendChild(card.recordList);
@@ -163,11 +182,13 @@ window.GIS = window.GIS || {};
       var fullOutput = String(evt.output == null ? '' : evt.output).trim();
       var output = brief(fullOutput);
       var isError = evt.is_error === true || evt.status === 'error' || toolFailureText.test(fullOutput);
+      var isWarning = evt.status === 'partial' || evt.partial === true || evt.has_warning === true;
       var errorText = String(evt.error_message || '').trim();
       if (!isError && fullOutput) {
         try {
           var parsed = JSON.parse(fullOutput);
           isError = !!(parsed && typeof parsed === 'object' && (parsed.ok === false || parsed.success === false || parsed.is_error === true || /^(error|failed|failure)$/i.test(parsed.status || '')));
+          isWarning = isWarning || !!(parsed && typeof parsed === 'object' && (parsed.partial === true || parsed.has_warning === true || parsed.status === 'partial' || (Array.isArray(parsed.warnings) && parsed.warnings.length > 0) || (Array.isArray(parsed.qa_warnings) && parsed.qa_warnings.length > 0) || Number(parsed.skipped_count || 0) > 0));
           if (isError) errorText = String(parsed.error || parsed.message || parsed.hint || '工具执行失败').trim();
         } catch (_) { /* Non-JSON results use the legacy status and prefix checks. */ }
       }
@@ -180,9 +201,13 @@ window.GIS = window.GIS || {};
         setStatus(card, 'failed', '步骤失败');
       } else if (output) {
         card.outputs.push(brief(output));
+        if (isWarning) {
+          card.warning = true;
+          card.outputs.push('部分完成或有警告');
+        }
       }
       updateProgress(card);
-      if (!isError && !card.inFlight && !card.pendingMapOps && card.status === 'running') setStatus(card, 'success');
+      if (!isError && !card.inFlight && !card.pendingMapOps && card.status === 'running') setStatus(card, card.warning ? 'warning' : 'success');
       return card;
     }
     function applyMapOps(evt) {
@@ -243,7 +268,7 @@ window.GIS = window.GIS || {};
         if (card.status === 'waiting' && status === 'success') return;
         card.inFlight = 0;
         card.pendingMapOps = 0;
-        if (status === 'success') setStatus(card, card.error ? 'failed' : 'success');
+        if (status === 'success') setStatus(card, card.error ? 'failed' : card.warning ? 'warning' : 'success');
         else if (status === 'cancelled') setStatus(card, 'cancelled');
         else if (status === 'interrupted') setStatus(card, 'interrupted');
         else if (status === 'waiting') setStatus(card, 'waiting');

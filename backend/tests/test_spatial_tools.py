@@ -642,6 +642,16 @@ class TestExportMap:
     def test_export_png(self):
         r = export_map.invoke({"format": "png"})
         assert "已触发" in r or "导出" in r
+        assert T._pending_layer_ops[-1]["format"] == "png"
+
+    def test_export_jpeg_alias_normalizes_to_jpg(self):
+        export_map.invoke({"format": "jpeg"})
+        assert T._pending_layer_ops[-1]["format"] == "jpg"
+
+    def test_export_rejects_unsupported_format(self):
+        r = export_map.invoke({"format": "webp"})
+        assert "不支持" in r
+        assert T._pending_layer_ops == []
 
 
 
@@ -652,6 +662,13 @@ class TestExportPdf:
     def test_export_pdf_default(self):
         r = export_pdf.invoke({"title": "测试地图"})
         assert "已触发" in r or "PDF" in r
+        assert T._pending_layer_ops[-1]["rotation_degrees"] == 0
+
+    def test_export_pdf_rotation(self):
+        export_pdf.invoke({"title": "旋转地图", "rotation_degrees": 30})
+        op = T._pending_layer_ops[-1]
+        assert op["title"] == "旋转地图"
+        assert op["rotation_degrees"] == 30
 
 
 
@@ -1028,6 +1045,15 @@ class TestSandboxSecurity:
         from backend.services.tools import _ast_sandbox_check
         r = _ast_sandbox_check("class A:\n  def f(self): return super()")
         assert r is not None and "内置类型" in r
+
+    def test_rejects_network_imports_and_points_to_gis_tools(self):
+        from backend.services.tools import _ast_sandbox_check
+        from backend.services import tools as gis_tools
+        assert "禁止导入库「requests」" in _ast_sandbox_check("import requests")
+        assert "禁止导入库「urllib.request」" in _ast_sandbox_check("import urllib.request")
+        result = gis_tools.execute_python.invoke({"code": "import requests"})
+        assert "请勿通过更换导入方式" in result
+        assert "专用 GIS 工具" in result
 
 
 

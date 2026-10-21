@@ -31,7 +31,7 @@ function makeElement() {
   return element;
 }
 
-function bootWorkspace(saved, projects = []) {
+function bootWorkspace(saved, projects = [], options = {}) {
   const elements = new Map();
   const documentListeners = {};
   const geoSourceCalls = { shows: [], searches: [] };
@@ -51,6 +51,8 @@ function bootWorkspace(saved, projects = []) {
   const taskSelect = makeElement();
   const taskCancelButton = makeElement();
   const recentProjects = makeElement();
+  const sampleStatus = makeElement();
+  const sampleCalls = { requests: [], loaded: [], added: [] };
   let taskOutput = null;
   taskPanel.attributes = {};
   taskPanel.setAttribute = function(name, value) { this.attributes[name] = value; };
@@ -83,6 +85,7 @@ function bootWorkspace(saved, projects = []) {
   elements.set('geosourceKeyword', makeElement());
   elements.set('chatInput', makeElement());
   elements.set('workspaceRecentProjectsList', recentProjects);
+  elements.set('workspaceSampleStatus', sampleStatus);
   let dock = null;
   const document = {
     readyState: 'complete',
@@ -117,7 +120,8 @@ function bootWorkspace(saved, projects = []) {
   };
   const window = { GIS: {
     api: { listProjects() { return Promise.resolve({ projects }); } },
-    map: { invalidateSize() {} },
+    map: { invalidateSize() {}, loadGeoJSON(data, name) { sampleCalls.loaded.push({ data, name }); } },
+    layers: { addLayer(layer) { sampleCalls.added.push(layer); } },
     renderers: { getViewer() { return null; } },
     geosource: {
       closeWorldMap() {},
@@ -128,12 +132,17 @@ function bootWorkspace(saved, projects = []) {
       doSearch(page) { geoSourceCalls.searches.push(page); },
     },
   }, innerWidth: 1200, addEventListener() {} };
-  const context = { window, document, localStorage: storage, requestAnimationFrame(callback) { callback(); }, setInterval() { return 1; }, clearInterval() {}, console, Set, Map, Math, Number, String, Array, Object, Promise, Date };
+  const fetch = options.fetch || (url => {
+    sampleCalls.requests.push(url);
+    const fixture = path.resolve(__dirname, '../..', 'frontend' + url);
+    return Promise.resolve({ ok: true, json() { return Promise.resolve(JSON.parse(fs.readFileSync(fixture, 'utf8'))); } });
+  });
+  const context = { window, document, localStorage: storage, fetch, requestAnimationFrame(callback) { callback(); }, setInterval() { return 1; }, clearInterval() {}, console, Set, Map, Math, Number, String, Array, Object, Promise, Date: options.Date || Date, setTimeout };
   const sourcePath = path.resolve(__dirname, '../js/workspace.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   return { workspace: window.GIS.workspace, dock, localStorage: storage, panes, tabs,
     taskPanel, taskRunButton, taskTabButton, taskInput, taskSelect, taskCancelButton,
-    documentListeners, geoSourceCalls, elements, recentProjects,
+    documentListeners, geoSourceCalls, elements, recentProjects, sampleCalls, sampleStatus,
     get taskOutput() { return taskOutput; } };
 }
 
@@ -188,6 +197,37 @@ test('workspace data search opens GeoSource without issuing a duplicate empty-st
   assert.deepEqual(harness.geoSourceCalls.shows, [true]);
   assert.deepEqual(harness.geoSourceCalls.searches, [1]);
   assert.equal(harness.elements.get('geosourceKeyword').value, 'population');
+});
+
+test('home sample cards load tracked demo data into the map and layer list', async () => {
+  const harness = bootWorkspace({});
+  for (const [sample, path] of [
+    ['buffer', '/samples/demo-polygons.json'],
+    ['points', '/samples/demo-points.json'],
+    ['network', '/samples/demo-lines.json'],
+  ]) {
+    assert.match(harness.dock.innerHTML, new RegExp('data-action="load-sample" data-sample="' + sample + '"'));
+    const button = { dataset: { sample }, closest(selector) { return selector === '[data-action="load-sample"]' ? this : null; } };
+    harness.documentListeners.click({ target: button });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(harness.sampleCalls.requests.at(-1), path);
+    assert.equal(harness.sampleCalls.loaded.at(-1).data.features.length > 0, true);
+    assert.equal(harness.sampleCalls.added.at(-1).filename.startsWith('样例_'), true);
+  }
+  assert.match(harness.dock.innerHTML, /id="workspaceSampleStatus"[^>]*role="status"/);
+});
+
+test('repeated same-sample loads in one millisecond receive distinct layer IDs', async () => {
+  class FixedDate extends Date { static now() { return 1700000000000; } }
+  const harness = bootWorkspace({}, [], { Date: FixedDate });
+  for (let i = 0; i < 2; i++) {
+    const button = { dataset: { sample: 'buffer' }, closest(selector) { return selector === '[data-action="load-sample"]' ? this : null; } };
+    harness.documentListeners.click({ target: button });
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  const layerIds = harness.sampleCalls.added.map(layer => layer.layer_id);
+  assert.equal(layerIds.length, 2);
+  assert.notEqual(layerIds[0], layerIds[1]);
 });
 
 test('workspace recent-project cards escape untrusted project metadata', async () => {

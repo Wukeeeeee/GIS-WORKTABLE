@@ -1,4 +1,10 @@
-"""Regression tests for project layer groups surviving save/load and autosave."""
+"""Regression tests for project persistence and import validation."""
+
+import io
+import json
+import zipfile
+
+import pytest
 
 from backend.services import project_service
 
@@ -141,3 +147,28 @@ def test_autosave_keeps_group_for_registered_existing_layer(tmp_path, monkeypatc
     )
     cleared = project_service.load_project(initial["id"])
     assert cleared["layers"][0]["symbology"] is None, "an explicit null clears the saved thematic style"
+
+
+@pytest.mark.parametrize("member_name", [
+    "../pwned.txt",
+    r"..\pwned.txt",
+    "/tmp/pwned.txt",
+    "C:/pwned.txt",
+])
+def test_project_import_rejects_unsafe_archive_paths_before_extract(
+    tmp_path, monkeypatch, member_name
+):
+    _use_temp_project_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(project_service, "_generate_id", lambda: "import-test")
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("project.json", json.dumps({"layers": [], "messages": []}))
+        zf.writestr(member_name, b"outside project")
+
+    with pytest.raises(ValueError, match="不安全路径"):
+        project_service.import_project(archive.getvalue())
+
+    project_root = tmp_path / "projects"
+    assert not (project_root / "pwned.txt").exists()
+    assert not (tmp_path / "tmp" / "pwned.txt").exists()
+    assert not (project_root / "proj_import-test").exists()

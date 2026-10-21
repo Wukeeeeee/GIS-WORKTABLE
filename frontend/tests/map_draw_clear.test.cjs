@@ -125,3 +125,13 @@ test('clear map exits feature-info mode so the next drawn feature is not interce
   assert.equal(h.mapElement.style.cursor, '');
   assert.equal(h.drawButtons[2].classList.contains('active'), false);
 });
+
+test('coordinate readout accepts Tahiti coordinates and distinguishes the Mercator edge', () => {
+  const h = createHarness();
+  assert.equal(h.mapApi.formatWgs84Coordinates(-149.37, -17.69),
+    'WGS-84 · 经度 -149.37000 · 纬度 -17.69000');
+  assert.equal(h.mapApi.formatWgs84Coordinates(210.63, -17.69),
+    'WGS-84 · 经度 -149.37000 · 纬度 -17.69000');
+  assert.equal(h.mapApi.formatWgs84Coordinates(0, -86),
+    'WGS-84 · 鼠标位置超出 Web Mercator 显示范围');
+});

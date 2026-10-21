@@ -126,6 +126,38 @@ def test_map_task_context_does_not_leak_to_another_session(local_map):
     assert "population" in own_context
 
 
+def test_explicitly_referenced_task_context_is_restored(local_map, monkeypatch):
+    task_id, _ = local_map
+    other_task_id = task_manager.create_task("其他会话的无关任务", "cartography-reference-other-session")
+    assert task_manager.find_or_create_task(
+        "cartography-reference-other-session", "把刚才的图改成蓝色", task_id=task_id,
+    ) == task_id
+
+    from backend.services import ai_service
+    from backend.services.llm_config import LLMConfig
+    monkeypatch.setattr(ai_service, "conversation_history", {})
+    cfg = LLMConfig(api_key="local-test", base_url="http://model.invalid", model="controlled", router=False)
+    system, _, _ = ai_service._build_system_content(
+        cfg, "把刚才的图改成蓝色", session_id="cartography-reference-other-session",
+        force_skills=[], task_id=task_id,
+    )
+
+    assert "用户明确引用的历史 GIS 任务" in system
+    assert "长沙人口分布图" in system
+    assert "其他会话的无关任务" not in system
+
+    missing_task_id = task_manager.find_or_create_task(
+        "cartography-reference-other-session", "继续修改已删除任务", task_id="missing-task-id",
+    )
+    assert missing_task_id not in {task_id, other_task_id}
+    system_missing, _, _ = ai_service._build_system_content(
+        cfg, "继续修改已删除任务", session_id="cartography-reference-other-session",
+        force_skills=[], task_id="missing-task-id",
+    )
+    assert "历史任务引用不可用" in system_missing
+    assert "其他会话的无关任务" not in system_missing
+
+
 @pytest.mark.parametrize("streaming", [False, True], ids=["invoke", "stream"])
 def test_controlled_model_routes_style_followups_to_real_tool_chain(local_map, monkeypatch, streaming):
     task_id, wrapped = local_map

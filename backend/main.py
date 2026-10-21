@@ -33,23 +33,26 @@ from backend.launcher import health_identity
 
 # ===== 版本信息（服务器启动时自动生成） =====
 _SERVER_START_TIME = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
-_GIT_COMMIT = ""
-_GIT_DIRTY = False
-try:
-    _GIT_COMMIT = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        capture_output=True, text=True, timeout=3,
-        cwd=os.path.dirname(os.path.dirname(__file__))
-    ).stdout.strip()
-    # 检测是否有未提交的改动
-    _status = subprocess.run(
-        ["git", "status", "--porcelain"],
-        capture_output=True, text=True, timeout=3,
-        cwd=os.path.dirname(os.path.dirname(__file__))
-    ).stdout.strip()
-    _GIT_DIRTY = bool(_status)
-except Exception:
-    _GIT_COMMIT = "unknown"
+_GIT_DIR = os.path.dirname(os.path.dirname(__file__))
+
+
+def _read_git_version():
+    """读取当前工作区版本；接口调用时重新读取，避免提交后显示启动时的旧号。"""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=3, cwd=_GIT_DIR,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=3, cwd=_GIT_DIR,
+        ).stdout.strip()
+        return commit or "unknown", bool(status)
+    except Exception:
+        return "unknown", False
+
+
+_GIT_COMMIT, _GIT_DIRTY = _read_git_version()
 
 app = FastAPI()
 
@@ -127,6 +130,7 @@ class ChatRequest(BaseModel):
     quoted: Optional[str] = None          # 用户点击"引用"的上一条 AI 回复（作为上下文注入）
     task_id: Optional[str] = None         # 任务 ID（跨轮保持）
     mode: str = "full"                    # 回复模式（已固定为完整模式，保留参数用于兼容）
+    read_only_location_analysis: bool = False  # 右键位置分析只允许只读工具，禁止地图图层副作用
 
 class TestKeyRequest(BaseModel):
     llm_config: Optional[LLMConfig] = None  # 通用测速入参即 cfg
@@ -190,6 +194,7 @@ async def chat(request: ChatRequest):
         amap_key=request.amap_key,
         provider=request.provider or "",
         mode=request.mode,
+        task_id=request.task_id,
     ))
     # result 已包含 layers / images / heatmap / clear_layers / pending_suggestions / reasoning
     # 从 chat_with_ai 直接返回给前端，不需要再读全局变量
@@ -329,7 +334,7 @@ async def chat_stream(request: ChatRequest):
     history = _get_or_create_history(session_id, request.message)
     # 技能路由可能等待远程模型；不能在事件循环中同步等待，阻塞健康检查和取消请求。
     system_content, skill_text, _ = await asyncio.to_thread(
-        _build_system_content, cfg, request.message, session_id, force_skills)
+        _build_system_content, cfg, request.message, session_id, force_skills, request.task_id)
 
     # 如果前端附带了待分析图层，将 GeoJSON 注入到用户消息中（同时进入 agent 上下文和校验器）
     original_message = request.message
@@ -380,6 +385,8 @@ async def chat_stream(request: ChatRequest):
                 original_message=original_message,
                 session_id=session_id,
                 mode=request.mode,
+                read_only_location_analysis=request.read_only_location_analysis,
+                task_id=request.task_id,
             ):
                 if line.startswith("data: "):
                     try:
@@ -497,11 +504,29 @@ async def save_proxy_config(req: dict):
 _USER_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache", "user_settings.json")
 
 
+def _sanitize_user_settings(data: dict) -> dict:
+    """Persist Provider metadata only; model API keys belong to browser localStorage."""
+    sanitized = dict(data)
+    providers = sanitized.get("providers")
+    if isinstance(providers, list):
+        sanitized["providers"] = [
+            {key: value for key, value in provider.items() if key != "api_key"}
+            if isinstance(provider, dict) else provider
+            for provider in providers
+        ]
+    return sanitized
+
+
 def _load_user_settings() -> dict:
     if os.path.exists(_USER_SETTINGS_PATH):
         try:
             with open(_USER_SETTINGS_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, dict):
+                sanitized = _sanitize_user_settings(data)
+                if sanitized != data:
+                    _save_user_settings(sanitized)
+                return sanitized
         except Exception:
             pass
     return {}
@@ -511,7 +536,7 @@ def _save_user_settings(data: dict) -> bool:
     os.makedirs(os.path.dirname(_USER_SETTINGS_PATH), exist_ok=True)
     try:
         with open(_USER_SETTINGS_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(_sanitize_user_settings(data), f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         print(f"[GIS] 保存 user_settings 失败: {e}", flush=True)
@@ -520,7 +545,7 @@ def _save_user_settings(data: dict) -> bool:
 
 @app.get("/api/user-settings")
 async def get_user_settings():
-    """获取用户持久化配置（跨浏览器/跨会话保活 API Key、模型与系统设置）"""
+    """获取用户持久化设置；Provider 仅同步元数据，API Key 保留在浏览器。"""
     return _load_user_settings()
 
 
@@ -528,7 +553,7 @@ async def get_user_settings():
 async def save_user_settings(req: dict):
     """保存用户持久化配置（增量合并更新）"""
     current = _load_user_settings()
-    current.update(req)
+    current.update(_sanitize_user_settings(req))
     ok = _save_user_settings(current)
     return {"status": "ok" if ok else "error"}
 
@@ -671,10 +696,11 @@ async def logs_clear():
 
 @app.get("/api/version")
 async def version():
+    commit, dirty = _read_git_version()
     return {
-        "commit": _GIT_COMMIT,
+        "commit": commit,
         "start_time": _SERVER_START_TIME,
-        "dirty": _GIT_DIRTY,
+        "dirty": dirty,
     }
 
 # ===== 清除记忆 =====
@@ -722,6 +748,21 @@ async def get_boundary_api(place: str = "长沙市", adcode: str = ""):
     except Exception as e:
         return {"error": str(e)}
 
+class _MissingGeoTiffCrsError(Exception):
+    pass
+
+
+def _is_safe_zip_member(name: str) -> bool:
+    import ntpath
+    from pathlib import PurePosixPath
+
+    raw_name = str(name or "")
+    normalized = raw_name.replace("\\", "/")
+    path = PurePosixPath(normalized)
+    drive, _ = ntpath.splitdrive(raw_name)
+    return bool(normalized) and not drive and not path.is_absolute() and ".." not in path.parts
+
+
 @app.post('/api/upload')
 async def upload(file: UploadFile = File(...)):
     import os, tempfile, zipfile, orjson
@@ -755,7 +796,45 @@ async def upload(file: UploadFile = File(...)):
                 break
             except FileExistsError:
                 suffix += 1
+    elif ext in ('.tif', '.tiff'):
+        # Reserve both the uploaded TIFF and its converted PNG name. The TIFF
+        # is removed after conversion, so checking only its path would allow a
+        # later same-named upload to overwrite the raster already on the map.
+        stem, file_ext = os.path.splitext(filename)
+        suffix = 0
+        while True:
+            candidate = filename if suffix == 0 else f"{stem}_{suffix}{file_ext}"
+            candidate_path = os.path.join(upload_dir, candidate)
+            candidate_png_path = os.path.join(upload_dir, f"{os.path.splitext(candidate)[0]}.png")
+            try:
+                upload_fd = os.open(candidate_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o666)
+            except FileExistsError:
+                suffix += 1
+                continue
+            try:
+                png_fd = os.open(candidate_png_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o666)
+            except FileExistsError:
+                os.close(upload_fd)
+                upload_fd = None
+                os.unlink(candidate_path)
+                suffix += 1
+                continue
+            except Exception:
+                os.close(upload_fd)
+                upload_fd = None
+                os.unlink(candidate_path)
+                raise
+            os.close(png_fd)
+            filename = candidate
+            break
     saved_path = os.path.join(upload_dir, filename)
+    png_path = os.path.join(upload_dir, f"{os.path.splitext(filename)[0]}.png") if ext in ('.tif', '.tiff') else None
+    def _discard_saved_upload():
+        try:
+            os.unlink(saved_path)
+        except OSError:
+            pass
+
     # 流式落盘（8MB 分块）：上传不再整读进内存，GB 级文件内存峰值 ~10MB
     with (os.fdopen(upload_fd, 'wb') if upload_fd is not None else open(saved_path, 'wb')) as f:
         while True:
@@ -772,8 +851,13 @@ async def upload(file: UploadFile = File(...)):
     # ===== GeoJSON =====
     if ext == '.geojson' or ext == '.json':
         if content is None:
+            _discard_saved_upload()
             return {"error": f"GeoJSON 文件过大（{file_size/1024/1024:.0f}MB > 64MB），请先在桌面 GIS 中抽稀后再上传"}
-        geojson_data = await loop.run_in_executor(None, orjson.loads, content)
+        try:
+            geojson_data = await loop.run_in_executor(None, orjson.loads, content)
+        except orjson.JSONDecodeError:
+            _discard_saved_upload()
+            return {"error": "GeoJSON 文件格式无效，请检查 JSON 语法后重新上传"}
         if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
             _register_layer(filename, geojson_data)
             return {"geojson": geojson_data, "name": filename}
@@ -784,26 +868,43 @@ async def upload(file: UploadFile = File(...)):
             fc = {"type": "FeatureCollection", "features": features}
             _register_layer(filename, fc)
             return {"geojson": fc, "name": filename}
+        _discard_saved_upload()
         return {"error": "文件不是有效的 GeoJSON 格式"}
 
     # ===== SHP (zip 包) =====
     if ext == '.zip':
-        # 看看 zip 里有没有 .shp
-        with zipfile.ZipFile(saved_path) as zf:
-            shp_files = [n for n in zf.namelist() if n.endswith('.shp')]
-            if not shp_files:
-                return {"error": "ZIP 包中没有找到 .shp 文件"}
-            with tempfile.TemporaryDirectory() as tmpdir:
-                zf.extractall(tmpdir)
-                shp_path = os.path.join(tmpdir, shp_files[0])
-                if not os.path.exists(shp_path):
-                    return {"error": "无法读取 Shapefile"}
-                import geopandas as gpd
-                gdf = await loop.run_in_executor(None, functools.partial(gpd.read_file, shp_path))
-                geojson_data = gdf.__geo_interface__
-                name = os.path.splitext(shp_files[0])[0]
-                _register_layer(name, geojson_data)
-                return {"geojson": geojson_data, "name": name}
+        try:
+            with zipfile.ZipFile(saved_path) as zf:
+                def _reject_zip_upload(message: str):
+                    zf.close()
+                    _discard_saved_upload()
+                    return {"error": message}
+
+                members = zf.namelist()
+                if any(not _is_safe_zip_member(member) for member in members):
+                    return _reject_zip_upload("ZIP 包包含不安全的文件路径，已拒绝解压")
+                shp_files = [n for n in members if n.lower().endswith('.shp')]
+                if not shp_files:
+                    return _reject_zip_upload("ZIP 包中没有找到 .shp 文件")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    zf.extractall(tmpdir)
+                    shp_path = os.path.join(tmpdir, shp_files[0])
+                    if not os.path.exists(shp_path):
+                        return _reject_zip_upload("无法读取 Shapefile")
+                    import geopandas as gpd
+                    gdf = await loop.run_in_executor(None, functools.partial(gpd.read_file, shp_path))
+                    if gdf.crs is None:
+                        return _reject_zip_upload("矢量文件缺少坐标参考系，无法安全转换为 WGS-84；请补充 .prj 文件后重新上传")
+                    geojson_data = gdf.to_crs("EPSG:4326").__geo_interface__
+                    name = os.path.splitext(os.path.basename(shp_files[0]))[0]
+                    _register_layer(name, geojson_data)
+                    return {"geojson": geojson_data, "name": name}
+        except zipfile.BadZipFile:
+            _discard_saved_upload()
+            return {"error": "ZIP 文件损坏或格式无效，请重新压缩后上传"}
+        except Exception as e:
+            _discard_saved_upload()
+            return {"error": f"无法读取 ZIP 中的 Shapefile: {str(e)[:200]}"}
 
     # ===== GPKG / KML / GPX 等（geopandas 支持的多图层格式） =====
     supported = {'.gpkg', '.kml', '.kmz', '.gpx', '.dxf'}
@@ -826,7 +927,9 @@ async def upload(file: UploadFile = File(...)):
                     continue
             if gdf is None or gdf.empty:
                 return {"error": "文件未包含有效的地理数据"}
-            geojson_data = gdf.__geo_interface__
+            if gdf.crs is None:
+                return {"error": "矢量文件缺少坐标参考系，无法安全转换为 WGS-84"}
+            geojson_data = gdf.to_crs("EPSG:4326").__geo_interface__
             name = os.path.splitext(filename)[0]
             _register_layer(name, geojson_data)
             return {"geojson": geojson_data, "name": name}
@@ -838,16 +941,22 @@ async def upload(file: UploadFile = File(...)):
 
     # ===== GeoTIFF 栅格加载 =====
     if ext in ('.tif', '.tiff'):
+        tif_path = saved_path
         try:
             import rasterio
-            from rasterio.warp import transform_bounds
+            from rasterio.enums import Resampling
+            from rasterio.transform import array_bounds
+            from rasterio.warp import calculate_default_transform, reproject, transform_bounds
             import numpy as np
             from PIL import Image
 
-            tif_path = saved_path
-
             with rasterio.open(tif_path) as src:
                 nodata = src.nodata
+                if src.crs is None:
+                    raise _MissingGeoTiffCrsError(
+                        "GeoTIFF 缺少坐标参考系，无法安全定位到地图；请先定义 CRS 后重新上传"
+                    )
+                source_crs = src.crs
                 if src.count >= 3:
                     red = src.read(1).astype(np.float64)
                     green = src.read(2).astype(np.float64)
@@ -856,31 +965,54 @@ async def upload(file: UploadFile = File(...)):
                     band = src.read(1).astype(np.float64)
                     red = green = blue = band
 
-                if nodata is not None:
-                    mask = (red == nodata) & (green == nodata) & (blue == nodata)
-                else:
-                    mask = None
+                valid = np.isfinite(red) & np.isfinite(green) & np.isfinite(blue)
+                if nodata is not None and not np.isnan(nodata):
+                    valid &= ~((red == nodata) & (green == nodata) & (blue == nodata))
 
                 def norm(b):
-                    b = np.clip(b, np.percentile(b[~np.isnan(b)], 2), np.percentile(b[~np.isnan(b)], 98)) if np.isfinite(b).any() else b
-                    b = (b - b.min()) / (b.max() - b.min() + 1e-10) * 255
-                    return b.astype(np.uint8)
+                    values = b[valid]
+                    if not values.size:
+                        return np.full(b.shape, -9999, dtype=np.float32)
+                    low, high = np.percentile(values, [2, 98])
+                    if high <= low:
+                        scaled = np.zeros(b.shape, dtype=np.float32)
+                    else:
+                        scaled = (np.clip(b, low, high) - low) / (high - low) * 255
+                    scaled[~valid] = -9999
+                    return scaled.astype(np.float32)
 
-                rgb = np.stack([norm(red), norm(green), norm(blue)], axis=-1)
-                if mask is not None:
-                    rgb[mask] = 0
+                dst_crs = "EPSG:3857"
+                dst_transform, dst_width, dst_height = calculate_default_transform(
+                    source_crs, dst_crs, src.width, src.height, *src.bounds
+                )
+                rgb = np.zeros((dst_height, dst_width, 3), dtype=np.uint8)
+                for index, band in enumerate((red, green, blue)):
+                    destination = np.zeros((dst_height, dst_width), dtype=np.float32)
+                    reproject(
+                        source=norm(band), destination=destination,
+                        src_transform=src.transform, src_crs=source_crs,
+                        dst_transform=dst_transform, dst_crs=dst_crs,
+                        src_nodata=-9999, dst_nodata=0, resampling=Resampling.bilinear,
+                    )
+                    rgb[:, :, index] = np.clip(destination, 0, 255).astype(np.uint8)
 
-                img = Image.fromarray(rgb)
+                source_valid = valid.astype(np.uint8)
+                destination_valid = np.zeros((dst_height, dst_width), dtype=np.uint8)
+                reproject(
+                    source=source_valid, destination=destination_valid,
+                    src_transform=src.transform, src_crs=source_crs,
+                    dst_transform=dst_transform, dst_crs=dst_crs,
+                    src_nodata=0, dst_nodata=0, resampling=Resampling.nearest,
+                )
+                rgba = np.dstack((rgb, destination_valid * 255))
+                img = Image.fromarray(rgba, mode="RGBA")
                 name = os.path.splitext(filename)[0]
                 png_name = f"{name}.png"
-                png_path = os.path.join(upload_dir, png_name)
                 img.save(png_path)
 
-                if src.crs and src.crs.to_string() != 'EPSG:4326':
-                    bounds_wgs84 = transform_bounds(src.crs, 'EPSG:4326', *src.bounds)
-                else:
-                    bounds_wgs84 = src.bounds
-                w, h = src.width, src.height
+                bounds_mercator = array_bounds(dst_height, dst_width, dst_transform)
+                bounds_wgs84 = transform_bounds(dst_crs, 'EPSG:4326', *bounds_mercator)
+                w, h = dst_width, dst_height
 
             try: os.unlink(tif_path)
             except: pass
@@ -895,9 +1027,21 @@ async def upload(file: UploadFile = File(...)):
                 },
                 "message": f"已加载栅格图层: {name}"
             }
+        except _MissingGeoTiffCrsError as e:
+            for path in (tif_path, png_path):
+                try: os.unlink(path)
+                except OSError: pass
+            return {"error": str(e)}
         except ImportError:
+            for path in (tif_path, png_path):
+                try: os.unlink(path)
+                except OSError: pass
             return {"error": "栅格处理依赖 rasterio/PIL，请安装: pip install rasterio pillow numpy"}
         except Exception as e:
+            for path in (tif_path, png_path):
+                if path:
+                    try: os.unlink(path)
+                    except OSError: pass
             import traceback
             return {"error": f"GeoTIFF 处理失败: {str(e)[:300]}"}
 
@@ -1029,6 +1173,14 @@ async def load_project(project_id: str):
     await asyncio.to_thread(project_service.activate_project, project_id, session_id=session_id)
     return result
 
+@app.get("/api/projects/{project_id}/assets/{filename}")
+async def get_project_asset(project_id: str, filename: str):
+    path = await asyncio.to_thread(project_service.get_project_raster_asset, project_id, filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail="工程资源不存在")
+    import mimetypes
+    return FileResponse(path, media_type=mimetypes.guess_type(path)[0] or "application/octet-stream")
+
 @app.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str):
     await asyncio.to_thread(project_service.delete_project, project_id)
@@ -1091,10 +1243,14 @@ async def unregister_layer(request: UnregisterLayerRequest):
 class RegisterLayerRequest(BaseModel):
     name: str
     geojson: dict
+    group_name: Optional[str] = None
 
 @app.post("/api/layer/register")
 async def register_layer(request: RegisterLayerRequest):
-    _register_layer(request.name, request.geojson)
+    try:
+        _register_layer(request.name, request.geojson, group_name=request.group_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"success": True, "message": f"已注册图层: {request.name}"}
 
 

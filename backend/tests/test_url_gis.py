@@ -2,7 +2,10 @@
 """GIS URL 探测与数据抽取服务单元测试"""
 
 import os
+import io
 import json
+import zipfile
+import tempfile
 from unittest.mock import patch, MagicMock
 import pytest
 from backend.services import url_gis_service as ugs
@@ -167,3 +170,53 @@ def test_fetch_gis_data_url_csv(tmp_path, monkeypatch):
         assert res["feature_count"] == 2
         assert res["crs"] == "EPSG:4326"
         assert os.path.exists(res["file_path"])
+
+
+@pytest.mark.parametrize("member", ["../escape.shp", r"..\escape.shp", "C:/escape.shp", "/escape.shp"])
+def test_inspect_remote_shapefile_zip_rejects_unsafe_member_paths(tmp_path, monkeypatch, member):
+    extract_dir = tmp_path / "inspect-extract"
+    extract_dir.mkdir()
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("safe.shp", b"safe")
+        archive.writestr(member, b"unsafe")
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda **_kwargs: str(extract_dir))
+    response = _make_mock_response(content_bytes=archive_bytes.getvalue())
+
+    with patch("backend.services.url_gis_service._http_get", return_value=response):
+        with pytest.raises(ugs.UrlGisError, match="不安全的文件路径"):
+            ugs._inspect_zip_shapefile("https://example.com/data.zip")
+
+    assert not (extract_dir / "safe.shp").exists()
+    assert not (tmp_path / "escape.shp").exists()
+
+
+def test_safe_extract_remote_shapefile_zip_accepts_relative_members(tmp_path):
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("roads.shp", b"safe shapefile data")
+
+    with zipfile.ZipFile(io.BytesIO(archive_bytes.getvalue())) as archive:
+        ugs._safe_extract_zip(archive, str(tmp_path))
+
+    assert (tmp_path / "roads.shp").read_bytes() == b"safe shapefile data"
+
+
+def test_fetch_remote_shapefile_zip_rejects_unsafe_member_paths(tmp_path, monkeypatch):
+    extract_dir = tmp_path / "fetch-extract"
+    extract_dir.mkdir()
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("safe.shp", b"safe")
+        archive.writestr("../escape.shp", b"unsafe")
+    monkeypatch.setattr(ugs, "inspect_gis_url", lambda _url: {"service_type": "Shapefile_ZIP"})
+    monkeypatch.setattr(ugs, "_get_output_dir", lambda: str(tmp_path / "downloads"))
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda **_kwargs: str(extract_dir))
+    response = _make_mock_response(content_bytes=archive_bytes.getvalue())
+
+    with patch("backend.services.url_gis_service._http_get", return_value=response):
+        with pytest.raises(ugs.UrlGisError, match="不安全的文件路径"):
+            ugs.fetch_gis_data_url("https://example.com/data.zip")
+
+    assert not (extract_dir / "safe.shp").exists()
+    assert not (tmp_path / "escape.shp").exists()

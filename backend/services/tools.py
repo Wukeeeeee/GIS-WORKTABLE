@@ -501,56 +501,123 @@ def _extract_coords(geom: dict, coords: list):
 
 
 def _make_fid(props: dict, idx: int) -> str:
-    """稳定要素 ID：adcode > name > id > index 兜底。与前端 gis_state.js 规则一致。"""
+    """稳定要素 ID：行政代码 > 数据源 ID > 名称 > 顺序兜底。"""
     if props.get("adcode") not in (None, ""):
         return f"p:{props['adcode']}"
-    if props.get("name"):
-        return f"n:{props['name']}"
     if props.get("id") not in (None, ""):
         return f"id:{props['id']}"
+    if props.get("name"):
+        return f"n:{props['name']}"
     return f"i:{idx}"
 
 
-def _register_layer(name: str, geojson: dict):
+def _register_layer(name: str, geojson: dict, group_name: str = None):
     """注册图层供 AI 后续查询。注册时为每个要素注入稳定 _fid（幂等），
     供前端 2D/3D 选中同步与下钻状态机使用。"""
-    try:
-        fc = _normalize_geojson(geojson)
-        features = fc.get("features", [])
-        types = set()
-        for i, f in enumerate(features):
-            geom = f.get("geometry", {}) or {}
-            if geom.get("type"):
-                types.add(geom["type"])
-            props = f.get("properties")
-            if not isinstance(props, dict):
-                props = {}
-                f["properties"] = props
-            if props.get("_fid") is None:
-                props["_fid"] = _make_fid(props, i)
-        bbox = _compute_bbox(geojson)
-        with _state_lock:
-            _registered_layers[name] = {
-                "name": name,
-                "layer_id": uuid.uuid4().hex,
-                "feature_count": len(features),
-                "geometry_types": list(types) if types else ["未知"],
-                "geojson": geojson,
-                "bbox": bbox,
-            }
-    except Exception:
-        pass
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("图层名称不能为空")
+    if not isinstance(geojson, dict):
+        raise ValueError("图层数据必须是 GeoJSON 对象")
+    fc = _normalize_geojson(geojson)
+    if not isinstance(fc, dict) or not isinstance(fc.get("features"), list):
+        raise ValueError("GeoJSON 必须是 Feature、FeatureCollection 或 Geometry")
+
+    features = fc["features"]
+    types, used_fids = set(), set()
+    for i, feature in enumerate(features):
+        if not isinstance(feature, dict):
+            raise ValueError(f"第 {i + 1} 个要素格式无效")
+        geom = feature.get("geometry") or {}
+        if geom.get("type"):
+            types.add(geom["type"])
+        props = feature.get("properties")
+        if not isinstance(props, dict):
+            props = {}
+            feature["properties"] = props
+        fid = props.get("_fid")
+        if fid in (None, "") or str(fid) in used_fids:
+            fid = _make_fid(props, i)
+            if str(fid) in used_fids:
+                fid = f"i:{i}"
+            suffix = 1
+            while str(fid) in used_fids:
+                fid = f"i:{i}:{suffix}"
+                suffix += 1
+            props["_fid"] = fid
+        used_fids.add(str(fid))
+
+    bbox = _compute_bbox(fc)
+    with _state_lock:
+        previous = _registered_layers.get(name) or {}
+        _registered_layers[name] = {
+            "name": name,
+            "layer_id": previous.get("layer_id") or uuid.uuid4().hex,
+            "group_name": (group_name.strip() if isinstance(group_name, str) else previous.get("group_name", "")),
+            "feature_count": len(features),
+            "geometry_types": list(types) if types else ["未知"],
+            "geojson": fc,
+            "bbox": bbox,
+        }
+
+
+def _update_registered_layer_data(name: str, geojson: dict):
+    """Replace registered data through the same metadata/FID refresh path as registration."""
+    _register_layer(name, geojson)
+
+
+def _get_exact_registered_layer(name: str) -> tuple:
+    """Mutating operations require the exact registered layer name to avoid editing a similarly named layer."""
+    if isinstance(name, str) and name.strip() and name in _registered_layers:
+        return name, _registered_layers[name], ""
+    if not isinstance(name, str) or not name.strip():
+        return "", None, "图层名不能为空；请先查看已注册图层并传入完整图层名；未执行修改"
+    candidates = [key for key in _registered_layers if name in key]
+    if candidates:
+        if len(candidates) == 1:
+            return "", None, f"请使用完整图层名「{candidates[0]}」，未执行修改"
+        return "", None, f"「{name}」匹配多个图层：{', '.join(candidates)}，请指定完整图层名；未执行修改"
+    return "", None, f"未找到完整图层名「{name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}；未执行修改"
+
+
+def _layer_property_examples(geojson: dict, limit: int = 3) -> list:
+    """抽取少量分散的非敏感属性样例，帮助模型理解图层内容。"""
+    features = geojson.get("features", []) if isinstance(geojson, dict) else []
+    if not features:
+        return []
+    if len(features) <= limit:
+        indices = list(range(len(features)))
+    else:
+        indices = sorted({round(i * (len(features) - 1) / (limit - 1)) for i in range(limit)}) if limit > 1 else [0]
+    examples = []
+    for index in indices:
+        props = features[index].get("properties") or {}
+        example = {}
+        for key, value in props.items():
+            key_text = str(key)
+            if key_text == "_fid" or any(term in key_text.casefold() for term in ("password", "secret", "token", "api_key", "phone", "email")):
+                continue
+            if isinstance(value, (str, int, float)) and str(value).strip():
+                example[key_text] = str(value)[:72]
+            if len(example) >= 5:
+                break
+        if example:
+            examples.append(example)
+    return examples
 
 
 def get_registered_layers_snapshot() -> list:
-    """返回当前所有注册图层的快照 [{name, geojson, geometry_types, feature_count, color?, visible?}]"""
+    """返回当前所有注册图层的快照，包括属性样例，供 AI 识别图层内容。"""
     result = []
     for name, info in list(_registered_layers.items()):
+        geojson = info.get("geojson") or {}
         result.append({
             "filename": name,
-            "geojson": info.get("geojson"),
+            "group_name": info.get("group_name", ""),
+            "geojson": geojson,
             "geometry_types": info.get("geometry_types", []),
             "feature_count": info.get("feature_count", 0),
+            "bbox": info.get("bbox", []),
+            "property_examples": _layer_property_examples(geojson),
             "source": "ai",
         })
     return result
@@ -1277,7 +1344,8 @@ def _extract_geojson(name: str, data: dict):
 def execute_python(code: str) -> str:
     """执行自定义 Python GIS 分析与可视化代码（沙箱隔离）。
     仅当需绘制多子图图表(matplotlib/pyecharts)、指标看板或无现有工具覆盖的高级矢量/栅格运算时使用。
-    常用库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, rasterio, pyproj, requests。
+    允许库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, rasterio, pyproj, osmnx, json, math, re, datetime, io, tempfile。
+    不允许在用户代码中联网（requests/urllib 被沙箱拦截）；边界和要素使用 fetch_osm_boundary_or_features 等现有 GIS 工具。
     输出规范：print(GeoJSON) 自动加载到地图（加 name 属性为图层名）；plt.savefig('chart_xxx.png') 自动注册图表。"""
     global _exec_call_count, _exec_log
     _exec_call_count += 1
@@ -1315,7 +1383,7 @@ def execute_python(code: str) -> str:
                               stderr=ast_error, exit_code=1)
             except Exception:
                 pass
-        return ast_error
+        return ast_error + "\n请勿通过更换导入方式、反射或内省绕过沙箱；联网获取 GIS 数据请调用现有专用 GIS 工具。"
 
     # ================================================================
     # 第二层：每次执行创建专属临时目录
@@ -1569,53 +1637,130 @@ _os.makedirs('output', exist_ok=True)
 # 工具: amap_poi_search — 高德 POI 搜索（独立工具）
 # ============================================================
 
+def _search_osm_poi_fallback(keywords: str, city: str = "", location: str = "", radius: int = 1000) -> dict:
+    """Use public OSM/Overpass POIs when AMap is unavailable; bbox coordinates are WGS-84."""
+    import re as _re
+    from backend.services.data_providers import geocode as _geocode
+    from backend.services.data_providers.osm_provider import OpenStreetMapProvider, _element_to_feature
+
+    if location:
+        parts = location.split(",")
+        if len(parts) != 2:
+            raise ValueError("位置坐标格式应为 经度,纬度")
+        lon, lat = float(parts[0].strip()), float(parts[1].strip())
+        if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+            raise ValueError("位置坐标超出经纬度范围")
+        radius_m = max(100, min(int(radius or 1000), 50000))
+        lat_delta = radius_m / 111320
+        lon_delta = radius_m / max(111320 * abs(math.cos(math.radians(lat))), 1000)
+        bbox = (lon - lon_delta, lat - lat_delta, lon + lon_delta, lat + lat_delta)
+        area = f"{lat:.5f},{lon:.5f} ±{radius_m}m"
+    elif city:
+        bbox = _geocode.resolve_area_bbox(city)
+        area = city
+    else:
+        raise ValueError("OSM 回退搜索需要城市名或中心坐标")
+
+    text = str(keywords or "").strip()
+    if not text:
+        raise ValueError("缺少 POI 搜索关键词")
+    normalized = text.lower()
+    category_tags = {
+        "hospital": ("amenity", "^(hospital|clinic|doctors)$"),
+        "医院": ("amenity", "^(hospital|clinic|doctors)$"),
+        "school": ("amenity", "^(school|university|college|kindergarten)$"),
+        "学校": ("amenity", "^(school|university|college|kindergarten)$"),
+        "餐厅": ("amenity", "^(restaurant|fast_food|cafe)$"),
+        "restaurant": ("amenity", "^(restaurant|fast_food|cafe)$"),
+        "pharmacy": ("amenity", "pharmacy"),
+        "药店": ("amenity", "pharmacy"),
+        "超市": ("shop", "^(supermarket|convenience)$"),
+        "supermarket": ("shop", "^(supermarket|convenience)$"),
+    }
+    matched_tags = next((value for key, value in category_tags.items() if key in normalized), None)
+    if matched_tags:
+        tag, value = matched_tags
+        selectors = [f'{obj}["{tag}"~"{value}"]' for obj in ("node", "way", "relation")]
+        if text in ("医院", "hospital"):
+            selectors += [f'{obj}["healthcare"~"^(hospital|clinic|doctor|doctors)$"]' for obj in ("node", "way", "relation")]
+    else:
+        regex = _re.escape(text).replace('"', '\\"')
+        quoted = json.dumps(regex, ensure_ascii=False)
+        selectors = [f'{obj}["name"~{quoted},i]' for obj in ("node", "way", "relation")]
+
+    provider = OpenStreetMapProvider()
+    query = provider._build_query(selectors, bbox, max_items=3000)
+    response = provider._overpass(query)
+    features = []
+    for element in response.get("elements") or []:
+        feature = _element_to_feature(element)
+        if feature:
+            feature["properties"]["source"] = "OpenStreetMap"
+            features.append(feature)
+    return {
+        "geojson": {"type": "FeatureCollection", "name": f"{text}_POI_OSM", "features": features},
+        "count": len(features),
+        "area": area,
+    }
+
+
 @tool
 def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: int = 1000) -> str:
-    """高德地图 POI 搜索（餐厅/银行/超市等），自动转 WGS-84 加载到地图。
-    keywords: 搜索关键词；city: 城市名（必填）；location: 中心点"经度,纬度"（周边搜索用）；radius: 搜索半径米（默认1000）。禁止用 execute_python 调高德API。"""
-    if not _current_amap_key:
-        return "高德 API Key 未配置，请在设置中配置高德地图密钥"
+    """Search POIs with AMap when available, then automatically fall back to public OSM/Overpass.
+    keywords: POI type/name; city: city or region; location: WGS-84 center as "lng,lat"; radius: meters."""
+    amap_error = ""
+    result = None
+    if _current_amap_key:
+        from backend.services.amap_service import search_poi as _search_poi
 
-    from backend.services.amap_service import search_poi as _search_poi
+        # AMap uses GCJ-02 for around queries; preserve the supplied WGS-84 point for OSM fallback.
+        actual_location = location
+        if location:
+            try:
+                parts = location.split(",")
+                wgs_lng, wgs_lat = float(parts[0].strip()), float(parts[1].strip())
+                actual_location = f"{wgs_lng},{wgs_lat}"
+            except (ValueError, IndexError):
+                pass
+        result = _search_poi(
+            keywords=keywords, city=city,
+            location=actual_location if location else "",
+            radius=radius, api_key=_current_amap_key,
+        )
+        amap_error = result.get("error", "")
+        if not amap_error and result.get("count", 0) > 0:
+            geojson = result["geojson"]
+            count = result["count"]
+            source = result["source"]
+            layer_name = f"{keywords}_POI(高德已转WGS84)"
+        else:
+            source = ""
+            geojson = None
+            count = 0
+    else:
+        amap_error = "高德 API Key 未配置"
+        source = ""
+        geojson = None
+        count = 0
 
-    # 如果有 location，需要从 WGS-84 转到 GCJ-02 再搜索
-    # （高德 API 需要 GCJ-02 坐标输入）
-    actual_location = location
-    if location:
+    if not source:
         try:
-            parts = location.split(",")
-            wgs_lng, wgs_lat = float(parts[0].strip()), float(parts[1].strip())
-            # 近似：WGS-84 → GCJ-02 的逆转换（直接用高德 API 接受 WGS-84 也可以，但结果偏差不大）
-            # 高德周边搜索直接接受 WGS-84 也能工作
-            actual_location = f"{wgs_lng},{wgs_lat}"
-        except (ValueError, IndexError):
-            pass
+            fallback = _search_osm_poi_fallback(keywords, city, location, radius)
+            geojson, count = fallback["geojson"], fallback["count"]
+            if not count:
+                return f"高德不可用（{amap_error}）；已尝试 OSM，但在「{fallback['area']}」未找到「{keywords}」POI。"
+            source = "OpenStreetMap"
+            layer_name = f"{keywords}_POI(OSM)"
+        except Exception as error:
+            return f"高德不可用（{amap_error or '无有效结果'}）；OSM 回退也失败：{str(error)[:250]}"
 
-    result = _search_poi(
-        keywords=keywords,
-        city=city,
-        location=actual_location if location else "",
-        radius=radius,
-        api_key=_current_amap_key
-    )
-
-    if result.get("error"):
-        return f"POI 搜索失败：{result['error']}"
-
-    geojson = result["geojson"]
-    count = result["count"]
-    source = result["source"]
-
-    if count == 0:
-        return f"未找到「{keywords}」相关 POI"
-
-    # 自动推送到地图（名称标注"高德已转WGS84"，说明坐标已转换）
-    layer_name = f"{keywords}_POI(高德已转WGS84)"
     _push_layer(layer_name, geojson, {"color": "#e74c3c", "fillColor": "#e74c3c"})
     _register_layer(layer_name, geojson)
 
-    source_desc = "关键字搜索" if source == "text" else "周边搜索"
     feat_count = len(geojson.get("features", []))
+    if source == "OpenStreetMap":
+        return f"高德不可用（{amap_error}）；已自动回退到 OpenStreetMap，找到 {count} 个「{keywords}」POI，已加载 {feat_count} 个要素。OSM 数据由社区维护，中国地区覆盖可能不完整。"
+    source_desc = "关键字搜索" if source == "text" else "周边搜索"
     return f"高德 {source_desc} 完成：找到 {count} 个「{keywords}」POI，原始坐标 GCJ-02 已转 WGS-84，已加载 {feat_count} 个点到地图（图层名已标注）"
 
 
@@ -1743,10 +1888,13 @@ def _format_extent(bbox: list) -> str:
     return loc
 
 
-def _registered_layers_summary() -> str:
+def _registered_layers_summary(keyword: str = "") -> str:
     """生成当前会话图层摘要，供多个工具入口共享。"""
     if not _registered_layers:
         return "当前地图没有已加载或注册的图层。"
+    import re
+
+    terms = [part.strip() for part in re.split(r"[,，、;；|]", keyword or "") if part.strip()]
     lines = [f"当前地图共注册了 {len(_registered_layers)} 个图层："]
     for name, info in _registered_layers.items():
         types = ", ".join(info.get("geometry_types", ["未知"]))
@@ -1763,20 +1911,46 @@ def _registered_layers_summary() -> str:
                         if k not in fields and k != "_fid":
                             fields.append(k)
         fields_desc = f"，属性字段: {', '.join(fields[:8])}" if fields else ""
-        lines.append(f"  - 图层「{name}」: {fc} 个要素（东西），几何类型: {types}，范围: {ext}{fields_desc}")
+        examples = _layer_property_examples(geojson)
+        examples_desc = f"，属性样例: {examples}" if examples else ""
+        group_name = info.get("group_name", "")
+        group_desc = f"，所属分组:「{group_name}」" if group_name else "，所属分组:未分组"
+        lines.append(f"  - 图层「{name}」: {fc} 个要素（东西），几何类型: {types}，范围: {ext}{group_desc}{fields_desc}{examples_desc}")
+    if terms:
+        lines.append("\n按属性内容检索结果：")
+        for term in terms:
+            needle = term.casefold()
+            term_hits = []
+            for name, info in _registered_layers.items():
+                features = (info.get("geojson") or {}).get("features", [])
+                matched = []
+                for feature in features:
+                    props = feature.get("properties") or {}
+                    if any(needle in str(value).casefold() for value in props.values() if value is not None):
+                        matched.append(props)
+                if matched or needle in name.casefold():
+                    examples = []
+                    for props in matched[:3]:
+                        label = next((str(props[key]) for key in ("name", "name:zh", "名称", "poi_name", "医院名称", "NAME") if props.get(key)), "")
+                        examples.append(label or str({k: v for k, v in props.items() if k != "_fid"})[:100])
+                    term_hits.append(f"图层「{name}」命中 {len(matched)} 个要素" + (f"，样例: {', '.join(examples)}" if examples else "（关键词匹配图层名）"))
+            lines.append(f"  - 关键词「{term}」: " + ("；".join(term_hits) if term_hits else "没有匹配到图层或要素属性"))
     lines.append("\n如需查看指定图层的具体属性明细或前几条要素内容，可进一步调用 get_layer_detail(layer_name) 工具；如需对图层做缓冲区、叠加分析、裁剪等处理，可直接调用对应 GIS 工具。")
     return "\n".join(lines)
 
 
 @tool
-def get_registered_layers() -> str:
-    """查看当前地图上所有已加载和已注册的图层列表，包括图层名、要素数量（有几个要素/东西）、几何类型、覆盖范围和属性字段。
+def get_registered_layers(keyword: str = "") -> str:
+    """查看当前已注册图层；可附关键词在全部图层属性中查找对应要素。
 
     【适用场景】
     - 用户询问“现在有几个图层”、“图层有几个东西”、“有哪些图层”、“当前地图有什么数据”
     - 对图层进行进一步空间分析、筛选或处理前，先查看当前图层状态和要素数
+    - 不确定某个对象（如麦当劳、医院）在哪个图层时，将对象名放入 keyword 搜索属性值
+
+    keyword 可用逗号、顿号或分号分隔多个对象名称；留空时返回图层概览及属性样例。
     """
-    return _registered_layers_summary()
+    return _registered_layers_summary(keyword)
 
 
 @tool
@@ -1801,7 +1975,7 @@ def get_layer_detail(layer_name: str) -> str:
     【返回】
     - 图层名称、要素数、几何类型、覆盖范围
     - 属性字段列表
-    - 前 3 个要素的属性预览
+    - 前 3 个要素的稳定 ID（可用于精确修改/删除单条要素）及业务属性预览
     """
     if not layer_name or not layer_name.strip():
         return f"错误：layer_name 不能为空，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
@@ -1821,17 +1995,19 @@ def get_layer_detail(layer_name: str) -> str:
     fields = set()
     for f in features[:50]:
         props = f.get("properties", {}) or {}
-        fields.update(props.keys())
+        fields.update(key for key in props if key != "_fid")
     fields = sorted(fields)
     # 属性样本（前 3 个要素）
     samples = []
     for f in features[:3]:
         props = f.get("properties", {}) or {}
-        if props:
-            samples.append(props)
+        visible_props = {key: value for key, value in props.items() if key != "_fid"}
+        if visible_props:
+            samples.append((f, visible_props))
     bbox = info.get("bbox", [])
     result = [
         f"图层：{info['name']}",
+        f"所属分组：{info.get('group_name') or '未分组'}",
         f"要素数：{info['feature_count']}",
         f"几何类型：{', '.join(info['geometry_types'])}",
         f"覆盖范围：{_format_extent(bbox)}",
@@ -1840,8 +2016,9 @@ def get_layer_detail(layer_name: str) -> str:
         result.append(f"属性字段（{len(fields)}个）：{', '.join(fields)}")
     if samples:
         result.append("属性样本（前3个要素）：")
-        for i, s in enumerate(samples, 1):
-            result.append(f"  要素{i}: {json.dumps(s, ensure_ascii=False)[:200]}")
+        for i, (feature, s) in enumerate(samples, 1):
+            fid = (feature.get("properties") or {}).get("_fid", "未知")
+            result.append(f"  要素{i}（稳定 ID: {fid}）: {json.dumps(s, ensure_ascii=False)[:200]}")
     return "\n".join(result)
 
 
@@ -1851,7 +2028,7 @@ def get_layer_detail(layer_name: str) -> str:
 
 @tool
 def datav_boundary(name: str) -> str:
-    """从阿里云 DataV 获取中国省/市/区三级行政边界，自动转 WGS-84 加载到地图。国外边界用 execute_python 调 osmnx。查不到时尝试上级行政区划。"""
+    """从阿里云 DataV 获取中国省/市/区三级行政边界，自动转 WGS-84 加载到地图。国外边界请调用 fetch_osm_boundary_or_features。查不到时尝试上级行政区划。"""
     try:
         from backend.services.datav_service import fetch_boundary, get_ambiguous_candidates
         # 1. 检查是否属于全国多地重名区县（如鼓楼区、朝阳区、西湖区等）且用户未指明所属地级市
@@ -2203,16 +2380,9 @@ def measure_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> str:
 def field_calculate(layer_name: str, expression: str, new_field: str, field_type: str = "float") -> str:
     """计算并添加新字段到指定图层。expression 写 Python 表达式（如"面积*0.0015"），直接引用字段名。支持 abs/round/int/float/str/len/min/max/sum/pow。自动更新地图。"""
     try:
-        info = _registered_layers.get(layer_name)
-        if not info:
-            matches = [n for n in _registered_layers.keys() if layer_name in n]
-            if len(matches) == 1:
-                info = _registered_layers[matches[0]]
-                layer_name = matches[0]
-            elif len(matches) > 1:
-                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
-            else:
-                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
 
         import geopandas as gpd
         import pandas as pd
@@ -2264,7 +2434,7 @@ def field_calculate(layer_name: str, expression: str, new_field: str, field_type
         geojson_data = gdf.__geo_interface__
         geojson_data["name"] = layer_name
 
-        _registered_layers[layer_name]["geojson"] = geojson_data
+        _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         non_null = gdf[new_field].notna().sum()
@@ -2399,22 +2569,15 @@ def get_session_logs(n: int = 20) -> str:
 @tool
 def layer_control(action: str, name: str = "", new_name: str = "", color: str = "", opacity: float = 1.0, weight: int = 2, fill_pattern: str = "") -> str:
     """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) set_style(设置完整样式+color+opacity+weight+fill_pattern) clear_symbology(清除分级/唯一值符号化和图例) rename(重命名+new_name) fit(缩放至图层)。opacity: 0~1，weight: 线宽像素数，fill_pattern: hatch/crosshatch/dots/grid/diagonal。"""
+    if action in ("remove", "toggle", "set_color", "set_style", "clear_symbology", "fit", "rename"):
+        resolved, _, error = _get_exact_registered_layer(name)
+        if not resolved:
+            return error.replace("未执行修改", "未执行操作")
+        name = resolved
     if action == "remove":
         _pending_layer_ops.append({"action": "remove", "name": name})
-        # 同步从后端注册图层中删除，保持前后端状态一致
-        _removed = []
-        if name in _registered_layers:
-            del _registered_layers[name]
-            _removed.append(name)
-        else:
-            # 模糊匹配：name 是图层名的子串时也删除
-            for _key in list(_registered_layers.keys()):
-                if name in _key or _key in name:
-                    del _registered_layers[_key]
-                    _removed.append(_key)
-        if _removed:
-            return f"已删除图层: {', '.join(_removed)}（当前剩余 {len(_registered_layers)} 个图层）"
-        return f"未找到图层「{name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        _unregister_layer(name)
+        return f"已删除图层: {name}（当前剩余 {len(_registered_layers)} 个图层）"
     elif action == "toggle":
         _pending_layer_ops.append({"action": "toggle", "name": name})
         return f"已标记切换图层显隐: {name}"
@@ -2439,18 +2602,16 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
         _pending_layer_ops.append({"action": "clear_symbology", "name": name})
         return f"已标记清除图层「{name}」的分级/唯一值符号化与对应图例"
     elif action == "rename":
+        if not isinstance(new_name, str) or not new_name.strip():
+            return "新图层名不能为空；未重命名任何图层"
+        new_name = new_name.strip()
+        if new_name != name and new_name in _registered_layers:
+            return f"图层「{new_name}」已存在；未重命名任何图层"
         _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
-        # 同步更新后端注册图层的名称
-        if name in _registered_layers:
-            _registered_layers[new_name] = _registered_layers.pop(name)
-            return f"已重命名图层: {name} → {new_name}"
-        else:
-            # 模糊匹配
-            for _key in list(_registered_layers.keys()):
-                if name in _key or _key in name:
-                    _registered_layers[new_name] = _registered_layers.pop(_key)
-                    return f"已重命名图层: {_key} → {new_name}"
-        return f"未找到图层「{name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        info = _registered_layers.pop(name)
+        info["name"] = new_name
+        _registered_layers[new_name] = info
+        return f"已重命名图层: {name} → {new_name}"
     elif action == "fit":
         _pending_layer_ops.append({"action": "fit", "name": name})
         return f"已标记缩放到图层: {name}"
@@ -3534,16 +3695,9 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
         import geopandas as gpd
         import warnings
 
-        info = _registered_layers.get(layer_name)
-        if not info:
-            matches = [n for n in _registered_layers.keys() if layer_name in n]
-            if len(matches) == 1:
-                info = _registered_layers[matches[0]]
-                layer_name = matches[0]
-            elif len(matches) > 1:
-                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
-            else:
-                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
 
         gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
         if gdf.empty:
@@ -3571,7 +3725,7 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
         gdf_result = gdf_utm.to_crs("EPSG:4326")
         geojson_data = gdf_result.__geo_interface__
         geojson_data["name"] = layer_name
-        _registered_layers[layer_name]["geojson"] = geojson_data
+        _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         dir_x = "东" if dx > 0 else ("西" if dx < 0 else "")
@@ -3614,16 +3768,9 @@ def rotate_features(layer_name: str, angle: float = 90) -> str:
         from shapely import affinity
         import warnings
 
-        info = _registered_layers.get(layer_name)
-        if not info:
-            matches = [n for n in _registered_layers.keys() if layer_name in n]
-            if len(matches) == 1:
-                info = _registered_layers[matches[0]]
-                layer_name = matches[0]
-            elif len(matches) > 1:
-                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
-            else:
-                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
 
         gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
         if gdf.empty:
@@ -3637,7 +3784,7 @@ def rotate_features(layer_name: str, angle: float = 90) -> str:
 
         geojson_data = gdf.__geo_interface__
         geojson_data["name"] = layer_name
-        _registered_layers[layer_name]["geojson"] = geojson_data
+        _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         direction = "逆时针" if angle > 0 else "顺时针"
@@ -3660,16 +3807,9 @@ def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) ->
         from shapely import affinity
         import warnings
 
-        info = _registered_layers.get(layer_name)
-        if not info:
-            matches = [n for n in _registered_layers.keys() if layer_name in n]
-            if len(matches) == 1:
-                info = _registered_layers[matches[0]]
-                layer_name = matches[0]
-            elif len(matches) > 1:
-                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
-            else:
-                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
 
         gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
         if gdf.empty:
@@ -3686,7 +3826,7 @@ def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) ->
 
         geojson_data = gdf.__geo_interface__
         geojson_data["name"] = layer_name
-        _registered_layers[layer_name]["geojson"] = geojson_data
+        _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         return (f"已缩放图层「{layer_name}」（X: {x_factor}倍, Y: {y_factor}倍），"
@@ -4107,6 +4247,114 @@ def spatial_near(layer_name: str, target_layer: str, distance: float = 1000) -> 
         return f"找到 {len(result)} 个距离{distance}m 以内的要素，已加载到地图"
     except Exception as e:
         return f"近邻查找失败: {str(e)[:300]}"
+
+
+@tool
+def nearest_pair(
+    layer_name: str,
+    target_layer: str = "",
+    feature_filter: str = "",
+    target_filter: str = "",
+) -> str:
+    """查找同一图层或两个不同图层之间距离最近的一对要素，可按属性关键词筛选。
+
+    适用于“图层里最近的一对”“最近的两家医院”“最近的一家麦当劳和一家医院”等问题。
+    target_layer 留空时在 layer_name 内比较；填写时在 layer_name 与 target_layer 之间比较。
+    feature_filter 和 target_filter 分别用于在对应图层的要素属性中匹配关键词。
+    对点要素计算点间距离；对面或线要素以代表点计算距离。距离使用局部 UTM 投影，单位为米。
+    """
+    try:
+        from scipy.spatial import cKDTree
+
+        source, source_name = _layer_to_gdf(layer_name)
+        if source is None:
+            return source_name
+        same_layer = not target_layer
+        if same_layer:
+            target, target_name = source, source_name
+            target_filter = target_filter or feature_filter
+        else:
+            target, target_name = _layer_to_gdf(target_layer)
+            if target is None:
+                return target_name
+            same_layer = source_name == target_name and (not target_filter or target_filter == feature_filter)
+
+        def select_features(gdf, keyword):
+            valid = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty].copy()
+            if keyword and keyword.strip():
+                needle = keyword.strip().casefold()
+                matched = valid.apply(
+                    lambda row: any(
+                        needle in str(value).casefold()
+                        for value in row.drop(labels="geometry", errors="ignore")
+                        if value is not None
+                    ),
+                    axis=1,
+                )
+                valid = valid[matched]
+            return valid
+
+        left = select_features(source, feature_filter)
+        right = select_features(target, target_filter)
+        for gdf, name, keyword in ((left, source_name, feature_filter), (right, target_name, target_filter)):
+            if gdf.empty:
+                subject = f"属性包含「{keyword}」的" if keyword else ""
+                return f"图层「{name}」中没有{subject}有效要素"
+        insufficient = len(left) < 2 if same_layer else len(left) < 1 or len(right) < 1
+        if insufficient:
+            return "可比较的要素不足，无法计算最近距离"
+
+        import geopandas as gpd
+        combined = gpd.GeoDataFrame(
+            {"geometry": list(left.geometry) + list(right.geometry)},
+            geometry="geometry",
+            crs=left.crs,
+        )
+        metric_crs = combined.estimate_utm_crs()
+        if metric_crs is None:
+            return "无法确定用于距离计算的局部投影坐标系"
+        left_points = left.to_crs(metric_crs).geometry.representative_point()
+        right_points = right.to_crs(metric_crs).geometry.representative_point()
+        left_xy = [(point.x, point.y) for point in left_points]
+        right_xy = [(point.x, point.y) for point in right_points]
+        if same_layer:
+            distances, indices = cKDTree(left_xy).query(left_xy, k=2)
+            pairs = (
+                (float(distance), i, int(j))
+                for i, (distance, j) in enumerate(zip(distances[:, 1], indices[:, 1]))
+                if i != int(j)
+            )
+        else:
+            distances, indices = cKDTree(right_xy).query(left_xy, k=1)
+            pairs = ((float(distance), i, int(j)) for i, (distance, j) in enumerate(zip(distances, indices)))
+        distance_m, source_index, target_index = min(pairs, key=lambda item: item[0])
+
+        left_rows = [row for _, row in left.iterrows()]
+        right_rows = left_rows if same_layer else [row for _, row in right.iterrows()]
+        name_fields = ("name", "医院名称", "poi_name", "NAME", "名称", "name:zh")
+
+        def feature_name(row, index):
+            for field in name_fields:
+                value = row.get(field)
+                if value is not None and str(value).strip():
+                    return str(value).strip()
+            return f"要素 {index + 1}"
+
+        names = (
+            feature_name(left_rows[source_index], source_index),
+            feature_name(right_rows[target_index], target_index),
+        )
+        distance_text = f"{distance_m:.1f} 米" if distance_m < 1000 else f"{distance_m / 1000:.3f} 千米"
+        geometry_note = "点间距离" if all(g.geom_type == "Point" for g in list(left.geometry) + list(right.geometry)) else "要素代表点间距离"
+        subject = f"（属性包含「{feature_filter}」）" if feature_filter else ""
+        target_subject = f"（属性包含「{target_filter}」）" if target_filter and not same_layer else ""
+        return (
+            f"图层「{source_name}」{subject}与图层「{target_name}」{target_subject}距离最近的一对是："
+            f"{names[0]} 和 {names[1]}；"
+            f"{geometry_note}约 {distance_text}（{distance_m:.1f} 米）。"
+        )
+    except Exception as e:
+        return f"最近要素对计算失败: {str(e)[:300]}"
 
 
 # ============================================================
@@ -4584,21 +4832,14 @@ def add_legend(layer_name: str) -> str:
 
 @tool
 def update_attribute(layer_name: str, field: str, value: str, condition_field: str = "", condition_value: str = "") -> str:
-    """更新图层要素的属性值。不指定条件则更新所有要素。
+    """更新图层要素的属性值。不指定条件则更新所有要素；只改一条要素时优先用 condition_field="_fid" 和 get_layer_detail 返回的稳定 ID。
     支持数值和文本字段。更新后地图自动同步。
-    layer_name: 图层名；field: 要更新的字段名；value: 新值（自动转换类型）；
+    layer_name: 必须为注册图层完整名称；field: 要更新的字段名；value: 新值（自动转换类型）；
     condition_field: 条件字段名（可选）；condition_value: 条件字段值（可选，仅更新匹配要素）。"""
     try:
-        info = _registered_layers.get(layer_name)
-        if not info:
-            matches = [n for n in _registered_layers.keys() if layer_name in n]
-            if len(matches) == 1:
-                info = _registered_layers[matches[0]]
-                layer_name = matches[0]
-            elif len(matches) > 1:
-                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
-            else:
-                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
 
         import geopandas as gpd
         import json
@@ -4609,27 +4850,37 @@ def update_attribute(layer_name: str, field: str, value: str, condition_field: s
 
         if field not in gdf.columns:
             return f"图层「{layer_name}」没有字段「{field}」，可用字段：{', '.join([c for c in gdf.columns if c != 'geometry'])}"
+        if field == "_fid":
+            return "_fid 是要素稳定标识，不能修改"
 
         # 类型转换
         dtype_kind = gdf[field].dtype.kind
         try:
-            if dtype_kind == 'i':
+            if dtype_kind in ('i', 'u'):
                 typed_value = int(value)
             elif dtype_kind == 'f':
                 typed_value = float(value)
+            elif dtype_kind == 'b':
+                normalized = str(value).strip().casefold()
+                if normalized not in ("true", "false"):
+                    return f"字段「{field}」为布尔类型，请使用 true 或 false"
+                typed_value = normalized == "true"
             else:
                 typed_value = str(value)
         except ValueError:
             return f"字段「{field}」类型为 {gdf[field].dtype}，但值「{value}」无法转换"
 
         # 筛选要更新的行
-        if condition_field and condition_value:
+        if condition_field:
             if condition_field not in gdf.columns:
                 return f"条件字段「{condition_field}」不存在"
             cond_kind = gdf[condition_field].dtype.kind
             try:
-                if cond_kind in ('i', 'f'):
+                if cond_kind in ('i', 'u', 'f'):
                     cond_value = float(condition_value)
+                elif cond_kind == 'b':
+                    normalized = str(condition_value).strip().casefold()
+                    cond_value = normalized == "true" if normalized in ("true", "false") else condition_value
                 else:
                     cond_value = str(condition_value)
             except ValueError:
@@ -4647,7 +4898,7 @@ def update_attribute(layer_name: str, field: str, value: str, condition_field: s
 
         geojson_data = gdf.__geo_interface__
         geojson_data["name"] = layer_name
-        _registered_layers[layer_name]["geojson"] = geojson_data
+        _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         condition_str = f"（条件：{condition_field} = {condition_value}）" if condition_field else ""
@@ -4665,20 +4916,13 @@ def update_attribute(layer_name: str, field: str, value: str, condition_field: s
 def delete_features(layer_name: str, condition_field: str = "", condition_value: str = "") -> str:
     """按条件删除图层的要素。必须指定条件（例如删除某个字段等于某值的所有要素）。
     删除后地图自动同步。layer_name: 图层名；condition_field: 条件字段名（必填）；
-    condition_value: 条件字段值（必填）。"""
+    condition_value: 要匹配的字段值（可为空字符串，例如删除空值记录）；用 condition_field="_fid" 可精准删除单条要素。"""
     try:
-        info = _registered_layers.get(layer_name)
-        if not info:
-            matches = [n for n in _registered_layers.keys() if layer_name in n]
-            if len(matches) == 1:
-                info = _registered_layers[matches[0]]
-                layer_name = matches[0]
-            elif len(matches) > 1:
-                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
-            else:
-                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
 
-        if not condition_field or not condition_value:
+        if not condition_field:
             return "请指定删除条件（condition_field 和 condition_value），例如删除 name=xx 的所有要素"
 
         import geopandas as gpd
@@ -4693,8 +4937,11 @@ def delete_features(layer_name: str, condition_field: str = "", condition_value:
 
         cond_kind = gdf[condition_field].dtype.kind
         try:
-            if cond_kind in ('i', 'f'):
+            if cond_kind in ('i', 'u', 'f'):
                 cond_val = float(condition_value)
+            elif cond_kind == 'b':
+                normalized = str(condition_value).strip().casefold()
+                cond_val = normalized == "true" if normalized in ("true", "false") else condition_value
             else:
                 cond_val = str(condition_value)
         except ValueError:
@@ -4711,7 +4958,7 @@ def delete_features(layer_name: str, condition_field: str = "", condition_value:
 
         geojson_data = remaining.__geo_interface__
         geojson_data["name"] = layer_name
-        _registered_layers[layer_name]["geojson"] = geojson_data
+        _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         return (f"已从图层「{layer_name}」删除 {to_delete}/{len(gdf)} 个要素"
@@ -4733,55 +4980,52 @@ def add_field(layer_name: str, field_name: str, field_type: str = "str", default
         import pandas as pd
         import json
 
-        info = _registered_layers.get(layer_name)
-        if not info:
-            matches = [n for n in _registered_layers.keys() if layer_name in n]
-            if len(matches) == 1:
-                info = _registered_layers[matches[0]]
-                layer_name = matches[0]
-            elif len(matches) > 1:
-                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
-            else:
-                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
 
         gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
+        if not isinstance(field_name, str) or not field_name.strip():
+            return "字段名不能为空"
+        field_name = field_name.strip()
+        if field_name in ("geometry", "_fid"):
+            return f"字段名「{field_name}」为保留字段，不能新增"
         if field_name in gdf.columns:
             return f"字段「{field_name}」已存在"
 
         field_type = field_type.lower().strip()
-        if field_type == "int":
-            gdf[field_name] = pd.Series(dtype="int64")
-            if default_value:
-                try:
-                    gdf[field_name] = int(default_value)
-                except ValueError:
-                    pass
-        elif field_type == "float":
-            gdf[field_name] = pd.Series(dtype="float64")
-            if default_value:
-                try:
-                    gdf[field_name] = float(default_value)
-                except ValueError:
-                    pass
-        else:
-            gdf[field_name] = pd.Series(dtype="object")
-            if default_value:
-                gdf[field_name] = str(default_value)
+        if field_type not in ("str", "string", "text", "int", "integer", "float", "double", "number"):
+            return f"不支持字段类型「{field_type}」，请选择 str、int 或 float"
+        if field_type in ("string", "text"):
+            field_type = "str"
+        elif field_type in ("integer",):
+            field_type = "int"
+        elif field_type in ("double", "number"):
+            field_type = "float"
 
-        if default_value:
-            gdf[field_name] = gdf[field_name].fillna(default_value if field_type == "str" else
-                                                       (int(default_value) if field_type == "int" else float(default_value)))
+        parsed_default = None
+        if default_value != "":
+            try:
+                parsed_default = int(default_value) if field_type == "int" else float(default_value) if field_type == "float" else str(default_value)
+            except (TypeError, ValueError):
+                return f"默认值「{default_value}」无法转换为字段类型 {field_type}"
+        if field_type == "int":
+            gdf[field_name] = parsed_default if parsed_default is not None else pd.Series([None] * len(gdf), dtype="object")
+        elif field_type == "float":
+            gdf[field_name] = parsed_default if parsed_default is not None else pd.Series([None] * len(gdf), dtype="object")
+        else:
+            gdf[field_name] = parsed_default if parsed_default is not None else None
 
         geojson_data = gdf.__geo_interface__
         geojson_data["name"] = layer_name
-        _registered_layers[layer_name]["geojson"] = geojson_data
+        _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         return (f"已为图层「{layer_name}」添加字段「{field_name}」（类型：{field_type}"
-                + (f"，默认值：{default_value}" if default_value else "")
+                + (f"，默认值：{default_value}" if default_value != "" else "")
                 + "），已同步地图")
 
     except Exception as e:
@@ -4795,16 +5039,9 @@ def delete_field(layer_name: str, field_name: str) -> str:
         import geopandas as gpd
         import json
 
-        info = _registered_layers.get(layer_name)
-        if not info:
-            matches = [n for n in _registered_layers.keys() if layer_name in n]
-            if len(matches) == 1:
-                info = _registered_layers[matches[0]]
-                layer_name = matches[0]
-            elif len(matches) > 1:
-                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
-            else:
-                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
 
         gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
         if gdf.empty:
@@ -4815,12 +5052,14 @@ def delete_field(layer_name: str, field_name: str) -> str:
 
         if field_name == "geometry":
             return "不能删除 geometry 字段"
+        if field_name == "_fid":
+            return "_fid 是要素稳定标识，不能删除"
 
         gdf = gdf.drop(columns=[field_name])
 
         geojson_data = gdf.__geo_interface__
         geojson_data["name"] = layer_name
-        _registered_layers[layer_name]["geojson"] = geojson_data
+        _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         return f"已从图层「{layer_name}」删除字段「{field_name}」，已同步地图"
@@ -4954,6 +5193,11 @@ def edit_vertices(layer_name: str) -> str:
 @tool
 def export_map(format: str = "png") -> str:
     """将当前地图导出为图片。format: png(默认) / jpg。"""
+    format = str(format or "png").strip().lower().lstrip(".")
+    if format == "jpeg":
+        format = "jpg"
+    if format not in {"png", "jpg"}:
+        return f"不支持的图片格式：{format}，仅支持 png/jpg"
     try:
         _pending_layer_ops.append({
             "action": "export_map",
@@ -4969,15 +5213,17 @@ def export_map(format: str = "png") -> str:
 # ============================================================
 
 @tool
-def export_pdf(title: str = "地图导出") -> str:
-    """将当前地图导出为 PDF 文档（打印布局），包含地图、标题、比例尺、图例、指北针。
-    title: 文档标题（默认"地图导出"）。"""
+def export_pdf(title: str = "地图导出", rotation_degrees: float = 0) -> str:
+    """将当前地图导出为 PDF 文档（打印布局），包含地图、标题、比例尺、图例、经纬度和指北针。
+    title: 文档标题（默认"地图导出"）。
+    rotation_degrees: 地图顺时针旋转角度（度），北针随地图旋转；默认 0。"""
     try:
         _pending_layer_ops.append({
             "action": "export_pdf",
             "title": title,
+            "rotation_degrees": rotation_degrees,
         })
-        return f"已触发 PDF 出图，标题：{title}"
+        return f"已触发 PDF 出图，标题：{title}，旋转：{rotation_degrees}°"
     except Exception as e:
         return f"PDF 出图失败: {str(e)[:200]}"
 
@@ -8194,7 +8440,8 @@ def generate_static_map(
     show_scale_bar: bool = True,
     dpi: int = 150,
 ) -> str:
-    """生成静态研究区地图（PNG），含标题/图例/指北针/比例尺。
+    """根据已注册的矢量图层生成独立静态研究区图（PNG），不包含交互地图的卫星底图。
+    需要保留当前地图底图（包括卫星影像）导出图片时应调用 export_map；本工具用于独立矢量图。
     layer_ids: 要绘制的图层ID，逗号分隔（为空则绘制所有已注册图层）；
     title: 地图标题；output_name: 输出文件名；
     show_north_arrow: 是否显示指北针；show_scale_bar: 是否显示比例尺；dpi: 输出分辨率。"""
@@ -8568,13 +8815,11 @@ def _write_dem_geotiff(path: str, result) -> None:
 
 
 def _resolve_layer_name(name: str) -> str:
-    """按注册表解析图层名：精确命中优先，子串模糊匹配兜底；未找到返回空串"""
-    if name in _registered_layers:
-        return name
-    for _key in _registered_layers:
-        if name in _key or _key in name:
-            return _key
-    return ""
+    """Resolve only exact registered names; partial names are unsafe for multi-layer operations."""
+    if not isinstance(name, str) or not name.strip():
+        return ""
+    name = name.strip()
+    return name if name in _registered_layers else ""
 
 
 # ============================================================
@@ -11325,6 +11570,7 @@ tools = [
     spatial_select,
     spatial_sample,
     spatial_near,
+    nearest_pair,
     spatial_cluster,
     spatial_voronoi,
     spatial_field_stats,

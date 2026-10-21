@@ -514,11 +514,19 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
 .workbench .ai-step-icon { display: inline-flex; flex: 0 0 16px; width: 16px; height: 16px; color: var(--on-surface-variant); }
 .workbench .ai-step-icon svg { width: 100%; height: 100%; }
 .workbench .ai-step-title { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
-.workbench .ai-step-status { flex: 0 0 auto; color: var(--on-surface-variant); font-size: 10px; }
-.workbench .ai-step-running .ai-step-icon { animation: ai-step-pulse 1.2s ease-in-out infinite; }
-.workbench .ai-step-success .ai-step-icon { color: var(--on-surface); }
-.workbench .ai-step-failed .ai-step-icon, .workbench .ai-step-interrupted .ai-step-icon, .workbench .ai-step-cancelled .ai-step-icon { color: var(--on-surface-variant); }
+.workbench .ai-step-status { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 3px 7px; border-radius: 999px; color: #64748b; background: rgba(100, 116, 139, .12); font-size: 10px; font-weight: 650; }
+.workbench .ai-step-status-icon { display: inline-flex; width: 13px; height: 13px; }
+.workbench .ai-step-status-icon svg { display: block; width: 100%; height: 100%; }
+.workbench .ai-step-running .ai-step-status { color: #2563eb; background: rgba(37, 99, 235, .12); }
+.workbench .ai-step-running .ai-step-status-icon svg { animation: ai-step-spin 1.1s linear infinite; }
+.workbench .ai-step-success .ai-step-status { color: #15803d; background: rgba(21, 128, 61, .12); }
+.workbench .ai-step-failed .ai-step-status, .workbench .ai-step-interrupted .ai-step-status { color: #dc2626; background: rgba(220, 38, 38, .12); }
+.workbench .ai-step-warning .ai-step-status { color: #c2710c; background: rgba(194, 113, 12, .14); }
+.workbench .ai-step-cancelled .ai-step-status, .workbench .ai-step-waiting .ai-step-status { color: #64748b; background: rgba(100, 116, 139, .12); }
 .workbench .ai-step-progress { min-width: 0; margin: 5px 0 0 23px; color: var(--on-surface-variant); font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.workbench .ai-step-progress-track { position: relative; height: 3px; margin: 6px 0 0 23px; overflow: hidden; border-radius: 999px; background: rgba(37, 99, 235, .12); }
+.workbench .ai-step-progress-track[hidden] { display: none; }
+.workbench .ai-step-progress-indicator { position: absolute; inset: 0 auto 0 0; width: 30%; border-radius: inherit; background: #3b82f6; animation: ai-step-progress 1.4s ease-in-out infinite; }
 .workbench .ai-step-records { margin: 6px 0 0 23px; color: var(--on-surface-variant); font-size: 10px; }
 .workbench .ai-step-records summary { width: fit-content; cursor: pointer; user-select: none; }
 .workbench .ai-step-record-list { display: grid; gap: 6px; margin: 6px 0 0; padding: 0; list-style: none; }
@@ -527,7 +535,8 @@ html.gis-workspace :is(#historyPanel, #featurePanel, #bmPanel) { right: 68px; }
 .workbench .ai-tool-args { max-width: 100%; margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 10px/1.5 var(--font-body); }
 .workbench .ai-tool-result { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; line-height: 1.5; }
 .workbench .ai-tool-failed .ai-tool-result { text-decoration: underline dotted; text-underline-offset: 2px; }
-@keyframes ai-step-pulse { 50% { opacity: .45; } }
+@keyframes ai-step-spin { to { transform: rotate(360deg); } }
+@keyframes ai-step-progress { from { transform: translateX(-110%); } to { transform: translateX(430%); } }
 
 /* 简约空聊天状态与未配置提示 */
 .workbench .chat-empty-state {

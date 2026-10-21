@@ -164,10 +164,15 @@ window.GIS.api = (() => {
   function _saveProviders(list) {
     _lsSet(PROVIDERS_STORAGE_KEY, JSON.stringify(list));
     try {
+      var backendProviders = list.map(function(provider) {
+        var copy = Object.assign({}, provider);
+        delete copy.api_key;
+        return copy;
+      });
       fetch(BASE_URL + '/api/user-settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providers: list }),
+        body: JSON.stringify({ providers: backendProviders }),
       }).catch(function() {});
     } catch(e) {}
   }
@@ -337,30 +342,36 @@ window.GIS.api = (() => {
       if (!res.ok) return null;
       var data = await res.json();
       if (!data || typeof data !== 'object') return null;
+      if (Array.isArray(data.providers)) {
+        data.providers = data.providers.filter(function(provider) {
+          return provider && typeof provider === 'object' && !Array.isArray(provider);
+        }).map(function(provider) {
+          var safeProvider = Object.assign({}, provider);
+          delete safeProvider.api_key;
+          return safeProvider;
+        });
+      }
 
       var updated = false;
 
-      // 1. 同步 Provider 与 API Key
+      // 1. 同步 Provider 元数据。模型 Key 仅保留在本浏览器 localStorage。
       if (Array.isArray(data.providers) && data.providers.length > 0) {
         var localList = getProviders();
         var hasLocalKeys = localList.some(function(p) { return !!p.api_key; });
-        var hasBackendKeys = data.providers.some(function(p) { return !!p.api_key; });
 
-        if (hasBackendKeys || !hasLocalKeys) {
-          data.providers.forEach(function(bp) {
-            var lp = localList.find(function(x) { return x.id === bp.id; });
-            if (lp) {
-              if (bp.api_key && !lp.api_key) { lp.api_key = bp.api_key; updated = true; }
-              if (bp.base_url && !lp.base_url) { lp.base_url = bp.base_url; updated = true; }
-              if (bp.model && !lp.model) { lp.model = bp.model; updated = true; }
-            } else {
-              localList.push(bp);
-              updated = true;
-            }
-          });
-        } else if (hasLocalKeys && !hasBackendKeys) {
-          _saveProviders(localList);
-        }
+        data.providers.forEach(function(bp) {
+          var backendProvider = Object.assign({}, bp);
+          delete backendProvider.api_key;
+          var lp = localList.find(function(x) { return x.id === bp.id; });
+          if (lp) {
+            if (bp.base_url && !lp.base_url) { lp.base_url = bp.base_url; updated = true; }
+            if (bp.model && !lp.model) { lp.model = bp.model; updated = true; }
+          } else {
+            localList.push(backendProvider);
+            updated = true;
+          }
+        });
+        if (hasLocalKeys) _saveProviders(localList);
 
         if (updated) {
           _lsSet(PROVIDERS_STORAGE_KEY, JSON.stringify(localList));
@@ -600,28 +611,32 @@ window.GIS.api = (() => {
 
   /** 通知后端取消注册已删除的图层 */
   async function unregisterLayer(name) {
-    try {
-      await fetch(`${BASE_URL}/api/layer/unregister`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-    } catch (e) {
-      console.warn('[GIS API] 取消注册图层失败', e);
-    }
+    const res = await fetch(`${BASE_URL}/api/layer/unregister`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok) throw new Error(`取消注册图层失败: HTTP ${res.status}`);
+    const data = await res.json();
+    if (data && data.success === false) throw new Error(data.message || '取消注册图层失败');
+    return data;
   }
 
   /** 通知后端注册新加载的图层（名字 + GeoJSON） */
   async function registerLayer(name, geojson) {
-    try {
-      await fetch(`${BASE_URL}/api/layer/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, geojson }),
-      });
-    } catch (e) {
-      console.warn('[GIS API] 注册图层失败', e);
+    const res = await fetch(`${BASE_URL}/api/layer/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, geojson }),
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json()).detail || detail; } catch (_) {}
+      throw new Error(`注册图层失败: ${detail}`);
     }
+    const data = await res.json();
+    if (data && data.success === false) throw new Error(data.message || '注册图层失败');
+    return data;
   }
 
   /** 检查图层元数据（前端可先算基础信息，后端补充 CRS 等） */

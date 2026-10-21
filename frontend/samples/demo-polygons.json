@@ -1,0 +1,21 @@
+{
+  "type": "FeatureCollection",
+  "name": "demo-polygons",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "示例地块 A", "group": "住宅", "score": 72 },
+      "geometry": { "type": "Polygon", "coordinates": [[[120.145, 30.245], [120.151, 30.245], [120.151, 30.250], [120.145, 30.250], [120.145, 30.245]]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "示例地块 B", "group": "商业", "score": 88 },
+      "geometry": { "type": "Polygon", "coordinates": [[[120.153, 30.245], [120.159, 30.245], [120.159, 30.250], [120.153, 30.250], [120.153, 30.245]]] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "示例地块 C", "group": "住宅", "score": 64 },
+      "geometry": { "type": "Polygon", "coordinates": [[[120.145, 30.252], [120.151, 30.252], [120.151, 30.257], [120.145, 30.257], [120.145, 30.252]]] }
+    }
+  ]
+}
