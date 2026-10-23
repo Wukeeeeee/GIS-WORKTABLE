@@ -17,7 +17,6 @@ from backend.services.data_providers.models import (
     DataRequest,
     DataHit,
     DataType,
-    DownloadedAsset,
     ProviderCapability,
 )
 
@@ -100,8 +99,9 @@ class ProviderRegistry:
         with _PROVIDER_INSTALL_LOCK:
             if self._installed:
                 return  # 双检：等锁期间已被另一线程装好
-            self._installed = True
             self._install_providers()
+            # 仅在全部默认 Provider 安装成功后标记完成；失败时允许下次重试。
+            self._installed = True
 
     def _install_providers(self) -> None:
         # 延迟 import：这些模块顶层只引 stdlib/requests，加载廉价

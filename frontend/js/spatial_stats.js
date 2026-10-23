@@ -169,6 +169,7 @@ window.GIS = window.GIS || {};
     document.getElementById('spatialStatsTabs').addEventListener('click', function (e) {
       var btn = e.target.closest('.spatial-tab');
       if (!btn) return;
+      _refreshLayers();
       _switchTab(btn.dataset.tab);
     });
 
@@ -182,7 +183,7 @@ window.GIS = window.GIS || {};
     // 运行按钮
     container.querySelectorAll('.spatial-run-btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        _runOperation(this.dataset.op, this);
+        return _runOperation(this.dataset.op, this);
       });
     });
 
@@ -317,7 +318,7 @@ window.GIS = window.GIS || {};
       if (!sel) return;
       var cur = sel.value;
       sel.innerHTML = '<option value="">-- 请选择图层 --</option>';
-      layers.forEach(function (l) {
+      layers.filter(function(l) { return l.geojson && !l.raster; }).forEach(function (l) {
         var opt = document.createElement('option');
         opt.value = l.filename || l.layer_id;
         opt.textContent = l.filename || l.layer_id;
@@ -343,9 +344,11 @@ window.GIS = window.GIS || {};
       fieldSel.innerHTML = '<option value="">-- 自动选择第一个数值字段 --</option>';
       if (!name || !GIS.layers || !GIS.layers.getLayerByName) return;
       var layer = GIS.layers.getLayerByName(name);
-      if (!layer || !layer.geojson || !layer.geojson.features) return;
+      if (!layer || !layer.geojson) return;
+      var features = layer.geojson.type === 'Feature' ? [layer.geojson] : layer.geojson.features;
+      if (!Array.isArray(features)) return;
       var numericFields = new Set();
-      layer.geojson.features.forEach(function (feature) {
+      features.forEach(function (feature) {
         var props = feature && feature.properties || {};
         Object.keys(props).forEach(function (key) {
           if (typeof props[key] === 'number' && Number.isFinite(props[key])) numericFields.add(key);
@@ -365,8 +368,6 @@ window.GIS = window.GIS || {};
   }
 
   /** 直连执行：调后端工具 → 结果上图 + 面板展示文本（不经 AI） */
-  var METERS_PER_DEGREE = 111320;
-
   function _invoke(tool, args, runButton) {
     var loader = document.getElementById('ssLoader');
     if (loader) loader.style.display = 'flex';
@@ -377,7 +378,7 @@ window.GIS = window.GIS || {};
       if (!(GIS.api && GIS.api.invokeTool)) throw new Error('GIS.api.invokeTool 不可用');
       return GIS.api.invokeTool(tool, args);
     });
-    p.then(function(result) {
+    return p.then(function(result) {
       if (loader) loader.style.display = 'none';
       if (GIS.workspace && !GIS.workspace.toolFeedback('spatialStatsPanel', result)) return;
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
@@ -401,10 +402,13 @@ window.GIS = window.GIS || {};
       var local = document.getElementById('ssMoranLocal').checked;
       var args = { layer_name: layer, field: field || '', weight_type: weight, local: local };
       if (weight === 'distance') {
-        var dist = parseFloat(document.getElementById('ssMoranDist').value) || 1000;
-        args.threshold = +(dist / METERS_PER_DEGREE).toFixed(6);  // 米 → 度
+        var dist = Number(document.getElementById('ssMoranDist').value);
+        if (!Number.isFinite(dist) || dist <= 0) { alert('距离阈值必须是大于 0 的有限数值'); return; }
+        args.threshold_m = dist;
       } else {
-        args.k = parseInt(document.getElementById('ssMoranK').value, 10) || 5;
+        var k = Number(document.getElementById('ssMoranK').value);
+        if (!Number.isInteger(k) || k < 1 || k > 50) { alert('K 近邻数必须是 1 到 50 之间的整数'); return; }
+        args.k = k;
       }
       return _invoke('spatial_moran', args, runButton);
     }
@@ -412,22 +416,25 @@ window.GIS = window.GIS || {};
       var layer2 = document.getElementById('ssHotspotLayer').value;
       if (!layer2) { alert('请选择图层'); return; }
       var field2 = document.getElementById('ssHotspotField').value;
-      var dist2 = parseFloat(document.getElementById('ssHotspotDist').value) || 1000;
+      var dist2 = Number(document.getElementById('ssHotspotDist').value);
+      if (!Number.isFinite(dist2) || dist2 <= 0) { alert('距离阈值必须是大于 0 的有限数值'); return; }
       return _invoke('spatial_hotspot', {
         layer_name: layer2, field: field2 || '',
-        threshold: +(dist2 / METERS_PER_DEGREE).toFixed(6),  // 米 → 度
+        threshold_m: dist2,
       }, runButton);
     }
     if (op === 'kde') {
       var layer3 = document.getElementById('ssKdeLayer').value;
       if (!layer3) { alert('请选择图层'); return; }
-      var bw = parseFloat(document.getElementById('ssKdeBandwidth').value);
-      var grid = parseInt(document.getElementById('ssKdeGrid').value, 10) || 50;
-      var args3 = { layer_name: layer3, grid_size: grid };
-      if (bw) args3.bandwidth = +(bw / METERS_PER_DEGREE).toFixed(6);  // 米 → 度
+      var bwText = document.getElementById('ssKdeBandwidth').value.trim();
+      var bw = bwText ? Number(bwText) : 0;
+      if (bwText && (!Number.isFinite(bw) || bw <= 0)) { alert('带宽必须是大于 0 的有限数值，或留空自动估算'); return; }
+      var grid = Number(document.getElementById('ssKdeGrid').value);
+      if (!Number.isInteger(grid) || grid < 10 || grid > 200) { alert('网格分辨率必须是 10 到 200 之间的整数'); return; }
+      var args3 = { layer_name: layer3, grid_size: grid, bandwidth_m: bw, metric_units: true };
       return _invoke('spatial_kde', args3, runButton);
     }
   }
 
-  GIS.spatialStats = { init: init, activate: activate, deactivate: deactivate, toggle: toggle, refreshLayers: _refreshLayers };
+  GIS.spatialStats = { toggle: toggle };
 })();

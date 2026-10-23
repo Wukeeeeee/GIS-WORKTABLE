@@ -3,11 +3,11 @@
 数据源
 ------
 - AWS Open Data Terrain Tiles：https://registry.opendata.aws/terrain-tiles/
-- S3 endpoint：https://elevation-tiles-prod.s3.amazonaws.com/{z}/{x}/{y}.png
+- S3 endpoint：https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png
 - 编码：Terrarium PNG，256×256 RGB
   解码公式：elevation_m = (R * 256 + G + B / 256) - 32768
-- 来源：SRTM 1-arcsec（≈ 30 m）；海洋 / 无效区域用 R=G=B=128（→ ≈0.5 m）标记。
-  本 Provider 把 R=G=B=128 视为 nodata，置 NaN；保留原始 0 米的陆地像元。
+- 来源：SRTM 等高程数据；上游使用 R=0 标记无数据，解码时置 NaN。
+  其余 RGB 按 Terrarium 公式解码，保留零米及负高程。
 
 覆盖
 ----
@@ -26,10 +26,6 @@ from typing import Tuple
 
 import numpy as np
 
-from backend.services.data_providers.errors import (
-    DownloadTimeoutError,
-    ProviderUnavailableError,
-)
 from backend.services.data_providers.http import get_bytes
 from backend.services.dem_providers.base import DEMProvider
 from backend.services.dem_providers.errors import DEMTileDecodeError
@@ -37,37 +33,36 @@ from backend.services.dem_providers.errors import DEMTileDecodeError
 
 # Terrarium 解码常量
 _TERRARIUM_OFFSET = 32768.0  # elevation = (R*256 + G + B/256) - 32768
-# 海洋 / 无效区域标记：RGB 完全等于 (128, 128, 128) → 解码后 ≈ 0.5
-_OCEAN_RGB = (128, 128, 128)
 _TILE_PNG_MAX_BYTES = 4 * 1024 * 1024  # 单 tile 上限，正常 < 50 KB
 
 
 def _decode_terrarium_png(png_bytes: bytes) -> np.ndarray:
-    """Terrarium PNG → ndarray(256, 256)，单位米，海洋 → NaN。
+    """Terrarium PNG → ndarray(256, 256)，单位米，无数据 → NaN。
 
     公式：elev_m = R*256 + G + B/256 - 32768
-    海洋 / 无效值：RGB = (128, 128, 128) → NaN
+    上游无数据标记：R = 0 → NaN。
     """
     from PIL import Image
     try:
-        img = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+        with Image.open(io.BytesIO(png_bytes)) as img:
+            if img.size != (256, 256):
+                raise DEMTileDecodeError(
+                    f"AWS Terrain PNG 形状异常：{img.size}（期望 (256, 256)）",
+                    hint="Provider 可能更新了 tile 大小，需适配。",
+                )
+            arr = np.asarray(img.convert("RGB"), dtype=np.float64)
+    except DEMTileDecodeError:
+        raise
     except Exception as e:
         raise DEMTileDecodeError(
             f"AWS Terrain PNG 解码失败：{type(e).__name__}: {str(e)[:120]}",
             hint="文件可能损坏，请清除缓存后重试。",
         ) from e
-    arr = np.asarray(img, dtype=np.float64)
-    if arr.ndim != 3 or arr.shape[2] != 3 or arr.shape[0] != 256 or arr.shape[1] != 256:
-        raise DEMTileDecodeError(
-            f"AWS Terrain PNG 形状异常：{arr.shape}（期望 (256, 256, 3)）",
-            hint="Provider 可能更新了 tile 大小，需适配。",
-        )
     R = arr[:, :, 0]
     G = arr[:, :, 1]
     B = arr[:, :, 2]
     elev = (R * 256.0 + G + B / 256.0) - _TERRARIUM_OFFSET
-    ocean = (R == _OCEAN_RGB[0]) & (G == _OCEAN_RGB[1]) & (B == _OCEAN_RGB[2])
-    elev = np.where(ocean, np.nan, elev)
+    elev = np.where(R == 0, np.nan, elev)
     return elev.astype(np.float64)
 
 
@@ -89,7 +84,7 @@ class AWSTerrainProvider(DEMProvider):
         "SRTM 1-arcsec 实际 ≈ 30 m/px"
     )
 
-    URL_TEMPLATE = "https://elevation-tiles-prod.s3.amazonaws.com/{z}/{x}/{y}.png"
+    URL_TEMPLATE = "https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"
 
     # ----- Provider 抽象实现 -----
 
@@ -106,34 +101,30 @@ class AWSTerrainProvider(DEMProvider):
     def _load_or_download(self, z: int, x: int, y: int, cache_dir: str) -> Tuple[np.ndarray, bool]:
         from backend.services.dem_providers import cache as cache_mod
 
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in (z, x, y)):
+            raise ValueError("tile 的 z、x、y 必须是整数。")
+        if not self.min_zoom <= z <= self.max_zoom:
+            raise ValueError(f"tile zoom 必须在 {self.min_zoom} 到 {self.max_zoom} 之间。")
+        tile_count = 1 << z
+        if not (0 <= x < tile_count and 0 <= y < tile_count):
+            raise ValueError(f"tile 坐标超出 z={z} 的范围：x、y 应在 [0, {tile_count})。")
+
         cached = cache_mod.load_cached_tile(cache_dir, self.provider_id, z, x, y)
         if cached is not None:
             try:
                 return _decode_terrarium_png(cached), True
             except DEMTileDecodeError:
-                # 缓存损坏：当 miss 处理，删掉再重下
-                path = cache_mod.tile_path(cache_dir, self.provider_id, z, x, y)
-                try:
-                    os_remove(path)
-                except OSError:
-                    pass
+                # 当 miss 处理；下载成功后原子替换，避免误删并发写入的新版本。
+                pass
 
         url = self.URL_TEMPLATE.format(z=z, x=x, y=y)
-        try:
-            png = get_bytes(url, timeout=20.0, max_bytes=_TILE_PNG_MAX_BYTES, retries=2)
-        except (DownloadTimeoutError, ProviderUnavailableError):
-            raise
+        png = get_bytes(url, timeout=20.0, max_bytes=_TILE_PNG_MAX_BYTES, retries=2)
         if not png.startswith(b"\x89PNG\r\n\x1a\n"):
             raise DEMTileDecodeError(
                 f"AWS Terrain 返回不是有效 PNG：{url[:80]}…",
                 hint="Provider 升级或返回了非 PNG 内容，请重试。",
             )
+        tile = _decode_terrarium_png(png)
         # 写缓存（失败不影响本次返回）
         cache_mod.save_tile_atomic(cache_dir, self.provider_id, z, x, y, png)
-        return _decode_terrarium_png(png), False
-
-
-def os_remove(path: str) -> None:
-    """小封装以便 mock 测试。"""
-    import os
-    os.remove(path)
+        return tile, False

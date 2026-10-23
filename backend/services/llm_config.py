@@ -9,7 +9,7 @@ LLMConfig 字段：
     base_url / model / api_key   必需（OpenAI 兼容接口三要素）
     glm_prompt: bool  用 GLM 专属 system prompt（ai_service 读）
     router:     bool  是否先跑一次技能路由（ai_service 读）
-    reasoning:  bool  请求体注入 reasoning:{enabled:true}，并把
+    reasoning:  bool  智谱接口请求体注入 thinking:{type:"enabled"}，并把
                       reasoning_content/details 抽进 assistant 消息
                       元数据、在下一轮序列化时原样塞回
     temperature / max_tokens / timeout: 可选，透传给 ChatOpenAI
@@ -22,6 +22,7 @@ LLMConfig 字段：
 """
 
 from typing import List, Optional
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, field_validator
 
@@ -89,7 +90,7 @@ _REASONING_KEY = "reasoning_content"
 
 
 def disable_reasoning(cfg: LLMConfig) -> LLMConfig:
-    """返回一份强制关掉 reasoning 的 cfg（Verifier 保证吐纯 JSON 用）"""
+    """返回一份强制关闭 reasoning 的配置，供纯文本兜底调用使用。"""
     return cfg.model_copy(update={"reasoning": False})
 
 
@@ -105,10 +106,13 @@ def _reasoning_request_body(base_url: str) -> Optional[dict]:
     """
     if not base_url:
         return None
-    host = base_url.lower()
-    # 匹配智谱官方相关域名（含任意子域名），避免只认 bigmodel.cn 一处硬编码
-    glm_hosts = ("bigmodel.cn", "zhipuai.cn", "open.bigmodel.cn", "api.bigmodel.cn")
-    if any(h in host for h in glm_hosts):
+    try:
+        host = (urlsplit(base_url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return None
+    # 只匹配真实主机名及其子域名，避免 URL 路径或相似域名误触发厂商参数。
+    glm_domains = ("bigmodel.cn", "zhipuai.cn")
+    if any(host == domain or host.endswith("." + domain) for domain in glm_domains):
         return {"thinking": {"type": "enabled"}}
     return None
 
@@ -244,7 +248,7 @@ def get_message_reasoning(message: BaseMessage) -> Optional[str]:
 def build_llm(cfg: LLMConfig) -> ChatOpenAI:
     """按 LLMConfig 构造 ChatOpenAI（恒用适配子类，reasoning 开则注入请求体）
 
-    - cfg.reasoning True  → 请求体注入 reasoning:{enabled:true}
+    - cfg.reasoning True  → 智谱接口请求体注入 thinking:{type:"enabled"}
     - 不注入也会抽取响应里的 reasoning_content/details（有些思考模型不传参
       也会吐思考，仍能展示 & 跨轮回传）
     """

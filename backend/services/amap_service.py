@@ -8,7 +8,7 @@
 API 文档: skills/amap.md
 """
 
-import json
+import math
 from typing import Optional, List
 
 from backend.services.geo_coords import gcj02_to_wgs84
@@ -20,13 +20,25 @@ from backend.services.geo_coords import gcj02_to_wgs84
 
 def _poi_to_feature(poi: dict) -> Optional[dict]:
     """单个 POI 条目 → GeoJSON Feature（坐标已转 WGS-84）"""
+    if not isinstance(poi, dict):
+        return None
     location = poi.get("location", "")
-    if not location:
+    if not isinstance(location, str) or not location:
         return None
     try:
-        lng_str, lat_str = location.split(",")
+        parts = location.split(",")
+        if len(parts) != 2:
+            return None
+        lng_str, lat_str = parts
         gcj_lng, gcj_lat = float(lng_str), float(lat_str)
-    except (ValueError, IndexError):
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        not math.isfinite(gcj_lng)
+        or not math.isfinite(gcj_lat)
+        or not -180 <= gcj_lng <= 180
+        or not -90 <= gcj_lat <= 90
+    ):
         return None
 
     wgs_lng, wgs_lat = gcj02_to_wgs84(gcj_lng, gcj_lat)
@@ -96,11 +108,14 @@ def search_text(keywords: str, city: str = "", offset: int = 25, page: int = 1, 
         import requests
         resp = requests.get(f"{AMAP_BASE}/place/text", params=params, timeout=10)
         data = resp.json()
+        if not isinstance(data, dict):
+            return {"error": "高德 API 返回结构无效"}
         if data.get("status") != "1":
             return {"error": f"高德 API 返回错误: {data.get('info', '未知错误')}"}
         return data
     except Exception as e:
-        return {"error": f"高德 API 请求失败: {str(e)}"}
+        # requests 异常可能包含完整查询 URL，其中带有 API Key。
+        return {"error": f"高德 API 请求失败: {type(e).__name__}"}
 
 
 def search_around(location: str, keywords: str = "", radius: int = 1000,
@@ -129,11 +144,14 @@ def search_around(location: str, keywords: str = "", radius: int = 1000,
         import requests
         resp = requests.get(f"{AMAP_BASE}/place/around", params=params, timeout=10)
         data = resp.json()
+        if not isinstance(data, dict):
+            return {"error": "高德 API 返回结构无效"}
         if data.get("status") != "1":
             return {"error": f"高德 API 返回错误: {data.get('info', '未知错误')}"}
         return data
     except Exception as e:
-        return {"error": f"高德 API 请求失败: {str(e)}"}
+        # requests 异常可能包含完整查询 URL，其中带有 API Key。
+        return {"error": f"高德 API 请求失败: {type(e).__name__}"}
 
 
 def search_poi(keywords: str, city: str = "", location: str = "",
@@ -161,20 +179,37 @@ def search_poi(keywords: str, city: str = "", location: str = "",
     """
     if not api_key:
         return {"geojson": pois_to_geojson([], keywords), "count": 0, "error": "高德 API Key 未配置"}
+    keywords = str(keywords or "").strip()
+    if not keywords:
+        return {"geojson": pois_to_geojson([], keywords), "count": 0, "error": "搜索关键词不能为空"}
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset <= 0:
+        return {"geojson": pois_to_geojson([], keywords), "count": 0, "error": "offset 必须是正整数"}
+    if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages <= 0:
+        return {"geojson": pois_to_geojson([], keywords), "count": 0, "error": "max_pages 必须是正整数"}
+    offset = min(offset, 25)
+    page_limit = min(max_pages, 8)
 
     all_pois = []
+    warnings = []
     source = "text"
 
     if location:
         # 周边搜索
         source = "around"
-        for p in range(1, min(max_pages, 8) + 1):
+        for p in range(1, page_limit + 1):
             data = search_around(location, keywords, radius, offset, p, api_key)
             if "error" in data:
                 if p == 1:
                     return {"geojson": pois_to_geojson([], keywords), "count": 0, "error": data["error"]}
+                warnings.append(f"第 {p} 页周边搜索失败，结果仅包含前 {p - 1} 页。")
                 break
             pois = data.get("pois", [])
+            if not isinstance(pois, list) or any(not isinstance(poi, dict) for poi in pois):
+                if p == 1:
+                    return {"geojson": pois_to_geojson([], keywords), "count": 0,
+                            "error": "高德 API 返回的 pois 列表结构无效"}
+                warnings.append(f"第 {p} 页周边搜索返回无效数据，结果仅包含前 {p - 1} 页。")
+                break
             if not pois:
                 break
             all_pois.extend(pois)
@@ -182,13 +217,20 @@ def search_poi(keywords: str, city: str = "", location: str = "",
                 break
     else:
         # 关键字搜索
-        for p in range(1, min(max_pages, 8) + 1):
+        for p in range(1, page_limit + 1):
             data = search_text(keywords, city, offset, p, api_key)
             if "error" in data:
                 if p == 1:
                     return {"geojson": pois_to_geojson([], keywords), "count": 0, "error": data["error"]}
+                warnings.append(f"第 {p} 页关键字搜索失败，结果仅包含前 {p - 1} 页。")
                 break
             pois = data.get("pois", [])
+            if not isinstance(pois, list) or any(not isinstance(poi, dict) for poi in pois):
+                if p == 1:
+                    return {"geojson": pois_to_geojson([], keywords), "count": 0,
+                            "error": "高德 API 返回的 pois 列表结构无效"}
+                warnings.append(f"第 {p} 页关键字搜索返回无效数据，结果仅包含前 {p - 1} 页。")
+                break
             if not pois:
                 break
             all_pois.extend(pois)
@@ -198,6 +240,7 @@ def search_poi(keywords: str, city: str = "", location: str = "",
     geojson = pois_to_geojson(all_pois, f"{keywords}_POI")
     return {
         "geojson": geojson,
-        "count": len(all_pois),
+        "count": len(geojson["features"]),
         "source": source,
+        "warnings": warnings,
     }

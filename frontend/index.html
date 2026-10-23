@@ -214,7 +214,7 @@
             <div class="connector-online" id="connectorOnline">
               <div class="connector-online-title">
                 <span class="ui-icon" aria-hidden="true" style="vertical-align:middle;margin-right:4px;;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-9155ffdbf56d.png')"></span>
-                添加在线数据（云原生格式）
+                添加在线数据
               </div>
               <div class="connector-online-row">
                 <select id="onlineType" class="connector-online-select">
@@ -223,16 +223,32 @@
                   <option value="pmtiles">PMTiles</option>
                   <option value="geoparquet">GeoParquet</option>
                   <option value="flatgeobuf">FlatGeobuf</option>
+                  <option value="arcgis-rest">ArcGIS REST 矢量图层</option>
                 </select>
               </div>
               <div class="connector-online-row">
                 <input type="text" id="onlineUrl" class="connector-online-input" placeholder="粘贴数据 URL（http/https）或本地路径" />
                 <button class="connector-online-btn" id="onlineLoadBtn">加载</button>
               </div>
+              <div class="connector-online-row arcgis-fetch-only" style="display:none;">
+                <input type="text" id="arcgisLayerId" class="connector-online-input" placeholder="图层 ID（可留空自动选择）" />
+                <select id="arcgisFetchMode" class="connector-online-select"><option value="preview">限量预览（不核验完整性）</option><option value="full">完整获取（核对对象 ID）</option></select>
+              </div>
+              <div class="connector-online-row arcgis-fetch-only" style="display:none;">
+                <input type="text" id="arcgisWhere" class="connector-online-input" value="1=1" aria-label="属性过滤条件" placeholder="属性条件，例如 POPULATION > 1000" />
+                <input type="text" id="arcgisBbox" class="connector-online-input" aria-label="空间范围" placeholder="范围 minx,miny,maxx,maxy（WGS84）" />
+              </div>
+              <div class="connector-online-row arcgis-fetch-only" style="display:none;">
+                <button class="connector-online-btn" id="arcgisInspectBtn">检查图层</button>
+                <button class="connector-online-btn" id="arcgisCancelBtn" style="display:none;">取消获取</button>
+                <button class="connector-online-btn" id="arcgisRerunBtn" style="display:none;">重跑上次配方</button>
+              </div>
+              <div class="connector-online-hint arcgis-fetch-only" id="arcgisFetchStatus" style="display:none;" role="status" aria-live="polite"></div>
+              <div class="connector-online-hint arcgis-fetch-only" id="arcgisFetchResult" style="display:none;"></div>
               <div class="connector-online-hint">支持 COG(.tif)、PMTiles(.pmtiles)、GeoParquet(.parquet)、FlatGeobuf(.fgb)，流式加载不整体下载</div>
             </div>
             <div class="connector-panel-footer">
-              <span>配置在「设置 → 连接器」中管理，AI 分析时自动读取已配置的凭据</span>
+              <span>账号与密钥：设置 → 连接器</span>
             </div>
           </div>
         </div>
@@ -1013,13 +1029,31 @@
   <span class="ui-icon" aria-hidden="true" style="display:none;;--ui-icon-image:url('/assets/ui-icons/icon-c7b5fb2ea8c3.png')"></span>
   <div id="mapContextMenu" class="map-context-menu" style="display:none;">
     <div class="context-menu-item" data-action="send-location-routed">
-      <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-050db8fc6bba.png')"></span>
+      <svg class="context-menu-action-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9-1.9 5.1-1.9-5.1L5 10.5l5.1-1.9L12 3.5z"/><path d="M19 15.5l.9 2.6 2.6.9-2.6.9L19 22.5l-.9-2.6-2.6-.9 2.6-.9.9-2.6z"/></svg>
       <span>问 AI 深度分析此地</span>
       <span class="ctx-badge ctx-badge-ai">AI</span>
+    </div>
+    <div class="context-menu-item" data-action="add-map-point">
+      <span class="context-menu-item-icon" aria-hidden="true">＋</span>
+      <span>在此处添加点</span>
+    </div>
+    <div class="context-menu-item" data-action="buffer-map-point">
+      <span class="context-menu-item-icon" aria-hidden="true">◎</span>
+      <span>创建缓冲区</span>
     </div>
     <div class="context-menu-item" data-action="copy-coords">
       <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-53bb8fdc3902.png')"></span>
       <span>复制经纬度坐标</span>
+    </div>
+    <div class="context-menu-item context-menu-submenu-trigger" data-action="copy-format-menu" role="button" tabindex="0" aria-haspopup="true" aria-expanded="false">
+      <span class="context-menu-item-icon" aria-hidden="true">↗</span>
+      <span>复制其他格式</span>
+      <span class="context-menu-submenu-arrow" aria-hidden="true">›</span>
+      <div class="context-menu-submenu" role="menu">
+        <div class="context-menu-item" role="menuitem" tabindex="0" data-action="copy-coords-format" data-format="dms">度分秒（DMS）</div>
+        <div class="context-menu-item" role="menuitem" tabindex="0" data-action="copy-coords-format" data-format="geojson">GeoJSON</div>
+        <div class="context-menu-item" role="menuitem" tabindex="0" data-action="copy-coords-format" data-format="wkt">WKT</div>
+      </div>
     </div>
   </div>
 
@@ -1507,6 +1541,7 @@
                 <div class="logs-stat-label">历史问题记录</div>
               </div>
             </div>
+            <p class="setting-desc" id="logsLegacyNote" hidden></p>
           </div>
           <div class="setting-group">
             <label class="setting-label">操作</label>

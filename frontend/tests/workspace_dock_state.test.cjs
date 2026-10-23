@@ -53,6 +53,7 @@ function bootWorkspace(saved, projects = [], options = {}) {
   const recentProjects = makeElement();
   const sampleStatus = makeElement();
   const sampleCalls = { requests: [], loaded: [], added: [] };
+  const arcgisCalls = [];
   let taskOutput = null;
   taskPanel.attributes = {};
   taskPanel.setAttribute = function(name, value) { this.attributes[name] = value; };
@@ -122,6 +123,7 @@ function bootWorkspace(saved, projects = [], options = {}) {
     api: { listProjects() { return Promise.resolve({ projects }); } },
     map: { invalidateSize() {}, loadGeoJSON(data, name) { sampleCalls.loaded.push({ data, name }); } },
     layers: { addLayer(layer) { sampleCalls.added.push(layer); } },
+    connector: { openArcgis(options) { arcgisCalls.push(options); } },
     renderers: { getViewer() { return null; } },
     geosource: {
       closeWorldMap() {},
@@ -142,7 +144,7 @@ function bootWorkspace(saved, projects = [], options = {}) {
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   return { workspace: window.GIS.workspace, dock, localStorage: storage, panes, tabs,
     taskPanel, taskRunButton, taskTabButton, taskInput, taskSelect, taskCancelButton,
-    documentListeners, geoSourceCalls, elements, recentProjects, sampleCalls, sampleStatus,
+    documentListeners, geoSourceCalls, elements, recentProjects, sampleCalls, sampleStatus, arcgisCalls,
     get taskOutput() { return taskOutput; } };
 }
 
@@ -152,7 +154,9 @@ test('workspace restores a dock closed before reload without overwriting its sav
   assert.equal(harness.localStorage.getItem('gis_workspace_dock_closed'), 'true');
   assert.equal(harness.localStorage.getItem('gis_workspace_active_tab'), 'layers');
 
-  harness.workspace.setTab('layers');
+  harness.documentListeners.click({target: {closest(selector) {
+    return selector === '[data-dock-tab]' ? {dataset: {dockTab: 'layers'}} : null;
+  }}});
   assert.equal(harness.dock.hidden, false);
   assert.equal(harness.localStorage.getItem('gis_workspace_dock_closed'), 'false');
 });
@@ -201,6 +205,7 @@ test('workspace data search opens GeoSource without issuing a duplicate empty-st
 
 test('home sample cards load tracked demo data into the map and layer list', async () => {
   const harness = bootWorkspace({});
+  assert.doesNotMatch(harness.dock.innerHTML, /workspace-agent-entry|配置 MCP/);
   for (const [sample, path] of [
     ['buffer', '/samples/demo-polygons.json'],
     ['points', '/samples/demo-points.json'],
@@ -215,6 +220,28 @@ test('home sample cards load tracked demo data into the map and layer list', asy
     assert.equal(harness.sampleCalls.added.at(-1).filename.startsWith('样例_'), true);
   }
   assert.match(harness.dock.innerHTML, /id="workspaceSampleStatus"[^>]*role="status"/);
+});
+
+test('home public-data shortcut opens the own-URL flow or pre-fills the verified ArcGIS sample', () => {
+  const harness = bootWorkspace({});
+  assert.match(harness.dock.innerHTML, /workspace-first-task/);
+  assert.doesNotMatch(harness.dock.innerHTML, /workspace-agent-entry|配置 MCP/);
+  assert.match(harness.dock.innerHTML, /data-workspace-action="arcgis-own"/);
+  assert.match(harness.dock.innerHTML, /data-workspace-action="arcgis-sample"/);
+  assert.match(harness.dock.innerHTML, /样例人口数据较旧，仅用于演示/);
+
+  const clickAction = action => harness.documentListeners.click({ target: {
+    closest(selector) { return selector === '[data-workspace-action]' ? { dataset: { workspaceAction: action } } : null; },
+  } });
+  clickAction('arcgis-own');
+  clickAction('arcgis-sample');
+
+  assert.equal(harness.arcgisCalls.length, 2);
+  assert.equal(harness.arcgisCalls[0].mode, 'preview');
+  assert.equal(harness.arcgisCalls[0].url, '');
+  assert.equal(harness.arcgisCalls[1].url, 'https://sampleserver6.arcgisonline.com/arcgis/rest/services/Census/MapServer');
+  assert.equal(harness.arcgisCalls[1].where, "STATE_NAME = 'Alabama'");
+  assert.equal(harness.arcgisCalls[1].mode, 'full');
 });
 
 test('repeated same-sample loads in one millisecond receive distinct layer IDs', async () => {

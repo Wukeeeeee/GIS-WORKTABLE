@@ -511,7 +511,8 @@ function scrollMessages() {
     if (modelBar) modelBar.classList.remove('is-disabled');
     // 恢复右键菜单
     document.querySelectorAll('.context-menu-item').forEach(function(el) {
-      if (el.getAttribute('data-action') !== 'copy-coords') el.classList.remove('is-disabled');
+      var action = el.getAttribute('data-action');
+      if (action !== 'copy-coords' && action !== 'copy-format-menu' && action !== 'copy-coords-format') el.classList.remove('is-disabled');
     });
   }
 
@@ -704,7 +705,8 @@ function scrollMessages() {
       stopBtn.title = '停止当前任务';
     }
     document.querySelectorAll('.context-menu-item').forEach(function(el) {
-      if (el.getAttribute('data-action') !== 'copy-coords') el.classList.add('is-disabled');
+      var action = el.getAttribute('data-action');
+      if (action !== 'copy-coords' && action !== 'copy-format-menu' && action !== 'copy-coords-format') el.classList.add('is-disabled');
     });
 
     // 获取当前模型显示名（优先用 providerOverride → 取 Provider 列表的 name）
@@ -920,7 +922,6 @@ function scrollMessages() {
             } else if (evt.type === 'done') {
               _receivedDone = true;
               result = evt;
-              if (executionCards) executionCards.finish(evt.confirm_pending ? 'waiting' : 'success');
               _clearAllTimeouts();
             }
           } catch (parseErr) {
@@ -1136,6 +1137,7 @@ function scrollMessages() {
               b.onmouseleave = function() { this.style.transform = ''; this.style.boxShadow = ''; };
               b.onclick = function() {
                 bar.remove();
+                if (executionCards) executionCards.resolveWaiting(false);
                 // 发送选项 label，后端 choose_option 逻辑会记录选择并注入 AI 上下文
                 window.GIS.chat.sendMessage(opt.label);
               };
@@ -1146,7 +1148,11 @@ function scrollMessages() {
             cancelBtn.type = 'button';
             cancelBtn.textContent = '取消';
             cancelBtn.style.cssText = 'border:none;background:transparent;color:var(--ui-gray-400,#aaa);font-size:11px;cursor:pointer;padding:4px 8px;';
-            cancelBtn.onclick = function() { bar.remove(); };
+            cancelBtn.onclick = function() {
+              bar.remove();
+              if (executionCards) executionCards.resolveWaiting(true);
+              window.GIS.chat.sendMessage('取消');
+            };
             bar.appendChild(cancelBtn);
           } else {
             // 普通确认：继续/取消
@@ -1165,6 +1171,7 @@ function scrollMessages() {
               b.style.cursor = 'pointer';
               b.onclick = function() {
                 bar.remove();
+                if (executionCards) executionCards.resolveWaiting(word === '取消');
                 window.GIS.chat.sendMessage(word);
               };
               return b;
@@ -1487,6 +1494,10 @@ function scrollMessages() {
 
         sortedOps.forEach(function(op) {
           if (executionCards && op && executionCards.hasAppliedMapOp(op._stream_id)) return;
+          if (executionCards && op && op._stream_id && op._step_id && (op.action === 'fit' || op.action === 'center')) {
+            executionCards.handle({type: 'layer_ops_delta', step_id: op._step_id, layer_ops: [op]});
+            return;
+          }
           if (op.action === 'legend' && op.name && symbologyApplied.has(op.name)) {
             return;
           }
@@ -1524,6 +1535,11 @@ function scrollMessages() {
               if (target && window.GIS.layers) {
                 var oldN = target.filename || target._rawName;
                 var oldMapName = target._rawName || oldN;
+                var oldRegisteredName = target._registeredName || op.name;
+                if (target._registrationTokens && target._registrationTokens[oldRegisteredName] && oldRegisteredName !== op.new_name) {
+                  target._registrationTokens[op.new_name] = target._registrationTokens[oldRegisteredName];
+                  delete target._registrationTokens[oldRegisteredName];
+                }
                 target.filename = op.new_name;
                 target._rawName = op.new_name;
                 target._registeredName = op.new_name;
@@ -1774,6 +1790,7 @@ function scrollMessages() {
       if (window.GIS.project && typeof window.GIS.project.autoSave === 'function') {
         window.GIS.project.autoSave();
       }
+      if (executionCards) executionCards.finish(result.confirm_pending ? 'waiting' : 'success');
     } catch (err) {
       // 清除超时计时器
       _clearAllTimeouts();
@@ -2048,7 +2065,7 @@ function scrollMessages() {
     avatar.className = 'message-avatar' + (type === 'user' ? ' message-avatar-user' : ' message-avatar-ai');
     avatar.innerHTML = type === 'user'
       ? "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-5df592d75d04.png')\"></span>"
-      : "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-04301442a3cd.png')\"></span>";
+      : "<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 4v2\"/><circle cx=\"12\" cy=\"3\" r=\"1\"/><rect x=\"4.5\" y=\"7\" width=\"15\" height=\"13\" rx=\"4\"/><path d=\"M9 12h.01M15 12h.01M9 16h6M2.5 11v5M21.5 11v5\"/></svg>";
     row.appendChild(avatar);
 
     const bubble = document.createElement('div');
@@ -2135,7 +2152,7 @@ function scrollMessages() {
       });
       panel.appendChild(counts);
       const note = document.createElement('p');
-      note.textContent = isEst ? '模型未返回用量，以下为本地估算。' : '按模型接口返回的用量统计。';
+      note.textContent = isEst ? '模型未返回完整用量，统计中包含本地估算。' : '按模型接口返回的用量统计。';
       panel.prepend(note);
       usage.appendChild(panel);
       footer.appendChild(usage);

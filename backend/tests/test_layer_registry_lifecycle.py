@@ -19,6 +19,11 @@ def setup_function():
     tools.reset_state()
 
 
+def teardown_function():
+    tools.reset_registered_layers([])
+    tools.reset_state()
+
+
 def test_register_normalizes_feature_and_keeps_unique_stable_ids_on_replacement():
     geojson = _points()
     geojson["features"][0]["properties"]["_fid"] = "duplicate"
@@ -151,6 +156,7 @@ def test_layer_management_exact_name_and_rename_collision_are_safe():
         "action": "rename", "name": "clinic east", "new_name": "clinic west",
     })
     assert "已存在" in conflict
+    assert tools._tool_result_failed("layer_control", conflict)
     assert set(tools._registered_layers) == {"clinic east", "clinic west"}
 
     result = tools.layer_control.invoke({

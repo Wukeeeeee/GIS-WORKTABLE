@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import json
-from functools import lru_cache
-from typing import Optional, List, Dict, Any
+from contextlib import closing
+from typing import Optional, Dict, Any
 
 # 默认数据库路径：优先环境变量 GEOSOURCE_DB_PATH，其次 data/gis_services.db
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -87,6 +86,11 @@ def search_services(
         page_size: 每页条数（默认 20，最大 100）
         limit: 限制返回条数（兼容老接口，若指定且未指定 page 则单页截断）
     """
+    keyword = (keyword or "").strip() or None
+    country = (country or "").strip() or None
+    protocol = (protocol or "").strip() or None
+    category = (category or "").strip() or None
+
     conn = get_db_connection(readonly=True)
     cur = conn.cursor()
 
@@ -126,8 +130,12 @@ def search_services(
 
     # 计算总匹配条数
     count_sql = f"SELECT COUNT(*) FROM master {where_clause}"
-    cur.execute(count_sql, list(params))
-    total_count = cur.fetchone()[0]
+    try:
+        cur.execute(count_sql, list(params))
+        total_count = cur.fetchone()[0]
+    except Exception:
+        conn.close()
+        raise
 
     # 分页参数计算
     if limit is not None and limit > 0:
@@ -183,24 +191,20 @@ def get_service_detail(service_id: str) -> Dict[str, Any]:
     if not sid:
         return {"error": "缺少 service_id 参数"}
 
-    conn = get_db_connection(readonly=True)
-    cur = conn.cursor()
+    with closing(get_db_connection(readonly=True)) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM master WHERE service_id = ?", (sid,))
+        service_row = cur.fetchone()
 
-    cur.execute("SELECT * FROM master WHERE service_id = ?", (sid,))
-    service_row = cur.fetchone()
+        if not service_row:
+            return {"error": f"未找到 ID 为 '{sid}' 的服务。"}
 
-    if not service_row:
-        conn.close()
-        return {"error": f"未找到 ID 为 '{sid}' 的服务。"}
-
-    service_data = dict(service_row)
-
-    cur.execute(
-        "SELECT layer_idx, layer_name FROM layers WHERE service_id = ? ORDER BY layer_idx",
-        (sid,)
-    )
-    layer_rows = cur.fetchall()
-    conn.close()
+        service_data = dict(service_row)
+        cur.execute(
+            "SELECT layer_idx, layer_name FROM layers WHERE service_id = ? ORDER BY layer_idx",
+            (sid,)
+        )
+        layer_rows = cur.fetchall()
 
     service_data["layers"] = [dict(lr) for lr in layer_rows]
     return service_data
@@ -219,34 +223,35 @@ def list_categories_and_stats() -> Dict[str, Any]:
     except Exception:
         current_mtime = 0.0
 
-    if _cached_stats_data is not None and current_mtime == _last_db_mtime:
+    if (
+        _cached_stats_data is not None
+        and db_path == _cached_stats_data.get("db_path")
+        and current_mtime == _last_db_mtime
+    ):
         return dict(_cached_stats_data)
 
-    conn = get_db_connection(readonly=True)
-    cur = conn.cursor()
+    with closing(get_db_connection(readonly=True)) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT count(*) FROM master")
+        total_services = cur.fetchone()[0]
 
-    cur.execute("SELECT count(*) FROM master")
-    total_services = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM layers")
+        total_layers = cur.fetchone()[0]
 
-    cur.execute("SELECT count(*) FROM layers")
-    total_layers = cur.fetchone()[0]
+        cur.execute(
+            "SELECT category, count(*) as count FROM master WHERE category != '' GROUP BY category ORDER BY count DESC LIMIT 15"
+        )
+        top_categories = [dict(r) for r in cur.fetchall()]
 
-    cur.execute(
-        "SELECT category, count(*) as count FROM master WHERE category != '' GROUP BY category ORDER BY count DESC LIMIT 15"
-    )
-    top_categories = [dict(r) for r in cur.fetchall()]
+        cur.execute(
+            "SELECT protocol, count(*) as count FROM master WHERE protocol != '' GROUP BY protocol ORDER BY count DESC LIMIT 10"
+        )
+        top_protocols = [dict(r) for r in cur.fetchall()]
 
-    cur.execute(
-        "SELECT protocol, count(*) as count FROM master WHERE protocol != '' GROUP BY protocol ORDER BY count DESC LIMIT 10"
-    )
-    top_protocols = [dict(r) for r in cur.fetchall()]
-
-    cur.execute(
-        "SELECT country, count(*) as count FROM master WHERE country != '' GROUP BY country ORDER BY count DESC LIMIT 20"
-    )
-    top_countries = [dict(r) for r in cur.fetchall()]
-
-    conn.close()
+        cur.execute(
+            "SELECT country, count(*) as count FROM master WHERE country != '' GROUP BY country ORDER BY count DESC LIMIT 20"
+        )
+        top_countries = [dict(r) for r in cur.fetchall()]
 
     _cached_stats_data = {
         "total_services": total_services,
@@ -277,61 +282,15 @@ def query_sql(query: str) -> Dict[str, Any]:
     cur = conn.cursor()
     try:
         cur.execute(clean_query)
-        rows = cur.fetchall()
+        rows = cur.fetchmany(101)
         columns = [desc[0] for desc in cur.description] if cur.description else []
         results = [dict(zip(columns, r)) for r in rows[:100]]
         return {
             "row_count": len(results),
-            "rows": results
+            "rows": results,
+            "truncated": len(rows) > 100,
         }
     except Exception as e:
         return {"error": str(e)}
     finally:
         conn.close()
-
-
-def update_service_status(
-    service_id: str,
-    new_url: Optional[str] = None,
-    status: Optional[str] = None,
-    notes: Optional[str] = None
-) -> Dict[str, Any]:
-    """更新服务端点 URL、状态（已验证/未验证/已停止/历史服务）或补充备注。"""
-    sid = (service_id or "").strip()
-    if not sid:
-        return {"error": "缺少 service_id 参数"}
-
-    conn = get_db_connection(readonly=False)
-    cur = conn.cursor()
-
-    cur.execute("SELECT service_id, service_url, status, notes FROM master WHERE service_id = ?", (sid,))
-    existing = cur.fetchone()
-    if not existing:
-        conn.close()
-        return {"error": f"未找到 ID 为 '{sid}' 的服务。"}
-
-    updates = []
-    params = []
-    if new_url:
-        updates.append("service_url = ?")
-        params.append(new_url.strip())
-    if status:
-        updates.append("status = ?")
-        params.append(status.strip())
-    if notes:
-        existing_notes = existing["notes"] or ""
-        combined_notes = f"{existing_notes} | [更新]: {notes.strip()}" if existing_notes else notes.strip()
-        updates.append("notes = ?")
-        params.append(combined_notes)
-
-    if not updates:
-        conn.close()
-        return {"message": "没有需要更新的字段。"}
-
-    params.append(sid)
-    sql = f"UPDATE master SET {', '.join(updates)} WHERE service_id = ?"
-    cur.execute(sql, params)
-    conn.commit()
-    conn.close()
-
-    return {"success": True, "service_id": sid, "updated_fields": updates}

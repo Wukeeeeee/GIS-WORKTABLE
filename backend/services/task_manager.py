@@ -20,6 +20,7 @@ import uuid
 import threading
 import datetime
 import shutil
+import tempfile
 from typing import Optional
 
 # ============================================================
@@ -30,7 +31,7 @@ _BASE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "cache", "tasks"
 )
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 # 内存缓存：task_id -> TaskMemory
 _tasks: dict = {}
@@ -44,7 +45,19 @@ def _now() -> str:
 
 
 def _task_dir(task_id: str) -> str:
-    return os.path.join(_BASE_DIR, task_id)
+    if not isinstance(task_id, str) or not task_id or task_id in {".", ".."}:
+        raise ValueError("无效 task_id")
+    if os.path.basename(task_id) != task_id or "/" in task_id or "\\" in task_id or "\0" in task_id:
+        raise ValueError("无效 task_id")
+    base = os.path.abspath(_BASE_DIR)
+    task_dir = os.path.abspath(os.path.join(base, task_id))
+    try:
+        common = os.path.commonpath((base, task_dir))
+    except ValueError as exc:
+        raise ValueError("无效 task_id") from exc
+    if os.path.normcase(common) != os.path.normcase(base):
+        raise ValueError("无效 task_id")
+    return task_dir
 
 
 def _task_json_path(task_id: str) -> str:
@@ -61,6 +74,16 @@ def _artifacts_json_path(task_id: str) -> str:
 
 def _exec_log_json_path(task_id: str) -> str:
     return os.path.join(_task_dir(task_id), "exec_log.json")
+
+
+def _file_size(path: str) -> int:
+    """返回普通文件大小；文件失效或被并发删除时按 0 字节处理。"""
+    if not path:
+        return 0
+    try:
+        return os.path.getsize(path) if os.path.isfile(path) else 0
+    except OSError:
+        return 0
 
 
 # ============================================================
@@ -96,7 +119,7 @@ def _new_artifact(task_id: str, filename: str, filepath: str,
         "path": filepath,
         "mime_type": mime_type,
         "size": size,
-        "status": "success" if (filepath and os.path.exists(filepath) and size > 0) else "pending",
+        "status": "success" if size > 0 else "pending",
         "created_by_step": created_by_step,
         "derived_from": derived_from,
         "created_at": _now(),
@@ -128,12 +151,33 @@ def _new_exec_record(task_id: str, step_id: int, source_code: str,
 # 磁盘持久化
 # ============================================================
 
+def _write_atomic(path: str, write_content) -> None:
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=".task-write-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            write_content(f)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def _write_json_atomic(path: str, value) -> None:
+    _write_atomic(path, lambda f: json.dump(value, f, ensure_ascii=False, indent=2))
+
+
+def _write_text_atomic(path: str, value: str) -> None:
+    _write_atomic(path, lambda f: f.write(value))
+
+
 def _save_task_to_disk(task: dict):
     tid = task["task_id"]
-    d = _task_dir(tid)
-    os.makedirs(d, exist_ok=True)
-    with open(_task_json_path(tid), "w", encoding="utf-8") as f:
-        json.dump(task, f, ensure_ascii=False, indent=2)
+    _write_json_atomic(_task_json_path(tid), task)
 
 
 def _load_task_from_disk(task_id: str) -> Optional[dict]:
@@ -142,16 +186,14 @@ def _load_task_from_disk(task_id: str) -> Optional[dict]:
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        return data if isinstance(data, dict) else None
     except Exception:
         return None
 
 
 def _save_artifacts_to_disk(task_id: str, artifacts: list):
-    d = _task_dir(task_id)
-    os.makedirs(d, exist_ok=True)
-    with open(_artifacts_json_path(task_id), "w", encoding="utf-8") as f:
-        json.dump(artifacts, f, ensure_ascii=False, indent=2)
+    _write_json_atomic(_artifacts_json_path(task_id), artifacts)
 
 
 def _load_artifacts_from_disk(task_id: str) -> list:
@@ -160,16 +202,14 @@ def _load_artifacts_from_disk(task_id: str) -> list:
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
     except Exception:
         return []
 
 
 def _save_exec_log_to_disk(task_id: str, log: list):
-    d = _task_dir(task_id)
-    os.makedirs(d, exist_ok=True)
-    with open(_exec_log_json_path(task_id), "w", encoding="utf-8") as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
+    _write_json_atomic(_exec_log_json_path(task_id), log)
 
 
 def _load_exec_log_from_disk(task_id: str) -> list:
@@ -178,7 +218,8 @@ def _load_exec_log_from_disk(task_id: str) -> list:
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
     except Exception:
         return []
 
@@ -206,11 +247,16 @@ def create_task(user_goal: str, session_id: str = "default") -> str:
 
 def get_task(task_id: str) -> Optional[dict]:
     """获取任务（内存优先，磁盘兜底），双检锁保证并发放大读盘后写回导致老数据覆盖新值"""
+    if not isinstance(task_id, str) or not task_id:
+        return None
     with _lock:
         if task_id in _tasks:
             return _tasks[task_id]
     # 磁盘加载（无锁 IO）
-    loaded = _load_task_from_disk(task_id)
+    try:
+        loaded = _load_task_from_disk(task_id)
+    except (TypeError, ValueError):
+        return None
     if not loaded:
         return None
     with _lock:
@@ -218,12 +264,20 @@ def get_task(task_id: str) -> Optional[dict]:
         existing = _tasks.get(task_id)
         if existing:
             return existing
+        # 删除任务也持有同一把锁；若磁盘读取期间任务已被删除，不要把旧快照复活到缓存。
+        if not os.path.isfile(_task_json_path(task_id)):
+            return None
         _tasks[task_id] = loaded
         return loaded
 
 
 def update_task(task_id: str, **kwargs) -> bool:
-    """更新任务字段"""
+    """更新任务字段；内存未命中时先从磁盘恢复任务。"""
+    try:
+        if not get_task(task_id):
+            return False
+    except (TypeError, ValueError):
+        return False
     with _lock:
         task = _tasks.get(task_id)
         if not task:
@@ -255,17 +309,24 @@ def restore_task(task_id: str) -> bool:
 def delete_task(task_id: str) -> bool:
     """删除任务及其所有文件（磁盘的 rmtree 和内存清索引要放同一把锁里，避免并发重建）"""
     with _lock:
-        task = _tasks.pop(task_id, None)
+        try:
+            d = _task_dir(task_id)
+        except ValueError:
+            return False
+        task = _tasks.get(task_id) or _load_task_from_disk(task_id)
+        directory_exists = os.path.exists(d)
+        if not task and not directory_exists:
+            return False
+        if directory_exists:
+            try:
+                shutil.rmtree(d)
+            except OSError:
+                return False
+        _tasks.pop(task_id, None)
         if task:
             sid = task.get("session_id") or "default"
             if _session_active.get(sid) == task_id:
                 _session_active.pop(sid, None)
-        d = _task_dir(task_id)
-        if os.path.exists(d):
-            try:
-                shutil.rmtree(d)
-            except Exception:
-                pass
     return True
 
 
@@ -321,13 +382,11 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
         code_dir = _code_dir(task_id)
         os.makedirs(code_dir, exist_ok=True)
         version_file = os.path.join(code_dir, f"step_{step:03d}.py")
-        with open(version_file, "w", encoding="utf-8") as f:
-            f.write(source_code)
+        _write_text_atomic(version_file, source_code)
 
         # 更新 latest.py
         latest_file = os.path.join(code_dir, "latest.py")
-        with open(latest_file, "w", encoding="utf-8") as f:
-            f.write(source_code)
+        _write_text_atomic(latest_file, source_code)
 
         # 如果有 label，保存到 metadata
         if label:
@@ -340,8 +399,7 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
                 except Exception:
                     pass
             meta[f"step_{step:03d}"] = {"label": label, "saved_at": _now()}
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
+            _write_json_atomic(meta_path, meta)
 
         _save_task_to_disk(task)
         print(f"[TaskManager] 保存代码 {task_id}/step_{step:03d}.py ({len(source_code)} bytes)", flush=True)
@@ -350,35 +408,54 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
 
 def get_latest_code(task_id: str) -> Optional[str]:
     """获取任务的最新 Python 源代码"""
-    code_dir = _code_dir(task_id)
+    try:
+        code_dir = _code_dir(task_id)
+    except ValueError:
+        return None
     latest = os.path.join(code_dir, "latest.py")
-    if os.path.exists(latest):
+    try:
         with open(latest, "r", encoding="utf-8") as f:
             return f.read()
-    return None
+    except OSError:
+        return None
 
 
 def get_code_version(task_id: str, step: int) -> Optional[str]:
     """获取指定版本的 Python 源代码"""
-    path = os.path.join(_code_dir(task_id), f"step_{step:03d}.py")
-    if os.path.exists(path):
+    if isinstance(step, bool) or not isinstance(step, int) or step < 1:
+        return None
+    try:
+        path = os.path.join(_code_dir(task_id), f"step_{step:03d}.py")
+    except ValueError:
+        return None
+    try:
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
-    return None
+    except OSError:
+        return None
 
 
 def get_code_versions(task_id: str) -> list:
     """列出所有代码版本"""
-    code_dir = _code_dir(task_id)
-    if not os.path.isdir(code_dir):
+    try:
+        code_dir = _code_dir(task_id)
+        filenames = os.listdir(code_dir)
+    except (OSError, ValueError):
         return []
     versions = []
-    for fname in sorted(os.listdir(code_dir)):
+    for fname in sorted(filenames):
         if fname.startswith("step_") and fname.endswith(".py"):
-            step = int(fname[5:8])
+            step_text = fname[len("step_"):-len(".py")]
+            if not step_text.isdigit():
+                continue
+            step = int(step_text)
             fpath = os.path.join(code_dir, fname)
-            size = os.path.getsize(fpath)
+            try:
+                size = os.path.getsize(fpath)
+            except OSError:
+                continue
             versions.append({"step": step, "file": fname, "size": size})
+    versions.sort(key=lambda version: version["step"])
     return versions
 
 
@@ -387,12 +464,10 @@ def get_code_versions(task_id: str) -> list:
 # ============================================================
 
 def register_artifact(task_id: str, filename: str, filepath: str,
-                       mime_type: str = "", artifact_type: str = "file",
+                       mime_type: str = "", artifact_type: str = "",
                        created_by_step: int = 0, derived_from: str = None) -> dict:
     """注册一个生成的 Artifact"""
-    size = 0
-    if filepath and os.path.exists(filepath):
-        size = os.path.getsize(filepath)
+    size = _file_size(filepath)
 
     artifact = _new_artifact(
         task_id=task_id,
@@ -406,7 +481,7 @@ def register_artifact(task_id: str, filename: str, filepath: str,
     )
 
     # 验证：文件必须真实存在且 size > 0 才能标记 success
-    if filepath and os.path.exists(filepath) and size > 0:
+    if size > 0:
         artifact["status"] = "success"
     else:
         artifact["status"] = "failed"
@@ -423,24 +498,6 @@ def register_artifact(task_id: str, filename: str, filepath: str,
 def get_artifacts(task_id: str) -> list:
     """获取任务的所有 Artifact"""
     return _load_artifacts_from_disk(task_id)
-
-
-def get_artifact(task_id: str, artifact_id: str) -> Optional[dict]:
-    """获取指定 Artifact"""
-    artifacts = _load_artifacts_from_disk(task_id)
-    for a in artifacts:
-        if a["artifact_id"] == artifact_id:
-            return a
-    return None
-
-
-def verify_artifact(task_id: str, artifact_id: str) -> bool:
-    """验证 Artifact 是否真实存在"""
-    artifact = get_artifact(task_id, artifact_id)
-    if not artifact:
-        return False
-    fp = artifact.get("path", "")
-    return bool(fp and os.path.exists(fp) and os.path.getsize(fp) > 0)
 
 
 def get_artifact_summary(task_id: str) -> str:
@@ -505,19 +562,6 @@ def get_exec_log_summary(task_id: str) -> str:
 # ============================================================
 # WorkingMemory：GIS 上下文
 # ============================================================
-
-def update_gis_context(task_id: str, **kwargs):
-    """更新任务的 GIS 上下文（CRS、数据路径、图层名等）"""
-    with _lock:
-        task = _tasks.get(task_id)
-        if not task:
-            return
-        gis = task.get("gis_context", {})
-        gis.update(kwargs)
-        task["gis_context"] = gis
-        task["updated_at"] = _now()
-        _save_task_to_disk(task)
-
 
 def record_gis_operation(task_id: str, tool: str, arguments: dict,
                         input_layers: list = None, output_layers: list = None,
@@ -667,21 +711,23 @@ def find_or_create_task(session_id: str, user_message: str, task_id: str = None)
     2. 如果有活跃任务 → 复用（多轮对话继续同一任务）
     3. 如果没有活跃任务 → 创建新任务
     """
-    if task_id:
-        referenced = get_task(str(task_id))
-        if referenced:
-            with _lock:
-                _session_active[session_id or "default"] = str(task_id)
-            return str(task_id)
-        # Explicit reference must never silently fall back to an unrelated active task.
-        return create_task(user_message, session_id)
+    sid = session_id or "default"
+    # 查找与创建必须是一个原子操作，否则同一会话的并发首轮请求会各自
+    # 观察到“无活跃任务”并创建多条任务，最后一条覆盖 session 索引。
+    with _lock:
+        if task_id:
+            referenced = get_task(str(task_id))
+            if referenced:
+                _session_active[sid] = str(task_id)
+                return str(task_id)
+            # Explicit reference must never silently fall back to an unrelated active task.
+            return create_task(user_message, sid)
 
-    existing = find_active_task_for_session(session_id)
-    if existing:
-        return existing
+        existing = find_active_task_for_session(sid)
+        if existing:
+            return existing
 
-    # 创建新任务
-    return create_task(user_message, session_id)
+        return create_task(user_message, sid)
 
 
 # ============================================================

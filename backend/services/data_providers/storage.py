@@ -12,15 +12,18 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
+import numbers
 import os
+import shutil
 import tempfile
+import threading
 from typing import Optional
 
 from backend.services.ai_service import _TEMP_OUTPUT_DIR
 from backend.services.data_providers.errors import DataValidationError, DownloadError
 from backend.services.data_providers.models import (
     ALLOWED_FORMAT_EXTS,
-    ALLOWED_FORMATS,
     sanitize_name,
 )
 
@@ -29,6 +32,7 @@ _ALLOWED_GEOM = {
     "Point", "MultiPoint", "LineString", "MultiLineString",
     "Polygon", "MultiPolygon", "GeometryCollection",
 }
+_CATALOG_LOCK = threading.RLock()
 
 # 数据缓存根目录：/output 静态目录下的 data/<provider>/
 def data_root() -> str:
@@ -112,13 +116,64 @@ def normalize_featurecollection(geojson: dict) -> dict:
         raise DataValidationError("数据不是有效的 GeoJSON 对象。")
     t = geojson.get("type")
     if t == "FeatureCollection":
-        return {"type": "FeatureCollection", "features": list(geojson.get("features", []))}
+        features = geojson.get("features")
+        if not isinstance(features, list) or any(not isinstance(feature, dict) for feature in features):
+            raise DataValidationError("FeatureCollection.features 必须是要素对象列表。")
+        return {"type": "FeatureCollection", "features": list(features)}
     if t == "Feature":
+        if not isinstance(geojson.get("geometry"), (dict, type(None))):
+            raise DataValidationError("Feature.geometry 必须是几何对象或 null。")
+        if geojson.get("properties") is not None and not isinstance(geojson.get("properties"), dict):
+            raise DataValidationError("Feature.properties 必须是对象或 null。")
         return {"type": "FeatureCollection", "features": [geojson]}
-    if t in _ALLOWED_GEOM:
+    if isinstance(t, str) and t in _ALLOWED_GEOM:
         return {"type": "FeatureCollection",
                 "features": [{"type": "Feature", "geometry": geojson, "properties": {}}]}
     raise DataValidationError(f"数据格式未知（GeoJSON type={t}），已拒绝加载。")
+
+
+def _valid_geometry(geometry: dict) -> bool:
+    if not isinstance(geometry, dict):
+        return False
+    kind = geometry.get("type")
+    if not isinstance(kind, str) or kind not in _ALLOWED_GEOM:
+        return False
+    def valid_position(position) -> bool:
+        if not isinstance(position, (list, tuple)) or len(position) < 2:
+            return False
+        for value in position:
+            if not isinstance(value, numbers.Real) or isinstance(value, bool):
+                return False
+            try:
+                if not math.isfinite(float(value)):
+                    return False
+            except (OverflowError, TypeError, ValueError):
+                return False
+        return True
+
+    def valid_line(line, minimum=2) -> bool:
+        return isinstance(line, (list, tuple)) and len(line) >= minimum and all(valid_position(p) for p in line)
+
+    def valid_ring(ring) -> bool:
+        return valid_line(ring, minimum=4) and tuple(ring[0]) == tuple(ring[-1])
+
+    coordinates = geometry.get("coordinates")
+    if kind == "GeometryCollection":
+        children = geometry.get("geometries")
+        return isinstance(children, list) and bool(children) and all(_valid_geometry(child) for child in children)
+    if kind == "Point":
+        return valid_position(coordinates)
+    if kind == "MultiPoint":
+        return isinstance(coordinates, (list, tuple)) and bool(coordinates) and all(valid_position(p) for p in coordinates)
+    if kind == "LineString":
+        return valid_line(coordinates)
+    if kind == "MultiLineString":
+        return isinstance(coordinates, (list, tuple)) and bool(coordinates) and all(valid_line(line) for line in coordinates)
+    if kind == "Polygon":
+        return isinstance(coordinates, (list, tuple)) and bool(coordinates) and all(valid_ring(ring) for ring in coordinates)
+    return (isinstance(coordinates, (list, tuple)) and bool(coordinates)
+            and all(isinstance(polygon, (list, tuple)) and bool(polygon)
+                    and all(valid_ring(ring) for ring in polygon) for polygon in coordinates))
 
 
 def validate_vector(geojson: dict, *, provider: str = "", crs: str = "",
@@ -155,18 +210,24 @@ def validate_vector(geojson: dict, *, provider: str = "", crs: str = "",
     bad = 0
     has_geom = False
     for f in features:
+        if not isinstance(f, dict) or f.get("type") != "Feature":
+            bad += 1
+            continue
+        properties = f.get("properties")
+        if properties is not None and not isinstance(properties, dict):
+            bad += 1
+            continue
         g = f.get("geometry")
         if g is None:
             continue
-        gt = g.get("type")
-        if gt not in _ALLOWED_GEOM:
+        if not _valid_geometry(g):
             bad += 1
             continue
         has_geom = True
     if not has_geom:
         raise DataValidationError("数据中没有任何有效几何，已拒绝加载。", provider=provider)
-    if bad and bad == len(features):
-        raise DataValidationError(f"几何类型不在白名单内（共 {bad} 条），已拒绝加载。", provider=provider)
+    if bad:
+        raise DataValidationError(f"数据中有 {bad} 条要素的结构或几何无效，已拒绝加载。", provider=provider)
     return fc
 
 
@@ -200,37 +261,79 @@ def write_vector(geojson: dict, *, out_format: str, name: str, dirpath: str,
     base = sanitize_name(name)
     path = os.path.join(dirpath, f"{base}{ext}")
     os.makedirs(dirpath, exist_ok=True)
+    staging_dir = tempfile.mkdtemp(prefix=".vector-write-", dir=dirpath)
+    staging_path = os.path.join(staging_dir, f"{base}{ext}")
 
-    if out_format == "geojson":
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(fc, f, ensure_ascii=False)
-    else:
-        gdf = _gdf_from_features(fc, crs)
-        driver = "GPKG" if out_format == "gpkg" else "ESRI Shapefile"
-        try:
+    try:
+        if out_format == "geojson":
+            with open(staging_path, "w", encoding="utf-8") as f:
+                json.dump(fc, f, ensure_ascii=False)
+        else:
+            gdf = _gdf_from_features(fc, crs)
+            driver = "GPKG" if out_format == "gpkg" else "ESRI Shapefile"
             if out_format == "shp":
                 # shapefile 字段名 ≤ 10，先截断，避免写失败
                 _truncate_shapefile_columns(gdf)
-            gdf.to_file(path, driver=driver, encoding="utf-8")
-        except Exception as e:
-            raise DownloadError(f"写入 {out_format} 失败：{e}", hint="磁盘或驱动异常。") from e
+            gdf.to_file(staging_path, driver=driver, encoding="utf-8")
 
-    # 回读校验：确认文件能再次被打开且非空
-    _verify_vector_file(path, out_format)
-    return path
+        # 回读临时成果，校验通过后再替换正式文件，失败不会破坏上一次有效结果。
+        _verify_vector_file(staging_path, out_format)
+        if out_format == "shp":
+            staged_names = {
+                filename for filename in os.listdir(staging_dir)
+                if filename.startswith(base + ".")
+            }
+            if not staged_names:
+                raise DownloadError("Shapefile 写入未生成任何文件。")
+            for filename in sorted(staged_names):
+                os.replace(os.path.join(staging_dir, filename), os.path.join(dirpath, filename))
+            for filename in os.listdir(dirpath):
+                suffix = os.path.splitext(filename)[1].lower()
+                if (filename.startswith(base + ".") and filename not in staged_names
+                        and suffix in {".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".fix", ".sbn", ".sbx"}):
+                    try:
+                        os.remove(os.path.join(dirpath, filename))
+                    except OSError:
+                        pass
+        else:
+            os.replace(staging_path, path)
+        return path
+    except (DataValidationError, DownloadError):
+        raise
+    except Exception as e:
+        raise DownloadError(f"写入或校验 {out_format} 失败：{e}", hint="磁盘或驱动异常。") from e
+    finally:
+        shutil.rmtree(staging_dir, ignore_errors=True)
 
 
 def _truncate_shapefile_columns(gdf) -> None:
     import geopandas as gpd
     if not isinstance(gdf, gpd.GeoDataFrame):
         return
+    columns = [col for col in gdf.columns if col != "geometry"]
+    reserved = {str(col).casefold() for col in columns if len(str(col)) <= 10}
+    used = set()
+    short_seen = set()
     renames = {}
-    for col in gdf.columns:
-        if col == "geometry":
-            continue
-        new = str(col)[:10]
-        if new != col:
-            renames[col] = new
+    for col in columns:
+        original = str(col)
+        if len(original) <= 10:
+            new = original
+            if new.casefold() not in short_seen:
+                short_seen.add(new.casefold())
+                used.add(new.casefold())
+                continue
+            reserved_names = reserved
+        else:
+            new = original[:10]
+            reserved_names = reserved
+        suffix_index = 1
+        while new.casefold() in used or new.casefold() in reserved_names:
+            suffix = f"_{suffix_index}"
+            new = f"{original[:10 - len(suffix)]}{suffix}"
+            suffix_index += 1
+        used.add(new.casefold())
+        renames[col] = new
     if renames:
         gdf.rename(columns=renames, inplace=True)
 
@@ -306,24 +409,43 @@ def save_metadata(metadata: dict, *, dirpath: str, name: str) -> str:
     """写 sidecar <name>.metadata.json，并追加到目录级 catalog.json。"""
     base = sanitize_name(name)
     meta_path = os.path.join(dirpath, f"{base}.metadata.json")
+    metadata_file = os.path.basename(meta_path)
     os.makedirs(dirpath, exist_ok=True)
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, ensure_ascii=False, indent=2)
-
-    catalog = os.path.join(dirpath, "catalog.json")
-    records = []
-    if os.path.exists(catalog):
-        try:
-            with open(catalog, "r", encoding="utf-8") as f:
-                records = json.load(f)
-        except (ValueError, OSError):
-            records = []
-    records.append({"metadata": metadata, "metadata_file": os.path.basename(meta_path)})
-    if len(records) > 200:
-        records = records[-200:]
-    with open(catalog, "w", encoding="utf-8") as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+    with _CATALOG_LOCK:
+        _write_json_atomic(meta_path, metadata)
+        catalog = os.path.join(dirpath, "catalog.json")
+        records = []
+        if os.path.exists(catalog):
+            try:
+                with open(catalog, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                records = loaded if isinstance(loaded, list) else []
+            except (ValueError, OSError):
+                records = []
+        records = [
+            record for record in records
+            if not (isinstance(record, dict)
+                    and str(record.get("metadata_file", "")).casefold() == metadata_file.casefold())
+        ]
+        records.append({"metadata": metadata, "metadata_file": metadata_file})
+        if len(records) > 200:
+            records = records[-200:]
+        _write_json_atomic(catalog, records)
     return meta_path
+
+
+def _write_json_atomic(path: str, value) -> None:
+    fd, temp_path = tempfile.mkstemp(prefix=".json-write-", suffix=".tmp", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(value, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def file_size(path: str) -> int:

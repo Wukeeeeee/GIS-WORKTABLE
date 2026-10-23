@@ -7,13 +7,10 @@ qa_check 把它们变成显式警告；本文件验证守卫本身抓得住、�
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import pytest
-
 os.environ.pop("PROJ_LIB", None)
 os.environ.pop("PROJ_DATA", None)
 
-from backend.services import geo_qa
-from backend.services.geo_qa import qa_check, bbox_in_range, haversine_m
+from backend.services.geo_qa import qa_check
 from backend.services.tools import _push_layer, get_pending_state, reset_state
 
 
@@ -99,22 +96,6 @@ def test_invalid_geometry_hint_mentions_fix_tool():
 
 
 # ============================================================
-# 辅助函数
-# ============================================================
-
-def test_bbox_in_range():
-    assert bbox_in_range(_fc(_point(116.4, 39.9))) is True
-    assert bbox_in_range(_fc(_point(200, 39.9))) is False
-    assert bbox_in_range({"type": "FeatureCollection", "features": []}) is True
-
-
-def test_haversine_known_distance():
-    # 北京天安门 → 上海人民广场 约 1067km（允许 ±10km）
-    d = haversine_m(116.391, 39.907, 121.474, 31.230)
-    assert abs(d - 1_067_000) < 10_000
-
-
-# ============================================================
 # 图层通道集成：警告随 pending 状态返回
 # ============================================================
 
@@ -139,3 +120,36 @@ def test_qa_never_raises():
     assert isinstance(qa_check({"type": "FeatureCollection"}), list)
     assert isinstance(qa_check({"type": "Feature", "geometry": None}), list)
     assert isinstance(qa_check({"type": "Feature", "geometry": {"type": "Point"}}), list)
+
+
+def test_unparseable_geometry_is_reported_invalid():
+    feature = {"type": "Feature", "properties": {},
+               "geometry": {"type": "Point", "coordinates": ["bad", "data"]}}
+    assert any("无效几何" in warning for warning in qa_check(_fc(feature)))
+
+
+def test_nested_collection_coordinates_are_checked():
+    geometry = {"type": "GeometryCollection", "geometries": [
+        {"type": "GeometryCollection", "geometries": [
+            {"type": "Point", "coordinates": [88, 116]},
+        ]},
+    ]}
+    feature = {"type": "Feature", "properties": {}, "geometry": geometry}
+    assert any("超出 WGS-84" in warning for warning in qa_check(_fc(feature)))
+
+
+def test_sampling_stops_inside_large_geometry():
+    from backend.services.geo_qa import _extract_points
+
+    class CountingCoordinates(list):
+        visited = 0
+
+        def __iter__(self):
+            for position in super().__iter__():
+                self.visited += 1
+                yield position
+
+    coordinates = CountingCoordinates([[116, 28]] * 6000)
+    points = _extract_points({"type": "LineString", "coordinates": coordinates})
+    assert len(points) == 5000
+    assert coordinates.visited <= 5001

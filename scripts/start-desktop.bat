@@ -21,12 +21,12 @@ if exist "%ELECTRON_EXE%" (
 )
 
 echo  [INFO] Local Electron binary not found, attempting npm start in desktop/...
-if exist "%~dp0..\desktop\package.json" (
-  cd /d "%~dp0..\desktop"
-  npm start
-  exit /b 0
-)
+if not exist "%~dp0..\desktop\package.json" goto missing_desktop
+cd /d "%~dp0..\desktop"
+call npm start
+exit /b %ERRORLEVEL%
 
+:missing_desktop
 echo  [ERROR] desktop/ directory not found.
 pause
 exit /b 1

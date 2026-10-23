@@ -19,6 +19,7 @@ window.GIS = window.GIS || {};
   }
 
   let mapInstance = null;
+  let _initialView = { center: [35, 110], zoom: 4 };
   const layers = {};
   const geoStore = {};
   let baseLayer = null;
@@ -149,6 +150,10 @@ var _undoSkip = false;
       preferCanvas: true,  // Canvas 渲染，大幅提升大数据性能
       renderer: _createCanvasRenderer(),
     });
+    _initialView = {
+      center: (options.center || [35, 110]).slice(),
+      zoom: options.zoom || 4,
+    };
     mapInstance.attributionControl.setPrefix('<a href="https://leafletjs.com" title="Leaflet">Leaflet</a>');
 
     // 卫星底图（Esri / Bing 中国区 / 白底）
@@ -832,6 +837,15 @@ var _undoSkip = false;
     return layers[name] || null;
   }
 
+  function getGeoJSON(name) {
+    var entry = geoStore[name];
+    return entry && entry.geojson ? entry.geojson : null;
+  }
+
+  function resetView() {
+    if (mapInstance) mapInstance.setView(_initialView.center, _initialView.zoom);
+  }
+
   /** 修改图层颜色 */
   function setLayerColor(name, color) {
     var layer = layers[name];
@@ -983,8 +997,11 @@ var _undoSkip = false;
   }
 
   function fitLayer(name) {
-    if (!mapInstance || !layers[name]) return;
-    mapInstance.fitBounds(layers[name].getBounds());
+    if (!mapInstance || !layers[name] || typeof layers[name].getBounds !== 'function') return false;
+    var bounds = layers[name].getBounds();
+    if (!bounds || (typeof bounds.isValid === 'function' && !bounds.isValid())) return false;
+    mapInstance.fitBounds(bounds);
+    return true;
   }
 
   /** 清除当前高亮 */
@@ -1138,12 +1155,18 @@ var _undoSkip = false;
           var item = e.target.closest('.context-menu-item');
           if (!item) return;
           var action = item.getAttribute('data-action');
+          if (action === 'copy-format-menu') {
+            var isOpen = !item.classList.contains('is-open');
+            item.classList.toggle('is-open', isOpen);
+            item.setAttribute('aria-expanded', String(isOpen));
+            return;
+          }
           var latlng = _lastRightClickLatLng;
           // 只隐藏菜单，十字准星保留在地图上（发送后不消失）
           var el = document.getElementById('mapContextMenu');
           if (el) el.style.display = 'none';
           if (!latlng) return;
-          _handleCtxAction(action, latlng);
+          _handleCtxAction(action, latlng, item.dataset.format);
         });
       }
   }
@@ -1175,18 +1198,15 @@ var _undoSkip = false;
     var mapEl = document.getElementById('map');
     var mapRect = mapEl ? mapEl.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
     var mLeft = mapRect.left, mTop = mapRect.top;
-    var mRight = mLeft + mapRect.width, mBottom = mTop + mapRect.height;
-
     var container = document.createElement('div');
     container.id = 'crosshair-overlay';
     container.style.cssText = 'position:fixed;left:' + mLeft + 'px;top:' + mTop + 'px;width:' + mapRect.width + 'px;height:' + mapRect.height + 'px;pointer-events:none;z-index:9999;overflow:hidden;';
 
-    // 竖线（只在地图区域内）
+    // 短十字准星，避免辅助线贯穿整个地图或覆盖侧栏
     var vLine = document.createElement('div');
-    vLine.style.cssText = 'position:absolute;left:' + (x - mLeft) + 'px;top:0;width:1px;height:100%;background:#666;opacity:0.5;pointer-events:none;';
-    // 横线（只在地图区域内）
+    vLine.style.cssText = 'position:absolute;left:' + (x - mLeft) + 'px;top:' + (y - mTop - 18) + 'px;width:1px;height:36px;background:#666;opacity:0.5;pointer-events:none;';
     var hLine = document.createElement('div');
-    hLine.style.cssText = 'position:absolute;left:0;top:' + (y - mTop) + 'px;width:100%;height:1px;background:#666;opacity:0.5;pointer-events:none;';
+    hLine.style.cssText = 'position:absolute;left:' + (x - mLeft - 18) + 'px;top:' + (y - mTop) + 'px;width:36px;height:1px;background:#666;opacity:0.5;pointer-events:none;';
     // 中心圆点
     var dot = document.createElement('div');
     dot.style.cssText = 'position:absolute;left:' + (x - mLeft - 5) + 'px;top:' + (y - mTop - 5) + 'px;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #333;box-sizing:border-box;pointer-events:none;';
@@ -1214,27 +1234,43 @@ var _undoSkip = false;
     _crosshairOverlay = null;
   }
 
-  function _handleCtxAction(action, latlng) {
+  function _handleCtxAction(action, latlng, requestedFormat) {
     var lat = latlng.lat.toFixed(6);
     var lng = latlng.lng.toFixed(6);
 
     // 复制坐标：不受任何限制
     if (action === 'copy-coords') {
-      var text = lat + ', ' + lng;
-      if (navigator.clipboard) {
-        navigator.clipboard.writeText(text).then(function() {
-          if (window.GIS && window.GIS.chat && window.GIS.chat.addMessage)
-            window.GIS.chat.addMessage('已复制坐标：' + text, 'system');
-        });
-      } else {
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        if (window.GIS && window.GIS.chat && window.GIS.chat.addMessage)
-          window.GIS.chat.addMessage('已复制坐标：' + text, 'system');
+      _copyContextCoordinateText(lat + ', ' + lng, '经纬度坐标');
+      return;
+    }
+
+    if (action === 'copy-coords-format') {
+      var text;
+      var label;
+      if (requestedFormat === 'dms') {
+        text = _formatCoordinateDms(Number(lat), true) + ', ' + _formatCoordinateDms(Number(lng), false);
+        label = 'DMS';
+      } else if (requestedFormat === 'geojson') {
+        text = JSON.stringify({ type: 'Point', coordinates: [Number(lng), Number(lat)] });
+        label = 'GeoJSON';
+      } else if (requestedFormat === 'wkt') {
+        text = 'POINT (' + lng + ' ' + lat + ')';
+        label = 'WKT';
+      }
+      if (text) _copyContextCoordinateText(text, label);
+      return;
+    }
+
+    if (action === 'add-map-point') {
+      _addMapContextPoint(latlng, false);
+      return;
+    }
+
+    if (action === 'buffer-map-point') {
+      var sourceLayer = _addMapContextPoint(latlng, true);
+      if (sourceLayer && window.GIS && GIS.spatial && GIS.spatial.openBufferForLayer) {
+        GIS.spatial.openBufferForLayer(sourceLayer.name);
+        _showMapContextFeedback('已准备缓冲区输入点，请设置距离后运行');
       }
       return;
     }
@@ -1291,6 +1327,119 @@ var _undoSkip = false;
     if (action === 'send-location' || action === 'send-location-routed') {
       _triggerAiLocationAnalysis(lat, lng, '');
       return;
+    }
+  }
+
+  function _formatCoordinateDms(value, isLatitude) {
+    var absolute = Math.abs(value);
+    var degrees = Math.floor(absolute);
+    var minutesValue = (absolute - degrees) * 60;
+    var minutes = Math.floor(minutesValue);
+    var seconds = ((minutesValue - minutes) * 60).toFixed(1);
+    if (Number(seconds) >= 60) {
+      seconds = '0.0';
+      minutes += 1;
+    }
+    if (minutes >= 60) {
+      minutes = 0;
+      degrees += 1;
+    }
+    var hemisphere = isLatitude ? (value < 0 ? 'S' : 'N') : (value < 0 ? 'W' : 'E');
+    return degrees + '°' + String(minutes).padStart(2, '0') + '′' + seconds + '″' + hemisphere;
+  }
+
+  function _copyContextCoordinateText(text, label) {
+    function copied(ok) {
+      _showMapContextFeedback(ok ? '已复制 ' + label : '复制失败，请检查剪贴板权限');
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function() { copied(true); }).catch(function() {
+        copied(_fallbackCopyText(text));
+      });
+    } else {
+      copied(_fallbackCopyText(text));
+    }
+  }
+
+  function _fallbackCopyText(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var copied = false;
+    try { copied = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    return copied;
+  }
+
+  function _showMapContextFeedback(message) {
+    if (window.GIS && GIS.toast && typeof GIS.toast.success === 'function') {
+      GIS.toast.success(message);
+    } else if (window.GIS && GIS.chat && GIS.chat.addMessage) {
+      GIS.chat.addMessage(message, 'system');
+    }
+  }
+
+  function _addMapContextPoint(latlng, forBuffer) {
+    if (!window.GIS || !GIS.state || !GIS.state.addLayer) return null;
+    var coordinates = [Number(latlng.lng.toFixed(6)), Number(latlng.lat.toFixed(6))];
+    var properties = { name: '地图标注点', source: '地图右键', _fid: 'ctx:' + Date.now().toString(36) + ':' + Math.floor(Math.random() * 1e6).toString(36) };
+    var feature = { type: 'Feature', properties: properties, geometry: { type: 'Point', coordinates: coordinates } };
+    if (forBuffer) {
+      var name = '右键缓冲点_' + Date.now().toString(36);
+      var bufferLayer = GIS.state.addLayer({
+        name: name, layer_id: name, geojson: { type: 'FeatureCollection', features: [feature] },
+        source: '地图右键', style: { color: '#e74c3c', fillColor: '#e74c3c' }, _skip2DRender: true
+      });
+      _registerMapContextLayer(bufferLayer);
+      return bufferLayer;
+    }
+
+    var pointLayer = GIS.state.getLayers().find(function(layer) {
+      return layer.metadata && layer.metadata.contextMapPoints;
+    });
+    if (!pointLayer) {
+      pointLayer = GIS.state.addLayer({
+        name: '地图标注点', layer_id: 'map_context_points',
+        geojson: { type: 'FeatureCollection', features: [feature] }, source: '地图右键',
+        metadata: { contextMapPoints: true }, style: { color: '#e74c3c', fillColor: '#e74c3c' }, _skip2DRender: true
+      });
+    } else {
+      var geojson = pointLayer.geojson;
+      if (!geojson || geojson.type !== 'FeatureCollection') {
+        geojson = { type: 'FeatureCollection', features: geojson ? [geojson] : [] };
+      }
+      geojson.features.push(feature);
+      pointLayer.geojson = geojson;
+      pointLayer.featureCount = geojson.features.length;
+      pointLayer.fidIndex[properties._fid] = geojson.features.length - 1;
+      var oldBbox = pointLayer.bbox;
+      pointLayer.bbox = oldBbox
+        ? [Math.min(oldBbox[0], coordinates[0]), Math.min(oldBbox[1], coordinates[1]), Math.max(oldBbox[2], coordinates[0]), Math.max(oldBbox[3], coordinates[1])]
+        : [coordinates[0], coordinates[1], coordinates[0], coordinates[1]];
+      var panelLayer = GIS.layers && GIS.layers.getLayers().find(function(layer) { return layer.layer_id === pointLayer.layer_id; });
+      if (panelLayer) {
+        panelLayer.geojson = geojson;
+        panelLayer.geometry_type = 'Point';
+      }
+    }
+    _registerMapContextLayer(pointLayer);
+    _showMapContextFeedback('已在地图标注点图层添加点');
+    return pointLayer;
+  }
+
+  function _registerMapContextLayer(layer) {
+    if (layer && GIS.map && GIS.map.loadGeoJSON) {
+      GIS.map.loadGeoJSON(layer.geojson, layer._rawName || layer.name, layer.style || {}, { fitBounds: false });
+      if (GIS.layers && GIS.layers.renderList) GIS.layers.renderList();
+    }
+    if (layer && GIS.api && GIS.api.registerLayer) {
+      Promise.resolve(GIS.api.registerLayer(layer.name, layer.geojson)).catch(function(error) {
+        console.warn('地图右键点图层注册失败:', error);
+      });
     }
   }
 
@@ -2716,6 +2865,7 @@ var _undoSkip = false;
     setLayerOpacity: setLayerOpacity,
     setLayerStyle: setLayerStyle,
     getLayer: getLayer,
+    getGeoJSON: getGeoJSON,
     toggleLayer: toggleLayer,
     flyTo: flyTo,
     fitLayer: fitLayer,
@@ -2740,6 +2890,7 @@ var _undoSkip = false;
     redo: redo,
     invalidateSize: function() { if (mapInstance) mapInstance.invalidateSize(); },
     getInstance: function() { return mapInstance; },
+    resetView: resetView,
     startTimeAnimation: function(name, timeField, timeValues, intervalMs) {
       if (!mapInstance || !timeValues || timeValues.length < 2) return;
       var targetLayer = null;
@@ -2789,8 +2940,9 @@ var _undoSkip = false;
       return { center: mapInstance.getCenter(), zoom: mapInstance.getZoom() };
     },
     setView: function(center, zoom) {
-      if (!mapInstance) return;
+      if (!mapInstance) return false;
       mapInstance.setView(center, zoom);
+      return true;
     },
     getMap: function() { return mapInstance; },
     renameLayer: renameLayer,

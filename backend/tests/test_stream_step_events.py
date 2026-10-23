@@ -1,6 +1,6 @@
 """Contract checks for semantic task grouping in the streamed execution cards."""
 
-from backend.services.graph import _stream_step_descriptor, _stream_tool_failure
+from backend.services.graph import _stream_step_descriptor, _stream_tool_failure, _stream_tool_warning
 import json
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -78,7 +78,7 @@ def test_controlled_stream_events_correlate_parallel_calls_and_apply_map_delta(m
             ai = AIMessage(content="", tool_calls=calls)
             yield {"messages": base + [ai]}
             yield {"messages": base + [ai, ToolMessage(content="NY result one", name="search_web", tool_call_id="ny-1")]}
-            yield {"messages": base + [ai, ToolMessage(content="NY result two", name="search_web", tool_call_id="ny-2")]}
+            yield {"messages": base + [ai, ToolMessage(content=json.dumps({"data": "x" * 1300, "partial": True}), name="search_web", tool_call_id="ny-2")]}
             web = AIMessage(content="", tool_calls=[{"name": "fetch_webpage", "args": {"url": "https://example.test/ny"}, "id": "read-1", "type": "tool_call"}])
             yield {"messages": base + [ai, ToolMessage(content="NY result two", name="search_web", tool_call_id="ny-2"), web]}
             yield {"messages": base + [ai, ToolMessage(content="NY result two", name="search_web", tool_call_id="ny-2"), web,
@@ -123,6 +123,10 @@ def test_controlled_stream_events_correlate_parallel_calls_and_apply_map_delta(m
     assert starts[0]["step_id"] == starts[1]["step_id"]
     assert ends[0]["tool_call_id"] == "ny-1" and ends[1]["tool_call_id"] == "ny-2"
     assert ends[0]["step_id"] == starts[0]["step_id"]
+    assert json.loads(starts[0]["input"]) == {"query": "New York weather"}
+    assert ends[1]["has_warning"] is True
+    with pytest.raises(ValueError):
+        json.loads(ends[1]["output"])
     page_start = next(event for event in starts if event["tool_call_id"] == "read-1")
     assert page_start["step_id"] == starts[0]["step_id"]
     delta = next(event for event in events if event.get("type") == "layer_ops_delta")
@@ -135,3 +139,15 @@ def test_controlled_stream_events_correlate_parallel_calls_and_apply_map_delta(m
     assert url_end["status"] == "error" and url_end["is_error"] is True
     assert url_end["error_message"] == "数据抓取失败: URL 无法解析"
     assert any(event.get("type") == "done" for event in events)
+
+
+@pytest.mark.parametrize("content,expected", [
+    ({"partial": True}, True), ({"warnings": ["skipped"]}, True),
+    ({"qa_warnings": ["invalid"]}, True), ({"skipped_count": "2"}, True),
+    ({"status": "partial"}, True), ({"ok": True, "warnings": []}, False),
+    ({"skipped_count": "invalid"}, False), ("普通成功结果", False), ([], False),
+])
+def test_stream_preserves_explicit_partial_result_metadata(content, expected):
+    assert _stream_tool_warning(content) is expected
+    if isinstance(content, dict):
+        assert _stream_tool_warning(json.dumps(content)) is expected

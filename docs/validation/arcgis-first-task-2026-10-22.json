@@ -1,0 +1,63 @@
+{
+  "checked_at_utc": "2026-10-22T15:14:37.515781+00:00",
+  "kind": "agent_operated_technical_validation_not_user_study",
+  "source_url": "https://sampleserver6.arcgisonline.com/arcgis/rest/services/USA/MapServer/0",
+  "where": "st = 'CA'",
+  "mode": "full",
+  "feature_count": 446,
+  "geometry_types": [
+    "Point"
+  ],
+  "crs": "EPSG:4326",
+  "gdal_driver": "GeoJSON",
+  "bounds": [
+    -124.16275198199997,
+    32.578254865000076,
+    -114.58924105699998,
+    40.94739193200007
+  ],
+  "field_count": 6,
+  "manifest_completeness": "complete",
+  "sha256": "8baf6106bc93af917d4e90b465acb2a34f073c0e9f22f533308387fd81b63bf6",
+  "checks": {
+    "four_downloads_exist": true,
+    "count_matches_manifest": true,
+    "ids_unique": true,
+    "filter_CA": true,
+    "crs_4326": true,
+    "sha256_matches": true,
+    "file_size_matches": true,
+    "recipe_conditions_match": true
+  },
+  "direct_source_id_check": {
+    "status": "passed",
+    "source_id_count": 446,
+    "download_ids_equal_source_ids": true,
+    "checked_at_utc": "2026-10-22T15:14:37.515771+00:00"
+  },
+  "artifacts": {
+    "data": {
+      "filename": "fetched_20261022T150908040744Z_5f6fdf.geojson",
+      "bytes": 107075
+    },
+    "report": {
+      "filename": "fetched_20261022T150908040744Z_5f6fdf.report.md",
+      "bytes": 1212
+    },
+    "manifest": {
+      "filename": "fetched_20261022T150908040744Z_5f6fdf.manifest.json",
+      "bytes": 1592
+    },
+    "recipe": {
+      "filename": "fetched_20261022T150908040744Z_5f6fdf.recipe.json",
+      "bytes": 278
+    }
+  },
+  "human_validation": null,
+  "cold_install_timing": null,
+  "agent_observation_elapsed_ms_not_benchmark": {
+    "preview": 53138,
+    "initial_full": 107364,
+    "successful_replay": 148930
+  }
+}

@@ -94,3 +94,8 @@ ai_implementation_reference/
 # Bootstrap cache and reproducible delivery sample
 .bootstrap/
 !data/sample_delivery_test.geojson
+
+# Local agent indexes and regression scratch files
+/.serena/
+/.codex-test-tmp/
+/.pytest-*-tmp*/

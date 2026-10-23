@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-function createHarness(initialStorage = {}, backendSettings = { providers: [] }) {
+function createHarness(initialStorage = {}, backendSettings = { providers: [] }, mutation, timers = { setTimeout, clearTimeout }) {
   const storage = new Map(Object.entries(initialStorage));
   const requests = [];
   const localStorage = {
@@ -23,15 +23,17 @@ function createHarness(initialStorage = {}, backendSettings = { providers: [] })
     if (!options.method) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(structuredClone(backendSettings)) });
     }
+    if (mutation) return mutation(url, options);
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ status: 'ok' }) });
   };
   const sourcePath = path.resolve(__dirname, '../js/api.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
     window, GIS: window.GIS, document, localStorage, fetch, Promise, Array, Object, String,
-    Number, Math, Date, JSON, Set, Map, Blob, URL, AbortController, setTimeout, clearTimeout,
+    Number, Math, Date, JSON, Set, Map, Blob, URL, AbortController,
+    setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
     requestAnimationFrame() {}, console: { warn() {}, log() {} },
   }, { filename: sourcePath });
-  return { api: window.GIS.api, requests, storage };
+  return { api: window.GIS.api, requests, storage, gis: window.GIS };
 }
 
 test('provider API keys stay in localStorage and are omitted from backend sync', async () => {
@@ -60,4 +62,62 @@ test('provider API keys stay in localStorage and are omitted from backend sync',
   assert.ok(syncRequest, 'local providers should still synchronize safe metadata');
   assert.equal(JSON.stringify(syncRequest.options.body).includes('legacy-server-key'), false);
   assert.equal(JSON.parse(syncRequest.options.body).providers[0].api_key, undefined);
+});
+
+test('registry API forwards the registration version and returns the next version', async () => {
+  const h = createHarness({}, {}, () => Promise.resolve({ ok: true, json: async () => ({ success: true, registration_token: 'next' }) }));
+  const registered = await h.api.registerLayer('demo', { type: 'FeatureCollection', features: [] });
+  assert.equal(registered.registration_token, 'next');
+  await h.api.unregisterLayer('demo', 'next');
+  const request = h.requests.find(item => item.url.endsWith('/unregister'));
+  assert.equal(JSON.parse(request.options.body).registration_token, 'next');
+  assert.ok(request.options.signal instanceof AbortSignal);
+});
+
+for (const method of ['registerLayer', 'unregisterLayer']) test(`${method} aborts a stalled request and releases its timer`, async () => {
+  let clears = 0;
+  const h = createHarness({}, {}, (url, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+  }), { setTimeout(fn) { queueMicrotask(fn); return 1; }, clearTimeout() { clears++; } });
+  await assert.rejects(h.api[method]('demo', {}), /超时/);
+  assert.equal(clears, 1);
+});
+
+for (const body of [null, { success: false }, { ok: true }]) test(`registry rejects an unconfirmed success response: ${JSON.stringify(body)}`, async () => {
+  const h = createHarness({}, {}, () => Promise.resolve({ ok: true, json: async () => body }));
+  await assert.rejects(h.api.unregisterLayer('demo'), /未确认/);
+});
+
+test('tool synchronization uses the tracked layer queue and propagates a failure', async () => {
+  const h = createHarness(); const names = [];
+  h.gis.layers = { syncToolLayer(name) { names.push(name); return Promise.resolve(false); } };
+  await assert.rejects(h.api.syncLayer('display'), /同步失败/);
+  assert.deepEqual(names, ['display']);
+  assert.equal(h.requests.length, 0);
+});
+
+test('fallback synchronization keeps large data and stores the exact registered alias version', async () => {
+  const h = createHarness({}, {}, () => Promise.resolve({ok: true, json: async () => ({success: true, registration_token: 'fresh'})}));
+  const layer = {filename: 'display', geojson: {type: 'FeatureCollection', features: Array(20001).fill({type: 'Feature', geometry: null, properties: {}})}};
+  h.gis.layers = {getLayerByName() { return layer; }};
+  await h.api.syncLayer('selected-id');
+  const body = JSON.parse(h.requests[0].options.body);
+  assert.equal(body.name, 'selected-id'); assert.equal(body.geojson.features.length, 20001);
+  assert.equal(layer._registrationTokens['selected-id'], 'fresh');
+});
+
+test('fallback synchronization rejects a network failure instead of allowing stale analysis', async () => {
+  const h = createHarness({}, {}, () => Promise.reject(new Error('offline')));
+  h.gis.layers = { getLayerByName() { return {geojson: {type: 'FeatureCollection', features: []}}; } };
+  await assert.rejects(h.api.syncLayer('display'), /offline/);
+});
+
+test('raster synchronization sends the managed source metadata and tracks its version', async () => {
+  const h = createHarness({}, {}, () => Promise.resolve({ok: true, json: async () => ({success: true, registration_token: 'raster-current'})}));
+  const layer = {raster: {source_asset: 'original.tif', project_id: 'project', bounds: [1, 2, 3, 4]}};
+  h.gis.layers = {getLayerByName() {return layer;}};
+  await h.api.syncLayer('renamed raster');
+  const body = JSON.parse(h.requests[0].options.body);
+  assert.equal(body.name, 'renamed raster'); assert.deepEqual(body.raster, layer.raster);
+  assert.equal(layer._registrationTokens['renamed raster'], 'raster-current');
 });

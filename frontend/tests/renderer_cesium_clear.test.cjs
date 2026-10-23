@@ -57,6 +57,7 @@ function loadRendererWithPendingLayer(layerId = 'pending-layer') {
     ScreenSpaceEventHandler: function() { this.setInputAction = noop; },
     ScreenSpaceEventType: { LEFT_CLICK: 0, MOUSE_MOVE: 1 },
     Color: color,
+    Rectangle: { fromDegrees(...bounds) { return bounds; } },
     GeoJsonDataSource: { load() { loadCalls++; return new Promise(resolve => { finishLoad = () => resolve(dataSource); }); } },
     defined(value) { return !!value; },
   };
@@ -64,9 +65,23 @@ function loadRendererWithPendingLayer(layerId = 'pending-layer') {
   const context = { window, Cesium, document, console, setTimeout, Promise, Set, Map, Math, Number, Infinity };
   const sourcePath = path.resolve(__dirname, '../js/renderer_cesium.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
-  return { renderer: window.GIS.renderers, dataSources, finishLoad: () => finishLoad,
+  return { renderer: window.GIS.renderers, viewer, dataSources, finishLoad: () => finishLoad,
     getLoadCalls: () => loadCalls, toggle3D: () => window.GIS.renderers.toggle3D() };
 }
+
+test('3D extent operations report readiness and validate their bounds', async () => {
+  const h = loadRendererWithPendingLayer();
+  assert.equal(h.renderer.flyToBbox([0, 0, 1, 1]), false);
+  await h.toggle3D();
+  const flights = [];
+  h.viewer.camera.flyTo = options => flights.push(options);
+  for (const bounds of [[0, 0, NaN, 1], [2, 0, 1, 1], [-181, 0, 1, 1]]) {
+    assert.equal(h.renderer.flyToBbox(bounds), false);
+  }
+  assert.equal(h.renderer.flyToBbox([180, 90, 180, 90], 0), true);
+  assert.equal(flights[0].duration, 0);
+  assert.deepEqual(Array.from(flights[0].destination), [179.9, 89.9, 179.9, 89.9]);
+});
 
 test('3D renderer loads layers whose stable IDs collide with Object prototype properties', async () => {
   const harness = loadRendererWithPendingLayer('constructor');

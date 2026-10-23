@@ -26,7 +26,6 @@ window.GIS = window.GIS || {};
     // 创建选择卡片消息
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;max-width:100%;margin:8px 0;';
-    row.id = 'aoi-select-msg';
 
     // AI 头像
     var avatar = document.createElement('div');

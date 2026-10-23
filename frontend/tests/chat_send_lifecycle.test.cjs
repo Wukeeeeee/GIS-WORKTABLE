@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-function createChatHarness(streamResponse) {
+function createChatHarness(streamResponse, withExecutionCards = false) {
   const elements = new Map();
   const getElement = id => {
     if (!elements.has(id)) {
@@ -24,6 +24,8 @@ function createChatHarness(streamResponse) {
   let taskId = 0;
   const streamCalls = [];
   const exportCalls = [];
+  const executionRows = [];
+  const createdElements = [];
   const api = {
     BASE_URL: 'http://127.0.0.1:8000',
     resolveProvider(id) { return { id, name: id, api_key: 'test-key' }; },
@@ -47,10 +49,13 @@ function createChatHarness(streamResponse) {
   getElement('modelSelectValue').textContent = 'test-provider';
   const document = {
     body: { appendChild() {} },
-    createElement() { return {
-      style: {}, classList: { add() {}, remove() {}, toggle() {} }, children: [],
-      appendChild(child) { this.children.push(child); }, setAttribute() {}, remove() {},
-    }; },
+    documentElement: { classList: { contains() { return false; } } },
+    createElement() { const element = {
+      style: {}, dataset: {}, classList: { add() {}, remove() {}, toggle() {} }, children: [],
+      appendChild(child) { this.children.push(child); }, setAttribute() {}, remove() { this.removed = true; },
+      insertAdjacentElement(position, element) { executionRows.push(element); },
+      querySelector() { return null; }, querySelectorAll() { return []; }, addEventListener() {}, closest() { return null; },
+    }; createdElements.push(element); return element; },
     getElementById: getElement,
     getElementsByClassName() { return []; },
     querySelector() { return null; },
@@ -71,13 +76,16 @@ function createChatHarness(streamResponse) {
     });
   };
   const sourcePath = path.resolve(__dirname, '../js/chat.js');
-  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+  const context = vm.createContext({
     window, document, fetch, AbortController, TextDecoder, Promise, Map, Set, Array,
     Object, String, Number, Math, Date, JSON, RegExp, URL, console: { log() {}, warn() {}, error() {} },
     sessionStorage: { getItem() { return '0'; } },
+    requestAnimationFrame(callback) { callback(); },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
-  }, { filename: sourcePath });
-  return { window, tasks, streamCalls, exportCalls, elements, getElement };
+  });
+  if (withExecutionCards) vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../js/execution_cards.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
+  return { window, tasks, streamCalls, exportCalls, elements, getElement, executionRows, createdElements };
 }
 
 test('replacing a chat request cancels its task without letting stale cleanup unlock the new request', async () => {
@@ -100,6 +108,61 @@ test('replacing a chat request cancels its task without letting stale cleanup un
   await second;
   assert.equal(harness.tasks[1].status, 'cancelled');
   assert.equal(harness.window._aiRunning, false);
+});
+
+test('streamed fits retry after final layers load before execution cards finish', async () => {
+  const op = { action: 'fit', name: 'demo', _stream_id: 'op-1', _step_id: 'map-step' };
+  const geojson = { type: 'FeatureCollection', features: [] };
+  const events = [
+    { type: 'tool_start', name: 'focus_map', tool_call_id: 'map-1', step_id: 'map-step', map_ops_pending: 1 },
+    { type: 'tool_end', name: 'focus_map', tool_call_id: 'map-1', step_id: 'map-step', output: '已请求定位' },
+    { type: 'layer_ops_delta', step_id: 'map-step', layer_ops: [op] },
+    { type: 'done', response: '已加载图层并定位', layers: [{ name: 'demo', geojson }], layer_ops: [op] },
+  ];
+  const bytes = new TextEncoder().encode(events.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join(''));
+  let readCount = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(readCount++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } }, true);
+  const layers = [];
+  let fits = 0;
+  h.window.GIS.layers.getLayers = () => layers;
+  h.window.GIS.state = { addLayer(layer) { layers.push(layer); }, getLayers: () => layers };
+  h.window.GIS.map.fitLayer = name => { fits++; return layers.some(layer => layer.name === name); };
+  h.window.GIS.chat.init();
+  await h.window.GIS.chat.send('加载并定位 demo');
+  const card = h.executionRows[0].children[0].children[0];
+  assert.equal(fits, 1);
+  assert.match(card.className, /ai-step-success/);
+});
+
+for (const cancel of [false, true]) test(`choice ${cancel ? 'cancellation' : 'submission'} reaches the backend and resolves its waiting card`, async () => {
+  const events = [
+    { type: 'tool_start', tool_call_id: 'choice', step_id: 'choice', name: 'ask_user_choice' },
+    { type: 'tool_end', tool_call_id: 'choice', step_id: 'choice', name: 'ask_user_choice', output: '请选择' },
+    { type: 'waiting_choice', step_id: 'choice' },
+    { type: 'done', response: '请选择方案', layers: [],
+      confirm_pending: { action: 'choose_option', options: [{ label: '方案 A' }] } },
+  ];
+  const bytes = new TextEncoder().encode(events.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join(''));
+  let reads = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } }, true);
+  h.window.GIS.utils = { escapeHtml: text => String(text) };
+  h.window.GIS.chat.init();
+  await h.window.GIS.chat.send('选择方案');
+  const card = h.executionRows[0].children[0].children[0];
+  assert.match(card.className, /ai-step-waiting/);
+  const sent = [];
+  h.window.GIS.chat.sendMessage = message => sent.push(message);
+  const bar = h.createdElements.find(el => el.className === 'pending-action-bar');
+  const button = cancel ? bar.children.find(el => el.textContent === '取消')
+    : bar.children.find(el => el.tagName !== 'span' && typeof el.onclick === 'function' && el.textContent !== '取消');
+  button.onclick();
+  assert.deepEqual(sent, [cancel ? '取消' : '方案 A']);
+  assert.equal(bar.removed, true);
+  assert.match(card.className, cancel ? /ai-step-cancelled/ : /ai-step-success/);
 });
 
 test('chat stream accepts a final done event without a trailing newline', async () => {
@@ -139,7 +202,8 @@ test('AI layer rename updates the panel registration identity used by later dele
     ok: true,
     body: { getReader() { return { read() { return Promise.resolve(readCount++ === 0 ? { done: false, value: bytes } : { done: true }); } }; } },
   });
-  const layer = { layer_id: 'layer-1', filename: 'registered-name', _rawName: 'registered-name', _registeredName: 'registered-name' };
+  const layer = { layer_id: 'layer-1', filename: 'registered-name', _rawName: 'registered-name', _registeredName: 'registered-name',
+    _registrationTokens: { 'registered-name': 'current-version' } };
   const renames = [];
   harness.window.GIS.layers.getLayers = () => [layer];
   harness.window.GIS.layers.renderList = () => {};
@@ -151,6 +215,8 @@ test('AI layer rename updates the panel registration identity used by later dele
   assert.equal(layer.filename, 'renamed-name');
   assert.equal(layer._rawName, 'renamed-name');
   assert.equal(layer._registeredName, 'renamed-name');
+  assert.equal(layer._registrationTokens['renamed-name'], 'current-version');
+  assert.equal(layer._registrationTokens['registered-name'], undefined);
   assert.deepEqual(JSON.parse(JSON.stringify(renames)), [
     ['layer-1', 'renamed-name'], ['registered-name', 'renamed-name'],
   ]);

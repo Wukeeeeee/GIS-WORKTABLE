@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -20,10 +21,10 @@ _DEFAULT_CACHE_SUBDIR = "dem_tiles"
 
 
 def default_cache_root() -> str:
-    """默认缓存根目录（项目 cache/dem_tiles）。
+    """默认缓存根目录（工具输出目录下的 dem_tiles）。
 
     依赖 tools.init_temp_dir() 已在请求开始时初始化 _temp_output_dir；
-    若尚未初始化则回退到 tempfile.gettempdir()/gis_worktable_cache/dem_tiles。
+    若尚未初始化则回退到 tempfile.gettempdir()/gis_worktable_output/dem_tiles。
     """
     try:
         from backend.services import tools as _t
@@ -41,7 +42,6 @@ def default_cache_root() -> str:
 def tile_path(cache_root: str, provider_id: str, z: int, x: int, y: int) -> str:
     """tile 在缓存中的绝对路径。"""
     p = Path(cache_root) / provider_id / str(z) / str(x)
-    p.mkdir(parents=True, exist_ok=True)
     return str(p / f"{y}.png")
 
 
@@ -57,8 +57,8 @@ def load_cached_tile(
         if size <= 0 or size > _MAX_TILE_BYTES:
             return None
         with open(path, "rb") as f:
-            data = f.read()
-        if not data:
+            data = f.read(_MAX_TILE_BYTES + 1)
+        if not data or len(data) > _MAX_TILE_BYTES:
             return None
         # PNG 魔数校验（前 8 字节）
         if not data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -73,7 +73,7 @@ def save_tile_atomic(
 ) -> Optional[str]:
     """原子写入 tile。
 
-    步骤：先写 <path>.tmp.part → os.replace 到 <path>.tmp → os.replace 到 <path>。
+    步骤：先写唯一的 .tmp.part → os.replace 到唯一的 .tmp → os.replace 到 <path>。
     任一步失败：保留旧 <path>（如已存在），不影响已有缓存；返回 None。
     """
     if not png_bytes or len(png_bytes) > _MAX_TILE_BYTES:
@@ -81,9 +81,11 @@ def save_tile_atomic(
     if not png_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
         return None
     final = tile_path(cache_root, provider_id, z, x, y)
-    tmp = final + ".tmp"
-    part = final + ".tmp.part"
+    write_id = uuid.uuid4().hex
+    tmp = f"{final}.{write_id}.tmp"
+    part = f"{tmp}.part"
     try:
+        os.makedirs(os.path.dirname(final), exist_ok=True)
         with open(part, "wb") as f:
             f.write(png_bytes)
             f.flush()
@@ -103,29 +105,3 @@ def save_tile_atomic(
             except OSError:
                 pass
         return None
-
-
-def clear_provider_cache(cache_root: str, provider_id: str) -> int:
-    """删除某 provider 的全部缓存 tile，返回删除文件数。"""
-    base = Path(cache_root) / provider_id
-    if not base.exists():
-        return 0
-    n = 0
-    for p in base.rglob("*.png"):
-        try:
-            p.unlink()
-            n += 1
-        except OSError:
-            pass
-    # 清理空目录
-    try:
-        for d in sorted(base.glob("**/*"), reverse=True):
-            if d.is_dir():
-                try:
-                    d.rmdir()
-                except OSError:
-                    pass
-        base.rmdir()
-    except OSError:
-        pass
-    return n

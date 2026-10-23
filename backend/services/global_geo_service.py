@@ -7,10 +7,9 @@
 3. OpenStreetMap Overpass API: 区域路网、建筑轮廓、水系与兴趣点矢量数据直接抽取
 """
 
-import os
-import json
+import math
 import urllib.parse
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import requests
 
 from backend.services.cloud_native import get_effective_proxies, parse_bbox
@@ -29,6 +28,12 @@ def _http_get(url: str, params: dict = None, timeout: int = 10) -> requests.Resp
     return requests.get(url, params=params, headers=headers, proxies=proxies, timeout=timeout)
 
 
+def _validate_limit(limit: int, maximum: int) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("limit 必须是正整数")
+    return min(limit, maximum)
+
+
 # ============================================================
 # 1. Wikidata / Wikipedia 地理实体与知识图谱
 # ============================================================
@@ -38,6 +43,7 @@ def search_wikidata_entities(query: str, lang: str = "zh", limit: int = 5) -> Li
     q = str(query).strip()
     if not q:
         return []
+    limit = _validate_limit(limit, 50)
 
     url = "https://www.wikidata.org/w/api.php"
     params = {
@@ -51,21 +57,34 @@ def search_wikidata_entities(query: str, lang: str = "zh", limit: int = 5) -> Li
 
     try:
         resp = _http_get(url, params=params)
+        resp.raise_for_status()
         data = resp.json()
+        if not isinstance(data, dict):
+            raise ValueError("Wikidata 返回了无效数据")
         search_results = data.get("search", [])
+        if not isinstance(search_results, list):
+            search_results = []
         if not search_results:
             # Fallback to English search
             if lang != "en":
                 params["language"] = "en"
                 params["uselang"] = "en"
                 resp = _http_get(url, params=params)
-                search_results = resp.json().get("search", [])
+                resp.raise_for_status()
+                fallback_data = resp.json()
+                search_results = fallback_data.get("search", []) if isinstance(fallback_data, dict) else []
+                if not isinstance(search_results, list):
+                    search_results = []
     except Exception as e:
         return [{"error": f"Wikidata 查询失败: {e}"}]
 
     entities = []
     for item in search_results[:limit]:
+        if not isinstance(item, dict):
+            continue
         qid = item.get("id")
+        if not isinstance(qid, str) or not qid:
+            continue
         label = item.get("label") or q
         description = item.get("description", "")
         concept_uri = item.get("concepturi", f"https://www.wikidata.org/wiki/{qid}")
@@ -107,7 +126,9 @@ def _fetch_wikidata_entity_details(qid: str, lang: str = "zh") -> tuple:
             lat = val.get("latitude")
             lng = val.get("longitude")
             if lat is not None and lng is not None:
-                coord = [round(float(lng), 6), round(float(lat), 6)]
+                lat, lng = float(lat), float(lng)
+                if math.isfinite(lat) and math.isfinite(lng) and -90 <= lat <= 90 and -180 <= lng <= 180:
+                    coord = [round(lng, 6), round(lat, 6)]
 
         # Sitelinks
         sitelinks = entity.get("sitelinks", {})
@@ -149,6 +170,7 @@ def search_osm_nominatim(query: str, fetch_polygon: bool = True, limit: int = 3)
     q = str(query).strip()
     if not q:
         return []
+    limit = _validate_limit(limit, 50)
 
     url = "https://nominatim.openstreetmap.org/search"
     params = {
@@ -161,21 +183,40 @@ def search_osm_nominatim(query: str, fetch_polygon: bool = True, limit: int = 3)
 
     try:
         resp = _http_get(url, params=params, timeout=8)
+        resp.raise_for_status()
         items = resp.json()
+        if not isinstance(items, list):
+            message = items.get("error") if isinstance(items, dict) else None
+            return [{"error": str(message or "Nominatim 返回了无效数据")}]
     except Exception as e:
         return [{"error": f"OSM Nominatim 查询失败: {e}"}]
 
     results = []
     for item in items:
-        lat = float(item.get("lat", 0))
-        lng = float(item.get("lon", 0))
+        if not isinstance(item, dict):
+            continue
+        try:
+            lat = float(item["lat"])
+            lng = float(item["lon"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+            continue
         bbox_raw = item.get("boundingbox", [])  # [minlat, maxlat, minlon, maxlon]
         bbox = None
-        if len(bbox_raw) == 4:
-            bbox = [float(bbox_raw[2]), float(bbox_raw[0]), float(bbox_raw[3]), float(bbox_raw[1])]  # [minx, miny, maxx, maxy]
+        if isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4:
+            try:
+                candidate_bbox = [float(bbox_raw[2]), float(bbox_raw[0]), float(bbox_raw[3]), float(bbox_raw[1])]
+                if (all(map(lambda value: -180 <= value <= 180, candidate_bbox[::2]))
+                        and all(map(lambda value: -90 <= value <= 90, candidate_bbox[1::2]))
+                        and candidate_bbox[0] < candidate_bbox[2]
+                        and candidate_bbox[1] < candidate_bbox[3]):
+                    bbox = candidate_bbox
+            except (TypeError, ValueError, OverflowError):
+                pass
 
-        geojson = item.get("geojson")
-        display_name = item.get("display_name", "")
+        geojson = item.get("geojson") if isinstance(item.get("geojson"), dict) else None
+        display_name = str(item.get("display_name") or "")
         category = item.get("category") or item.get("class", "")
         osm_type = item.get("osm_type", "")
         place_rank = item.get("place_rank", 0)
@@ -204,6 +245,7 @@ def query_osm_overpass(query_type: str, bbox: str, limit: int = 300) -> Dict[str
     bbox_tuple = parse_bbox(bbox)
     if not bbox_tuple:
         raise ValueError("Overpass 查询必须提供有效的 bbox: 'minx,miny,maxx,maxy'")
+    limit = _validate_limit(limit, 1000)
 
     minx, miny, maxx, maxy = bbox_tuple
     # Overpass bbox 格式为 (minlat, minlon, maxlat, maxlon)
@@ -220,7 +262,9 @@ def query_osm_overpass(query_type: str, bbox: str, limit: int = 300) -> Dict[str
     elif qt in ("amenity", "poi", "设施", "兴趣点"):
         filter_clause = f'node["amenity"]({op_bbox});'
     else:
-        filter_clause = f'way["highway"]({op_bbox}); way["building"]({op_bbox});'
+        raise ValueError(
+            f"不支持的 OSM 要素类型「{query_type}」，请使用 roads、buildings、water 或 amenity。"
+        )
 
     ql = f"""
     [out:json][timeout:15];
@@ -234,27 +278,65 @@ def query_osm_overpass(query_type: str, bbox: str, limit: int = 300) -> Dict[str
 
     url = "https://overpass-api.de/api/interpreter"
     resp = _http_get(url, params={"data": ql}, timeout=15)
+    resp.raise_for_status()
     data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("Overpass 返回了无效数据")
+    if data.get("remark"):
+        raise ValueError(f"Overpass 查询未完整完成: {str(data['remark'])[:300]}")
     elements = data.get("elements", [])
+    if not isinstance(elements, list):
+        raise ValueError("Overpass 返回的要素列表无效")
 
     # 将 Overpass 元素转为简易 GeoJSON
-    nodes_map = {el["id"]: (el["lon"], el["lat"]) for el in elements if el.get("type") == "node"}
+    nodes_map = {}
+    for el in elements:
+        if not isinstance(el, dict) or el.get("type") != "node":
+            continue
+        try:
+            node_id = el["id"]
+            hash(node_id)
+            lon, lat = float(el["lon"]), float(el["lat"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(lon) and math.isfinite(lat) and -180 <= lon <= 180 and -90 <= lat <= 90:
+            nodes_map[node_id] = (lon, lat)
     features = []
 
     for el in elements:
-        props = el.get("tags", {})
-        if not props:
+        if not isinstance(el, dict):
             continue
+        raw_props = el.get("tags", {})
+        if not isinstance(raw_props, dict):
+            continue
+        if not raw_props:
+            continue
+        props = dict(raw_props)
         props["osm_id"] = el.get("id")
 
         if el.get("type") == "node" and "lon" in el and "lat" in el:
+            try:
+                coords = nodes_map.get(el.get("id"))
+            except TypeError:
+                continue
+            if coords is None:
+                continue
             features.append({
                 "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [el["lon"], el["lat"]]},
+                "geometry": {"type": "Point", "coordinates": list(coords)},
                 "properties": props,
             })
         elif el.get("type") == "way" and "nodes" in el:
-            way_nodes = [nodes_map.get(nid) for nid in el["nodes"] if nid in nodes_map]
+            way_nodes = []
+            if not isinstance(el["nodes"], list):
+                continue
+            for node_id in el["nodes"]:
+                try:
+                    coords = nodes_map.get(node_id)
+                except TypeError:
+                    continue
+                if coords is not None:
+                    way_nodes.append(coords)
             if len(way_nodes) >= 2:
                 # 闭合则作为 Polygon，否则 LineString
                 is_closed = way_nodes[0] == way_nodes[-1] and len(way_nodes) >= 4 and ("building" in props or "natural" in props or "landuse" in props)

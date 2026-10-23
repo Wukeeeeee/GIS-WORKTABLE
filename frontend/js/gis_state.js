@@ -27,6 +27,17 @@ window.GIS = window.GIS || {};
   const drill = {             // 下钻导航栈（2D/3D 共用）
     stack: [],                // [{ level, adcode, name, layerId }]
   };
+  let drillSyncGeneration = 0;
+  let drillSyncTimer = null;
+
+  function invalidateDrillSync() {
+    drillSyncGeneration++;
+    if (drillSyncTimer !== null) {
+      clearTimeout(drillSyncTimer);
+      drillSyncTimer = null;
+    }
+    return drillSyncGeneration;
+  }
 
   // 稳定 _fid：行政代码 > 数据源 id > 名称 > 要素顺序兜底
   function makeFid(props, idx) {
@@ -124,6 +135,7 @@ window.GIS = window.GIS || {};
       geojson: geojson,
       style: Object.assign({ color: record.color ||
         (GIS.layers && GIS.layers.nextColor ? GIS.layers.nextColor() : '#e74c3c') }, record.style || {}),
+      opacity: Number.isFinite(Number(record.opacity)) ? Math.max(0, Math.min(1, Number(record.opacity))) : 1,
       source: record.source || 'ai',
       crs: 'EPSG:4326',
       visible: record.visible !== false,
@@ -160,6 +172,7 @@ window.GIS = window.GIS || {};
         geojson: geojson,
         color: rec.style.fillColor || rec.style.color,
         style: rec.style,          // 面板侧也要保留完整样式（3D 兜底/工程保存/图例用得到）
+        opacity: rec.opacity,
         visible: rec.visible,
         source: rec.source,
         groupId: rec.groupId,
@@ -191,6 +204,7 @@ window.GIS = window.GIS || {};
   }
 
   function clearAll() {
+    invalidateDrillSync();
     var copy = layers.slice();
     var errors = [];
     copy.forEach(function(rec) {
@@ -249,7 +263,11 @@ window.GIS = window.GIS || {};
   function setOpacity(layerId, opacity) {
     var rec = findLayer(layerId);
     if (!rec) return;
-    rec.style = Object.assign({}, rec.style || {}, { opacity: Math.max(0, Math.min(1, +opacity || 0)) });
+    rec.opacity = Math.max(0, Math.min(1, +opacity || 0));
+    rec.style = Object.assign({}, rec.style || {}, { opacity: rec.opacity });
+    var panelLayer = GIS.layers && GIS.layers.getLayers
+      ? GIS.layers.getLayers().find(function(layer) { return layer.layer_id === layerId; }) : null;
+    if (panelLayer) panelLayer.opacity = rec.opacity;
     emit('layer-style', rec);
   }
 
@@ -316,11 +334,13 @@ window.GIS = window.GIS || {};
   /** 加载某行政区的子级边界并下钻。adcode 必填；后端负责 GCJ-02→WGS84 与缓存 */
   function drillDown(adcode, name) {
     if (!adcode) return Promise.reject(new Error('该要素无 adcode，不支持下钻'));
+    var generation = invalidateDrillSync();
     var url = (GIS.api && GIS.api.BASE_URL ? GIS.api.BASE_URL : '') +
       '/api/boundary?adcode=' + encodeURIComponent(adcode);
     return fetch(url)
       .then(function(r) { if (!r.ok) throw new Error('边界服务返回 ' + r.status); return r.json(); })
       .then(function(data) {
+        if (generation !== drillSyncGeneration) return null;
         // /api/boundary 返回 {geojson: FC} 包装；解包并兼容裸 FC
         var geojson = data && data.geojson ? data.geojson : data;
         if (!geojson || geojson.error || geojson.type !== 'FeatureCollection') {
@@ -361,8 +381,10 @@ window.GIS = window.GIS || {};
   /** Agent drill_down 工具路径：图层由 result.layers 通道加载，这里同步导航栈。
    * op 先于图层到达（chat.js 先处理 layer_ops 后处理 layers），所以带重试。 */
   function drillSyncFromAgent(op) {
+    var generation = invalidateDrillSync();
     var tries = 0;
     (function attempt() {
+      if (generation !== drillSyncGeneration) return;
       var rec = layerByName(op.layer_name || '');
       if (!rec) {
         // 兼容前端唯一名后缀（图层名_时间戳_序号）：按前缀匹配后端图层名
@@ -372,7 +394,13 @@ window.GIS = window.GIS || {};
               (layers[i]._rawName || '').indexOf(want) === 0) { rec = layers[i]; break; }
         }
       }
-      if (!rec && tries++ < 10) { setTimeout(attempt, 300); return; }
+      if (!rec && tries++ < 10) {
+        drillSyncTimer = setTimeout(function() {
+          drillSyncTimer = null;
+          attempt();
+        }, 300);
+        return;
+      }
       if (!rec) return;
       var hiddenLayerId = null;
       if (selection && selection.layerId && String(selection.adcode) === String(op.adcode)) {
@@ -401,6 +429,7 @@ window.GIS = window.GIS || {};
    * 语义：栈项 E 表示「正在查看 E 的子级图层」；弹出 E = 删除 E 的子级图层、
    * 恢复进入 E 时被隐藏的图层（E.hiddenLayerId）。 */
   function drillUpTo(targetDepth) {
+    invalidateDrillSync();
     if (drill.stack.length === 0) return;
     var depth = (targetDepth === undefined) ? drill.stack.length - 2 : targetDepth;
     while (drill.stack.length > depth + 1) {

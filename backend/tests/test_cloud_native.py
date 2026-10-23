@@ -11,6 +11,7 @@ import json
 import gzip
 import tempfile
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -138,6 +139,37 @@ def test_read_cog_preview(local_tif):
     w, s, e, n = r["bounds"]
     assert 115.9 <= w < 116.1 and 39.9 < n <= 40.1
     assert r["meta"]["count"] == 3
+
+
+@pytest.mark.parametrize('reader', [cn.read_cog, cn.cog_info], ids=['preview', 'metadata'])
+@pytest.mark.parametrize('fail_local', [False, True], ids=['success', 'local-failure'])
+def test_remote_cog_decode_failure_uses_bounded_download_and_cleans_it(local_tif, tmp_path, monkeypatch, reader, fail_local):
+    import rasterio
+    original_open = rasterio.open
+    downloaded = tmp_path / 'fallback.tif'
+    monkeypatch.setattr(cn, '_OWNED_TEMP_DOWNLOADS', set())
+    requests = []
+    def download(url, fmt):
+        requests.append((url, fmt))
+        downloaded.write_bytes(Path(local_tif).read_bytes())
+        cn._OWNED_TEMP_DOWNLOADS.add(str(downloaded.resolve()))
+        return str(downloaded)
+    def open_source(source, *args, **kwargs):
+        if str(source).startswith('/vsicurl/'):
+            raise UnicodeDecodeError('utf-8', b'\xb0', 0, 1, 'invalid start byte')
+        if fail_local: raise ValueError('invalid local TIFF')
+        return original_open(source, *args, **kwargs)
+    monkeypatch.setattr(cn, 'http_download_to_temp', download)
+    monkeypatch.setattr(rasterio, 'open', open_source)
+    if fail_local:
+        with pytest.raises(cn.CloudNativeError, match='invalid local TIFF'):
+            reader('https://example.invalid/source.tif')
+    else:
+        result = reader('https://example.invalid/source.tif')
+        assert result
+    assert requests == [('https://example.invalid/source.tif', 'tif')]
+    assert not downloaded.exists()
+    assert Path(local_tif).exists()
 
 
 def test_load_cog_tool_registers_layer_and_overlay(local_tif):

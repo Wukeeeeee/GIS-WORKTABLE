@@ -14,7 +14,6 @@ window.GIS = window.GIS || {};
   var _panelLeft = NaN;
   var _panelTop = NaN;
   var PANEL_WIDTH = 380;
-  var METERS_PER_DEGREE = 111320;
 
   var SEL = '<option value="">选择图层</option>';
 
@@ -747,13 +746,25 @@ window.GIS = window.GIS || {};
     if (tabId) _switchTab(tabId);
   }
 
+  function openBufferForLayer(layerName) {
+    openTab('buffer');
+    var select = document.getElementById('bufferLayer');
+    if (!select || !layerName) return;
+    var option = Array.from(select.options).find(function(item) { return item.value === layerName; });
+    if (!option) {
+      option = document.createElement('option');
+      option.value = layerName;
+      option.textContent = layerName;
+      select.appendChild(option);
+    }
+    select.value = layerName;
+  }
+
   GIS.spatial = {
-    init: init,
-    activate: activate,
-    deactivate: deactivate,
     toggle: toggle,
     refreshLayers: _refreshLayers,
     openTab: openTab,
+    openBufferForLayer: openBufferForLayer,
   };
 
 })();

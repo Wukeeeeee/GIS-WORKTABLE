@@ -5,7 +5,7 @@
 把可疑的地理错误变成显式警告，而不是静默输出错误数据：
 
 - 坐标范围：bbox 超出 WGS-84 合法范围 → 疑似 CRS 未转换（如投影坐标/ GCJ-02 直出）
-- 坐标顺序：全部 |经度|>90 且 |纬度|<=90 → 疑似 lat/lng 顺序颠倒
+- 坐标顺序：颠倒导致经纬度越界时，通过范围检查提示
 - 几何有效性：抽样 shapely is_valid，无效几何给出修复提示
 - 空结果：FeatureCollection 零要素 → 提示分析可能无意义
 - 自相交缓冲类异常：单要素坐标数异常（<最小顶点数）→ 提示
@@ -13,26 +13,53 @@
 设计约束：绝不抛异常、绝不阻塞出图——警告只附加信息，不改变数据。
 """
 import math
+from numbers import Real
 
 _WGS_RANGE = (-180.0, -90.0, 180.0, 90.0)
 _MAX_SAMPLE = 200          # 有效性抽样的最大要素数
 
 
-def _walk_coords(coords, out):
+def _walk_coords(coords, out, limit):
     """递归收集坐标点到 out（列表复用，避免大图层深拷贝）"""
+    if len(out) >= limit:
+        return
     if not coords or not isinstance(coords, (list, tuple)):
         return
-    if len(coords) >= 2 and isinstance(coords[0], (int, float)) and isinstance(coords[1], (int, float)):
-        out.append((coords[0], coords[1]))
+    if (len(coords) >= 2 and isinstance(coords[0], Real) and isinstance(coords[1], Real)
+            and not isinstance(coords[0], bool) and not isinstance(coords[1], bool)):
+        try:
+            x, y = float(coords[0]), float(coords[1])
+        except (OverflowError, TypeError, ValueError):
+            return
+        if math.isfinite(x) and math.isfinite(y):
+            out.append((x, y))
         return
     for c in coords:
-        _walk_coords(c, out)
+        if len(out) >= limit:
+            break
+        _walk_coords(c, out, limit)
+
+
+def _walk_geometry(geom, out, limit):
+    if len(out) >= limit:
+        return
+    if not isinstance(geom, dict):
+        return
+    if geom.get("type") == "GeometryCollection":
+        children = geom.get("geometries", [])
+        if isinstance(children, list):
+            for child in children:
+                if len(out) >= limit:
+                    break
+                _walk_geometry(child, out, limit)
+    else:
+        _walk_coords(geom.get("coordinates"), out, limit)
 
 
 def _extract_points(geojson: dict, limit: int = 5000):
     """提取前 limit 个坐标点用于统计判断"""
     points = []
-    if not isinstance(geojson, dict):
+    if not isinstance(geojson, dict) or limit <= 0:
         return points
     if geojson.get("type") == "FeatureCollection":
         geoms = [f.get("geometry") or {} for f in geojson.get("features", [])]
@@ -43,7 +70,7 @@ def _extract_points(geojson: dict, limit: int = 5000):
     for g in geoms:
         if points and len(points) >= limit:
             break
-        _walk_coords(g.get("coordinates"), points)
+        _walk_geometry(g, points, limit)
         if len(points) >= limit:
             break
     return points[:limit]
@@ -70,7 +97,7 @@ def qa_check(geojson) -> list:
             lats = [p[1] for p in pts]
             out_of_range = any(
                 not (_WGS_RANGE[0] <= x <= _WGS_RANGE[2] and _WGS_RANGE[1] <= y <= _WGS_RANGE[3])
-                for x, y in pts[:1000])
+                for x, y in pts)
             if out_of_range:
                 # 注：不做"经纬度顺序颠倒"启发式判断——中国区域经度普遍 >90，
                 # 该启发式会大面积误报；范围检查已能拦住颠倒后的越界数据。
@@ -100,7 +127,8 @@ def qa_check(geojson) -> list:
                             invalid += 1
                         checked += 1
                     except Exception:
-                        continue
+                        invalid += 1
+                        checked += 1
                 if checked and invalid:
                     ratio = invalid / checked
                     msg = f"抽样 {checked} 个要素中发现 {invalid} 个无效几何"
@@ -116,11 +144,16 @@ def qa_check(geojson) -> list:
         degenerate = 0
         for f in features[:_MAX_SAMPLE]:
             geom = f.get("geometry") or {}
-            if geom.get("type") in ("Polygon", "MultiPolygon"):
-                coords = geom.get("coordinates")
-                flat = []
-                _walk_coords(coords, flat)
-                if len(flat) < 4:
+            geom_type = geom.get("type")
+            coords = geom.get("coordinates")
+            if geom_type == "Polygon" and isinstance(coords, (list, tuple)):
+                if not coords or not isinstance(coords[0], (list, tuple)) or len(coords[0]) < 4:
+                    degenerate += 1
+            elif geom_type == "MultiPolygon" and isinstance(coords, (list, tuple)):
+                if any(
+                    not polygon or not isinstance(polygon[0], (list, tuple)) or len(polygon[0]) < 4
+                    for polygon in coords
+                ):
                     degenerate += 1
         if degenerate:
             warnings.append(f"{degenerate} 个面要素坐标点数不足（退化多边形）——请检查数据源")
@@ -128,24 +161,3 @@ def qa_check(geojson) -> list:
         # 质量自检永不阻塞出图，但故障要可见（否则守卫本身坏了都不知道）
         print(f"[GeoQA] 质量自检异常（已跳过）: {e}", flush=True)
     return warnings
-
-
-def bbox_in_range(geojson) -> bool:
-    """bbox 是否在 WGS-84 范围内（供工具内部快速判断）"""
-    pts = _extract_points(geojson, limit=1000)
-    if not pts:
-        return True
-    for x, y in pts:
-        if not (_WGS_RANGE[0] <= x <= _WGS_RANGE[2] and _WGS_RANGE[1] <= y <= _WGS_RANGE[3]):
-            return False
-    return True
-
-
-def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-    """两点地面距离（米）。供需要距离 sanity check 的工具复用"""
-    r = 6371000.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = p2 - p1
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))

@@ -5,8 +5,7 @@
 import json
 import os
 import hashlib
-import time
-from typing import Optional, List, Dict, Any
+from urllib.parse import urlencode
 from playwright.sync_api import sync_playwright
 from shapely.geometry import Polygon
 import geopandas as gpd
@@ -179,41 +178,6 @@ def _add_script(page):
     )
 
 
-def fetch_fast_suggestions(query: str) -> List[Dict[str, Any]]:
-    """快速从在线空间数据联想服务获取候选地点 (毫秒级响应)"""
-    import requests
-    import urllib.parse
-    q = (query or "").strip()
-    if not q:
-        return []
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Referer": "https://map.baidu.com/"
-        }
-        url = f"https://map.baidu.com/su?wd={urllib.parse.quote(q)}&cid=1&type=0"
-        resp = requests.get(url, headers=headers, timeout=4)
-        resp.encoding = "utf-8"
-        text = resp.text.strip()
-        if "(" in text and text.endswith(")"):
-            text = text[text.find("(") + 1 : text.rfind(")")]
-        data = json.loads(text)
-        sugs = data.get("s", [])
-        candidates = []
-        for s in sugs:
-            parts = s.split("$")
-            if len(parts) >= 4:
-                city = parts[0]
-                district = parts[1]
-                name = parts[3]
-                addr = f"{city} {district}".strip()
-                if name:
-                    candidates.append({"name": name, "address": addr, "uid": ""})
-        return candidates
-    except Exception:
-        return []
-
-
 # ===== 搜索建议 =====
 def search_suggestions(query):
     if not query or not query.strip():
@@ -234,12 +198,7 @@ def search_suggestions(query):
 def _do_search(query):
     result_suggestions = []
 
-    # 1. 优先调用快速联想服务 (解决别名/火车站/机场/学校等特殊地名)
-    fast_sugs = fetch_fast_suggestions(query)
-    if fast_sugs:
-        result_suggestions.extend(fast_sugs)
-
-    # 2. 调用浏览器深入拦截精确 UID
+    # 调用浏览器深入拦截精确 UID，只有这类候选才能交给 extract_boundary。
     try:
         with sync_playwright() as p:
             browser = _launch_browser(p)
@@ -290,7 +249,7 @@ def _do_search(query):
     result_suggestions.sort(key=lambda x: (1 if x.get("uid") else 0), reverse=True)
     for s in result_suggestions:
         k = s["name"]
-        if k not in seen and s["name"]:
+        if s.get("uid") and k not in seen and s["name"]:
             seen.add(k)
             unique.append(s)
     return unique[:20]
@@ -343,7 +302,14 @@ def extract_boundary(uid, place_name, headless=True):
             page.keyboard.press("Enter")
             page.wait_for_timeout(3500)
 
-            api_url = f"https://map.baidu.com/?uid={uid}&ugc_type=3&ugc_ver=1&qt=detailConInfo&device_ratio=1&compat=1"
+            api_url = "https://map.baidu.com/?" + urlencode({
+                "uid": uid,
+                "ugc_type": 3,
+                "ugc_ver": 1,
+                "qt": "detailConInfo",
+                "device_ratio": 1,
+                "compat": 1,
+            })
 
             # 方式 A: context request
             if not geo_result[0]:
@@ -361,7 +327,10 @@ def extract_boundary(uid, place_name, headless=True):
             # 方式 B: fetch 兜底
             if not geo_result[0]:
                 for _ in range(2):
-                    js = page.evaluate(f"fetch('{api_url}').then(r=>r.text()).catch(e=>'FETCH_ERROR')")
+                    js = page.evaluate(
+                        "url => fetch(url).then(r => r.text()).catch(() => 'FETCH_ERROR')",
+                        api_url,
+                    )
                     if js and not js.startswith("FETCH_ERROR"):
                         try:
                             geo = extract_geo_from_detail(json.loads(js))

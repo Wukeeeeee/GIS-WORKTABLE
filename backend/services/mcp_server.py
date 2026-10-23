@@ -6,7 +6,7 @@
 
     python -m backend.services.mcp_server
 
-暴露 4 个 MCP 工具（不重复手写清单，全部从 @tool 注册表反射）：
+暴露 8 个 MCP 工具（通用调用、数据 URL 与地理搜索入口）：
 - tools_list():              名称 + 描述 + 参数 JSON Schema
 - tool_call(name, arguments): 执行任意注册工具（复用服务层，不含 LLM/Agent 循环），
                               图层产物落盘到会话目录并返回文件路径
@@ -20,6 +20,9 @@
 import os
 import json
 import datetime
+import sys
+import threading
+from contextlib import asynccontextmanager, redirect_stdout
 
 from mcp.server.fastmcp import FastMCP
 
@@ -27,9 +30,17 @@ from mcp.server.fastmcp import FastMCP
 os.environ.pop("PROJ_LIB", None)
 os.environ.pop("PROJ_DATA", None)
 
-mcp = FastMCP("gis-worktable")
+@asynccontextmanager
+async def _runtime_logs(_server):
+    # SDK 在进入 lifespan 前已绑定协议流；GIS 工具的 print 只能写诊断流。
+    with redirect_stdout(sys.stderr):
+        yield {}
 
-_SESSION_ID = os.environ.get("GEOWORKTABLE_MCP_SESSION", "mcp_default")
+
+mcp = FastMCP("gis-worktable", lifespan=_runtime_logs)
+
+_SESSION_ID = os.environ.get("GEOWORKTABLE_MCP_SESSION") or "mcp_default"
+_TOOL_CALL_LOCK = threading.RLock()
 
 
 # ============================================================
@@ -56,10 +67,12 @@ def get_allowed_roots() -> list:
 
 def assert_path_allowed(path: str) -> str:
     """校验路径在白名单内；返回规范化绝对路径。越界抛 PermissionError。"""
-    p = os.path.abspath(os.path.expanduser(str(path)))
+    p = os.path.realpath(os.path.abspath(os.path.expanduser(str(path))))
     for root in get_allowed_roots():
         try:
-            if os.path.commonpath([p, root]) == root:
+            real_root = os.path.realpath(os.path.abspath(root))
+            common = os.path.commonpath([p, real_root])
+            if os.path.normcase(common) == os.path.normcase(real_root):
                 return p
         except ValueError:
             continue
@@ -68,15 +81,40 @@ def assert_path_allowed(path: str) -> str:
         "（可用环境变量 GEOWORKTABLE_MCP_ROOTS 配置，分号分隔）")
 
 
-def _check_args_paths(name: str, arguments: dict) -> None:
+def _check_args_paths(arguments: dict) -> None:
     """工具入参 confinement：字符串参数若形似本地文件路径，必须在白名单内。
     http(s) URL 与输出名等非路径参数不受限。"""
-    for key, val in (arguments or {}).items():
+    def string_values(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for nested in value.values():
+                yield from string_values(nested)
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                yield from string_values(nested)
+
+    for val in string_values(arguments or {}):
         if not isinstance(val, str) or not val:
             continue
         v = val.strip()
-        if v.startswith(("http://", "https://", "/vsi", "/vsicurl", "s3://", "gs://")):
+        lower = v.lower()
+        if lower.startswith(("http://", "https://", "s3://", "gs://")):
             continue
+        if lower.startswith("/vsicurl/"):
+            nested = v[len("/vsicurl/"):]
+            if nested.lower().startswith(("http://", "https://")):
+                continue
+            assert_path_allowed(nested)
+            continue
+        if lower.startswith(("/vsizip/", "/vsitar/", "/vsigzip/")):
+            nested = v.split("/", 2)[2]
+            if nested.lower().startswith(("/vsicurl/http://", "/vsicurl/https://")):
+                continue
+            assert_path_allowed(nested)
+            continue
+        if lower.startswith("/vsi"):
+            raise PermissionError("不支持无法校验底层路径的 VSI 源；请提供白名单内路径或远程 URL")
         if v.startswith("{") or v.startswith("["):
             continue  # JSON 文本参数
         looks_like_path = ("\\" in v or "/" in v or os.path.isabs(v)
@@ -119,15 +157,25 @@ def _args_schema_of(t) -> dict:
 def _session_dir() -> str:
     from backend.services.tools import _temp_output_dir, init_temp_dir
     init_temp_dir()
-    d = os.path.join(_temp_output_dir, "mcp_sessions", _SESSION_ID)
+    if not _SESSION_ID or _SESSION_ID in {".", ".."} or "/" in _SESSION_ID or "\\" in _SESSION_ID or "\0" in _SESSION_ID:
+        raise ValueError("GEOWORKTABLE_MCP_SESSION 必须是单个目录名")
+    sessions_root = os.path.realpath(os.path.join(_temp_output_dir, "mcp_sessions"))
+    d = os.path.realpath(os.path.join(sessions_root, _SESSION_ID))
+    try:
+        common = os.path.commonpath((sessions_root, d))
+    except ValueError as exc:
+        raise ValueError("MCP 会话目录越界") from exc
+    if os.path.normcase(common) != os.path.normcase(sessions_root):
+        raise ValueError("MCP 会话目录越界")
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def _dump_pending_layers(session_tag: str) -> list:
+def _dump_pending_layers(session_tag: str, pending: dict = None) -> list:
     """把本轮工具产出的图层落盘为 GeoJSON，返回 [{name, file, feature_count}]"""
-    from backend.services.tools import get_pending_state
-    pending = get_pending_state()
+    if pending is None:
+        from backend.services.tools import get_pending_state
+        pending = get_pending_state()
     out = []
     for i, layer in enumerate(pending.get("layers", [])):
         name = layer.get("name") or f"layer_{i}"
@@ -144,8 +192,58 @@ def _dump_pending_layers(session_tag: str) -> list:
     return out
 
 
+def _invoke_tool_call(t, args: dict) -> str:
+    """在 MCP 调用锁内执行，避免共享 tools 状态被并发请求交叉消费。"""
+    from backend.services.tools import (
+        reset_state, _tool_result_failed, set_current_task,
+    )
+    reset_state()
+    task_id = ""
+    try:
+        from backend.services import task_manager
+        task_id = task_manager.find_or_create_task(_SESSION_ID, f"MCP 工具调用: {t.name}")
+        set_current_task(task_id)
+    except Exception:
+        # 任务台账不可用时仍允许工具执行；仅失去任务上下文记录。
+        pass
+    try:
+        response = t.invoke(args)
+        ok = not _tool_result_failed(t.name, response)
+    except Exception as e:
+        response = f"工具执行失败: {str(e)[:400]}"
+        ok = False
+
+    from backend.services.tools import get_pending_state as _gps, _registered_layers
+    session_tag = datetime.datetime.now().strftime("%H%M%S%f")
+    pending = _gps()
+    artifact_error = ""
+    try:
+        layers_out = _dump_pending_layers(session_tag, pending)
+    except Exception as exc:
+        layers_out = []
+        artifact_error = f"图层产物落盘失败：{str(exc)[:300]}"
+        ok = False
+    try:
+        images = [img.get("url") if isinstance(img, dict) else str(img)
+                  for img in pending.get("images", [])]
+    except Exception:
+        images = []
+    try:
+        return json.dumps({
+            "ok": ok,
+            "response": response,
+            "task_id": task_id or None,
+            "layers": layers_out,
+            "artifact_error": artifact_error or None,
+            "images": images,
+            "registered_layer_count": len(_registered_layers),
+        }, ensure_ascii=False)
+    finally:
+        set_current_task("")
+
+
 # ============================================================
-# 4 个 MCP 工具
+# MCP 工具
 # ============================================================
 
 @mcp.tool()
@@ -166,7 +264,7 @@ def tools_list() -> str:
 def tool_call(name: str, arguments: str = "{}") -> str:
     """执行一个 Gis-WorkTable 注册工具。
     name: tools_list 返回的工具名；arguments: JSON 对象字符串（参数名 → 值）。
-    返回 JSON：{ok, response, layers:[{name,file,feature_count}], images}。
+    返回 JSON：{ok, response, task_id, layers:[{name,file,feature_count}], images}。
     图层产物落盘到会话目录，文件路径可直接读取/下载。"""
     registry = _tool_registry()
     t = registry.get(name)
@@ -182,52 +280,41 @@ def tool_call(name: str, arguments: str = "{}") -> str:
         return json.dumps({"ok": False, "error": "arguments 应为 JSON 对象"},
                           ensure_ascii=False)
     try:
-        _check_args_paths(name, args)
+        _check_args_paths(args)
     except PermissionError as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
 
-    from backend.services.tools import reset_state
-    reset_state()
-    session_tag = datetime.datetime.now().strftime("%H%M%S")
-    try:
-        response = t.invoke(args)
-        ok = True
-    except Exception as e:
-        response = f"工具执行失败: {str(e)[:400]}"
-        ok = False
-
-    from backend.services.tools import get_pending_state as _gps, _registered_layers
-    try:
-        layers_out = _dump_pending_layers(session_tag)
-    except Exception:
-        layers_out = []
-    images = []
-    try:
-        images = [img.get("url") if isinstance(img, dict) else str(img)
-                  for img in _gps().get("images", [])]
-    except Exception:
-        pass
-    return json.dumps({
-        "ok": ok,
-        "response": response,
-        "layers": layers_out,
-        "images": images,
-        "registered_layer_count": len(_registered_layers),
-    }, ensure_ascii=False)
+    with _TOOL_CALL_LOCK:
+        from backend.services.tools import acquire_shared_state_lock, release_shared_state_lock
+        if not acquire_shared_state_lock():
+            return json.dumps({
+                "ok": False,
+                "error": "当前 GIS 工作区正在处理另一项操作，请稍后重试。",
+            }, ensure_ascii=False)
+        try:
+            return _invoke_tool_call(t, args)
+        finally:
+            release_shared_state_lock()
 
 
 @mcp.tool()
 def list_layers() -> str:
     """列出当前 MCP 会话已注册的图层（名称/要素数/几何类型/范围）。"""
-    from backend.services.tools import _registered_layers
-    layers = []
-    for name, info in _registered_layers.items():
-        layers.append({
-            "name": name,
-            "feature_count": info.get("feature_count", 0),
-            "geometry_types": info.get("geometry_types", []),
-            "bbox": info.get("bbox"),
-        })
+    from backend.services.tools import _registered_layers, acquire_shared_state_lock, release_shared_state_lock
+    with _TOOL_CALL_LOCK:
+        if not acquire_shared_state_lock():
+            return json.dumps({"ok": False, "error": "GIS 工作区忙，请稍后重试。"}, ensure_ascii=False)
+        try:
+            layers = []
+            for name, info in _registered_layers.items():
+                layers.append({
+                    "name": name,
+                    "feature_count": info.get("feature_count", 0),
+                    "geometry_types": info.get("geometry_types", []),
+                    "bbox": info.get("bbox"),
+                })
+        finally:
+            release_shared_state_lock()
     return json.dumps({"count": len(layers), "layers": layers}, ensure_ascii=False)
 
 
@@ -291,6 +378,8 @@ def search_wikidata(query: str, lang: str = "zh") -> str:
     from backend.services import global_geo_service as ggs
     try:
         res = ggs.search_wikidata_entities(query, lang=lang)
+        if res and isinstance(res[0], dict) and res[0].get("error"):
+            return json.dumps({"ok": False, "query": query, "error": res[0]["error"]}, ensure_ascii=False)
         return json.dumps({"ok": True, "query": query, "entities": res}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
@@ -302,6 +391,8 @@ def search_osm(query: str, fetch_polygon: bool = True) -> str:
     from backend.services import global_geo_service as ggs
     try:
         res = ggs.search_osm_nominatim(query, fetch_polygon=fetch_polygon)
+        if res and isinstance(res[0], dict) and res[0].get("error"):
+            return json.dumps({"ok": False, "query": query, "error": res[0]["error"]}, ensure_ascii=False)
         return json.dumps({"ok": True, "query": query, "results": res}, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
@@ -312,8 +403,11 @@ def search_osm(query: str, fetch_polygon: bool = True) -> str:
 # ============================================================
 
 def main():
-    print(f"[GIS MCP] 启动 stdio MCP server，会话: {_SESSION_ID}", flush=True)
-    print(f"[GIS MCP] 允许根目录: {'; '.join(get_allowed_roots())}", flush=True)
+    with redirect_stdout(sys.stderr):
+        print(f"[GIS MCP] 启动 stdio MCP server，会话: {_SESSION_ID}", flush=True)
+        # Windows 下先在主线程载入 GIS 库，再启动 STDIO 的读写线程。
+        _tool_registry()
+        print(f"[GIS MCP] 允许根目录: {'; '.join(get_allowed_roots())}", flush=True)
     mcp.run(transport="stdio")
 
 

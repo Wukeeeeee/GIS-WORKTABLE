@@ -2,7 +2,7 @@
 """阶段三：MCP Server 测试
 
 用 mcp SDK 内存传输客户端验证：
-- tools_list / tool_call / list_layers / get_task_status 四个 MCP 工具可达
+- 八个 MCP 工具入口可达
 - tool_call 执行注册工具并落盘图层产物
 - 路径 confinement 拦截白名单外的文件路径
 - 注册表反射数量与 tools.py 一致
@@ -63,6 +63,29 @@ def test_tools_list_reflects_registry(session):
     # 参数 schema 已反射
     buf = next(t for t in data["tools"] if t["name"] == "spatial_buffer")
     assert "properties" in buf["parameters"]
+
+
+def test_stdio_entrypoint_keeps_diagnostics_out_of_utf8_protocol():
+    import asyncio
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    async def run():
+        server = StdioServerParameters(
+            command=sys.executable, args=["-m", "backend.services.mcp_server"], cwd=ms._repo_root(),
+            env={"PYTHONIOENCODING": "gbk", "GEOWORKTABLE_MCP_ROOTS": ms._repo_root()},
+        )
+        async with asyncio.timeout(30):
+            async with stdio_client(server) as (read, write):
+                async with ClientSession(read, write) as client:
+                    await client.initialize()
+                    inventory = await client.list_tools()
+                    result = await client.call_tool("tools_list", {})
+                    assert not result.isError
+                    assert len(inventory.tools) == 8
+                    assert json.loads(_text(result))["count"] == len(TOOL_LIST)
+
+    asyncio.run(run())
 
 
 def test_tool_call_executes_and_dumps_layers(tmp_path):

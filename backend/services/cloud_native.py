@@ -16,8 +16,9 @@ import gzip
 import io
 import json
 import math
-import mmap
 import os
+import threading
+from contextlib import contextmanager
 import urllib.request
 
 from backend.services.data_providers.errors import DataProviderError  # noqa: F401 (保持包初始化一致)
@@ -42,13 +43,13 @@ class CloudNativeError(Exception):
 def _as_vsi_path(source: str) -> str:
     """http(s) URL → GDAL /vsicurl/ 流式路径；本地路径原样返回"""
     s = str(source).strip()
-    if s.startswith(("http://", "https://")) and not s.startswith("/vsi"):
+    if s.lower().startswith(("http://", "https://")) and not s.lower().startswith("/vsi"):
         return "/vsicurl/" + s
     return s
 
 
 def _is_http(source: str) -> bool:
-    return str(source).strip().startswith(("http://", "https://"))
+    return str(source).strip().lower().startswith(("http://", "https://"))
 
 
 def parse_bbox(bbox: str):
@@ -63,25 +64,57 @@ def parse_bbox(bbox: str):
     except ValueError:
         raise CloudNativeError(f"bbox 含非数字项: {bbox}")
     minx, miny, maxx, maxy = vals
+    if not all(math.isfinite(v) for v in vals):
+        raise CloudNativeError(f"bbox 必须是有限数值: {bbox}")
     if minx >= maxx or miny >= maxy:
         raise CloudNativeError(f"bbox 应为 minx<maxx, miny<maxy: {bbox}")
+    if minx < -180 or maxx > 180 or miny < -90 or maxy > 90:
+        raise CloudNativeError(f"bbox 超出 WGS84 经纬度范围: {bbox}")
     return (minx, miny, maxx, maxy)
 
 
 # ============================================================
 # GDAL 网络回退：部分 Windows 机器 curl 编译为 schannel 且不做
 # 中间证书补全（AIA fetching），访问 GitHub 等 CA 会出现
-# "schannel: certificate chain is incomplete"。
+# "schannel: certificate chain is incomplete"，或在解码本地化网络错误时
+# 抛出 UnicodeDecodeError。
 # 此时回退 urllib（走系统证书存储）下载到临时文件再本地解析，
 # 正常机器仍走 /vsicurl/ 流式，不整体下载。
 # ============================================================
 
 _DOWNLOAD_CAP_BYTES = 300 * 1024 * 1024
+_OWNED_TEMP_DOWNLOADS = set()
+_OWNED_TEMP_DOWNLOADS_LOCK = threading.Lock()
 
 
-def _is_curl_cert_error(err: Exception) -> bool:
+def _needs_gdal_download_fallback(err: Exception) -> bool:
+    if isinstance(err, UnicodeDecodeError):
+        return True
     msg = str(err)
     return "schannel" in msg or "CURL error" in msg
+
+
+def _remove_temp_download(path: str | None) -> None:
+    """删除本模块创建的回退下载文件，不触碰用户提供的本地路径。"""
+    if not path:
+        return
+    candidate = os.path.abspath(path)
+    with _OWNED_TEMP_DOWNLOADS_LOCK:
+        owned = candidate in _OWNED_TEMP_DOWNLOADS
+        _OWNED_TEMP_DOWNLOADS.discard(candidate)
+    if owned:
+        try:
+            os.remove(candidate)
+        except OSError:
+            pass
+
+
+@contextmanager
+def _managed_temp_download(path: str):
+    try:
+        yield path
+    finally:
+        _remove_temp_download(path)
 
 
 def http_download_to_temp(url: str, fmt: str = "") -> str:
@@ -94,13 +127,15 @@ def http_download_to_temp(url: str, fmt: str = "") -> str:
     proxies = get_effective_proxies()
     handler = urllib.request.ProxyHandler(proxies) if proxies else urllib.request.ProxyHandler({})
     opener = urllib.request.build_opener(handler)
+    path = None
+    downloaded = False
     try:
         with opener.open(req, timeout=60) as resp:
             length = int(resp.headers.get("Content-Length") or 0)
             if length > _DOWNLOAD_CAP_BYTES:
                 raise CloudNativeError(
                     f"远程文件 {length / 1e6:.0f}MB 超过下载回退上限 300MB"
-                    "（本机 GDAL 证书受限无法流式读取）")
+                    "（本机 GDAL 网络通道受限，无法流式读取）")
             fd, path = tempfile.mkstemp(suffix=ext, prefix="gis_cloud_")
             with os.fdopen(fd, "wb") as f:
                 while True:
@@ -110,17 +145,26 @@ def http_download_to_temp(url: str, fmt: str = "") -> str:
                     f.write(chunk)
                     if f.tell() > _DOWNLOAD_CAP_BYTES:
                         raise CloudNativeError("下载超过 300MB 上限，已中止")
+        downloaded = True
+        with _OWNED_TEMP_DOWNLOADS_LOCK:
+            _OWNED_TEMP_DOWNLOADS.add(os.path.abspath(path))
         return path
     except CloudNativeError:
         raise
     except Exception as e:
         raise CloudNativeError(f"下载回退失败: {str(e)[:200]}")
+    finally:
+        if path and not downloaded:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 def resolve_vector_source(source: str, fmt: str = "矢量") -> str:
     """矢量数据源解析：优先 /vsicurl/ 流式（元信息探测成功即用），证书受限时回退下载"""
     s_raw = str(source).strip()
-    is_remote = s_raw.startswith(("http://", "https://", "/vsicurl/http://", "/vsicurl/https://"))
+    is_remote = _is_http(s_raw) or s_raw.lower().startswith(("/vsicurl/http://", "/vsicurl/https://"))
     src = _as_vsi_path(source)
     if not is_remote:
         if not os.path.exists(src):
@@ -135,8 +179,8 @@ def resolve_vector_source(source: str, fmt: str = "矢量") -> str:
     except Exception as e:
         # GDAL 网络错误表现不稳定（schannel 证书链 / 间歇性 open 失败），
         # http 源统一尝试 urllib 下载回退；下载也失败则报下载错误
-        http_url = s_raw[len("/vsicurl/"):] if s_raw.startswith("/vsicurl/") else s_raw
-        if _is_curl_cert_error(e):
+        http_url = s_raw[len("/vsicurl/"):] if s_raw.lower().startswith("/vsicurl/") else s_raw
+        if _needs_gdal_download_fallback(e):
             return http_download_to_temp(http_url, fmt)
         try:
             return http_download_to_temp(http_url, fmt)
@@ -160,12 +204,14 @@ def read_cog(source: str, max_size: int = 2048) -> dict:
 
     src_path = _as_vsi_path(source)
     ds = None
+    downloaded_path = None
     try:
         try:
             ds = rasterio.open(src_path)
         except Exception as e:
-            if _is_http(source) and _is_curl_cert_error(e):
-                src_path = http_download_to_temp(str(source).strip(), "tif")
+            if _is_http(source) and _needs_gdal_download_fallback(e):
+                downloaded_path = http_download_to_temp(str(source).strip(), "tif")
+                src_path = downloaded_path
                 ds = rasterio.open(src_path)
             else:
                 raise
@@ -225,6 +271,8 @@ def read_cog(source: str, max_size: int = 2048) -> dict:
         raise
     except Exception as e:
         raise CloudNativeError(f"COG 读取失败: {str(e)[:300]}")
+    finally:
+        _remove_temp_download(downloaded_path)
 
     buf = io.BytesIO()
     png_image.save(buf, format="PNG")
@@ -242,12 +290,14 @@ def cog_info(source: str) -> dict:
 
     src_path = _as_vsi_path(source)
     ds = None
+    downloaded_path = None
     try:
         try:
             ds = rasterio.open(src_path)
         except Exception as e:
-            if _is_http(source) and _is_curl_cert_error(e):
-                src_path = http_download_to_temp(str(source).strip(), "tif")
+            if _is_http(source) and _needs_gdal_download_fallback(e):
+                downloaded_path = http_download_to_temp(str(source).strip(), "tif")
+                src_path = downloaded_path
                 ds = rasterio.open(src_path)
             else:
                 raise
@@ -288,6 +338,8 @@ def cog_info(source: str) -> dict:
         raise
     except Exception as e:
         raise CloudNativeError(f"COG 元信息读取失败: {str(e)[:300]}")
+    finally:
+        _remove_temp_download(downloaded_path)
 
 
 # ============================================================
@@ -301,10 +353,14 @@ class _HttpRangeSource:
         self.url = url.strip()
 
     def get_bytes(self, start: int, length: int) -> bytes:
+        if (isinstance(start, bool) or not isinstance(start, int) or start < 0
+                or isinstance(length, bool) or not isinstance(length, int) or length <= 0):
+            raise CloudNativeError("PMTiles Range 参数无效")
         req = urllib.request.Request(
             self.url,
             headers={
                 "Range": f"bytes={start}-{start + length - 1}",
+                "Accept-Encoding": "identity",
                 "User-Agent": "Gis-WorkTable/1.0",
             },
         )
@@ -313,15 +369,29 @@ class _HttpRangeSource:
         opener = urllib.request.build_opener(handler)
         try:
             with opener.open(req, timeout=30) as resp:
-                return resp.read()
+                if getattr(resp, "status", None) != 206:
+                    raise CloudNativeError("PMTiles 服务器未返回 HTTP 206 Range 分段响应")
+                content_range = resp.headers.get("Content-Range", "")
+                try:
+                    unit, span = content_range.split(" ", 1)
+                    byte_span, _total = span.split("/", 1)
+                    first, last = (int(value) for value in byte_span.split("-", 1))
+                except (ValueError, AttributeError):
+                    raise CloudNativeError("PMTiles Range 响应缺少有效的 Content-Range")
+                if unit.lower() != "bytes" or first != start or last < first or last - first + 1 > length:
+                    raise CloudNativeError("PMTiles Range 响应范围与请求不匹配")
+                data = resp.read(length + 1)
+                if len(data) != last - first + 1:
+                    raise CloudNativeError("PMTiles Range 响应长度与 Content-Range 不匹配")
+                return data
+        except CloudNativeError:
+            raise
         except Exception as e:
             raise CloudNativeError(f"PMTiles 远程读取失败（Range 请求）: {str(e)[:200]}")
 
 
-from contextlib import contextmanager
-
-def _pmtiles_open(source: str, want_handle: bool = False):
-    """打开 PMTiles：本地文件走 mmap，URL 走 HTTP Range。返回 (Reader, header)"""
+def _pmtiles_open(source: str):
+    """打开 PMTiles：本地文件走 mmap，URL 走 HTTP Range。返回 (Reader, header, file_handle)"""
     try:
         from pmtiles.reader import Reader, MmapSource
         from pmtiles.tile import deserialize_header
@@ -340,25 +410,20 @@ def _pmtiles_open(source: str, want_handle: bool = False):
             reader = Reader(MmapSource(f))
         header = deserialize_header(reader.get_bytes(0, 16384))
     except CloudNativeError:
+        if f is not None:
+            f.close()
         raise
     except Exception as e:
-        raise CloudNativeError(f"PMTiles 打开失败: {str(e)[:300]}")
-    # 修复：返回文件句柄供调用方 finally close（原实现泄漏 fd，Windows 反复加载会耗尽句柄）。
-    # want_handle=False 时保持旧的二元组返回（兼容 tools.py / url_gis_service 的既有调用）。
-    if want_handle:
-        return reader, header, f
-    if f is not None:
-        try:
+        if f is not None:
             f.close()
-        except Exception:
-            pass
-    return reader, header
+        raise CloudNativeError(f"PMTiles 打开失败: {str(e)[:300]}")
+    return reader, header, f
 
 
 @contextmanager
 def _pmtiles_reader(source: str):
     """PMTiles Reader 上下文管理器：确保本地文件句柄用后关闭。"""
-    reader, header, fh = _pmtiles_open(source, want_handle=True)
+    reader, header, fh = _pmtiles_open(source)
     try:
         yield reader, header
     finally:
@@ -367,6 +432,12 @@ def _pmtiles_reader(source: str):
                 fh.close()
             except Exception:
                 pass
+
+
+def pmtiles_header(source: str) -> dict:
+    """读取 PMTiles header 的独立副本，不向调用方暴露文件句柄生命周期。"""
+    with _pmtiles_reader(source) as (_, header):
+        return dict(header)
 
 def pmtiles_header_summary(header: dict) -> dict:
     e7 = 1e7
@@ -387,6 +458,17 @@ def pmtiles_header_summary(header: dict) -> dict:
         ],
         "addressed_tiles": header.get("addressed_tiles_count", 0),
     }
+
+
+def _sampling_zoom(summary: dict, preferred: int) -> int:
+    try:
+        min_zoom = int(summary["min_zoom"]) if summary.get("min_zoom") is not None else 0
+        max_zoom = int(summary["max_zoom"]) if summary.get("max_zoom") is not None else 30
+    except (TypeError, ValueError, OverflowError) as e:
+        raise CloudNativeError("PMTiles header 中的 zoom 范围无效") from e
+    if not 0 <= min_zoom <= max_zoom <= 30:
+        raise CloudNativeError("PMTiles header 中的 zoom 范围超出 0 到 30")
+    return max(min_zoom, min(max_zoom, preferred))
 
 
 def pmtiles_info(source: str) -> dict:
@@ -493,6 +575,12 @@ def pmtiles_vector_to_geojson(source: str, max_features: int = 5000,
     以数据中心所在瓦片为起点，同层螺旋扩圈取最多 max_tiles 块瓦片，
     解码 MVT 并转为 WGS84 GeoJSON。返回 (geojson, info)。
     """
+    if isinstance(max_features, bool) or not isinstance(max_features, int) or max_features <= 0:
+        raise CloudNativeError("max_features 必须是正整数")
+    if isinstance(max_tiles, bool) or not isinstance(max_tiles, int) or max_tiles <= 0:
+        raise CloudNativeError("max_tiles 必须是正整数")
+    max_features = min(max_features, 50_000)
+    max_tiles = min(max_tiles, 256)
     with _pmtiles_reader(source) as (reader, header):
         if int(header.get("tile_type", 0).value if hasattr(header.get("tile_type", 0), "value") else header.get("tile_type", 0)) != 1:  # TileType.MVT
             raise CloudNativeError(
@@ -501,12 +589,13 @@ def pmtiles_vector_to_geojson(source: str, max_features: int = 5000,
 
         summary = pmtiles_header_summary(header)
         lon_c, lat_c = summary["center"][0], summary["center"][1]
-        z = max(int(summary["min_zoom"] or 0), min(int(summary["max_zoom"] or 10), 10))
+        z = _sampling_zoom(summary, 10)
         cx, cy = _deg2tile(lon_c, lat_c, z)
 
         collected = []
         seen_layers = set()
         seen_tiles = set()
+        attempted_tiles = 0
         n = 2 ** z
 
         # 螺旋扩圈：先中心，再 1 圈、2 圈……（Chebyshev 距离）
@@ -517,13 +606,14 @@ def pmtiles_vector_to_geojson(source: str, max_features: int = 5000,
                                if max(abs(dx), abs(dy)) == radius])
 
         for dx, dy in candidates:
-            if len(collected) >= max_features or len(seen_tiles) >= max_tiles:
+            if len(collected) >= max_features or attempted_tiles >= max_tiles:
                 break
             tx, ty = cx + dx, cy + dy
             if tx < 0 or ty < 0 or tx >= n or ty >= n:
                 continue
             if (tx, ty) in seen_tiles:
                 continue
+            attempted_tiles += 1
             try:
                 tile_bytes = reader.get(z, tx, ty)
             except CloudNativeError:
@@ -554,7 +644,7 @@ def pmtiles_vector_to_geojson(source: str, max_features: int = 5000,
 
 
 def pmtiles_raster_tile_bounds(source: str):
-    """栅格 PMTiles：取中心瓦片 PNG/JPEG 字节 + 其 WGS84 边界，供影像叠加。返回 (bytes, bounds, fmt)"""
+    """取栅格 PMTiles 中心瓦片，返回 (bytes, bounds, fmt, header_summary)。"""
     with _pmtiles_reader(source) as (reader, header):
         ttype = header.get("tile_type", 0)
         ttype = int(ttype.value) if hasattr(ttype, "value") else int(ttype)
@@ -562,7 +652,7 @@ def pmtiles_raster_tile_bounds(source: str):
             raise CloudNativeError(f"该 PMTiles 不是栅格瓦片（tile_type={header.get('tile_type')}）")
         summary = pmtiles_header_summary(header)
         lon_c, lat_c = summary["center"][0], summary["center"][1]
-        z = min(int(summary["max_zoom"] or 8), 12)
+        z = _sampling_zoom(summary, 12)
         x, y = _deg2tile(lon_c, lat_c, z)
         tile_bytes = reader.get(z, x, y)
         if not tile_bytes:
@@ -586,6 +676,22 @@ def _tile_bounds(z: int, x: int, y: int):
 # ============================================================
 
 _CLOUD_VECTOR_LIMIT_DEFAULT = 50000
+
+
+def _bbox_to_source_crs(bbox, source_crs):
+    """把公开接口的 WGS84 bbox 转为数据源 CRS，供 GDAL/GeoParquet 过滤使用。"""
+    if bbox is None:
+        return None
+    if not source_crs or str(source_crs).strip().lower() in {"未知", "unknown", "none"}:
+        raise CloudNativeError("数据源未声明坐标系，无法安全应用 WGS84 bbox 过滤")
+    try:
+        from pyproj import CRS, Transformer
+        transformer = Transformer.from_crs(
+            CRS.from_epsg(4326), CRS.from_user_input(source_crs), always_xy=True
+        )
+        return transformer.transform_bounds(*bbox, densify_pts=21)
+    except Exception as e:
+        raise CloudNativeError(f"bbox 转换到数据源坐标系失败: {str(e)[:250]}") from e
 
 
 def _gdal_has_parquet_driver() -> bool:
@@ -616,6 +722,11 @@ def cloud_vector_metadata(source: str, fmt: str) -> dict:
     except ImportError as e:
         raise CloudNativeError(f"缺少依赖: {e}，请安装 pyogrio")
     src_path = resolve_vector_source(source, fmt)
+    with _managed_temp_download(src_path):
+        return _cloud_vector_metadata_from_path(src_path, fmt, pyogrio)
+
+
+def _cloud_vector_metadata_from_path(src_path: str, fmt: str, pyogrio) -> dict:
     try:
         info = pyogrio.read_info(src_path)
     except CloudNativeError:
@@ -637,11 +748,17 @@ def cloud_vector_metadata(source: str, fmt: str) -> dict:
 def _geoparquet_metadata_pyarrow(source: str) -> dict:
     """GeoParquet 元信息（pyarrow 通道）：行数 + GeoParquet 列元数据"""
     try:
-        import pyarrow.parquet as pq
+        import pyarrow.parquet  # noqa: F401
     except ImportError as e:
         raise CloudNativeError(f"缺少依赖: {e}，请安装 pyarrow")
     path = _geoparquet_local_path(source)
+    with _managed_temp_download(path):
+        return _geoparquet_metadata_pyarrow_from_path(path)
+
+
+def _geoparquet_metadata_pyarrow_from_path(path: str) -> dict:
     try:
+        import pyarrow.parquet as pq
         pf = pq.ParquetFile(path)
         num_rows = int(pf.metadata.num_rows)
         geo = {}
@@ -650,13 +767,17 @@ def _geoparquet_metadata_pyarrow(source: str) -> dict:
         if raw:
             geo = json.loads(raw.decode("utf-8"))
         primary = geo.get("primary_column", "geometry")
+        column_meta = geo.get("columns", {}).get(primary, {})
+        crs = column_meta.get("crs")
+        if isinstance(crs, dict):
+            crs = json.dumps(crs)
         fields = [f for f in pf.schema_arrow.names if f != primary][:20]
         return {
             "features": num_rows,
-            "crs": str(geo.get("columns", {}).get(primary, {}).get("crs") or "未知")[:80],
-            "geometry_type": str(geo.get("columns", {}).get(primary, {}).get("geometry_type") or "未知"),
+            "crs": str(crs or "未知"),
+            "geometry_type": str(column_meta.get("geometry_type") or "未知"),
             "fields": fields,
-            "bbox_native": geo.get("columns", {}).get(primary, {}).get("bbox"),
+            "bbox_native": column_meta.get("bbox"),
             "engine": "pyarrow",
         }
     except CloudNativeError:
@@ -677,9 +798,13 @@ def cloud_vector_to_geojson(source: str, fmt: str, bbox=None, limit: int = 0) ->
         import pyogrio
     except ImportError as e:
         raise CloudNativeError(f"缺少依赖: {e}，请安装 pyogrio")
-
     src_path = resolve_vector_source(source, fmt)
-    meta = cloud_vector_metadata(src_path, fmt)
+    with _managed_temp_download(src_path):
+        return _cloud_vector_to_geojson_from_path(src_path, fmt, bbox, limit, pyogrio)
+
+
+def _cloud_vector_to_geojson_from_path(src_path: str, fmt: str, bbox, limit: int, pyogrio) -> tuple:
+    meta = _cloud_vector_metadata_from_path(src_path, fmt, pyogrio)
     total = meta["features"]
 
     if limit and limit > 0:
@@ -696,7 +821,7 @@ def cloud_vector_to_geojson(source: str, fmt: str, bbox=None, limit: int = 0) ->
 
     kwargs = {}
     if bbox is not None:
-        kwargs["bbox"] = bbox
+        kwargs["bbox"] = _bbox_to_source_crs(bbox, meta.get("crs"))
     if max_features:
         kwargs["max_features"] = max_features
     try:
@@ -714,9 +839,18 @@ def _geoparquet_to_geojson_pyarrow(source: str, bbox=None, limit: int = 0) -> tu
         import geopandas as gpd
     except ImportError as e:
         raise CloudNativeError(f"缺少依赖: {e}，请安装 geopandas pyarrow")
+    try:
+        import pyarrow.parquet  # noqa: F401
+    except ImportError as e:
+        raise CloudNativeError(f"缺少依赖: {e}，请安装 geopandas pyarrow")
 
     path = _geoparquet_local_path(source)
-    meta = _geoparquet_metadata_pyarrow(path)
+    with _managed_temp_download(path):
+        return _geoparquet_to_geojson_pyarrow_from_path(path, bbox, limit, gpd)
+
+
+def _geoparquet_to_geojson_pyarrow_from_path(path: str, bbox, limit: int, gpd) -> tuple:
+    meta = _geoparquet_metadata_pyarrow_from_path(path)
     total = meta["features"]
 
     if limit and limit > 0:
@@ -730,18 +864,68 @@ def _geoparquet_to_geojson_pyarrow(source: str, bbox=None, limit: int = 0) -> tu
             f"该 GeoParquet 共 {total} 个要素，超过单次加载上限 {max_features}。"
             "请带 bbox 参数做空间过滤（minx,miny,maxx,maxy），或显式传较小的 limit")
 
-    kwargs = {}
-    if bbox is not None:
-        kwargs["bbox"] = bbox
+    if total > max_features:
+        gdf = _read_geoparquet_batches(path, bbox, meta, max_features, gpd)
+    else:
+        kwargs = {}
+        if bbox is not None:
+            kwargs["bbox"] = _bbox_to_source_crs(bbox, meta.get("crs"))
+        try:
+            gdf = gpd.read_parquet(path, **kwargs)
+        except CloudNativeError:
+            raise
+        except Exception as e:
+            raise CloudNativeError(f"GeoParquet 读取失败: {str(e)[:300]}")
+    return _gdf_to_geojson_result(gdf, meta, "GeoParquet", bbox)
+
+
+def _read_geoparquet_batches(path: str, bbox, meta: dict, limit: int, gpd):
+    """按批读取 GeoParquet WKB 几何，限制峰值内存和返回要素数。"""
     try:
-        gdf = gpd.read_parquet(path, **kwargs)
+        import pandas as pd
+        import pyarrow.parquet as pq
+        from shapely.geometry import box
+
+        parquet = pq.ParquetFile(path)
+        raw_geo = (parquet.schema_arrow.metadata or {}).get(b"geo")
+        geo = json.loads(raw_geo.decode("utf-8")) if raw_geo else {}
+        primary = geo.get("primary_column", "geometry")
+        column_meta = geo.get("columns", {}).get(primary, {})
+        if (column_meta.get("encoding") or "WKB").upper() != "WKB":
+            raise CloudNativeError("GeoParquet 几何编码不是 WKB，当前无法安全分批读取。")
+        if primary not in parquet.schema_arrow.names:
+            raise CloudNativeError("GeoParquet 缺少主几何列，无法分批读取。")
+
+        crs = meta.get("crs")
+        if crs == "未知":
+            crs = None
+        source_bounds = _bbox_to_source_crs(bbox, crs) if bbox is not None else None
+        query_geometry = box(*source_bounds) if source_bounds is not None else None
+        frames = []
+        remaining = limit
+        for batch in parquet.iter_batches(batch_size=min(max(1, limit), 4096)):
+            frame = batch.to_pandas()
+            geometry_wkb = frame.pop(primary)
+            geometry = gpd.GeoSeries.from_wkb(geometry_wkb, crs=crs).rename("geometry")
+            part = gpd.GeoDataFrame(frame, geometry=geometry, crs=crs)
+            if query_geometry is not None:
+                intersects = part.geometry.notna() & part.geometry.intersects(query_geometry)
+                part = part.loc[intersects]
+            if len(part) > remaining:
+                part = part.head(remaining)
+            if not part.empty:
+                frames.append(part)
+                remaining -= len(part)
+            if remaining <= 0:
+                break
+
+        if not frames:
+            return gpd.GeoDataFrame(geometry=gpd.GeoSeries([], crs=crs), crs=crs)
+        return gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry", crs=crs)
     except CloudNativeError:
         raise
     except Exception as e:
-        raise CloudNativeError(f"GeoParquet 读取失败: {str(e)[:300]}")
-    if max_features and len(gdf) > max_features:
-        gdf = gdf.head(max_features)
-    return _gdf_to_geojson_result(gdf, meta, "GeoParquet", bbox)
+        raise CloudNativeError(f"GeoParquet 分批读取失败: {str(e)[:300]}") from e
 
 
 def _gdf_to_geojson_result(gdf, meta: dict, fmt: str, bbox) -> tuple:
@@ -761,13 +945,15 @@ def _gdf_to_geojson_result(gdf, meta: dict, fmt: str, bbox) -> tuple:
     # GeoParquet/FGB 可能不是 4326：非 4326 时重投影，保证上图正确
     try:
         crs = gdf.crs
-        if crs is not None and crs.to_epsg() not in (4326, None):
+        if crs is None:
+            raise CloudNativeError(f"{fmt} 未声明坐标系，无法安全转换为 WGS84")
+        if crs.to_epsg() != 4326:
             gdf4326 = gdf.to_crs(4326)
             geojson = json.loads(gdf4326.to_json(na="null", show_bbox=False))
             meta["geometry_reprojected"] = True
             meta["crs"] = str(crs.to_string())
     except CloudNativeError:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        raise CloudNativeError(f"{fmt} 坐标系转换到 WGS84 失败: {str(e)[:250]}") from e
     return geojson, meta

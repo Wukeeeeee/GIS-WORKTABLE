@@ -23,6 +23,8 @@ import os
 import json
 import threading
 import datetime
+import hashlib
+from contextvars import ContextVar
 
 # 与 ai_service 的对话历史同一目录（cache/history/）
 _STORE_DIR = os.path.join(
@@ -31,14 +33,27 @@ _STORE_DIR = os.path.join(
 
 _lock = threading.Lock()
 _memory: dict = {}          # session_id -> action dict | None（未加载过则不在此）
-_active_session = "default"  # 供无 session 上下文的 @tool 使用（本工具多数无会话参数）
+_active_session = ContextVar("pending_action_active_session", default="default")
+
+
+def _session_key(session_id: str) -> str:
+    """Keep distinct caller ids distinct in the in-memory session map."""
+    return str(session_id or "default")
+
+
+def _legacy_sidecar_path(session_id: str) -> str:
+    from backend.services.ai_service import _sanitize_session_id
+    return os.path.join(_STORE_DIR, f"session_{_sanitize_session_id(session_id)}_pending.json")
 
 
 def _sidecar_path(session_id: str) -> str:
-    # session_id 白名单清洗（防路径污染）
+    sid = _session_key(session_id)
     from backend.services.ai_service import _sanitize_session_id
-    _sid = _sanitize_session_id(session_id)
-    return os.path.join(_STORE_DIR, f"session_{_sid}_pending.json")
+    safe_sid = _sanitize_session_id(sid)
+    if safe_sid != sid:
+        suffix = hashlib.sha256(sid.encode("utf-8")).hexdigest()[:12]
+        safe_sid = f"{safe_sid}_{suffix}"
+    return os.path.join(_STORE_DIR, f"session_{safe_sid}_pending.json")
 
 
 def _now() -> str:
@@ -50,12 +65,11 @@ def _now() -> str:
 # ============================================================
 
 def set_active_session(session_id: str):
-    global _active_session
-    _active_session = session_id or "default"
+    _active_session.set(_session_key(session_id))
 
 
 def get_active_session() -> str:
-    return _active_session
+    return _active_session.get()
 
 
 # ============================================================
@@ -67,14 +81,21 @@ def _load_locked(session_id: str):
     if session_id in _memory:
         return _memory[session_id]
     path = _sidecar_path(session_id)
+    legacy_path = _legacy_sidecar_path(session_id)
+    if not os.path.exists(path) and legacy_path != path and os.path.exists(legacy_path):
+        path = legacy_path
     data = None
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if not isinstance(data, dict):
+                data = None
         except Exception:
             data = None
     _memory[session_id] = data
+    if data is not None and path != _sidecar_path(session_id):
+        _save_locked(session_id)
     return data
 
 
@@ -84,14 +105,18 @@ def _save_locked(session_id: str):
     data = _memory.get(session_id)
     try:
         if data is None:
-            if os.path.exists(path):
-                os.remove(path)
+            for candidate in {path, _sidecar_path(session_id), _legacy_sidecar_path(session_id)}:
+                if os.path.exists(candidate):
+                    os.remove(candidate)
         else:
             # 原子写入：先写临时文件再替换，避免断电/中断留下半截 JSON
             tmp_path = path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             os.replace(tmp_path, path)
+            legacy_path = _legacy_sidecar_path(session_id)
+            if legacy_path != path and os.path.exists(legacy_path):
+                os.remove(legacy_path)
     except Exception as e:
         import sys
         print(f"[pending_action] sidecar 写入失败 {session_id}: {e}", file=sys.stderr)
@@ -99,13 +124,14 @@ def _save_locked(session_id: str):
 
 def get_pending_action(session_id: str = "default") -> dict | None:
     """返回当前待办动作（dict）或 None。"""
+    sid = _session_key(session_id)
     with _lock:
-        return _load_locked(session_id or "default")
+        return _load_locked(sid)
 
 
 def set_pending_action(session_id: str, action: dict) -> dict:
     """写入待办动作；若 action 无 created_at 自动补。返回 action。"""
-    sid = session_id or "default"
+    sid = _session_key(session_id)
     if not isinstance(action, dict):
         raise ValueError("pending action 必须是 dict")
     action.setdefault("created_at", _now())
@@ -118,26 +144,10 @@ def set_pending_action(session_id: str, action: dict) -> dict:
 
 def clear_pending_action(session_id: str = "default"):
     """清除待办动作（用户“取消”/确认执行成功后 / 清空记忆时调用）。"""
-    sid = session_id or "default"
+    sid = _session_key(session_id)
     with _lock:
         _memory[sid] = None
         _save_locked(sid)
-
-
-def pending_action_snapshot() -> dict:
-    """供调试/日志：所有会话的 pending 摘要（不含 geojson 本体，太长）。"""
-    out = {}
-    for sid in list(_memory.keys()):
-        act = _memory.get(sid)
-        if not act:
-            continue
-        out[sid] = {
-            "action": act.get("action"),
-            "summary": act.get("summary", "")[:60],
-            "layers": [l.get("name") for l in (act.get("layers") or [])],
-            "created_at": act.get("created_at"),
-        }
-    return out
 
 
 def build_choice_backfill(session_id: str, message: str) -> str | None:
@@ -158,7 +168,8 @@ def build_choice_backfill(session_id: str, message: str) -> str | None:
         return None
     if not action or action.get("action") != "choose_option":
         return None
-    context = (action.get("context") or "").strip()
+    context = action.get("context")
+    context = context.strip() if isinstance(context, str) else ""
     if not context:
         return None
     return (
@@ -173,10 +184,17 @@ def describe_action(action: dict) -> dict | None:
     """给前端渲染「继续/取消」或「选项按钮」用的轻量描述（不含 geojson 本体）。"""
     if not isinstance(action, dict):
         return None
+    summary = action.get("summary")
+    layers = action.get("layers")
+    if not isinstance(summary, str):
+        summary = ""
+    if not isinstance(layers, list):
+        layers = []
     result = {
         "action": action.get("action", ""),
-        "summary": action.get("summary", "")[:200],
-        "layer_names": [l.get("name") for l in (action.get("layers") or []) if l.get("name")],
+        "summary": summary[:200],
+        "layer_names": [l.get("name") for l in layers
+                        if isinstance(l, dict) and isinstance(l.get("name"), str) and l.get("name")],
     }
     # choose_option 动作：返回选项列表供前端渲染按钮组
     if action.get("action") == "choose_option":
@@ -262,12 +280,18 @@ def run_action(action: dict) -> dict | None:
     支持动作：
     - load_layer：把 action.layers 里每个图层注册并推送到地图（register + push）。
     """
-    act = (action or {}).get("action")
+    if not isinstance(action, dict):
+        return None
+    act = action.get("action")
     if act == "load_layer":
         layers = action.get("layers") or []
+        if not isinstance(layers, list):
+            return None
         _tools = _registry()
         loaded = []
         for lyr in layers:
+            if not isinstance(lyr, dict):
+                continue
             name = lyr.get("name") or ""
             if not name:
                 continue
@@ -311,7 +335,7 @@ def promote_registered_undisplayed(session_id: str, start_registered_names, push
     - start_registered_names: 本轮开始前已注册的图层名集合
     - pushed_layer_names: 本轮已推送到地图的图层名集合（已在 done 里展示的不再挂起）
     """
-    sid = session_id or "default"
+    sid = _session_key(session_id)
     with _lock:
         existing = _load_locked(sid)
     if existing:

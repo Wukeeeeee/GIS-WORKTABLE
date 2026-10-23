@@ -10,11 +10,14 @@
 """
 import os
 import json
+import tempfile
+import threading
 from cryptography.fernet import Fernet
 
 _CRED_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "cache", "credentials")
 _KEY_FILE = os.path.join(_CRED_DIR, ".key")
 _CRED_FILE = os.path.join(_CRED_DIR, "credentials.enc")
+_CRED_LOCK = threading.RLock()
 
 
 def _ensure_dir():
@@ -23,18 +26,18 @@ def _ensure_dir():
 
 def _get_or_create_key() -> bytes:
     """获取或生成加密密钥（存在本地，仅本机可用）"""
-    _ensure_dir()
-    if os.path.exists(_KEY_FILE):
-        with open(_KEY_FILE, "rb") as f:
-            return f.read()
-    key = Fernet.generate_key()
-    with open(_KEY_FILE, "wb") as f:
-        f.write(key)
-    try:
-        os.chmod(_KEY_FILE, 0o600)
-    except Exception:
-        pass
-    return key
+    with _CRED_LOCK:
+        _ensure_dir()
+        if os.path.exists(_KEY_FILE):
+            with open(_KEY_FILE, "rb") as f:
+                return f.read()
+        key = Fernet.generate_key()
+        _write_atomic(_KEY_FILE, key)
+        try:
+            os.chmod(_KEY_FILE, 0o600)
+        except OSError:
+            pass
+        return key
 
 
 def _get_fernet() -> Fernet:
@@ -45,34 +48,56 @@ def save_credential(service: str, username: str, password: str, extra: dict = No
     """保存凭据（加密存储）。供后端 API 调用，Agent 不可调用。"""
     if not service or not username:
         return False
-    _ensure_dir()
-    try:
-        creds = _load_all()
-        entry = {"username": username, "password": password}
-        if extra:
-            entry.update(extra)
-        creds[service] = entry
-        fernet = _get_fernet()
-        encrypted = fernet.encrypt(json.dumps(creds, ensure_ascii=False).encode("utf-8"))
-        with open(_CRED_FILE, "wb") as f:
-            f.write(encrypted)
-        return True
-    except Exception:
-        return False
+    with _CRED_LOCK:
+        _ensure_dir()
+        try:
+            creds = _load_all(strict=True)
+            entry = dict(extra or {})
+            # Explicit arguments are authoritative and cannot be overwritten by extras.
+            entry.update({"username": username, "password": password})
+            creds[service] = entry
+            fernet = _get_fernet()
+            encrypted = fernet.encrypt(json.dumps(creds, ensure_ascii=False).encode("utf-8"))
+            _write_atomic(_CRED_FILE, encrypted)
+            return True
+        except Exception:
+            return False
 
 
-def _load_all() -> dict:
+def _load_all(strict: bool = False) -> dict:
     """加载所有凭据（内部函数，不暴露给 Agent）"""
-    if not os.path.exists(_CRED_FILE):
-        return {}
+    with _CRED_LOCK:
+        if not os.path.exists(_CRED_FILE):
+            return {}
+        try:
+            with open(_CRED_FILE, "rb") as f:
+                encrypted = f.read()
+            fernet = _get_fernet()
+            decrypted = fernet.decrypt(encrypted)
+            data = json.loads(decrypted.decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("凭据文件内容不是对象")
+            return data
+        except Exception:
+            if strict:
+                raise
+            return {}
+
+
+def _write_atomic(path: str, content: bytes) -> None:
+    """在凭据目录内写临时文件并替换，避免并发/中断留下半份密文或密钥。"""
+    fd, tmp_path = tempfile.mkstemp(prefix=".credential_", dir=_CRED_DIR)
     try:
-        with open(_CRED_FILE, "rb") as f:
-            encrypted = f.read()
-        fernet = _get_fernet()
-        decrypted = fernet.decrypt(encrypted)
-        return json.loads(decrypted.decode("utf-8"))
-    except Exception:
-        return {}
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 def get_credential(service: str) -> dict | None:
@@ -98,15 +123,15 @@ def get_configured_services() -> list:
 
 def delete_credential(service: str) -> bool:
     """删除指定服务的凭据。供后端 API 调用，Agent 不可调用。"""
-    creds = _load_all()
-    if service in creds:
-        del creds[service]
+    with _CRED_LOCK:
         try:
+            creds = _load_all(strict=True)
+            if service not in creds:
+                return False
+            del creds[service]
             fernet = _get_fernet()
             encrypted = fernet.encrypt(json.dumps(creds, ensure_ascii=False).encode("utf-8"))
-            with open(_CRED_FILE, "wb") as f:
-                f.write(encrypted)
+            _write_atomic(_CRED_FILE, encrypted)
             return True
         except Exception:
             return False
-    return False

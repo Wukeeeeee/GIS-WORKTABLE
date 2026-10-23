@@ -10,9 +10,7 @@ window.GIS = window.GIS || {};
   'use strict';
 
   var GIS = window.GIS;
-  var _active = false;
   var _initialized = false;
-  var METERS_PER_DEGREE = 111320;
 
   var OPS = [
     { id: 'slope', label: '坡度分析', tool: 'dem_analysis', args: { analysis: 'slope' }, layerHint: 'DEM 栅格' },
@@ -190,7 +188,6 @@ window.GIS = window.GIS || {};
   }
 
   function activate() {
-    if (_active) return;
     init();
     var container = document.getElementById('rasterToolsPanelContainer');
     if (!container) return;
@@ -198,17 +195,11 @@ window.GIS = window.GIS || {};
     if (GIS.workspace) GIS.workspace.expandPanel('rasterToolsPanel');
     _refreshLayers();
     _centerPanel(container);
-    _active = true;
   }
 
   function deactivate() {
-    _active = false;
     var container = document.getElementById('rasterToolsPanelContainer');
     if (container) container.style.display = 'none';
-  }
-
-  function toggle() {
-    if (_active) { deactivate(); } else { activate(); }
   }
 
   function openWith(opId) {
@@ -347,8 +338,7 @@ window.GIS = window.GIS || {};
 
   function _centerPanel(container) {
     if (GIS.workspace) {
-      var pos = GIS.workspace.centerPanel(container, 380);
-      _lastLeft = pos[0]; _lastTop = pos[1];
+      GIS.workspace.centerPanel(container, 380);
       return;
     }
     var vw = window.innerWidth;
@@ -362,9 +352,7 @@ window.GIS = window.GIS || {};
     container.style.left = coords[0] + 'px';
     container.style.top = coords[1] + 'px';
     container.style.transform = 'none';
-    _lastLeft = coords[0]; _lastTop = coords[1];
   }
-  var _lastLeft = NaN, _lastTop = NaN;
 
   function _initDrag(container) {
     var header = document.getElementById('rasterToolsToolbar');
@@ -384,7 +372,6 @@ window.GIS = window.GIS || {};
       var c = _clampToMapArea(container, startLeft + ev.clientX - startX, startTop + ev.clientY - startY);
       container.style.left = c[0] + 'px';
       container.style.top = c[1] + 'px';
-      _lastLeft = c[0]; _lastTop = c[1];
     }
     function onEnd() {
       document.removeEventListener('mousemove', onMove);
@@ -474,5 +461,5 @@ window.GIS = window.GIS || {};
     return _invoke(op.tool, finalArgs);
   }
 
-  GIS.rasterTools = { init: init, activate: activate, deactivate: deactivate, toggle: toggle, openWith: openWith };
+  GIS.rasterTools = { openWith: openWith };
 })();

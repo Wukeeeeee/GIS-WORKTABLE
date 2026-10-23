@@ -14,8 +14,6 @@ from __future__ import annotations
 import math
 
 import geopandas as gpd
-import numpy as np
-from shapely.geometry import box
 
 
 # 阈值：块段（坐标点数）或要素数超限时走分批路径
@@ -34,13 +32,13 @@ def _geom_segments(geom) -> int:
         return len(geom.coords)
     if gt == "Polygon":
         return len(geom.exterior.coords) + sum(len(r.coords) for r in geom.interiors)
-    if gt.startswith("Multi"):
+    if gt.startswith("Multi") or gt == "GeometryCollection":
         return sum(_geom_segments(g) for g in geom.geoms)
     return 1
 
 
 def repair_geometry(gdf: gpd.GeoDataFrame):
-    """修复无效几何并丢弃空几何。
+    """修复无效几何并丢弃空几何或无法修复的无效几何。
 
     返回 (new_gdf, stats)，stats = {"repaired": n, "dropped": n}。
     无效几何先试 geom.buffer(0)（shapely 经典自交修法），
@@ -50,7 +48,7 @@ def repair_geometry(gdf: gpd.GeoDataFrame):
         return gdf, {"repaired": 0, "dropped": 0}
     repaired = 0
     dropped = 0
-    keep_idx = []
+    keep_positions = []
     new_geoms = []
     valid_mask = gdf.geometry.is_valid
     for idx, (geom, ok) in enumerate(zip(gdf.geometry, valid_mask)):
@@ -58,7 +56,7 @@ def repair_geometry(gdf: gpd.GeoDataFrame):
             dropped += 1
             continue
         if ok:
-            keep_idx.append(gdf.index[idx])
+            keep_positions.append(idx)
             new_geoms.append(geom)
             continue
         try:
@@ -67,13 +65,13 @@ def repair_geometry(gdf: gpd.GeoDataFrame):
             fixed = None
         if fixed is not None and not fixed.is_empty and fixed.is_valid:
             repaired += 1
-            keep_idx.append(gdf.index[idx])
+            keep_positions.append(idx)
             new_geoms.append(fixed)
         else:
             dropped += 1
-    if not keep_idx:
+    if not keep_positions:
         return gdf.iloc[0:0], {"repaired": repaired, "dropped": dropped}
-    out = gdf.loc[keep_idx].copy()
+    out = gdf.iloc[keep_positions].copy()
     out.geometry = new_geoms
     return out, {"repaired": repaired, "dropped": dropped}
 
@@ -91,57 +89,40 @@ def estimate_tier(gdf: gpd.GeoDataFrame) -> dict:
     return {"features": n, "segments": segs, "tier": tier}
 
 
-def _dedupe_by_geometry(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """按几何 WKB 去重（分批边界左右产生重复要素）。"""
-    if gdf is None or len(gdf) == 0:
-        return gdf
-    try:
-        wkb = gdf.geometry.apply(lambda g: g.wkb if g is not None else b"")
-        return gdf.loc[~wkb.duplicated(keep="first")].copy()
-    except Exception:
-        return gdf
-
-
 def chunked_overlay(gdf_a: gpd.GeoDataFrame, gdf_b: gpd.GeoDataFrame, op, chunk_cells: int = 4):
-    """分批 overlay：把 gdf_a 范围切成 chunk_cells x chunk_cells 网格，
-    逐格取两边的 envelope 相交子集调 op，最后 concat + 去重。
+    """分批处理 gdf_a，每批都与完整 gdf_b 执行 op，最后合并结果。
 
-    单格失败不弹全局；全部失败才 raise。
+    单批失败不弹全局；全部失败才 raise。
     返回 (result_gdf, stats)，stats = {"cells", "ok_cells", "failed_cells"}。
+    cells 表示分批数。不要按空间网格筛整条几何：difference 等非对称操作会因此重复
+    输出未扣除的完整要素。
     """
+    if chunk_cells < 1:
+        raise ValueError("chunk_cells 必须大于 0")
     if gdf_a is None or len(gdf_a) == 0:
         return gdf_a, {"cells": 0, "ok_cells": 0, "failed_cells": 0}
-    minx, miny, maxx, maxy = gdf_a.total_bounds
-    dx = (maxx - minx) / chunk_cells or 1e-12
-    dy = (maxy - miny) / chunk_cells or 1e-12
+    batch_count = min(chunk_cells, len(gdf_a))
+    batch_size = math.ceil(len(gdf_a) / batch_count)
+    batch_count = math.ceil(len(gdf_a) / batch_size)
     parts = []
     ok_cells = 0
     failed_cells = 0
-    for i in range(chunk_cells):
-        for j in range(chunk_cells):
-            cell = box(minx + i * dx, miny + j * dy,
-                       minx + (i + 1) * dx, miny + (j + 1) * dy)
-            sub_a = gdf_a[gdf_a.geometry.intersects(cell)]
-            if len(sub_a) == 0:
-                continue
-            if gdf_b is None or len(gdf_b) == 0:
-                sub_b = gdf_b
-            else:
-                sub_b = gdf_b[gdf_b.geometry.intersects(cell)]
-                if len(sub_b) == 0:
-                    continue
-            try:
-                res = op(sub_a, sub_b)
-                if res is not None and len(res):
-                    parts.append(res)
-                ok_cells += 1
-            except Exception:
-                failed_cells += 1
-    cells = chunk_cells * chunk_cells
+    for start in range(0, len(gdf_a), batch_size):
+        sub_a = gdf_a.iloc[start:start + batch_size]
+        try:
+            res = op(sub_a, gdf_b)
+            if res is not None and len(res):
+                parts.append(res)
+            ok_cells += 1
+        except Exception:
+            failed_cells += 1
+    cells = batch_count
+    if not parts and failed_cells:
+        raise RuntimeError(f"分批处理未产生结果且有批次失败（{failed_cells}/{cells} 批失败）")
     if not parts:
-        raise RuntimeError(f"分批处理全部失败（{cells} 格均错）")
-    merged = _dedupe_by_geometry(gpd.GeoDataFrame(
-        __import__("pandas").concat(parts, ignore_index=True), crs=gdf_a.crs))
+        return gdf_a.iloc[0:0].copy(), {"cells": cells, "ok_cells": ok_cells, "failed_cells": failed_cells}
+    merged = gpd.GeoDataFrame(
+        __import__("pandas").concat(parts, ignore_index=True), crs=gdf_a.crs)
     return merged, {"cells": cells, "ok_cells": ok_cells, "failed_cells": failed_cells}
 
 
@@ -151,12 +132,12 @@ def robust_note(rstats: dict, tier: dict, chunk_stats: dict = None) -> str:
     if rstats.get("repaired"):
         bits.append(f"已自动修复 {rstats['repaired']} 个无效几何")
     if rstats.get("dropped"):
-        bits.append(f"丢弃 {rstats['dropped']} 个空几何")
+        bits.append(f"丢弃 {rstats['dropped']} 个空或无法修复的无效几何")
     if chunk_stats is not None:
         bits.append(f"已启用分批处理（{tier['segments']} 块段，"
-                    f"{chunk_stats['ok_cells']}/{chunk_stats['cells']} 格成功）")
+                    f"{chunk_stats['ok_cells']}/{chunk_stats['cells']} 批成功）")
         if chunk_stats["failed_cells"]:
-            bits.append(f"{chunk_stats['failed_cells']} 格失败已跳过")
+            bits.append(f"{chunk_stats['failed_cells']} 批失败已跳过")
     elif tier.get("tier") == "chunked":
-        bits.append(f"已启用分批处理（{tier['segments']} 块段）")
+        bits.append(f"输入规模较大（{tier['segments']} 块段）")
     return ("（" + "；".join(bits) + "）") if bits else ""

@@ -15,12 +15,14 @@
 from __future__ import annotations
 
 import os
+import math
 from typing import Optional
 
 from backend.services.data_providers import http, geocode
 from backend.services.data_providers.base import DataProvider
 from backend.services.data_providers.errors import (
     DataNotFoundError,
+    DataValidationError,
     DataProviderError,
     DownloadTimeoutError,
     ProviderUnavailableError,
@@ -139,11 +141,22 @@ class OpenStreetMapProvider(DataProvider):
         last = None
         for url in self._endpoints():
             try:
-                return http.post_overpass(query, url, retries=OVERPASS_RETRIES)
+                response = http.post_overpass(query, url, retries=OVERPASS_RETRIES)
+                if not isinstance(response, dict):
+                    raise DataValidationError("Overpass 返回的数据结构无效。", provider=self.provider_id)
+                return response
             except DownloadTimeoutError as e:
                 last = e
             except ProviderUnavailableError as e:
                 last = e
+            except DataValidationError as e:
+                last = e
+        if isinstance(last, DataValidationError):
+            raise DataValidationError(
+                "所有 Overpass 镜像均返回了无法使用的数据。",
+                provider=self.provider_id,
+                hint="数据源响应格式异常，请稍后重试。",
+            ) from last
         if isinstance(last, DownloadTimeoutError):
             raise DownloadTimeoutError(
                 "所有 Overpass 镜像均请求超时。",
@@ -173,19 +186,28 @@ class OpenStreetMapProvider(DataProvider):
                 f"OSM 不支持该要素类型，可选：{', '.join(VECTOR_KINDS)}。", provider=self.provider_id)
         bbox = self._bbox(request)
         q = self._build_query(self._selectors(request.kind), bbox, count=True)
-        try:
-            resp = self._overpass(q)
-        except (ProviderUnavailableError, DownloadTimeoutError) as e:
-            raise e
+        resp = self._overpass(q)
 
         # out count 返回 elements:[{"type":"count","tags":{...}}]
-        counts = {}
-        for el in (resp.get("elements") or []):
+        elements = resp.get("elements") or []
+        if not isinstance(elements, list):
+            raise DataValidationError("Overpass 返回的计数列表无效。", provider=self.provider_id)
+        counts = None
+        for el in elements:
+            if not isinstance(el, dict):
+                continue
             if el.get("type") == "count":
-                counts = el.get("tags") or {}
-        ways = int(counts.get("ways") or 0)
-        nodes = int(counts.get("nodes") or 0)
-        total = ways + nodes
+                counts = el.get("tags")
+                break
+        if not isinstance(counts, dict):
+            raise DataValidationError("Overpass 未返回有效的要素计数。", provider=self.provider_id)
+        try:
+            ways = max(0, int(counts.get("ways") or 0))
+            nodes = max(0, int(counts.get("nodes") or 0))
+            relations = max(0, int(counts.get("relations") or 0))
+            total = max(0, int(counts.get("total") or ways + nodes + relations))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise DataValidationError("Overpass 返回了无效的要素计数。", provider=self.provider_id) from exc
         cap = KIND_CAPS.get(request.kind, DEFAULT_MAX_ITEMS)
 
         label = VECTOR_KINDS.get(request.kind, request.kind)
@@ -206,7 +228,8 @@ class OpenStreetMapProvider(DataProvider):
                 auth=AuthLevel.PUBLIC,
                 downloadable=True,
                 source_url="https://www.openstreetmap.org",
-                note=f"OSM 要素检索：ways≈{ways}, nodes≈{nodes}；单次获取上限 {cap} 条，超出会被截断。",
+                note=(f"OSM 要素检索：ways≈{ways}, nodes≈{nodes}, relations≈{relations}；"
+                      f"单次获取上限 {cap} 条，超出会被截断。"),
             )
         ]
         return hits
@@ -217,13 +240,25 @@ class OpenStreetMapProvider(DataProvider):
             raise DataProviderError(
                 f"OSM 不支持该要素类型，可选：{', '.join(VECTOR_KINDS)}。", provider=self.provider_id)
         bbox = self._bbox(request)
-        max_items = request.max_items or KIND_CAPS.get(request.kind, DEFAULT_MAX_ITEMS)
-        q = self._build_query(self._selectors(request.kind), bbox, max_items=max_items)
+        cap = KIND_CAPS.get(request.kind, DEFAULT_MAX_ITEMS)
+        requested = request.max_items
+        if isinstance(requested, bool) or not isinstance(requested, int) or requested < 0:
+            raise DataProviderError("max_items 必须是非负整数。", provider=self.provider_id)
+        max_items = min(requested or cap, cap)
+        # Request one extra element so hitting the user limit can be distinguished
+        # from a complete result set that happens to contain exactly max_items.
+        q = self._build_query(self._selectors(request.kind), bbox, max_items=max_items + 1)
         resp = self._overpass(q)
 
+        elements = resp.get("elements") or []
+        if not isinstance(elements, list):
+            raise DataValidationError("Overpass 返回的要素列表无效。", provider=self.provider_id)
+        truncated_by_limit = len(elements) > max_items
+        if truncated_by_limit:
+            elements = elements[:max_items]
         features = []
         skipped = 0
-        for el in (resp.get("elements") or []):
+        for el in elements:
             feat = _element_to_feature(el, force_line=request.kind in _LINE_KINDS)
             if feat is None:
                 skipped += 1
@@ -241,14 +276,16 @@ class OpenStreetMapProvider(DataProvider):
                 hint="该区域可能无此类要素，请扩大范围或核对要素类型。",
             )
 
-        # 若因上限截断给出提示（放在 extra，由上层回显）
-        truncated = skipped > 0 or resp.get("remark") or len(features) >= max_items
+        # 几何转换跳过项不代表 Overpass 截断，单独返回供导入层说明。
+        source_remark = resp.get("remark")
         return {
             "geojson": {"type": "FeatureCollection", "features": features},
             "crs": "EPSG:4326",
             "crs_known": True,
             "geometry_types": _distinct_geom(features),
-            "truncated": bool(truncated),
+            "truncated": bool(truncated_by_limit or source_remark),
+            "truncated_by_limit": truncated_by_limit,
+            "source_remark": str(source_remark)[:200] if source_remark else "",
             "skipped": skipped,
             "bbox": _features_bbox(features),
         }
@@ -262,22 +299,123 @@ def _pts_to_coords(pts: list) -> list:
     out = []
     for p in pts or []:
         if isinstance(p, dict) and p.get("lat") is not None and p.get("lon") is not None:
-            out.append([round(float(p["lon"]), 7), round(float(p["lat"]), 7)])
+            try:
+                lon, lat = float(p["lon"]), float(p["lat"])
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(lon) and math.isfinite(lat) and -180 <= lon <= 180 and -90 <= lat <= 90:
+                out.append([round(lon, 7), round(lat, 7)])
     return out
 
 
+def _stitch_rings(segments: list) -> list:
+    """按共享端点拼接 relation 的 way 成员，返回闭合坐标环。"""
+    remaining = [list(segment) for segment in segments if len(segment) >= 2]
+    rings = []
+    while remaining:
+        ring = remaining.pop(0)
+        changed = True
+        while ring[0] != ring[-1] and changed:
+            changed = False
+            for index, segment in enumerate(remaining):
+                if ring[-1] == segment[0]:
+                    ring.extend(segment[1:])
+                elif ring[-1] == segment[-1]:
+                    ring.extend(reversed(segment[:-1]))
+                elif ring[0] == segment[-1]:
+                    ring = segment[:-1] + ring
+                elif ring[0] == segment[0]:
+                    ring = list(reversed(segment[1:])) + ring
+                else:
+                    continue
+                remaining.pop(index)
+                changed = True
+                break
+        if len(ring) >= 4 and ring[0] == ring[-1]:
+            rings.append(ring)
+    return rings
+
+
+def _point_in_ring(point: list, ring: list) -> bool:
+    """射线法判断点是否位于环内，用于把 inner 环归属到 outer 环。"""
+    x, y = point[:2]
+    inside = False
+    for start, end in zip(ring, ring[1:]):
+        x1, y1 = start[:2]
+        x2, y2 = end[:2]
+        if (y1 > y) != (y2 > y):
+            cross_x = (x2 - x1) * (y - y1) / (y2 - y1) + x1
+            if x < cross_x:
+                inside = not inside
+    return inside
+
+
+def _relation_geometry(el: dict, force_line: bool) -> Optional[dict]:
+    members = el.get("members")
+    if not isinstance(members, list):
+        return None
+    lines = []
+    outer_segments, inner_segments = [], []
+    for member in members:
+        if not isinstance(member, dict) or member.get("type") != "way":
+            continue
+        coords = _pts_to_coords(member.get("geometry"))
+        if len(coords) < 2:
+            continue
+        lines.append(coords)
+        role = member.get("role") or ""
+        if role == "inner":
+            inner_segments.append(coords)
+        elif role in ("outer", ""):
+            outer_segments.append(coords)
+
+    if not lines:
+        return None
+    if force_line:
+        return ({"type": "LineString", "coordinates": lines[0]} if len(lines) == 1
+                else {"type": "MultiLineString", "coordinates": lines})
+
+    tags = el.get("tags") if isinstance(el.get("tags"), dict) else {}
+    is_area = tags.get("type") in ("multipolygon", "boundary")
+    if is_area:
+        outers = _stitch_rings(outer_segments)
+        inners = _stitch_rings(inner_segments)
+        polygons = [[outer] for outer in outers]
+        for inner in inners:
+            parent = next((polygon for polygon in polygons
+                           if _point_in_ring(inner[0], polygon[0])), None)
+            if parent is not None:
+                parent.append(inner)
+        if polygons:
+            if len(polygons) == 1:
+                return {"type": "Polygon", "coordinates": polygons[0]}
+            return {"type": "MultiPolygon", "coordinates": polygons}
+
+    return ({"type": "LineString", "coordinates": lines[0]} if len(lines) == 1
+            else {"type": "MultiLineString", "coordinates": lines})
+
+
 def _element_to_feature(el: dict, force_line: bool = False) -> Optional[dict]:
+    if not isinstance(el, dict):
+        return None
     etype = el.get("type")
     tags = el.get("tags") or {}
-    props = dict(tags)
+    props = dict(tags) if isinstance(tags, dict) else {}
     props["@osm_id"] = el.get("id")
     props["@osm_type"] = etype
 
     if etype == "node":
         if el.get("lat") is None or el.get("lon") is None:
             return None
-        geom = {"type": "Point", "coordinates": [el["lon"], el["lat"]]}
-    elif etype in ("way", "relation"):
+        coords = _pts_to_coords([{"lat": el["lat"], "lon": el["lon"]}])
+        if not coords:
+            return None
+        geom = {"type": "Point", "coordinates": coords[0]}
+    elif etype == "relation":
+        geom = _relation_geometry(el, force_line)
+        if geom is None:
+            return None
+    elif etype == "way":
         coords = _pts_to_coords(el.get("geometry"))
         if len(coords) < 2:
             return None
@@ -326,9 +464,15 @@ def _iter_xy(g: dict):
         for ring in c:
             for p in ring:
                 yield p
-    elif t in ("MultiLineString", "MultiPolygon"):
-        # 简化：只处理一层（OSM out geom 产出的是 Point/LineString/Polygon）
-        pass
+    elif t == "MultiLineString":
+        for line in c:
+            for p in line:
+                yield p
+    elif t == "MultiPolygon":
+        for polygon in c:
+            for ring in polygon:
+                for p in ring:
+                    yield p
     elif t == "GeometryCollection":
         for sub in g.get("geometries", []):
             for p in _iter_xy(sub):

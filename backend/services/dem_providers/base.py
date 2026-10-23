@@ -14,20 +14,19 @@
 """
 from __future__ import annotations
 
-import io
+import math
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
 from backend.services.dem_providers import tile_math
 from backend.services.dem_providers.errors import (
-    DEMAreaOutOfRangeError,
     DEMError,
+    DEMResolutionUnsupportedError,
     DEMTileDecodeError,
-    DEMTooManyTilesError,
 )
 
 
@@ -128,9 +127,9 @@ class DEMResult:
             "width": self.width,
             "height": self.height,
             "resolution": self.resolution,
-            "min_elevation": self.min_elevation,
-            "max_elevation": self.max_elevation,
-            "nodata": self.nodata if (self.nodata == self.nodata) else None,  # NaN→None
+            "min_elevation": self.min_elevation if math.isfinite(self.min_elevation) else None,
+            "max_elevation": self.max_elevation if math.isfinite(self.max_elevation) else None,
+            "nodata": self.nodata if math.isfinite(self.nodata) else None,
             "tile_count": self.tile_count,
             "tile_cache_hits": self.tile_cache_hits,
             "tile_cache_misses": self.tile_cache_misses,
@@ -148,10 +147,10 @@ def compute_summary(data: np.ndarray, nodata: float) -> dict:
     """
     arr = np.asarray(data, dtype=np.float64)
     total = int(arr.size)
-    if nodata == nodata:  # not NaN
-        valid = arr[arr != nodata]
-    else:
-        valid = arr[np.isfinite(arr)]
+    valid_mask = np.isfinite(arr)
+    if nodata == nodata:  # finite nodata sentinel
+        valid_mask &= arr != nodata
+    valid = arr[valid_mask]
     invalid = total - int(valid.size)
     summary = {
         "shape": [int(arr.shape[0]), int(arr.shape[1])] if arr.ndim == 2 else list(arr.shape),
@@ -200,7 +199,7 @@ class DEMProvider(ABC):
         """取单个 256x256 tile 的高程数据（米）。
 
         返回 ndarray(TILE_SIZE, TILE_SIZE)，dtype=float。
-        内部实现可调用 self._cache_or_download(z, x, y, cache_dir, _decode_fn)。
+        子类负责下载、解码与缓存。
         """
 
     def capability(self) -> ProviderCapability:
@@ -236,6 +235,15 @@ class DEMProvider(ABC):
         if not cache_dir:
             cache_dir = cache_mod.default_cache_root()
 
+        if isinstance(target_resolution_deg, bool):
+            raise DEMResolutionUnsupportedError("目标分辨率必须是有限的非负度数")
+        try:
+            target_resolution_deg = float(target_resolution_deg or 0)
+        except (TypeError, ValueError, OverflowError) as e:
+            raise DEMResolutionUnsupportedError("目标分辨率必须是有限的非负度数") from e
+        if not math.isfinite(target_resolution_deg) or target_resolution_deg < 0:
+            raise DEMResolutionUnsupportedError("目标分辨率必须是有限的非负度数")
+
         bb = tile_math.validate_bbox(bbox)
         # 决定 zoom
         z = self._decide_zoom(target_resolution_deg)
@@ -247,9 +255,16 @@ class DEMProvider(ABC):
         tile_dict: Dict[Tuple[int, int], np.ndarray] = {}
         hits = misses = 0
         failed: List[Tuple[int, int, str]] = []
+        last_failure: Optional[Exception] = None
         for x, y in tile_math.iter_tile_indexes(x_min, y_min, x_max, y_max):
             try:
                 tile, hit = self._fetch_tile_with_cache(z, x, y, cache_dir)
+                tile = np.asarray(tile, dtype=np.float64)
+                if tile.shape != (tile_math.TILE_SIZE, tile_math.TILE_SIZE):
+                    raise DEMTileDecodeError(
+                        f"{self.provider_id} 返回 tile 形状 {tile.shape}，"
+                        f"期望 {(tile_math.TILE_SIZE, tile_math.TILE_SIZE)}"
+                    )
                 tile_dict[(x, y)] = tile
                 if hit:
                     hits += 1
@@ -259,34 +274,30 @@ class DEMProvider(ABC):
                 raise
             except Exception as e:
                 # 单 tile 失败不能毁掉整次请求：跳过该 tile 但记录
+                last_failure = e
                 failed.append((x, y, str(e)[:200]))
         if not tile_dict:
-            raise DEMAreaOutOfRangeError(
-                "未能从 Provider 获取任何 tile（所有 tile 均下载失败或越界）。",
-                hint="请检查网络后重试，或缩小空间范围。",
-            )
+            raise DEMError(
+                "未能从 Provider 获取任何 tile；所有 tile 请求均失败。",
+                hint="请检查网络或数据源状态后重试。",
+            ) from last_failure
 
         mosaic = tile_math.mosaic_tiles(tile_dict, z, x_min, y_min, x_max, y_max)
-        transform = tile_math.mosaic_transform(x_min, y_min, z)
-
-        # 裁剪到目标 bbox
-        if target_resolution_deg and target_resolution_deg > 0:
-            clipped, new_transform, new_bounds = tile_math.resample_to_resolution(
-                mosaic, transform, bb, target_resolution_deg,
-            )
-        else:
-            clipped, new_transform, new_bounds = tile_math.clip_mosaic_to_bbox(
-                mosaic, transform, bb,
-            )
+        source_transform = tile_math.mosaic_transform(x_min, y_min, z)
+        clipped, new_transform, new_bounds = tile_math.reproject_mosaic_to_wgs84(
+            mosaic, source_transform, bb, target_resolution_deg, z=z,
+        )
 
         a = new_transform[0]
         resolution = abs(a) if a else tile_math.degrees_per_pixel(z)
         valid_mask = np.isfinite(clipped)
-        if valid_mask.any():
-            vmin = float(np.min(clipped[valid_mask]))
-            vmax = float(np.max(clipped[valid_mask]))
-        else:
-            vmin = vmax = float("nan")
+        if not valid_mask.any():
+            raise DEMError(
+                "请求范围内没有有效高程数据。",
+                hint="请调整范围，或更换具有该区域覆盖的数据源。",
+            )
+        vmin = float(np.min(clipped[valid_mask]))
+        vmax = float(np.max(clipped[valid_mask]))
 
         notes = []
         if failed:
@@ -358,6 +369,7 @@ class DEMRegistry:
     def __init__(self):
         self._providers: Dict[str, DEMProvider] = {}
         self._installed = False
+        self._install_lock = threading.Lock()
 
     def register(self, provider: DEMProvider) -> None:
         if not provider.provider_id:
@@ -367,10 +379,13 @@ class DEMRegistry:
     def _ensure_installed(self) -> None:
         if self._installed:
             return
-        self._installed = True
-        # 延迟 import，避免顶层加载 aws_terrain（其依赖 PIL/numpy/requests）
-        from backend.services.dem_providers.aws_terrain import AWSTerrainProvider
-        self.register(AWSTerrainProvider())
+        with self._install_lock:
+            if self._installed:
+                return
+            # 延迟 import，避免顶层加载 aws_terrain（其依赖 PIL/numpy/requests）
+            from backend.services.dem_providers.aws_terrain import AWSTerrainProvider
+            self.register(AWSTerrainProvider())
+            self._installed = True
 
     def get(self, provider_id: str) -> DEMProvider:
         self._ensure_installed()
@@ -385,11 +400,6 @@ class DEMRegistry:
 
     def capabilities(self) -> List[ProviderCapability]:
         return [p.capability() for p in self.all()]
-
-    def capable_public(self) -> List[DEMProvider]:
-        """公开免 Key 的 Provider（优先使用）。"""
-        return [p for p in self.all() if not p.requires_key]
-
 
 _registry = DEMRegistry()
 

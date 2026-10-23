@@ -1,4 +1,4 @@
-"""Web Mercator XYZ tile 数学（纯函数 + numpy）。
+"""Web Mercator XYZ tile 数学与 DEM 网格重投影。
 
 约定
 ----
@@ -7,12 +7,7 @@
   （Web Mercator 极区极限，超出无法用 Mercator 表示）
 - 像素 (col, row) 中：col=0 是最西（左），row=0 是最北（上）。
   这与 numpy 数组 row=0 是最上一致；row 增大 → lat 减小 → 负的 pixel_height。
-- affine transform 遵循 GDAL/rasterio 风格：
-    X = a * col + b * row + c    (c = top_left_lng)
-    Y = d * col + e * row + f    (f = top_left_lat, e < 0)
-  即 `transform = (pixel_width, 0, top_left_lng, 0, -pixel_height, top_left_lat)`
-
-所有函数都接受并返回 (lng, lat) WGS84 度；不涉及 CRS 转换（输入/输出都是 EPSG:4326）。
+- mosaic 仿射变换遵循 GDAL/rasterio 风格并使用 EPSG:3857；裁剪/重采样输出 EPSG:4326。
 
 错误
 ----
@@ -22,12 +17,15 @@
 from __future__ import annotations
 
 import math
-from typing import Iterable, List, Optional, Tuple
+from numbers import Real
+from typing import Iterable, Tuple
 
 import numpy as np
 
 from backend.services.dem_providers.errors import (
     DEMAreaOutOfRangeError,
+    DEMResolutionUnsupportedError,
+    DEMTileDecodeError,
     DEMTooManyTilesError,
 )
 
@@ -39,6 +37,8 @@ TILE_SIZE = 256
 
 # 安全上限：单次下载的 tile 数量；超过即报错让用户缩小范围
 DEFAULT_MAX_TILES = 512
+DEFAULT_MAX_OUTPUT_PIXELS = 20_000_000
+MAX_ZOOM = 30
 # 默认 z 选择：bbox 较小（< 0.5°）→ 较细；bbox 较大 → 较粗（更少 tile）
 DEFAULT_ZOOM = 12
 
@@ -51,8 +51,15 @@ def _clamp_lat(lat: float) -> float:
     return max(MERCATOR_MIN_LAT, min(MERCATOR_MAX_LAT, lat))
 
 
+def _validate_zoom(z: int) -> int:
+    if isinstance(z, bool) or not isinstance(z, int) or not 0 <= z <= MAX_ZOOM:
+        raise ValueError(f"zoom 必须是 0 到 {MAX_ZOOM} 之间的整数。")
+    return z
+
+
 def _world_pixel_size(z: int) -> int:
     """z 级下整个世界地图的像素边长。"""
+    z = _validate_zoom(z)
     return TILE_SIZE * (1 << z)
 
 
@@ -112,9 +119,11 @@ def validate_bbox(bbox) -> Tuple[float, float, float, float]:
         raise DEMAreaOutOfRangeError(
             f"bbox 参数必须是 4 个数（minLng,minLat,maxLng,maxLat），收到 {bbox!r}",
         )
+    if any(isinstance(value, bool) for value in bbox):
+        raise DEMAreaOutOfRangeError("bbox 坐标必须是数值，不能使用布尔值。")
     try:
         min_lng, min_lat, max_lng, max_lat = (float(v) for v in bbox)
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError, OverflowError) as e:
         raise DEMAreaOutOfRangeError(f"bbox 含不可解析数值：{bbox!r}") from e
     if not (-180.0 <= min_lng < max_lng <= 180.0):
         raise DEMAreaOutOfRangeError(
@@ -128,10 +137,10 @@ def validate_bbox(bbox) -> Tuple[float, float, float, float]:
                   f"{MERCATOR_MAX_LAT:.4f}]；超出此范围的极区无法用 XYZ tile 表示。"),
         )
     # 微小数值夹紧到合法区间（避免 85.0511 触发 off-by-1 失败）
-    if min_lat < MERCATOR_MIN_LAT:
-        min_lat = MERCATOR_MIN_LAT
-    if max_lat > MERCATOR_MAX_LAT:
-        max_lat = MERCATOR_MAX_LAT
+    min_lat = _clamp_lat(min_lat)
+    max_lat = _clamp_lat(max_lat)
+    if min_lat >= max_lat:
+        raise DEMAreaOutOfRangeError("bbox 在 Web Mercator 覆盖范围内没有有效纬度跨度。")
     return min_lng, min_lat, max_lng, max_lat
 
 
@@ -146,10 +155,17 @@ def bbox_to_tile_index_range(
 
     max_tiles：超过则抛 DEMTooManyTilesError（保护服务端）。
     """
+    if isinstance(max_tiles, bool) or not isinstance(max_tiles, int) or max_tiles <= 0:
+        raise DEMTooManyTilesError("max_tiles 必须是正整数。")
+    z = _validate_zoom(z)
     min_lng, min_lat, max_lng, max_lat = validate_bbox(bbox)
     n = 1 << z
     x_min, y_min = lnglat_to_tile_index(min_lng, max_lat, z)   # NW corner
-    x_max, y_max = lnglat_to_tile_index(max_lng, min_lat, z)   # SE corner
+    # The east and south edges are exclusive for area coverage. If either edge
+    # falls exactly on a tile boundary, the adjacent tile contributes no area.
+    east_px, south_px = lnglat_to_world_px(max_lng, min_lat, z)
+    x_max = int(math.floor(math.nextafter(east_px, -math.inf) / TILE_SIZE))
+    y_max = int(math.floor(math.nextafter(south_px, -math.inf) / TILE_SIZE))
     # tile 索引必须在 [0, 2^z)
     x_min = max(0, min(x_min, n - 1))
     x_max = max(0, min(x_max, n - 1))
@@ -177,12 +193,6 @@ def iter_tile_indexes(x_min: int, y_min: int, x_max: int, y_max: int) -> Iterabl
 # zoom 选择：根据 bbox 与目标分辨率挑 z
 # ============================================================
 
-def meters_per_pixel(lat: float, z: int) -> float:
-    """Web Mercator 在指定纬度的地面分辨率（米/像素，赤道处最小、两极放大）。"""
-    n = _world_pixel_size(z)
-    return 156543.03392 * math.cos(math.radians(lat)) / n
-
-
 def degrees_per_pixel(z: int) -> float:
     """每个像素多少度（沿赤道方向；非赤道会因 Mercator 拉伸有偏差，但本系统统一按
     赤道 360°/n_px 报告，因为 DEM 用经纬度 grid 表示，跨纬度仍按 256 px/° 切片。"""
@@ -198,10 +208,22 @@ def select_zoom(target_resolution_deg: float, *, z_min: int = 0, z_max: int = 14
     若 target_resolution_deg 比 degrees_per_pixel(z_max) 还细 → 强制返回 z_max。
     若 target_resolution_deg 比 degrees_per_pixel(z_min) 还粗 → 返回 z_min。
     """
-    if target_resolution_deg <= 0:
-        return DEFAULT_ZOOM
+    z_min = _validate_zoom(z_min)
+    z_max = _validate_zoom(z_max)
+    if z_min > z_max:
+        raise ValueError("z_min 不能大于 z_max。")
+    if isinstance(target_resolution_deg, bool) or not isinstance(target_resolution_deg, Real):
+        raise ValueError("目标分辨率必须是有限数值。")
+    try:
+        target_resolution = float(target_resolution_deg)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("目标分辨率必须是有限数值。") from exc
+    if not math.isfinite(target_resolution):
+        raise ValueError("目标分辨率必须是有限数值。")
+    if target_resolution <= 0:
+        return max(z_min, min(DEFAULT_ZOOM, z_max))
     for z in range(z_min, z_max + 1):
-        if degrees_per_pixel(z) <= target_resolution_deg:
+        if degrees_per_pixel(z) <= target_resolution:
             return z
     return z_max
 
@@ -233,12 +255,9 @@ def mosaic_tiles(
                 continue
             tile = np.asarray(tile, dtype=np.float64)
             if tile.shape != (TILE_SIZE, TILE_SIZE):
-                # 防止 provider 返回意外形状；按左上对齐补/截
-                tmp = np.full((TILE_SIZE, TILE_SIZE), np.nan, dtype=np.float64)
-                h = min(TILE_SIZE, tile.shape[0])
-                w = min(TILE_SIZE, tile.shape[1])
-                tmp[:h, :w] = tile[:h, :w]
-                tile = tmp
+                raise DEMTileDecodeError(
+                    f"tile ({x}, {y}) 形状 {tile.shape}，期望 {(TILE_SIZE, TILE_SIZE)}。"
+                )
             row = (y - tile_y_min) * TILE_SIZE
             col = (x - tile_x_min) * TILE_SIZE
             mosaic[row:row + TILE_SIZE, col:col + TILE_SIZE] = tile
@@ -248,120 +267,102 @@ def mosaic_tiles(
 def mosaic_transform(
     tile_x_min: int, tile_y_min: int, z: int,
 ) -> Tuple[float, float, float, float, float, float]:
-    """mosaic 数组对应的 affine transform。
+    """mosaic 数组的真实 EPSG:3857 affine transform。"""
+    return mosaic_mercator_transform(tile_x_min, tile_y_min, z)
 
-    mosaic 数组的 (col=0, row=0) 像素中心在世界像素坐标 (x0_px + 0.5, y0_px + 0.5)
-    —— 但为简化与 rasterio 一致，使用 tile 的几何西北角作为 top_left：
-        X = a * col + c
-        Y = e * row + f    (e < 0)
-    """
-    x0_px, y0_px = tile_x_min * TILE_SIZE, tile_y_min * TILE_SIZE
-    top_left_lng, top_left_lat = world_px_to_lnglat(x0_px, y0_px, z)
-    pixel_width = degrees_per_pixel(z)
-    pixel_height = -pixel_width  # 北向上：row 增大 → lat 减小
-    a = pixel_width
-    b = 0.0
-    c = top_left_lng
-    d = 0.0
-    e = pixel_height
-    f = top_left_lat
-    return (a, b, c, d, e, f)
+
+def mosaic_mercator_transform(
+    tile_x_min: int, tile_y_min: int, z: int,
+) -> Tuple[float, float, float, float, float, float]:
+    """返回 XYZ 瓦片 mosaic 的真实 EPSG:3857 仿射变换。"""
+    half_world = math.pi * 6378137.0
+    pixel_size = (2.0 * half_world) / _world_pixel_size(z)
+    left = -half_world + tile_x_min * TILE_SIZE * pixel_size
+    top = half_world - tile_y_min * TILE_SIZE * pixel_size
+    return (pixel_size, 0.0, left, 0.0, -pixel_size, top)
+
+
+def _zoom_from_transform(transform) -> int:
+    pixel_size = abs(float(transform[0]))
+    if not math.isfinite(pixel_size) or pixel_size <= 0:
+        raise DEMAreaOutOfRangeError("mosaic 仿射变换中的像素尺寸无效")
+    world_pixels = (2.0 * math.pi * 6378137.0) / pixel_size
+    return int(round(math.log2(world_pixels / TILE_SIZE)))
+
+
+def reproject_mosaic_to_wgs84(
+    data: np.ndarray,
+    src_transform,
+    target_bbox,
+    target_resolution_deg: float = 0.0,
+    *,
+    z: int,
+) -> Tuple[np.ndarray, tuple, tuple]:
+    """把 EPSG:3857 XYZ mosaic 重投影并裁到 WGS84 bbox。"""
+    from rasterio.enums import Resampling
+    from rasterio.transform import Affine
+    from rasterio.warp import reproject
+
+    min_lng, min_lat, max_lng, max_lat = validate_bbox(target_bbox)
+    if (isinstance(target_resolution_deg, bool)
+            or not isinstance(target_resolution_deg, Real)
+            or not math.isfinite(float(target_resolution_deg))
+            or target_resolution_deg < 0):
+        raise DEMResolutionUnsupportedError("目标分辨率必须是有限的非负度数")
+    if not isinstance(data, np.ndarray) or data.ndim != 2 or not data.size:
+        raise DEMTileDecodeError("DEM mosaic 必须是非空二维数组")
+    if len(src_transform) != 6 or not all(math.isfinite(float(v)) for v in src_transform):
+        raise DEMAreaOutOfRangeError("DEM mosaic 仿射变换无效")
+
+    if target_resolution_deg > 0:
+        desired_x = desired_y = float(target_resolution_deg)
+    else:
+        desired_x = degrees_per_pixel(z)
+        center_lat = (min_lat + max_lat) / 2.0
+        desired_y = desired_x * math.cos(math.radians(center_lat))
+        desired_y = max(desired_y, desired_x * 0.01)
+
+    width = max(1, int(math.ceil((max_lng - min_lng) / desired_x)))
+    height = max(1, int(math.ceil((max_lat - min_lat) / desired_y)))
+    if width * height > DEFAULT_MAX_OUTPUT_PIXELS:
+        raise DEMTooManyTilesError(
+            f"目标网格需要 {width * height:,} 个像素，超过单次上限 {DEFAULT_MAX_OUTPUT_PIXELS:,}。",
+            hint="增大目标分辨率或缩小 bbox 后重试。",
+        )
+    xres = (max_lng - min_lng) / width
+    yres = (max_lat - min_lat) / height
+    dst_transform = Affine(xres, 0.0, min_lng, 0.0, -yres, max_lat)
+    destination = np.full((height, width), np.nan, dtype=np.float32)
+
+    reproject(
+        source=np.asarray(data, dtype=np.float32),
+        destination=destination,
+        src_transform=Affine(*src_transform),
+        src_crs="EPSG:3857",
+        src_nodata=np.nan,
+        dst_transform=dst_transform,
+        dst_crs="EPSG:4326",
+        dst_nodata=np.nan,
+        resampling=Resampling.bilinear,
+        init_dest_nodata=True,
+    )
+    return destination, tuple(dst_transform)[:6], (min_lng, min_lat, max_lng, max_lat)
 
 
 def clip_mosaic_to_bbox(
     data: np.ndarray, transform, target_bbox,
 ) -> Tuple[np.ndarray, tuple, tuple]:
-    """把 mosaic 数组裁剪到 target_bbox（包含边界）。
-
-    返回 (clipped_data, new_transform, new_bounds)。
-    target_bbox = [minLng, minLat, maxLng, maxLat]。
-    """
-    a, b, c, d, e, f = transform
-    min_lng, min_lat, max_lng, max_lat = validate_bbox(target_bbox)
-
-    # 像素中心到 (lng, lat)：col → lng = a*col + c + a/2（用中心更稳）。
-    # 但 GDAL/rasterio 默认 col=0 是左上角（非中心），保持一致。
-    # row/col → (lng, lat)：col = (lng - c) / a；row = (lat - f) / e（e<0）
-    col_min = max(0, int(math.floor((min_lng - c) / a)))
-    col_max = min(data.shape[1] - 1, int(math.ceil((max_lng - c) / a)) - 1)
-    # row：e < 0，所以 (lat - f) / e；min_lat → row_max，max_lat → row_min
-    row_max = min(data.shape[0] - 1, int(math.floor((min_lat - f) / e)))
-    row_min = max(0, int(math.ceil((max_lat - f) / e)))
-    if col_min > col_max or row_min > row_max:
-        # bbox 与 mosaic 无重叠（理论上前面已保证；保险起见返回 1x1 NaN）
-        return np.full((1, 1), np.nan, dtype=np.float64), (a, b, c, d, e, f), (
-            min_lng, min_lat, max_lng, max_lat,
-        )
-
-    clipped = data[row_min:row_max + 1, col_min:col_max + 1].copy()
-    new_c = c + a * col_min
-    new_f = f + e * row_min
-    new_transform = (a, b, new_c, d, e, new_f)
-    # 裁剪后真实 bounds（与切片起止一致）
-    h, w = clipped.shape
-    new_min_lng = new_c
-    new_max_lng = new_c + a * w
-    new_max_lat = new_f
-    new_min_lat = new_f + e * h
-    new_bounds = (new_min_lng, new_min_lat, new_max_lng, new_max_lat)
-    return clipped, new_transform, new_bounds
+    """重投影并裁剪 EPSG:3857 mosaic 到 WGS84 bbox。"""
+    return reproject_mosaic_to_wgs84(
+        data, transform, target_bbox, z=_zoom_from_transform(transform),
+    )
 
 
 def resample_to_resolution(
     data: np.ndarray, transform, target_bbox, target_resolution_deg: float,
 ) -> Tuple[np.ndarray, tuple, tuple]:
-    """按目标分辨率（度/像素）重采样 data 到与 target_bbox 对齐的 grid。
-
-    规则 grid 二线性插值：先把数据翻转成 lat 递增（南→北）以满足 np.interp 的单调
-    递增要求；先沿列（lng）插值得到 (height, width_dst_col_temp)，再沿行（lat）插值
-    得到 (height, width)。
-
-    target_resolution_deg == 0 或 None 时只裁剪不重采样。
-    """
-    if not target_resolution_deg or target_resolution_deg <= 0:
-        return clip_mosaic_to_bbox(data, transform, target_bbox)
-    a, b, c, d, e, f = transform
-    min_lng, min_lat, max_lng, max_lat = validate_bbox(target_bbox)
-
-    width = max(1, int(math.ceil((max_lng - min_lng) / target_resolution_deg)))
-    height = max(1, int(math.ceil((max_lat - min_lat) / target_resolution_deg)))
-
-    # 源 grid：col=0..src_w-1 → lng=c+a*i；row=0..src_h-1 → lat=f+e*i（lat 递减）
-    src_cols = c + a * np.arange(data.shape[1], dtype=np.float64)
-    src_rows = f + e * np.arange(data.shape[0], dtype=np.float64)
-    # 翻成 lat 递增（南→北）方便 np.interp
-    data_south_up = data[::-1, :]
-    rows_south_up = src_rows[::-1]
-
-    # 目标 grid
-    dst_cols = min_lng + target_resolution_deg * np.arange(width, dtype=np.float64)
-    dst_rows = max_lat - target_resolution_deg * np.arange(height, dtype=np.float64)
-    dst_rows_south_up = dst_rows[::-1]
-
-    # 沿 col（lng）插值：对每一行（lat_south_up），在 src_cols 上插值到 dst_cols
-    # 结果 shape = (src_rows, width)
-    col_interp = np.empty((data_south_up.shape[0], width), dtype=np.float64)
-    for r in range(data_south_up.shape[0]):
-        col_interp[r, :] = np.interp(
-            dst_cols, src_cols, data_south_up[r, :],
-            left=np.nan, right=np.nan,
-        )
-    # 沿 row（lat）插值：对每一列（dst col），在 rows_south_up 上插值到 dst_rows_south_up
-    # 结果 shape = (height, width)
-    out = np.empty((height, width), dtype=np.float64)
-    for c_idx in range(width):
-        out[:, c_idx] = np.interp(
-            dst_rows_south_up, rows_south_up, col_interp[:, c_idx],
-            left=np.nan, right=np.nan,
-        )
-
-    new_transform = (
-        target_resolution_deg, 0.0, float(min_lng),
-        0.0, -target_resolution_deg, float(max_lat),
+    """重投影 EPSG:3857 mosaic 到请求 bbox 的角度分辨率网格。"""
+    return reproject_mosaic_to_wgs84(
+        data, transform, target_bbox, target_resolution_deg,
+        z=_zoom_from_transform(transform),
     )
-    new_bounds = (
-        float(min_lng), float(min_lat),
-        float(min_lng + target_resolution_deg * width),
-        float(max_lat - target_resolution_deg * height),
-    )
-    return out, new_transform, new_bounds

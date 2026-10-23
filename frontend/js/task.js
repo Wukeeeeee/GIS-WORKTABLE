@@ -332,7 +332,6 @@ window.GIS = window.GIS || {};
     deleteTask: deleteTask,
     rerunTask: rerunTask,
     clearUnsaved: clearUnsaved,
-    getTasks: function() { return [].concat(taskRecords); },
   };
 
 })();

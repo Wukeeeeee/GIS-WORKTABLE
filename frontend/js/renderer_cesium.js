@@ -69,7 +69,10 @@ window.GIS = window.GIS || {};
         } catch (e) { lastErr = e; }
       }
       throw lastErr || new Error('CesiumJS 所有源均加载失败');
-    })();
+    })().catch(function(error) {
+      cesiumReadyPromise = null;
+      throw error;
+    });
     return cesiumReadyPromise;
   }
 
@@ -94,13 +97,16 @@ window.GIS = window.GIS || {};
 
   /** 飞到 bbox（drill/新图层/复位共用） */
   function flyToBbox(b, duration) {
-    if (!viewer || !b) return;
+    if (!viewer || !Array.isArray(b) || b.length !== 4
+        || !b.every(function(value) { return typeof value === 'number' && Number.isFinite(value); })
+        || b[0] > b[2] || b[1] > b[3] || b[0] < -180 || b[2] > 180 || b[1] < -90 || b[3] > 90) return false;
     viewer.camera.flyTo({
       destination: Cesium.Rectangle.fromDegrees(
-        Math.max(b[0], -179.9), Math.max(b[1], -89.9),
-        Math.min(b[2], 179.9), Math.min(b[3], 89.9)),
-      duration: duration || 1.5,
+        Math.max(-179.9, Math.min(b[0], 179.9)), Math.max(-89.9, Math.min(b[1], 89.9)),
+        Math.max(-179.9, Math.min(b[2], 179.9)), Math.max(-89.9, Math.min(b[3], 89.9))),
+      duration: duration == null ? 1.5 : duration,
     });
+    return true;
   }
 
   function createViewer() {

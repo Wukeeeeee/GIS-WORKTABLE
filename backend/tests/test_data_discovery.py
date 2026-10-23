@@ -123,6 +123,12 @@ def _download_asset(monkeypatch, tmp_path, kind, **kw):
 # ============================================================
 
 class TestNormalize:
+    @pytest.mark.parametrize("bbox", ["112,28,112,29", "112,28,113,28"])
+    def test_zero_area_bbox_rejected(self, bbox):
+        assert parse_bbox(bbox) is None
+        with pytest.raises(DataProviderError):
+            data_discovery.resolve_request(kind="roads", bbox=bbox)
+
     def test_kind_synonyms(self):
         assert normalize_kind("道路", "长沙") == "roads"
         assert normalize_kind("", "帮我找长沙市的道路数据") == "roads"
@@ -162,6 +168,33 @@ class TestDiscover:
 # ============================================================
 
 class TestDownloadVector:
+    @pytest.mark.parametrize("count,truncated", [(2, False), (3, True)])
+    def test_osm_limit_distinguishes_complete_result(self, monkeypatch, count, truncated):
+        elements = [_line_way(i, {"highway": "residential"}) for i in range(count)]
+        monkeypatch.setattr(osm_provider.http, "post_overpass",
+                            lambda *a, **kw: {"elements": elements})
+        req = make_req("roads", bbox=(112.9, 28.1, 113.2, 28.4))
+        req.max_items = 2
+        result = osm_provider.OpenStreetMapProvider().download(req)
+        assert len(result["geojson"]["features"]) == 2
+        assert result["truncated"] is truncated
+
+    def test_osm_skipped_geometry_is_not_truncation(self, monkeypatch):
+        elements = [_line_way(1, {"highway": "residential"}), {"type": "way", "id": 2}]
+        monkeypatch.setattr(osm_provider.http, "post_overpass",
+                            lambda *a, **kw: {"elements": elements})
+        req = make_req("roads", bbox=(112.9, 28.1, 113.2, 28.4))
+        result = osm_provider.OpenStreetMapProvider().download(req)
+        assert result["skipped"] == 1
+        assert result["truncated"] is False
+
+    def test_catalog_replaces_overwritten_metadata(self, tmp_path):
+        storage.save_metadata({"version": 1}, dirpath=str(tmp_path), name="roads")
+        storage.save_metadata({"version": 2}, dirpath=str(tmp_path), name="roads")
+        records = json.loads((tmp_path / "catalog.json").read_text(encoding="utf-8"))
+        assert len(records) == 1
+        assert records[0]["metadata"]["version"] == 2
+
     @pytest.mark.parametrize("kind,geom_expected", [
         ("roads", ["LineString"]),
         ("buildings", ["Polygon"]),
@@ -252,6 +285,41 @@ class TestRemoteProviders:
         assert "LC09_L1TP" in h.title
         assert h.time_start == "2024-01-11"
         assert h.downloadable is False
+        assert h.auth == "account"
+
+    def test_copernicus_catalog_hit_does_not_enable_download(self, monkeypatch):
+        from backend.services.data_providers.copernicus_provider import CopernicusProvider
+        monkeypatch.setattr(dhttp, "post_json", lambda *a, **kw: {
+            "features": [{"id": "sentinel-scene", "properties": {}}],
+        })
+        provider = CopernicusProvider()
+        req = make_req("imagery", bbox=(112.9, 28.1, 113.0, 28.2))
+        assert provider.capability().auth == "public"
+        hit = provider.search(req)[0]
+        assert hit.auth == "account"
+        assert hit.downloadable is False
+        with pytest.raises(ProviderAuthError):
+            provider.download(req)
+
+    @pytest.mark.parametrize("start,end,expected", [
+        ("", "2020-01-01", "../2020-01-01T23:59:59Z"),
+        ("2020-01-01", "", "2020-01-01T00:00:00Z/.."),
+        ("..", "2020-01-01", "../2020-01-01T23:59:59Z"),
+        ("2020-01-01", "..", "2020-01-01T00:00:00Z/.."),
+    ])
+    def test_usgs_partial_time_window(self, monkeypatch, start, end, expected):
+        sent = {}
+
+        def search_response(url, **kwargs):
+            sent.update(kwargs["json_body"])
+            return {"features": [{"id": "scene", "properties": {}}]}
+
+        monkeypatch.setattr(usgs_provider.http, "post_json", search_response)
+        req = make_req("imagery", bbox=(112.9, 28.1, 113.0, 28.2))
+        req.time_start, req.time_end = start, end
+        hits = usgs_provider.USGSProvider().search(req)
+        assert len(hits) == 1
+        assert sent["datetime"] == expected
 
 
 
@@ -266,7 +334,9 @@ class TestCapabilities:
         caps = {c["provider"]: c for c in list_capabilities()}
         assert set(caps) == {"osm", "copernicus", "usgs", "gscloud"}
         assert caps["osm"]["auth"] == "public"
-        assert caps["copernicus"]["auth"] == "account"
+        assert caps["copernicus"]["auth"] == "public"
+        assert caps["usgs"]["auth"] == "public"
+        assert caps["gscloud"]["auth"] == "account"
         assert "roads" in caps["osm"]["vector_kinds"]
         assert "dem" in caps["usgs"]["raster_kinds"]
         assert caps["osm"]["crs_default"] == "EPSG:4326"

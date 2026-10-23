@@ -12,7 +12,6 @@ window.GIS = window.GIS || {};
 
   var GIS = window.GIS;
   var PANEL_WIDTH = 400;
-  var _lastLeft = NaN, _lastTop = NaN;
 
   var OPS = [
     // 栅格分析
@@ -20,7 +19,7 @@ window.GIS = window.GIS || {};
     { id: 'focal', group: '栅格分析', label: '邻域统计', tool: 'raster_focal_stats', args: {}, layerHint: '栅格图层', extra: 'focal' },
     { id: 'euclid', group: '栅格分析', label: '欧氏距离', tool: 'euclidean_distance', args: {}, layerHint: '栅格图层', extra: 'sourceValue' },
     { id: 'mask', group: '栅格分析', label: '按掩膜提取', tool: 'raster_extract_by_mask', args: {}, layerHint: '栅格图层', layerHint2: '掩膜矢量', layers: ['raster_layer', 'zone_layer'], extra: 'inside' },
-    { id: 'surface', group: '栅格分析', label: '表面体积', tool: 'surface_volumes', args: {}, layerHint: '变化前 DEM', layerHint2: '变化后 DEM', layers: ['before_layer', 'after_layer'], extra: 'reference' },
+    { id: 'surface', group: '栅格分析', label: '表面体积', tool: 'surface_volumes', args: {}, layerHint: '变化前 DEM', layerHint2: '变化后 DEM', layers: ['before_layer', 'after_layer'], optionalLayers: ['after_layer'], extra: 'reference' },
     // 矢量与属性
     { id: 'join', group: '矢量与属性', label: '属性字段连接', tool: 'join_field', args: {}, layerHint: '目标图层', layerHint2: '连接图层', layers: ['target_layer', 'join_layer'], extra: 'join' },
     { id: 'geomattrs', group: '矢量与属性', label: '几何属性', tool: 'geometry_attributes', args: {}, layerHint: '矢量图层', extra: 'metrics' },
@@ -170,14 +169,6 @@ window.GIS = window.GIS || {};
       + "<div class=\"spatial-field\" id=\"atKField\" style=\"display:none\">"
       + "<label for=\"atK\">K 近邻数</label>"
       + "<input type=\"number\" id=\"atK\" class=\"spatial-input\" value=\"8\" min=\"1\" max=\"64\" step=\"1\">"
-      + "</div>"
-      + "<div class=\"spatial-field\" id=\"atWeightsIntervalField\" style=\"display:none\">"
-      + "<label for=\"atWeightsInterval\">距离阈值（可选）</label>"
-      + "<input type=\"number\" id=\"atWeightsInterval\" class=\"spatial-input\" step=\"any\" placeholder=\"可选\">"
-      + "</div>"
-      + "<div class=\"spatial-field\" id=\"atWeightsLagField\" style=\"display:none\">"
-      + "<label for=\"atWeightsLag\">滞后阶数（可选）</label>"
-      + "<input type=\"number\" id=\"atWeightsLag\" class=\"spatial-input\" min=\"1\" step=\"1\" placeholder=\"可选\">"
       + "</div>"
       + "<div class=\"spatial-field\" id=\"atIndependentsField\" style=\"display:none\">"
       + "<label for=\"atIndependents\">自变量字段（逗号分隔）</label>"
@@ -393,7 +384,7 @@ window.GIS = window.GIS || {};
       if (el) el.addEventListener('change', function () { _applyOpVisibility(root); });
     });
     var runBtn = container.querySelector('#atRun-' + suffix);
-    if (runBtn) runBtn.addEventListener('click', function () { _run(root); });
+    if (runBtn) runBtn.addEventListener('click', function () { return _run(root); });
 
     if (GIS.workspace) {
       GIS.workspace.preparePanel(root.id, 'analysisToolsToolbar-' + suffix, 'analysisToolsClose-' + suffix, op.label);
@@ -490,15 +481,6 @@ window.GIS = window.GIS || {};
     return _launcher;
   }
 
-  function init() { if (!_launcher) _buildLauncher(); }
-
-  function activate() { return _showLauncher(); }
-
-  function deactivate() {
-    Object.keys(_panels).forEach(function (id) { _panels[id].container.style.display = 'none'; });
-    if (_launcher) _launcher.container.style.display = 'none';
-  }
-
   function toggle() {
     var opId = window.GIS._lastMenuOp || '';
     window.GIS._lastMenuOp = '';
@@ -506,10 +488,6 @@ window.GIS = window.GIS || {};
     else _showLauncher();
   }
 
-  function openWith(opId) {
-    if (opId && _opById(opId)) return _showTool(opId);
-    return _showLauncher();
-  }
   function _applyOpVisibility(root) {
     _root = root;
     var op = _opById(_g('atOp').value);
@@ -555,8 +533,6 @@ window.GIS = window.GIS || {};
     _show('atUnitField', e === 'gpal');
     _show('atWeightsMethodField', e === 'weights');
     _show('atKField', e === 'weights' && _g('atWeightsMethod').value === 'knn');
-    _show('atWeightsIntervalField', e === 'weights');
-    _show('atWeightsLagField', e === 'weights');
     _show('atIndependentsField', e === 'regression');
     _show('atNetworkSourceField', e === 'od');
     _show('atCellSizeField', e === 'f2r' || e === 'fishnet');
@@ -572,25 +548,22 @@ window.GIS = window.GIS || {};
   /** 图层下拉：后端注册名 与 前端面板名 合并（直连前会自动补注册） */
   function _refreshLayers(root) {
     _root = root;
-    var feNames = (GIS.layers && GIS.layers.getLayerNames) ? GIS.layers.getLayerNames() : [];
-    fetch((GIS.api && GIS.api.BASE_URL || '') + '/api/layers/names')
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        var seen = {}, merged = [];
-        ((data && data.names) || []).concat(feNames).forEach(function (n) {
-          if (n && !seen[n]) { seen[n] = 1; merged.push(n); }
-        });
-        _fillLayerSelect(root, 'atLayer', merged);
-        _fillLayerSelect(root, 'atLayer2', merged);
-        _fillLayerSelect(root, 'atLayer3', merged);
-        _refreshFieldSel(root);
-      })
-      .catch(function () {
-        _fillLayerSelect(root, 'atLayer', feNames);
-        _fillLayerSelect(root, 'atLayer2', feNames);
-        _fillLayerSelect(root, 'atLayer3', feNames);
-        _refreshFieldSel(root);
-      });
+    var revision = root._layerRefreshRevision = (root._layerRefreshRevision || 0) + 1;
+    function fill(backendNames) {
+      if (revision !== root._layerRefreshRevision) return;
+      var feNames = (GIS.layers && GIS.layers.getLayerNames) ? GIS.layers.getLayerNames() : [];
+      var merged = Array.from(new Set(feNames.concat(backendNames).filter(function(name) { return typeof name === 'string' && name; })));
+      _fillLayerSelect(root, 'atLayer', merged);
+      _fillLayerSelect(root, 'atLayer2', merged);
+      _fillLayerSelect(root, 'atLayer3', merged);
+      _refreshFieldSel(root);
+    }
+    // Local layers remain usable while the backend is slow or unavailable.
+    fill([]);
+    return fetch((GIS.api && GIS.api.BASE_URL || '') + '/api/layers/names')
+      .then(function (r) { if (!r.ok) throw new Error('图层列表读取失败'); return r.json(); })
+      .then(function (data) { fill(data && Array.isArray(data.names) ? data.names : []); })
+      .catch(function () { fill([]); });
   }
 
   function _fillLayerSelect(root, selId, names) {
@@ -627,8 +600,9 @@ window.GIS = window.GIS || {};
     sel.innerHTML = '<option value="">-- 选择字段 --</option>';
     if (!layerName || !GIS.layers || !GIS.layers.getLayerByName) return;
     var layer = GIS.layers.getLayerByName(layerName);
-    var features = layer && layer.geojson && Array.isArray(layer.geojson.features)
-      ? layer.geojson.features : [];
+    var geojson = layer && layer.geojson;
+    var features = geojson && geojson.type === 'Feature' ? [geojson]
+      : geojson && Array.isArray(geojson.features) ? geojson.features : [];
     var fields = new Set();
     features.forEach(function (feature) {
       var props = feature && feature.properties;
@@ -665,8 +639,7 @@ window.GIS = window.GIS || {};
 
   function _centerPanel(container) {
     if (GIS.workspace) {
-      var pos = GIS.workspace.centerPanel(container, PANEL_WIDTH);
-      _lastLeft = pos[0]; _lastTop = pos[1];
+      GIS.workspace.centerPanel(container, PANEL_WIDTH);
       return;
     }
     var vw = window.innerWidth;
@@ -680,7 +653,6 @@ window.GIS = window.GIS || {};
     container.style.left = coords[0] + 'px';
     container.style.top = coords[1] + 'px';
     container.style.transform = 'none';
-    _lastLeft = coords[0]; _lastTop = coords[1];
   }
 
   /** 面板保持在地图可见区域内（窗口缩放/侧栏宽度变化时）。 */
@@ -694,7 +666,6 @@ window.GIS = window.GIS || {};
       var pos = _clampToMapArea(container, r.left, r.top);
       container.style.left = pos[0] + 'px';
       container.style.top = pos[1] + 'px';
-      _lastLeft = pos[0]; _lastTop = pos[1];
     });
   }
 
@@ -716,7 +687,6 @@ window.GIS = window.GIS || {};
       var c = _clampToMapArea(container, startLeft + ev.clientX - startX, startTop + ev.clientY - startY);
       container.style.left = c[0] + 'px';
       container.style.top = c[1] + 'px';
-      _lastLeft = c[0]; _lastTop = c[1];
     }
     function onEnd() {
       document.removeEventListener('mousemove', onMove);
@@ -788,12 +758,24 @@ window.GIS = window.GIS || {};
       args.size = Math.max(3, Math.round(_num('atFocalSize', 3)));
     } else if (e === 'sourceValue') {
       var sv = _text('atSourceValue');
-      if (sv !== '') args.source_value = parseFloat(sv);
+      if (sv !== '') {
+        args.source_value = Number(sv);
+        if (!Number.isFinite(args.source_value)) { alert('源像元值必须是有限数值'); return; }
+      }
     } else if (e === 'inside') {
       args.inside = _checked('atInside');
     } else if (e === 'reference') {
       var ref = _text('atReference');
-      if (ref !== '') args.reference = parseFloat(ref);
+      if (ref !== '') {
+        var referenceValue = Number(ref);
+        if (!Number.isFinite(referenceValue)) { alert('参考高程必须是有限数值'); return; }
+        args.reference = referenceValue;
+      }
+      if (!args.after_layer && ref === '') {
+        alert('请选择变化后 DEM，或输入参考高程');
+        return;
+      }
+      if (!args.after_layer) args.after_layer = '';
     } else if (e === 'join') {
       var tf = _g('atField1').value;
       var jf = _g('atField2').value;
@@ -824,10 +806,6 @@ window.GIS = window.GIS || {};
     } else if (e === 'weights') {
       args.method = _g('atWeightsMethod').value;
       args.k = Math.max(1, Math.round(_num('atK', 8)));
-      var wInterval = _text('atWeightsInterval');
-      if (wInterval !== '') args.interval = parseFloat(wInterval);
-      var wLag = _text('atWeightsLag');
-      if (wLag !== '') args.lag = Math.round(parseFloat(wLag));
     } else if (e === 'regression') {
       var dep = _g('atField1').value;
       var ind = _text('atIndependents');
@@ -862,5 +840,5 @@ window.GIS = window.GIS || {};
     return _invoke(root, op.tool, args);
   }
 
-  GIS.analysisTools = { init: init, activate: activate, deactivate: deactivate, toggle: toggle, openWith: openWith };
+  GIS.analysisTools = { toggle: toggle };
 })();

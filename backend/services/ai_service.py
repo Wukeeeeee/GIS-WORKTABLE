@@ -11,7 +11,8 @@ GIS WorkTable — AI 服务层
     - 本文件保留: 系统提示词、对话历史、GLM 路由、测试函数
 """
 
-import os, time, tempfile, json, datetime, re, subprocess
+import os, time, tempfile, json, datetime, re
+import threading
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -19,10 +20,6 @@ from urllib.parse import urlsplit
 _TEMP_OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "gis_worktable_output")
 os.makedirs(_TEMP_OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.path.join(_TEMP_OUTPUT_DIR, "output"), exist_ok=True)
-
-# Browser-Use / LLM 工具需要用到的当前会话 API Key
-_current_api_key = ""
-_current_provider = "deepseek"
 
 # 技能目录（ Markdown 文件，由 GLM 路由加载）
 _SKILLS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "skills")
@@ -414,7 +411,7 @@ SYSTEM_PROMPT = """你是一个GIS WorkTable内置AI助手（多模型协作）�
   - cost_distance / least_cost_path 是栅格代价面，不是路网；路网分析用 network_analysis / od_cost_matrix
   - spatial_regression 是探索性回归（OLS + 残差自相关），要求因变量和自变量都是数值字段
   - geometry_attributes 在经纬度坐标系下面积/长度无意义，工具会自动投影并在结果中说明
-  - spatial_weights_matrix 是 spatial_moran / spatial_hotspot / spatial_regression 的前置产物，可先建一次复用
+  - spatial_weights_matrix 可独立生成并查看/下载权重文件；spatial_moran / spatial_hotspot / spatial_regression 当前各自构建权重，不读取此文件
   - 不确定用什么方法时：参考已加载的 GIS 专业知识库（knowledge/ 模块）中的"方法选择依据"
 
   ### 结果验证清单（分析完成后必须自查）
@@ -502,7 +499,36 @@ SYSTEM_PROMPT_GLM = """你是 GIS WorkTable 的 AI 助手（免费模型）。
 # ============================================================
 
 conversation_history = {}
+_HISTORY_LOCK = threading.RLock()
 _HISTORY_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "cache", "history")
+
+
+class _PendingHistory(list):
+    """Request-local history view rebased against committed session history."""
+
+    def __init__(self, messages, base_history):
+        super().__init__(messages)
+        self.base_history = base_history
+
+
+def _rebase_history_context(session_id: str, context: list) -> list:
+    if not isinstance(context, _PendingHistory):
+        return context
+    with _HISTORY_LOCK:
+        current = conversation_history.get(session_id)
+        if current is context.base_history:
+            return context
+        request_entry = next(
+            (item for item in reversed(context) if isinstance(item, dict) and item.get("role") == "user"),
+            None,
+        )
+        if request_entry is None:
+            return context
+        messages = list(current or [])
+        if messages and not _check_topic_relevance(request_entry.get("content", ""), messages):
+            messages = []
+        rebased = _PendingHistory(messages + [request_entry], current)
+        return rebased
 
 
 def _ensure_history_dir():
@@ -539,6 +565,8 @@ def _sanitize_history(history: list) -> list:
         new_msg["content"] = msg.get("content")
         if role == "assistant" and isinstance(new_msg["content"], str):
             new_msg["content"] = _strip_protocol_text(new_msg["content"])
+        if role == "assistant" and isinstance(msg.get("reasoning_content"), str):
+            new_msg["reasoning_content"] = msg["reasoning_content"]
         if role == "tool":
             new_msg["tool_call_id"] = msg.get("tool_call_id", "")
         tool_calls = msg.get("tool_calls")
@@ -605,7 +633,10 @@ def _strip_protocol_text(text: str) -> str:
     return cleaned.strip()
 
 
-def commit_assistant_reply(session_id: str, response: str, reasoning: str = None):
+def commit_assistant_reply(
+    session_id: str, response: str, reasoning: str = None,
+    history_context: list = None,
+):
     """把一轮 AI 回复写回会话历史并落盘（幂等：末条已是 assistant 则跳过）。
 
     普通 /api/chat 与 SSE /api/chat/stream 共用，保证两种入口的对话历史一致：
@@ -614,21 +645,30 @@ def commit_assistant_reply(session_id: str, response: str, reasoning: str = None
     """
     if not response or not response.strip():
         return
-    history = conversation_history.get(session_id)
-    if history is None:
-        history = _load_history(session_id)
-        conversation_history[session_id] = history
-    if history and history[-1].get("role") == "assistant":
-        return  # 已提交过，防重复
-    response = _strip_protocol_text(response)
-    entry = {"role": "assistant", "content": response}
-    if reasoning:
-        entry["reasoning_content"] = reasoning
-    history.append(entry)
-    if len(history) > _MAX_HISTORY:
-        history = history[-_MAX_HISTORY:]
-        conversation_history[session_id] = history
-    _save_history(session_id, history)
+    with _HISTORY_LOCK:
+        current_history = conversation_history.get(session_id)
+        if history_context is not None:
+            if (current_history is history_context and history_context
+                    and history_context[-1].get("role") == "assistant"):
+                return  # 同一上下文已经提交
+            history = _rebase_history_context(session_id, history_context)
+            conversation_history[session_id] = history
+        else:
+            history = current_history
+            if history is None:
+                history = _load_history(session_id)
+                conversation_history[session_id] = history
+        if history and history[-1].get("role") == "assistant":
+            return  # 已提交过，防重复
+        response = _strip_protocol_text(response)
+        entry = {"role": "assistant", "content": response}
+        if reasoning:
+            entry["reasoning_content"] = reasoning
+        history.append(entry)
+        if len(history) > _MAX_HISTORY:
+            history = history[-_MAX_HISTORY:]
+            conversation_history[session_id] = history
+        _save_history(session_id, history)
 
 
 def _clean_old_history(max_days: int = 7):
@@ -684,18 +724,6 @@ def clean_old_cache(max_age_days: int = 7):
             except Exception:
                 pass
 
-    cache_root = os.path.dirname(_CACHE_DIR)
-    if os.path.isdir(cache_root):
-        for fname in os.listdir(cache_root):
-            if not (fname.endswith('.json') and len(fname) == 44):
-                continue
-            fpath = os.path.join(cache_root, fname)
-            try:
-                if now - os.path.getmtime(fpath) > max_age:
-                    os.remove(fpath)
-                    removed += 1
-            except Exception:
-                pass
     return removed
 
 
@@ -708,17 +736,19 @@ _MAX_HISTORY = 30
 
 def _get_or_create_history(session_id: str, message: str) -> list:
     """获取或创建会话历史，含话题切换检测"""
-    if session_id not in conversation_history:
-        conversation_history[session_id] = _load_history(session_id)
-    history = conversation_history[session_id]
-    # 话题切换检测
-    if history:
-        topic_related = _check_topic_relevance(message, history)
-        if not topic_related:
-            history.clear()
-    # 加入用户消息
-    history.append({"role": "user", "content": message})
-    return history
+    with _HISTORY_LOCK:
+        if session_id not in conversation_history:
+            conversation_history[session_id] = _load_history(session_id)
+        base_history = conversation_history[session_id]
+        history = list(base_history)
+        # 话题切换检测
+        if history:
+            topic_related = _check_topic_relevance(message, history)
+            if not topic_related:
+                history = []
+        # 新用户消息仅进入本次上下文；AI 成功回复后才提交为正式历史。
+        history.append({"role": "user", "content": message})
+        return _PendingHistory(history, base_history)
 
 
 def _build_system_content(cfg, message: str, session_id: str = "default", force_skills: list = None,
@@ -905,7 +935,8 @@ def _try_handle_confirm_command(session_id: str, message: str) -> dict | None:
 
     # choose_option：用户消息匹配某个选项时，记录选择并走正常 AI 流程
     action = pending_action.get_pending_action(session_id)
-    if action and action.get("action") == "choose_option":
+    cmd = pending_action.classify_short_command(message)
+    if action and action.get("action") == "choose_option" and cmd != "cancel":
         options = action.get("options", [])
         msg_norm = (message or "").strip()
         for opt in options:
@@ -920,7 +951,6 @@ def _try_handle_confirm_command(session_id: str, message: str) -> dict | None:
         pending_action.clear_pending_action(session_id)
         return None
 
-    cmd = pending_action.classify_short_command(message)
     if cmd is None:
         return None
     if action is None:
@@ -943,8 +973,11 @@ def _try_handle_confirm_command(session_id: str, message: str) -> dict | None:
         }
 
     # 本轮对话写回（user 已在此追加；补 assistant 并落盘），然后消费 pending
-    _get_or_create_history(session_id, message)
-    commit_assistant_reply(session_id, result.get("response", ""), None)
+    history_context = _get_or_create_history(session_id, message)
+    commit_assistant_reply(
+        session_id, result.get("response", ""), None,
+        history_context=history_context,
+    )
     pending_action.clear_pending_action(session_id)
     return result
 
@@ -979,11 +1012,8 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
             "pending_suggestions": {...} | None,  # AOI 候选
         }
     """
-    global _current_api_key, _current_provider
     if cfg is None:
         raise ValueError("chat_with_ai 需要 LLMConfig（cfg），请先 resolve_llm_config()")
-    _current_api_key = cfg.api_key
-    _current_provider = provider or cfg.model
 
     # 模式已固定为完整模式，快速模式已移除
 
@@ -1012,6 +1042,7 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     system_content, skill_text, model_display = _build_system_content(cfg, message, session_id, force_skills, task_id)
 
     # 构建消息列表（LangGraph 用 BaseMessage 格式，assistant + reasoning 一并带回）
+    history = _rebase_history_context(session_id, history)
     langgraph_messages = _build_langgraph_messages(system_content, history)
 
     # === 调用 LangGraph Agent ===
@@ -1020,21 +1051,15 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     start_time = time.time()
     print(f"[GIS] [{model_display}] 启动 LangGraph Agent...", flush=True)
 
-    from backend.services.tools import release_session_lock as _release_slock
-    _slock_sid = session_id or "default"
-    try:
-        result = run_agent(
-            messages=langgraph_messages,
-            cfg=cfg,
-            amap_key=amap_key or "",
-            skill_text=skill_text,
-            original_message=message,
-            session_id=session_id,
-            task_id=task_id,
-        )
-    finally:
-        # 异常路径也释放会话锁（run_agent 内部正常路径已释放，重复释放无害）
-        _release_slock(_slock_sid)
+    result = run_agent(
+        messages=langgraph_messages,
+        cfg=cfg,
+        amap_key=amap_key or "",
+        skill_text=skill_text,
+        original_message=message,
+        session_id=session_id,
+        task_id=task_id,
+    )
 
     elapsed = time.time() - start_time
     print(f"[GIS] [{model_display}] LangGraph Agent 完成，耗时 {elapsed:.1f}s", flush=True)
@@ -1042,10 +1067,13 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     # 写回本轮 AI 回复到历史并落盘（与 SSE 流共用同一函数）
     ai_reply = result.get("response", "")
     if result.get("busy"):
-        # 会话忙不是 AI 的回复：写进历史会让下一轮把它当成"自己说过的话"
+        # 用户消息尚未提交；busy 结果不能替换或污染正式历史。
         print("[GIS] 会话忙，本轮不写入会话历史", flush=True)
+        return result
     else:
-        commit_assistant_reply(session_id, ai_reply, result.get("reasoning"))
+        commit_assistant_reply(
+            session_id, ai_reply, result.get("reasoning"), history_context=history,
+        )
 
     # 定期清理过期历史文件
     if len(conversation_history) > 100:
@@ -1081,106 +1109,108 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
 
 
 # ============================================================
-# 会话状态导出（供工程持久化使用）
-# ============================================================
-
-def get_session_state(session_id: str = "default") -> dict:
-    """返回当前会话的快照：消息、图层、provider"""
-    from backend.services.tools import get_registered_layers_snapshot
-    history = conversation_history.get(session_id, [])
-    return {
-        "messages": history,
-        "layers": get_registered_layers_snapshot(),
-    }
-
-
-# ============================================================
 # 清除记忆
 # ============================================================
 
 def clear_memory(session_id: str = "default"):
     """清除指定会话的记忆"""
-    path = _history_path(session_id)
+    from backend.services.tools import acquire_shared_state_lock, release_shared_state_lock
+    if not acquire_shared_state_lock(0):
+        return False
     try:
-        if os.path.exists(path):
-            os.remove(path)
-    except Exception:
-        pass
-    if session_id in conversation_history:
-        conversation_history[session_id] = []
-    # 清除待确认的 pending task
-    try:
-        from backend.services import pending_action
-        pending_action.clear_pending_action(session_id)
-    except Exception:
-        pass
-    # 清除注册的图层和所有共享状态
-    try:
-        from backend.services.tools import (
-            _registered_layers, _pending_layers, _pending_images,
-            _pending_layer_ops, reset_state, get_current_task_id,
-        )
-        # 先删除 task_manager 中的当前任务（磁盘文件 + 内存），避免旧任务上下文残留
+        path = _history_path(session_id)
         try:
-            _tid = get_current_task_id()
-            if _tid:
-                from backend.services.task_manager import delete_task
-                delete_task(_tid)
+            if os.path.exists(path):
+                os.remove(path)
         except Exception:
             pass
-        _registered_layers.clear()
-        _pending_layers.clear()
-        _pending_images.clear()
-        _pending_layer_ops.clear()
-        # 重置当前任务 ID，避免 system prompt 注入旧任务上下文（代码/Artifact/执行历史）
-        reset_state()
-    except Exception:
-        pass
-    try:
-        from backend.services.log_service import archive_temp_to_perm
-        archive_temp_to_perm(session_id)
-    except Exception:
-        pass
-    return True
+        if session_id in conversation_history:
+            conversation_history[session_id] = []
+        # 清除待确认的 pending task
+        try:
+            from backend.services import pending_action
+            pending_action.clear_pending_action(session_id)
+        except Exception:
+            pass
+        # 清除注册的图层和所有共享状态
+        try:
+            from backend.services.tools import (
+                _registered_layers, _pending_layers, _pending_images,
+                _pending_layer_ops, _state_lock, reset_state, get_current_task_id,
+            )
+            # 先删除 task_manager 中的当前任务（磁盘文件 + 内存），避免旧任务上下文残留
+            try:
+                _tid = get_current_task_id()
+                if _tid:
+                    from backend.services.task_manager import delete_task
+                    delete_task(_tid)
+            except Exception:
+                pass
+            with _state_lock:
+                _registered_layers.clear()
+                _pending_layers.clear()
+                _pending_images.clear()
+                _pending_layer_ops.clear()
+                # 重置当前任务 ID，避免 system prompt 注入旧任务上下文（代码/Artifact/执行历史）
+                reset_state()
+        except Exception:
+            pass
+        try:
+            from backend.services.log_service import archive_temp_to_perm
+            archive_temp_to_perm(session_id)
+        except Exception:
+            pass
+        return True
+    finally:
+        release_shared_state_lock()
 
 
 # ============================================================
 # 取消 AI 请求（按 session 隔离，避免并发会话互相误伤）
 # ============================================================
 
-# session_id -> bool。遗留的全局名保留为兼容别名（graph.py 等处引用），
-# 但真实状态存 _cancelled_sessions。
-_request_cancelled = False
+# 全局取消使用代次：已运行会话保留旧代次并被取消；新请求记录当前代次后可正常运行。
+_global_cancel_generation = 0
+_session_cancel_generation: dict = {}
 _cancelled_sessions: dict = {}
 _CANCELLED_SESSIONS_MAX = 1000
+_CANCEL_LOCK = threading.Lock()
 
 def request_cancel(session_id: str = ""):
     """标记取消指定会话的 AI 请求（由 /api/cancel 端点调用）。
 
     session_id 为空时视为"全局取消"（兼容旧前端：取消所有正在跑的会话）。
     """
-    global _request_cancelled
+    global _global_cancel_generation
     if not session_id:
         # 兼容模式：全局取消
-        _request_cancelled = True
-        _cancelled_sessions.clear()
+        with _CANCEL_LOCK:
+            _global_cancel_generation += 1
         print("[GIS] 用户请求取消（全局），已设置取消标志", flush=True)
         return "已发送取消信号"
-    if len(_cancelled_sessions) > _CANCELLED_SESSIONS_MAX:
-        _cancelled_sessions.clear()  # 防无限增长
-    _cancelled_sessions[session_id] = True
+    with _CANCEL_LOCK:
+        if session_id not in _cancelled_sessions:
+            while len(_cancelled_sessions) >= _CANCELLED_SESSIONS_MAX:
+                _cancelled_sessions.pop(next(iter(_cancelled_sessions)))
+        _cancelled_sessions[session_id] = True
     print(f"[GIS] 用户请求取消，已标记会话 {session_id} 的取消标志", flush=True)
     return f"已发送取消信号（会话 {session_id}）"
 
 def is_session_cancelled(session_id: str) -> bool:
     """检查指定会话是否被取消（同时兼容全局标志）。"""
-    if _request_cancelled:
-        return True
-    return bool(_cancelled_sessions.get(session_id))
+    with _CANCEL_LOCK:
+        started_generation = _session_cancel_generation.get(session_id, _global_cancel_generation)
+        return (started_generation < _global_cancel_generation
+                or bool(_cancelled_sessions.get(session_id)))
 
 def clear_session_cancel(session_id: str):
     """请求开始时清除本会话的取消标记（不动其他会话）。"""
-    _cancelled_sessions.pop(session_id, None)
+    with _CANCEL_LOCK:
+        _cancelled_sessions.pop(session_id, None)
+        if session_id not in _session_cancel_generation:
+            while len(_session_cancel_generation) >= _CANCELLED_SESSIONS_MAX:
+                _session_cancel_generation.pop(next(iter(_session_cancel_generation)))
+        _session_cancel_generation[session_id] = _global_cancel_generation
 
 
 # ============================================================
@@ -1252,59 +1282,3 @@ def test_key(cfg) -> tuple:
         if "connection error" in low or "connecterror" in low:
             return False, "无法连接模型服务。请检查接口地址、代理端口是否正常，以及 DNS / TLS 连接；这不一定是密钥错误。"
         return False, "连接失败。请检查接口地址、模型名和服务状态。"
-
-
-# ============================================================
-# Browser-Use 浏览器操控（保留原实现，不迁移为工具）
-# ============================================================
-
-def browser_operate(task: str, url: str = "") -> str:
-    """使用 Browser-Use AI Agent 操控浏览器执行复杂任务"""
-    import asyncio, sys
-    from backend.services.ai_service import _current_api_key, _current_provider
-
-    if not _current_api_key:
-        return "错误：未配置 API Key，browser_operate 需要 API Key 驱动 AI 决策"
-
-    script = r'''
-import asyncio, sys, os
-os.environ["ANONYMIZED_TELEMETRY"] = "false"
-from browser_use import Agent
-from langchain_openai import ChatOpenAI
-async def main():
-    api_key = os.environ.get("_BROWSER_API_KEY", "")
-    llm = ChatOpenAI(
-        model="deepseek-chat",
-        api_key=api_key,
-        base_url="https://api.deepseek.com",
-        temperature=0,
-    )
-    llm.provider = "openai"
-    agent = Agent(task=sys.argv[1], llm=llm, use_vision=False, max_actions_per_step=5)
-    result = await agent.run(max_steps=20)
-    text = str(result)
-    if len(text) > 5000:
-        text = text[:5000] + "\n\n...(结果过长已截断)"
-    return text
-if __name__ == "__main__":
-    try:
-        print(asyncio.run(main()))
-    except Exception as e:
-        print(f"Browser-Use 执行错误: {str(e)}")
-'''
-
-    try:
-        result = subprocess.run(
-            [sys.executable, '-c', script, task],
-            capture_output=True, timeout=120,
-            env={**os.environ.copy(), 'PYTHONIOENCODING': 'utf-8', '_BROWSER_API_KEY': _current_api_key},
-        )
-        stdout = result.stdout.decode('utf-8', errors='replace')
-        stderr = result.stderr.decode('utf-8', errors='replace')
-        if result.returncode != 0:
-            return f"Browser-Use 执行失败：{stderr[:500]}"
-        return stdout.strip() or f"Browser-Use 未返回结果（stderr: {stderr[:200] or '无'}）"
-    except subprocess.TimeoutExpired:
-        return "错误：Browser-Use 执行超时（120 秒）"
-    except Exception as e:
-        return f"Browser-Use 错误：[{type(e).__name__}] {str(e)[:300]}"

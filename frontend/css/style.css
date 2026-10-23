@@ -310,6 +310,11 @@ html.gis-workspace.theme-dark a:visited {
   width: 14px;
   height: 14px;
 }
+.message-avatar-ai svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
 
 .message-avatar-ai {
   background: var(--ui-gray-200) /* -> --outline-variant */;
@@ -1643,6 +1648,7 @@ html.gis-workspace.theme-dark a:visited {
   -webkit-backdrop-filter: blur(12px);
 }
 .map-context-menu .context-menu-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1658,9 +1664,39 @@ html.gis-workspace.theme-dark a:visited {
   flex-shrink: 0;
   opacity: 0.7;
 }
+.map-context-menu .context-menu-action-icon {
+  flex-shrink: 0;
+  opacity: 0.75;
+}
 .map-context-menu .context-menu-item span {
   white-space: nowrap;
 }
+.map-context-menu .context-menu-item-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.context-menu-submenu-arrow { margin-left: auto; opacity: 0.6; }
+.context-menu-submenu {
+  display: none;
+  position: absolute;
+  top: -4px;
+  left: 100%;
+  min-width: 150px;
+  padding: 4px 0;
+  border: 1px solid var(--outline-variant, #c4c7c7);
+  border-radius: 6px;
+  background: var(--surface-container-high, #ebe7e6);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+}
+.context-menu-submenu-trigger:hover > .context-menu-submenu,
+.context-menu-submenu-trigger:focus-within > .context-menu-submenu,
+.context-menu-submenu-trigger.is-open > .context-menu-submenu { display: block; }
+.context-menu-submenu .context-menu-item { padding: 6px 12px; }
 .map-context-menu .context-menu-item.is-disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -3276,6 +3312,9 @@ html.theme-dark {
 .model-status-dot.checking circle {
   fill: #f57c00;
   animation: dot-pulse 0.8s ease-in-out infinite alternate;
+}
+.model-status-dot.untested circle {
+  fill: #9e9e9e;
 }
 
 @keyframes dot-pulse {
@@ -5687,6 +5726,38 @@ body.gis-mode-3d .map-coords {
   font-size: 10px;
   color: var(--ui-gray-400);
   line-height: 1.5;
+}
+.connector-online-row.arcgis-fetch-only {
+  align-items: center;
+}
+.connector-online-row.arcgis-fetch-only .connector-online-input {
+  min-width: 0;
+}
+#arcgisFetchStatus,
+#arcgisFetchResult {
+  padding: 5px 12px;
+  overflow-wrap: anywhere;
+}
+#arcgisFetchStatus {
+  margin: 6px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--outline-variant, #d1d5db);
+  border-radius: 6px;
+  background: var(--surface-container-low, #f8fafc);
+  color: var(--on-surface, #1f2937);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.arcgis-inspection-title { display: block; margin-bottom: 4px; font-size: 12px; }
+.arcgis-inspection-summary + .arcgis-inspection-summary { margin-top: 2px; }
+.arcgis-inspection-fields { margin-top: 5px; }
+.arcgis-inspection-fields summary { color: var(--primary, #2563eb); cursor: pointer; }
+.arcgis-inspection-fields ul { margin: 4px 0 4px 16px; padding: 0; columns: 2; column-gap: 18px; }
+.arcgis-inspection-fields li { overflow-wrap: anywhere; break-inside: avoid; }
+.arcgis-inspection-next { margin-top: 6px; color: var(--on-surface-variant, #4b5563); }
+#arcgisFetchResult a {
+  color: var(--ui-accent, #2563eb);
+  text-decoration: underline;
 }
 
 /* 空间面板小按钮（数据获取行内） */

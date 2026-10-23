@@ -17,6 +17,8 @@
 """
 from __future__ import annotations
 
+import math
+
 PARAM_ROLES = {
     "spatial_buffer":       {"layer_name": "layer", "distance": "positive_num", "unit": "unit_km_m"},
     "spatial_multi_ring_buffer": {"layer_name": "layer"},
@@ -25,7 +27,7 @@ PARAM_ROLES = {
     "spatial_difference":   {"layer_a": "layer", "layer_b": "layer"},
     "spatial_clip":         {"layer_name": "layer", "clip_layer": "layer"},
     "spatial_centroid":     {"layer_name": "layer"},
-    "surface_volumes":      {"before_layer": "raster_layer", "after_layer": "raster_layer", "reference": "nonneg_num"},
+    "surface_volumes":      {"before_layer": "raster_layer", "after_layer": "raster_layer"},
     "raster_focal_stats":   {"layer_name": "raster_layer", "size": "odd_int"},
     "raster_reclassify":    {"layer_name": "raster_layer", "classes": "nonneg_num"},
     "join_field":           {"target_layer": "layer", "join_layer": "layer"},
@@ -39,10 +41,12 @@ _FIELD_ROLE = "field_of:"
 
 def _resolve_layer(value):
     """按 tools 的解析习惯找图层；返回 (info, err_msg)。"""
+    if not isinstance(value, str):
+        return None, "图层名称应为文本"
     try:
         from backend.services.tools import _registered_layers
-    except Exception:
-        return None, None
+    except Exception as exc:
+        return None, "图层注册表暂不可用，无法校验该参数（%s）" % type(exc).__name__
     info = _registered_layers.get(value)
     if not info:
         matches = [n for n in _registered_layers if value and value in n]
@@ -65,8 +69,17 @@ def _layer_fields(value):
     if err:
         return None, err
     feats = (info or {}).get("geojson", {}).get("features") or []
-    props = (feats[0] or {}).get("properties") or {}
-    return list(props.keys()), None
+    fields = []
+    seen = set()
+    for feature in feats:
+        props = (feature or {}).get("properties") or {}
+        if not isinstance(props, dict):
+            continue
+        for name in props:
+            if name not in seen:
+                seen.add(name)
+                fields.append(name)
+    return fields, None
 
 
 def validate_tool_args(tool_name: str, args: dict):
@@ -98,8 +111,10 @@ def validate_tool_args(tool_name: str, args: dict):
                 from backend.services.tools import _find_uploaded_tif
                 if _find_uploaded_tif(str(val)) is None:
                     warnings.append("%s: 未找到栅格文件「%s」，请先上传 GeoTIFF" % (pname, val))
-            except Exception:
-                pass
+            except Exception as exc:
+                warnings.append(
+                    "%s: 栅格文件检查暂不可用（%s）" % (pname, type(exc).__name__)
+                )
 
         elif role.startswith(_FIELD_ROLE):
             src_param = role[len(_FIELD_ROLE):]
@@ -137,27 +152,34 @@ def validate_tool_args(tool_name: str, args: dict):
 
         elif role == "positive_num":
             try:
+                if isinstance(val, bool):
+                    raise ValueError
                 fv = float(val)
-                if fv <= 0:
+                if not math.isfinite(fv) or fv <= 0:
                     warnings.append("%s: 应为正数，实际 %s" % (pname, fv))
-            except (TypeError, ValueError):
+            except (OverflowError, TypeError, ValueError):
                 warnings.append("%s: 应为数值，实际得到「%s」" % (pname, val))
 
         elif role == "nonneg_num":
             try:
+                if isinstance(val, bool):
+                    raise ValueError
                 fv = float(val)
-                if fv < 0:
+                if not math.isfinite(fv) or fv < 0:
                     warnings.append("%s: 不应为负数，实际 %s" % (pname, fv))
-            except (TypeError, ValueError):
+            except (OverflowError, TypeError, ValueError):
                 warnings.append("%s: 应为数值，实际得到「%s」" % (pname, val))
 
         elif role == "odd_int":
             try:
-                iv = int(val)
+                numeric = float(val)
+                if isinstance(val, bool) or not math.isfinite(numeric) or not numeric.is_integer():
+                    raise ValueError
+                iv = int(numeric)
                 if iv % 2 == 0:
                     clean[pname] = iv + 1
                     warnings.append("%s: 窗口应为奇数（3/5/7），已自动调整为 %d" % (pname, iv + 1))
-            except (TypeError, ValueError):
+            except (OverflowError, TypeError, ValueError):
                 warnings.append("%s: 应为整数，实际得到「%s」" % (pname, val))
 
     return clean, warnings

@@ -4,8 +4,9 @@ GIS WorkTable — 图层检测服务
 不依赖前端 AI，后端独立计算。
 """
 
-import json
 import math
+import re
+from numbers import Real
 from typing import Optional
 
 
@@ -21,9 +22,14 @@ def inspect_geojson(geojson: dict) -> dict:
             bbox, crs, crs_known, null_geom_count, invalid_geom_count
         }
     """
+    if not isinstance(geojson, dict):
+        return {"error": "不是有效的 GeoJSON 对象"}
+
     features = []
     if geojson.get("type") == "FeatureCollection":
         features = geojson.get("features", [])
+        if not isinstance(features, list) or any(not isinstance(f, dict) for f in features):
+            return {"error": "FeatureCollection.features 必须是 Feature 对象列表"}
     elif geojson.get("type") == "Feature":
         features = [geojson]
     else:
@@ -39,27 +45,36 @@ def inspect_geojson(geojson: dict) -> dict:
     for f in features:
         geom = f.get("geometry")
         props = f.get("properties", {})
+        if not isinstance(props, dict):
+            props = {}
 
         # 统计字段类型
         for k, v in props.items():
+            current = type(v).__name__ if v is not None else "null"
             if k not in attr_fields:
-                attr_fields[k] = type(v).__name__ if v is not None else "null"
+                attr_fields[k] = current
             else:
                 existing = attr_fields[k]
-                current = type(v).__name__ if v is not None else "null"
-                if existing != current:
+                if existing == "null" and current != "null":
+                    attr_fields[k] = current
+                elif current != "null" and existing != current and existing != "mixed":
                     attr_fields[k] = "mixed"
 
         # 几何类型
         if geom is None:
             null_geom += 1
             continue
+        if not isinstance(geom, dict):
+            invalid_geom += 1
+            continue
         gtype = geom.get("type")
-        if gtype:
-            geom_types.add(gtype)
-        else:
+        if not gtype:
             null_geom += 1
             continue
+        if not isinstance(gtype, str):
+            invalid_geom += 1
+            continue
+        geom_types.add(gtype)
 
         # 提取坐标用于 bbox
         extracted = _extract_coords(geom)
@@ -68,7 +83,6 @@ def inspect_geojson(geojson: dict) -> dict:
         # 检查无效几何
         try:
             from shapely.geometry import shape
-            import shapely
             s = shape(geom)
             if not s.is_valid:
                 invalid_geom += 1
@@ -98,31 +112,30 @@ def inspect_geojson(geojson: dict) -> dict:
 def _extract_coords(geom: dict) -> list:
     """递归提取几何中的所有坐标对"""
     coords = []
+    if not isinstance(geom, dict):
+        return coords
     gtype = geom.get("type")
-    raw = geom.get("coordinates", [])
 
-    if gtype == "Point":
-        if len(raw) >= 2:
-            coords.append(tuple(raw[:2]))
-    elif gtype in ("MultiPoint", "LineString"):
-        for c in raw:
-            if len(c) >= 2:
-                coords.append(tuple(c[:2]))
-    elif gtype in ("MultiLineString", "Polygon"):
-        for ring in raw:
-            for c in ring:
-                if len(c) >= 2:
-                    coords.append(tuple(c[:2]))
-    elif gtype == "MultiPolygon":
-        for poly in raw:
-            for ring in poly:
-                for c in ring:
-                    if len(c) >= 2:
-                        coords.append(tuple(c[:2]))
-    elif gtype == "GeometryCollection":
-        gs = geom.get("geometries", [])
-        for g in gs:
-            coords.extend(_extract_coords(g))
+    def walk(raw):
+        if not isinstance(raw, (list, tuple)):
+            return
+        if (len(raw) >= 2 and isinstance(raw[0], Real) and isinstance(raw[1], Real)
+                and not isinstance(raw[0], bool) and not isinstance(raw[1], bool)):
+            try:
+                x, y = float(raw[0]), float(raw[1])
+            except (OverflowError, TypeError, ValueError):
+                return
+            if math.isfinite(x) and math.isfinite(y):
+                coords.append((x, y))
+            return
+        for item in raw:
+            walk(item)
+
+    if gtype == "GeometryCollection":
+        for child in geom.get("geometries", []) if isinstance(geom.get("geometries", []), list) else []:
+            coords.extend(_extract_coords(child))
+    else:
+        walk(geom.get("coordinates", []))
     return coords
 
 
@@ -130,8 +143,8 @@ def _calc_bbox(coords: list) -> Optional[list]:
     """计算坐标边界框 [minLng, minLat, maxLng, maxLat]"""
     if not coords:
         return None
-    lngs = [c[0] for c in coords if len(c) >= 2]
-    lats = [c[1] for c in coords if len(c) >= 2]
+    lngs = [c[0] for c in coords if len(c) >= 2 and math.isfinite(c[0]) and math.isfinite(c[1])]
+    lats = [c[1] for c in coords if len(c) >= 2 and math.isfinite(c[0]) and math.isfinite(c[1])]
     if not lngs or not lats:
         return None
     return [min(lngs), min(lats), max(lngs), max(lats)]
@@ -142,11 +155,17 @@ def _detect_crs(geojson: dict) -> dict:
     # 检查 GeoJSON 标准 crs 字段
     crs = geojson.get("crs")
     if crs:
-        props = crs.get("properties", {})
-        name = props.get("name", "")
-        if "4326" in name or "WGS" in name.upper() or "84" in name:
+        props = crs.get("properties", {}) if isinstance(crs, dict) else {}
+        name = props.get("name", "") if isinstance(props, dict) else ""
+        if not isinstance(name, str):
+            name = ""
+        normalized = re.sub(r"[^A-Z0-9]", "", name.upper())
+        if (re.search(r"(?<!\d)4326(?!\d)", name)
+                or normalized.endswith("CRS84")
+                or normalized in {"WGS84", "WGS1984"}):
             return {"crs": "EPSG:4326 (WGS-84)", "known": True}
-        if "3857" in name or "900913" in name:
+        if (re.search(r"(?<!\d)(?:3857|900913)(?!\d)", name)
+                or "PSEUDOMERCATOR" in normalized):
             return {"crs": "EPSG:3857 (Web Mercator)", "known": True}
         if name:
             return {"crs": name, "known": True}

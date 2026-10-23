@@ -64,7 +64,6 @@ from backend.services.dem_providers.cache import (
 from backend.services.dem_providers.aws_terrain import (
     AWSTerrainProvider,
     _decode_terrarium_png,
-    _OCEAN_RGB,
 )
 
 
@@ -116,6 +115,19 @@ def _encode_rgb(R: int, G: int, B: int, h: int = 256, w: int = 256) -> bytes:
 # ============================================================
 
 class TestTileMath:
+
+    @pytest.mark.parametrize("latitudes", [
+        (MERCATOR_MAX_LAT + 2e-10, MERCATOR_MAX_LAT + 4e-10),
+        (-MERCATOR_MAX_LAT - 4e-10, -MERCATOR_MAX_LAT - 2e-10),
+    ])
+    def test_bbox_tolerance_cannot_create_empty_latitude_span(self, latitudes):
+        with pytest.raises(DEMAreaOutOfRangeError):
+            validate_bbox([0, latitudes[0], 1, latitudes[1]])
+
+    @pytest.mark.parametrize("shape", [(128, 128), (512, 512), (256,), (256, 256, 3)])
+    def test_mosaic_rejects_mis_sized_tiles(self, shape):
+        with pytest.raises(DEMTileDecodeError):
+            mosaic_tiles({(0, 0): np.zeros(shape)}, 0, 0, 0, 0, 0)
 
     def test_lnglat_to_tile_index_known(self):
         # 赤道本初子午线在 z=0 → tile (0,0)；z=1 → (1,1)
@@ -260,9 +272,17 @@ class TestCache:
     def test_empty_cache_returns_none(self, tmp_path):
         assert load_cached_tile(str(tmp_path), "test_prov", 0, 0, 0) is None
 
-    def test_oversized_cache_returns_none(self, tmp_path):
-        path = save_tile_atomic(str(tmp_path), "test_prov", 12, 1, 1, b"x")
-        # 不写入 → load_cached_tile 应返回 None
+    @pytest.mark.parametrize("stale_size", [False, True])
+    def test_oversized_cache_returns_none(self, tmp_path, monkeypatch, stale_size):
+        from backend.services.dem_providers import cache
+        from pathlib import Path
+
+        monkeypatch.setattr(cache, "_MAX_TILE_BYTES", 16)
+        path = Path(tile_path(str(tmp_path), "test_prov", 12, 1, 1))
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 16)
+        if stale_size:
+            monkeypatch.setattr(cache.os.path, "getsize", lambda _: 8)
         assert load_cached_tile(str(tmp_path), "test_prov", 12, 1, 1) is None
 
     def test_atomic_write_preserves_old_on_failure(self, tmp_path):
@@ -312,10 +332,18 @@ class TestTerrariumDecode:
         diff = np.abs(decoded - lin)
         assert np.nanmax(diff) < 1.5, f"max diff = {np.nanmax(diff)}"
 
-    def test_ocean_rgb_is_nan(self):
-        png = _encode_rgb(*_OCEAN_RGB)
+    @pytest.mark.parametrize("rgb", [(0, 0, 0), (0, 255, 255)])
+    def test_upstream_nodata_is_nan(self, rgb):
+        png = _encode_rgb(*rgb)
         decoded = _decode_terrarium_png(png)
         assert np.all(np.isnan(decoded))
+
+    @pytest.mark.parametrize("rgb,elevation", [
+        ((128, 128, 128), 128.5), ((128, 0, 0), 0), ((127, 255, 0), -1),
+    ])
+    def test_valid_elevations_are_not_masked(self, rgb, elevation):
+        decoded = _decode_terrarium_png(_encode_rgb(*rgb))
+        assert np.all(decoded == elevation)
 
     def test_decode_wrong_shape_raises(self):
         # 128×128 的 PNG（非 256×256）应抛 DEMTileDecodeError
@@ -336,6 +364,28 @@ class TestTerrariumDecode:
 # ============================================================
 
 class TestAWSTerrainProvider:
+
+    def test_corrupt_read_does_not_delete_concurrent_cache_refresh(self, tmp_path, monkeypatch):
+        from pathlib import Path
+        from backend.services.dem_providers import cache, aws_terrain
+        from backend.services.data_providers.errors import ProviderUnavailableError
+
+        good = _encode_rgb(128, 100, 0)
+        path = save_tile_atomic(str(tmp_path), "aws_terrain", 0, 0, 0, good)
+
+        def stale_read(*args):
+            # Another request replaces the file after this request read old bytes.
+            save_tile_atomic(str(tmp_path), "aws_terrain", 0, 0, 0, good)
+            return b"\x89PNG\r\n\x1a\nbroken"
+
+        def offline(*args, **kwargs):
+            raise ProviderUnavailableError("offline")
+
+        monkeypatch.setattr(cache, "load_cached_tile", stale_read)
+        monkeypatch.setattr(aws_terrain, "get_bytes", offline)
+        with pytest.raises(ProviderUnavailableError):
+            AWSTerrainProvider().fetch_tile(0, 0, 0, str(tmp_path))
+        assert Path(path).read_bytes() == good
 
     def test_capability_public(self):
         cap = AWSTerrainProvider().capability()
@@ -363,6 +413,7 @@ class TestAWSTerrainProvider:
         x_min, y_min, x_max, y_max = bbox_to_tile_index_range(bb, 12)
 
         def fake_get(url, **kwargs):
+            assert url.startswith("https://elevation-tiles-prod.s3.amazonaws.com/terrarium/")
             # URL 格式: .../{z}/{x}/{y}.png
             parts = url.rsplit("/", 3)
             z, x, y = int(parts[1]), int(parts[2].split(".")[0]), int(parts[3].split(".")[0])
@@ -462,12 +513,34 @@ class TestAWSTerrainProvider:
         assert s["valid_count"] == 9
         assert s["nodata_pct"] == 0.0
 
+    def test_result_summary_serializes_without_nonfinite_json_numbers(self):
+        result = DEMResult(
+            provider="test", data=np.full((2, 2), np.nan),
+            min_elevation=float("nan"), max_elevation=float("nan"), nodata=float("inf"),
+        )
+        payload = result.to_dict()
+        json.dumps(payload, allow_nan=False)
+        assert payload["min_elevation"] is None
+        assert payload["max_elevation"] is None
+        assert payload["nodata"] is None
+
 
 # ============================================================
 # 5. get_elevation_data 工具
 # ============================================================
 
 class TestGetElevationDataTool:
+
+    @mock.patch("backend.services.dem_providers.aws_terrain.get_bytes")
+    def test_nodata_only_area_returns_error_without_artifacts(self, mock_get, tmp_path):
+        mock_get.return_value = _encode_rgb(0, 0, 0)
+        output = json.loads(get_elevation_data.invoke({
+            "bbox": [112.93, 28.18, 112.97, 28.20], "resolution": 0.01,
+        }))
+        assert output["ok"] is False
+        assert "没有有效高程" in output["error"]
+        assert not list((tmp_path / "output" / "uploads").iterdir())
+        assert not _pending_layer_ops
 
     def test_tool_registered(self):
         from backend.services.tools import tools

@@ -66,7 +66,6 @@ _KIND_SYNONYMS = {
 # 允许的下载格式（白名单，未知格式不允许落盘/加载）
 VECTOR_FORMATS = ("geojson", "gpkg", "shp")
 RASTER_FORMATS = ("geotiff",)
-ALLOWED_FORMATS = VECTOR_FORMATS + RASTER_FORMATS
 ALLOWED_FORMAT_EXTS = {
     "geojson": ".geojson",
     "gpkg": ".gpkg",
@@ -80,12 +79,19 @@ def normalize_kind(kind: str = "", query: str = "") -> str:
 
     归一化失败返回 ""（表示"无法确定数据类型"，由上层引导用户补全）。
     """
-    text = f"{kind or ''} {query or ''}"
-    # 优先命中更长的同义词
     cands = sorted(_KIND_SYNONYMS.keys(), key=len, reverse=True)
-    for c in cands:
-        if c and c.lower() in text.lower():
-            return _KIND_SYNONYMS[c]
+    for text in (kind or "", query or ""):
+        normalized_text = str(text).lower()
+        for c in cands:
+            synonym = c.lower()
+            if not synonym:
+                continue
+            if synonym.isascii():
+                pattern = rf"(?<![a-z0-9_]){re.escape(synonym)}(?![a-z0-9_])"
+                if re.search(pattern, normalized_text):
+                    return _KIND_SYNONYMS[c]
+            elif synonym in normalized_text:
+                return _KIND_SYNONYMS[c]
     return ""
 
 
@@ -118,16 +124,26 @@ def parse_bbox(bbox: str = "") -> Optional[tuple]:
         return None
     if not (-90 <= min_lat <= 90 and -90 <= max_lat <= 90):
         return None
-    if min_lng > max_lng or min_lat > max_lat:
+    if min_lng >= max_lng or min_lat >= max_lat:
         return None
     return (min_lng, min_lat, max_lng, max_lat)
 
 
 def sanitize_name(name: str) -> str:
     """清理用于文件名/图层名的名称。"""
-    name = re.sub(r"[\\/:*?\"<>|\s]+", "_", str(name).strip())
+    name = re.sub(r"[\\/:*?\"<>|\x00-\x1f\s]+", "_", str(name).strip())
     name = re.sub(r"_+", "_", name).strip("_")
-    return name[:80] or "data"
+    name = name[:80].rstrip(".") or "data"
+    if name in (".", ".."):
+        return "data"
+    # Windows reserves these device names even when an extension is appended.
+    if name.split(".", 1)[0].upper() in {
+        "CON", "PRN", "AUX", "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }:
+        name = f"_{name}"
+    return name
 
 
 # ============================================================
@@ -208,7 +224,6 @@ class DataHit:
     time_end: str = ""
     source_url: str = ""
     note: str = ""
-    extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {

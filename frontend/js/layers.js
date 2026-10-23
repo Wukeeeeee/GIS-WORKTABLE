@@ -19,24 +19,52 @@ window.GIS = window.GIS || {};
   let _groupIdCounter = 0;
   let _handleSwipeAction = null;
 
-  function _trackRegistryOperation(promise, description) {
-    var tracked = Promise.resolve(promise).catch(function(error) {
-      console.warn('[GIS Layers] ' + description + '失败', error);
+  function _registryResultOk(result) {
+    if (Array.isArray(result)) return result.every(_registryResultOk);
+    return result !== false && !(result && (result.success === false || result.ok === false));
+  }
+
+  function _runRegistryOperation(operation) {
+    operation.failed = false;
+    operation.promise = Promise.resolve().then(operation.run).then(function(result) {
+      if (!_registryResultOk(result)) throw new Error('后台未确认操作成功');
+      _pendingRegistryOps = _pendingRegistryOps.filter(function(item) { return item !== operation; });
+      return result;
+    }).catch(function(error) {
+      operation.failed = true;
+      console.warn('[GIS Layers] ' + operation.description + '失败', error);
+      if (GIS.toast && GIS.toast.error) GIS.toast.error(operation.description + '失败，保存前将重试');
       return false;
     });
-    _pendingRegistryOps.push(tracked);
-    tracked.then(function() {
-      _pendingRegistryOps = _pendingRegistryOps.filter(function(item) { return item !== tracked; });
-    });
-    return tracked;
+    return operation.promise;
+  }
+
+  function _trackRegistryOperation(run, description, names, ownerId, waitsForLayer) {
+    var operation = { run: run, description: description, names: names || [], ownerId: ownerId,
+      waitsForLayer: !!waitsForLayer, failed: false };
+    _pendingRegistryOps.push(operation);
+    return _runRegistryOperation(operation);
   }
 
   function _waitForRegistrySync() {
-    var operations = _pendingRegistryOps.slice();
-    layerData.forEach(function(layer) {
-      if (layer._registrationPromise) operations.push(Promise.resolve(layer._registrationPromise));
-    });
-    return Promise.all(operations);
+    function waitUntilStable() {
+      var operations = _pendingRegistryOps.slice();
+      var promises = operations.map(function(operation) {
+        return operation.failed ? _runRegistryOperation(operation) : operation.promise;
+      });
+      layerData.forEach(function(layer) {
+        if (layer._registrationFailed && layer._retryRegistration) layer._retryRegistration();
+        if (layer._registrationPromise) promises.push(layer._registrationPromise);
+      });
+      return Promise.all(promises).then(function(results) {
+        var flat = results.flat(Infinity);
+        if (!flat.every(_registryResultOk)) return flat;
+        var changed = _pendingRegistryOps.some(function(operation) { return operations.indexOf(operation) < 0; })
+          || layerData.some(function(layer) { return layer._registrationPromise && promises.indexOf(layer._registrationPromise) < 0; });
+        return changed ? waitUntilStable().then(function(next) { return flat.concat(next); }) : flat;
+      });
+    }
+    return waitUntilStable();
   }
 
   function init() {
@@ -93,16 +121,14 @@ window.GIS = window.GIS || {};
           '</div>' +
         '</td></tr>';
 
-      if (!collapsed) {
-        if (groupLayers.length === 0) {
+      if (groupLayers.length === 0 && !collapsed) {
           html += '<tr class="group-empty-placeholder" data-group="' + escapeHtml(gid) + '" style="display:flex;align-items:center;justify-content:center;padding:8px 10px;margin-block:2px 6px;border:1px dashed var(--outline-variant,#ddd);border-radius:4px;background:var(--surface-container-lowest,#faf8f7);">' +
             '<td colspan="4" style="font-size:11px;color:var(--on-surface-variant,#888);text-align:center;border:none;padding:0;"><span style="display:inline-flex;align-items:center;vertical-align:-2px;margin-right:4px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><polyline points="2 10 22 10"/></svg></span> 该分组暂无图层，可拖入或右键图层移动至此</td></tr>';
-        } else {
-          groupLayers.forEach(function(layer) {
-            var originalIndex = layerData.indexOf(layer);
-            html += _renderLayerRow(layer, originalIndex, '');
-          });
-        }
+      } else {
+        groupLayers.forEach(function(layer) {
+          var originalIndex = layerData.indexOf(layer);
+          html += _renderLayerRow(layer, originalIndex, '', collapsed);
+        });
       }
     });
 
@@ -138,7 +164,7 @@ window.GIS = window.GIS || {};
     return 'GeometryCollection';
   }
 
-  function _renderLayerRow(layer, index, hiddenStyle) {
+  function _renderLayerRow(layer, index, hiddenStyle, groupCollapsed) {
     var rawType = layer.geometry_type;
     if (!rawType || rawType === '未知' || rawType === '未知类型' || rawType === 'Vector') {
       rawType = _detectGeomType(layer.geojson);
@@ -168,7 +194,9 @@ window.GIS = window.GIS || {};
     }
 
     const op = Math.round((layer.opacity !== undefined ? layer.opacity : 1) * 100);
-    return '<tr class="' + (layer.visible === false ? 'layer-hidden' : '') + '" draggable="true" data-index="' + index + '" data-id="' + escapeHtml(layer.layer_id || '') + '"' +
+    var rowClass = layer.visible === false ? 'layer-hidden' : '';
+    if (layer.groupId) rowClass += (rowClass ? ' ' : '') + 'group-layer-row' + (groupCollapsed ? ' is-collapsed' : '');
+    return '<tr class="' + rowClass + '"' + (groupCollapsed ? ' aria-hidden="true" inert' : '') + ' draggable="true" data-index="' + index + '" data-id="' + escapeHtml(layer.layer_id || '') + '"' +
       (layer.groupId ? ' data-group="' + escapeHtml(layer.groupId) + '"' : '') + hiddenStyle + '>' +
       "<td class=\"col-drag\"><span class=\"drag-handle\" draggable=\"true\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-102a87898985.png')\"></span></span></td>" +
       '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + (layer.layer_id || '') + '" aria-pressed="' + String(layer.visible !== false) + '" aria-label="' + (layer.visible !== false ? '隐藏图层' : '显示图层') + '" title="' + (layer.visible !== false ? '隐藏图层' : '显示图层') + '">' +
@@ -220,13 +248,23 @@ window.GIS = window.GIS || {};
     return colors[layerData.length % colors.length];
   }
 
-  function _registerLayerForPanel(name, geojson) {
+  function _registerLayerForPanel(name, geojson, layer) {
     if (!window.GIS.api || typeof window.GIS.api.registerLayer !== 'function') return Promise.resolve(false);
-    var registration;
-    try { registration = window.GIS.api.registerLayer(name, geojson); }
-    catch (error) { registration = Promise.reject(error); }
-    return Promise.resolve(registration).then(function(result) {
-      return result !== false;
+    var barriers = _pendingRegistryOps.filter(function(operation) {
+      return operation.names.indexOf(name) >= 0 && !(operation.waitsForLayer && operation.ownerId === layer.layer_id);
+    });
+    return Promise.all(barriers.map(function(operation) {
+      return operation.failed ? _runRegistryOperation(operation) : operation.promise;
+    })).then(function(results) {
+      if (!results.every(_registryResultOk)) throw new Error('同名旧图层尚未完成清理');
+      return window.GIS.api.registerLayer(name, geojson, layer.raster);
+    }).then(function(result) {
+      if (!_registryResultOk(result)) throw new Error('后台未确认图层注册成功');
+      if (result && typeof result.registration_token === 'string') {
+        var tokens = layer._registrationTokens || (layer._registrationTokens = Object.create(null));
+        tokens[name] = result.registration_token;
+      }
+      return true;
     }).catch(function(error) {
       console.warn('[GIS Layers] 后端图层注册/同步失败', name, error);
       if (window.GIS.toast && typeof window.GIS.toast.error === 'function') {
@@ -234,6 +272,64 @@ window.GIS = window.GIS || {};
       }
       return false;
     });
+  }
+
+  function _unregisterPanelName(layer, name) {
+    var token = layer._registrationTokens && layer._registrationTokens[name];
+    return Promise.resolve().then(function() { return GIS.api.unregisterLayer(name, token); }).then(function(result) {
+      if (result && result.stale && GIS.toast && typeof GIS.toast.warn === 'function') {
+        GIS.toast.warn('后台已更新同名图层，本次未删除新版本：「' + name + '」');
+      }
+      if (_registryResultOk(result) && layer._registrationTokens && layer._registrationTokens[name] === token) {
+        delete layer._registrationTokens[name];
+      }
+      return result;
+    });
+  }
+
+  function _retireRegisteredName(name, tokens, ownerId) {
+    var retired = { _registrationTokens: tokens };
+    return _trackRegistryOperation(function() {
+      if (layerData.some(function(other) { return other.layer_id !== ownerId && other._registeredName === name; })) return true;
+      return _unregisterPanelName(retired, name);
+    }, '清理旧图层「' + name + '」', [name], ownerId, false);
+  }
+
+  function _queueLayerRegistration(layer, name, geojson, keepRegisteredName) {
+    var previous = layer._registrationPromise;
+    var version = (layer._registrationVersion || 0) + 1;
+    layer._registrationVersion = version;
+    function attempt() {
+      layer._registrationFailed = false;
+      var promise = Promise.resolve(previous).catch(function() {}).then(function() {
+        var desired = typeof name === 'function' ? name() : name;
+        return _registerLayerForPanel(desired, geojson, layer).then(function(ok) {
+          if (!ok) return false;
+          // Tool panels may need a display-name alias. Keep the canonical
+          // identity and retain the alias token for versioned deletion.
+          if (keepRegisteredName && layer._registeredName) return true;
+          var old = layer._registeredName;
+          layer._registeredName = desired;
+          if (old && old !== desired && GIS.api && GIS.api.unregisterLayer) {
+            _retireRegisteredName(old, layer._registrationTokens, layer.layer_id);
+          }
+          return true;
+        });
+      }).then(function(ok) {
+        if (layer._registrationVersion === version) layer._registrationFailed = !ok;
+        return ok;
+      });
+      layer._registrationPromise = promise;
+      return promise;
+    }
+    layer._retryRegistration = attempt;
+    return attempt();
+  }
+
+  function _syncToolLayer(name) {
+    var layer = layerData.find(function(item) { return item.filename === name || item.layer_id === name; });
+    if (!layer || (!layer.geojson && !layer.raster)) return Promise.resolve(true);
+    return _queueLayerRegistration(layer, name, layer.geojson, true);
   }
 
   function _syncEditedLayerData(layerId, geojson) {
@@ -280,13 +376,11 @@ window.GIS = window.GIS || {};
       });
       stateLayer.bbox = hasCoordinates ? bounds : null;
     }
-    var registeredName = layer._registeredName || layer._rawName || layer.filename || layer.layer_id;
-    var promise = _registerLayerForPanel(registeredName, geojson);
-    layer._registrationPromise = promise.then(function(ok) {
-      if (ok) layer._registeredName = registeredName;
-      return ok;
-    });
-    return layer._registrationPromise;
+    renderList();
+    return _queueLayerRegistration(layer, function() {
+      return layer._rawName === layer.filename ? layer.filename
+        : layer._registeredName || layer._rawName || layer.filename || layer.layer_id;
+    }, geojson);
   }
 
   function addLayer(layer, skipRegister) {
@@ -302,6 +396,7 @@ window.GIS = window.GIS || {};
         _mapName: bridgeMapName,   // 2D 已按此名渲染，地图操作沿用
         geojson: layer.geojson,
         style: layer.style || { color: layer.color || nextColor() },
+        opacity: layer.opacity,
         color: layer.color || nextColor(),
         source: layer.source || 'upload',
         visible: layer.visible !== false,
@@ -310,11 +405,10 @@ window.GIS = window.GIS || {};
       });
       // 保持原注册行为（AI 后端需按原名可查）
       if (!skipRegister && window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
-        var registrationPromise = _registerLayerForPanel(bridgeMapName, layer.geojson);
         var panelRecord = layerData.find(function(item) { return item.layer_id === bridged.layer_id; });
         if (panelRecord) {
           panelRecord._registeredName = bridgeMapName;
-          panelRecord._registrationPromise = registrationPromise;
+          _queueLayerRegistration(panelRecord, bridgeMapName, layer.geojson);
         }
       }
       return bridged;
@@ -340,7 +434,7 @@ window.GIS = window.GIS || {};
     if (!skipRegister && window.GIS.api && typeof window.GIS.api.registerLayer === 'function' && layer.geojson) {
       var registeredLayer = layerData[layerData.length - 1];
       registeredLayer._registeredName = name;
-      registeredLayer._registrationPromise = _registerLayerForPanel(name, layer.geojson);
+      _queueLayerRegistration(registeredLayer, name, layer.geojson);
     }
     return layerData[layerData.length - 1] || null;
   }
@@ -372,11 +466,26 @@ window.GIS = window.GIS || {};
         window.GIS.chat.addMessage('已删除图层: ' + (target.filename || '图层'), 'system');
       }
       if (window.GIS.api && typeof window.GIS.api.unregisterLayer === 'function') {
-        var registeredName = target._registeredName || target.filename || target.layer_id || '';
-        var unregisterPromise = Promise.resolve(target._registrationPromise).catch(function() {}).then(function() {
-          return window.GIS.api.unregisterLayer(registeredName);
-        });
-        _trackRegistryOperation(unregisterPromise, '取消注册图层「' + registeredName + '」');
+        var registeredName = target._registeredName || target._rawName || target.filename || target.layer_id || '';
+        var registration = target._registrationPromise;
+        var retirement = target;
+        var reservedNames = [registeredName, target._rawName, target.filename].filter(Boolean);
+        _trackRegistryOperation(function() {
+          return Promise.resolve(registration).catch(function() {}).then(function() {
+            // 失败重试仅保留名称与版本，避免离线时留住已删除图层的大型数据。
+            retirement = { _registeredName: retirement._registeredName || registeredName,
+              _registrationTokens: retirement._registrationTokens };
+            var names = [retirement._registeredName].concat(Object.keys(retirement._registrationTokens || {}));
+            return Promise.allSettled(Array.from(new Set(names.filter(Boolean))).map(function(name) {
+              if (layerData.some(function(other) { return other._registeredName === name; })) return true;
+              return _unregisterPanelName(retirement, name);
+            })).then(function(results) {
+              var failure = results.find(function(result) { return result.status === 'rejected'; });
+              if (failure) throw failure.reason;
+              return results.map(function(result) { return result.value; });
+            });
+          });
+        }, '取消注册图层「' + registeredName + '」', reservedNames, target.layer_id, true);
       }
     }
   }
@@ -566,7 +675,7 @@ window.GIS = window.GIS || {};
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = (layer.filename || '图层') + '.geojson';
+    a.download = (layer.filename || '图层').replace(/\.geojson$/i, '') + '.geojson';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -769,7 +878,23 @@ window.GIS = window.GIS || {};
         var gid = toggle.dataset.group;
         if (groups[gid]) {
           groups[gid].collapsed = !groups[gid].collapsed;
-          renderList();
+          var collapsed = groups[gid].collapsed;
+          toggle.textContent = collapsed ? '▶' : '▼';
+          toggle.title = collapsed ? '展开分组' : '折叠分组';
+          var groupRows = Array.from(tbody.querySelectorAll('.group-layer-row')).filter(function(row) {
+            return row.dataset.group === gid;
+          });
+          _saveGroupingChanges();
+          if (!groupRows.length) {
+            renderList();
+            return;
+          }
+          groupRows.forEach(function(row) {
+            row.classList.toggle('is-collapsed', collapsed);
+            row.inert = collapsed;
+            if (collapsed) row.setAttribute('aria-hidden', 'true');
+            else row.removeAttribute('aria-hidden');
+          });
         }
         return;
       }
@@ -894,11 +1019,6 @@ window.GIS = window.GIS || {};
       _syncLayerOrder();
       _saveGroupingChanges();
     }
-  }
-
-  /** 从分组中移除图层 */
-  function removeLayerFromGroup(layerId) {
-    moveLayerToGroup(layerId, null);
   }
 
   /** 删除分组 */
@@ -2633,6 +2753,29 @@ window.GIS = window.GIS || {};
     return undefined;
   }
 
+  function _parseEditedPointCoordinates(longitudeText, latitudeText) {
+    var longitude = longitudeText === undefined || longitudeText === '' ? NaN : Number(longitudeText);
+    var latitude = latitudeText === undefined || latitudeText === '' ? NaN : Number(latitudeText);
+    if (!Number.isFinite(longitude)) return { error: '经度必须是有限数字' };
+    if (longitude < -180 || longitude > 180) return { error: '经度须在 -180 到 180 之间' };
+    if (!Number.isFinite(latitude)) return { error: '纬度必须是有限数字' };
+    if (latitude < -90 || latitude > 90) return { error: '纬度须在 -90 到 90 之间' };
+    return { coordinates: [longitude, latitude] };
+  }
+
+  function _showAttrValidationError(table, message) {
+    if (window.GIS.toast && typeof window.GIS.toast.error === 'function') window.GIS.toast.error(message);
+    var error = document.getElementById('attrValidationError');
+    if (!error) {
+      error = document.createElement('div');
+      error.id = 'attrValidationError';
+      error.setAttribute('role', 'alert');
+      error.style.cssText = 'margin:6px 10px;padding:8px 10px;border:1px solid #d32f2f;border-radius:4px;background:#fff0f0;color:#b71c1c;font-size:12px;';
+      if (table.parentNode) table.parentNode.insertBefore(error, table);
+    }
+    error.textContent = message;
+  }
+
   /** 保存属性修改：读取 input → 检查空行 → 更新 GeoJSON → 刷新地图 */
   function saveAttrChanges(layerId, attrKeys) {
     var gj = getLayerGeoJSON(layerId);
@@ -2643,10 +2786,13 @@ window.GIS = window.GIS || {};
 
     var table = document.getElementById('attrDataTable');
     if (!table) return;
+    var priorValidationError = document.getElementById('attrValidationError');
+    if (priorValidationError && priorValidationError.parentNode) priorValidationError.parentNode.removeChild(priorValidationError);
 
     var fillVal = (document.getElementById('attrFillValue')?.value || '').trim();
 
     var rows = table.querySelectorAll('tbody tr');
+    var stagedRows = [];
     var emptyRowNums = [];
 
     rows.forEach(function(row) {
@@ -2658,39 +2804,53 @@ window.GIS = window.GIS || {};
       if (isNaN(idx) || idx >= features.length) return;
       var inputs = row.querySelectorAll('.attr-cell');
       var allEmpty = true;
-      var newLng = null, newLat = null;
+      var changes = {};
+      var coordinateValues = {};
       inputs.forEach(function(inp) {
         var field = inp.dataset.field;
         var val = inp.value.trim();
         if (field === '_fid') return; // Identity is managed by the layer registry, never by table edits.
-        if (field === '_经度') {
-          var numLng = parseFloat(val);
-          if (!isNaN(numLng)) newLng = numLng;
-          return;
-        }
-        if (field === '_纬度') {
-          var numLat = parseFloat(val);
-          if (!isNaN(numLat)) newLat = numLat;
+        if (field === '_经度' || field === '_纬度') {
+          coordinateValues[field] = val;
           return;
         }
         if (inp.readOnly) return; // 跳过只读几何列
         if (fillVal && val === '') val = fillVal;
-        var properties = features[idx].properties || (features[idx].properties = {});
+        var properties = features[idx].properties || {};
         var typeSample = properties[field];
         if (typeSample === undefined || typeSample === null) typeSample = _attributeTypeSample(features, field);
-        properties[field] = _coerceAttributeValue(typeSample, val);
+        changes[field] = _coerceAttributeValue(typeSample, val);
         if (val !== '') allEmpty = false;
       });
-      // 更新单点几何坐标
-      if (newLng !== null && newLat !== null) {
-        if (!features[idx].geometry) {
-          features[idx].geometry = { type: 'Point', coordinates: [newLng, newLat] };
-        } else if (features[idx].geometry.type === 'Point') {
-          features[idx].geometry.coordinates = [newLng, newLat];
+
+      var pointCoordinates = null;
+      if (Object.prototype.hasOwnProperty.call(coordinateValues, '_经度') || Object.prototype.hasOwnProperty.call(coordinateValues, '_纬度')) {
+        var rowNumber = parseInt(row.dataset.idx, 10) + 1;
+        var longitudeText = coordinateValues['_经度'];
+        var latitudeText = coordinateValues['_纬度'];
+        var parsedPoint = _parseEditedPointCoordinates(longitudeText, latitudeText);
+        if (parsedPoint.error) {
+          _showAttrValidationError(table, '第 ' + rowNumber + ' 行坐标无效：' + parsedPoint.error);
+          return;
         }
+        pointCoordinates = parsedPoint.coordinates;
         allEmpty = false;
       }
       if (allEmpty) emptyRowNums.push(idx + 1);
+      stagedRows.push({ idx: idx, changes: changes, pointCoordinates: pointCoordinates });
+    });
+
+    // Validate every row before mutating any properties or geometry.
+    if (stagedRows.length !== rows.length) return;
+    stagedRows.forEach(function(staged) {
+      var feature = features[staged.idx];
+      feature.properties = feature.properties || {};
+      Object.keys(staged.changes).forEach(function(field) { feature.properties[field] = staged.changes[field]; });
+      if (staged.pointCoordinates) {
+        if (!feature.geometry || feature.geometry.type === 'Point') {
+          feature.geometry = { type: 'Point', coordinates: staged.pointCoordinates };
+        }
+      }
     });
 
     // 弹窗警告空行
@@ -3504,7 +3664,10 @@ window.GIS = window.GIS || {};
     analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
     syncLayerOrder: _syncLayerOrder,
     syncLayerData: _syncEditedLayerData,
+    syncToolLayer: _syncToolLayer,
     coerceAttributeValue: _coerceAttributeValue,
+    parseEditedPointCoordinates: _parseEditedPointCoordinates,
+    saveAttrChanges: saveAttrChanges,
     waitForRegistrySync: _waitForRegistrySync,
     getLayers: () => [...layerData],
     getSymbologyState: _getSymbologyState,
@@ -3582,13 +3745,6 @@ window.GIS = window.GIS || {};
       if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
       if (GIS.map && GIS.map.enterEditMode) {
         GIS.map.enterEditMode(layer._rawName || layer.filename || layer.layer_id);
-      }
-    },
-    /** 保存折点编辑并退出编辑模式 */
-    saveEditVertices: function(name) {
-      if (GIS.map && GIS.map.exitEditMode) {
-        // map.exitEditMode is the cancel method; save is handled internally
-        GIS.chat.addMessage('请在编辑栏点击「保存」按钮完成编辑', 'system');
       }
     },
     startAddingToLayer: startAddingToLayer,
@@ -3903,9 +4059,7 @@ window.GIS = window.GIS || {};
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (!layer) return;
     var oldName = layer.filename || '未命名';
-    var oldRegisteredName = layer._registeredName || oldName;
     var oldMapName = layer._rawName || oldName;
-    var oldRegistrationPromise = layer._registrationPromise;
     var cancelled = false;
     var input = document.createElement('input');
     input.type = 'text';
@@ -3917,7 +4071,8 @@ window.GIS = window.GIS || {};
     input.focus();
     input.select();
     function commit() {
-      if (cancelled) return;
+      if (cancelled || !layerData.some(function(current) { return current === layer; })) return;
+      cancelled = true;
       var val = input.value.trim() || oldName;
       if (val === oldName) {
         nameEl.textContent = oldName;
@@ -3939,20 +4094,7 @@ window.GIS = window.GIS || {};
         window.GIS.map.renameLayer(oldMapName, val);
       }
       if (window.GIS.api && window.GIS.api.registerLayer && layer.geojson) {
-        var nextRegistrationPromise = Promise.resolve(oldRegistrationPromise).catch(function() {}).then(function() {
-          return _registerLayerForPanel(val, layer.geojson);
-        });
-        layer._registrationPromise = nextRegistrationPromise.then(function(registered) {
-          if (registered && window.GIS.api.unregisterLayer && oldRegisteredName !== val) {
-            return window.GIS.api.unregisterLayer(oldRegisteredName);
-          }
-          return registered;
-        });
-        layer._registrationPromise.then(function(registered) {
-          if (registered) layer._registeredName = val;
-        }).catch(function(error) {
-          console.warn('[GIS Layers] 重命名后的旧注册项清理失败', oldRegisteredName, error);
-        });
+        _queueLayerRegistration(layer, val, layer.geojson);
       }
     }
     input.addEventListener('blur', commit);

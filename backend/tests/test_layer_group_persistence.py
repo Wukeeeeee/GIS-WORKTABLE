@@ -27,6 +27,55 @@ def _use_temp_project_store(tmp_path, monkeypatch):
     project_service._blob_refcount.clear()
 
 
+@pytest.mark.parametrize("assignments,expected", [
+    (None, {"kept", "deleted"}),
+    ([], set()),
+    ([{"names": ["kept"]}], {"kept"}),
+    ([{"registry_name": "kept", "names": ["kept", "deleted"]}], {"kept"}),
+])
+def test_autosave_uses_the_explicit_frontend_layer_set(tmp_path, monkeypatch, assignments, expected):
+    from backend.services import ai_service, tools
+
+    _use_temp_project_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(ai_service, "conversation_history", {"scope": [{"role": "user", "content": "keep"}]})
+    monkeypatch.setattr(tools, "_registered_layers", {
+        name: {"geojson": _GEOJSON, "geometry_types": ["Point"]} for name in ("kept", "deleted")
+    })
+    saved = project_service.auto_save(session_id="scope", layer_assignments=assignments)
+    result = project_service._load_project_data(saved["id"])
+    assert {layer["name"] for layer in result["layers"]} == expected
+
+
+def test_autosave_can_remove_all_layers_without_chat_history(tmp_path, monkeypatch):
+    from backend.services import ai_service, tools
+
+    _use_temp_project_store(tmp_path, monkeypatch)
+    messages = [{"role": "user", "content": "saved history"}]
+    saved = project_service.save_project(project_id=None, name="manual", session_id="manual", provider="test",
+                                         map_state={}, messages=messages, layers=[{"name": "old", "geojson": _GEOJSON}])
+    monkeypatch.setattr(ai_service, "conversation_history", {})
+    monkeypatch.setattr(tools, "_registered_layers", {"old": {"geojson": _GEOJSON}})
+    project_service.auto_save(session_id="manual", project_id=saved["id"], layer_assignments=[])
+    result = project_service._load_project_data(saved["id"])
+    assert result["layers"] == []
+    assert result["messages"] == messages
+
+
+@pytest.mark.parametrize("assignment", [None, {}, {"names": "old"}, {"names": [None]},
+                                        {"registry_name": 3}, {"registry_name": "missing"}])
+def test_invalid_or_missing_layer_assignments_cannot_clear_saved_data(tmp_path, monkeypatch, assignment):
+    from backend.services import ai_service, tools
+
+    _use_temp_project_store(tmp_path, monkeypatch)
+    saved = project_service.save_project(project_id=None, name="manual", session_id="manual", provider="test",
+                                         map_state={}, messages=[], layers=[{"name": "old", "geojson": _GEOJSON}])
+    monkeypatch.setattr(ai_service, "conversation_history", {})
+    monkeypatch.setattr(tools, "_registered_layers", {"old": {"geojson": _GEOJSON}})
+    with pytest.raises(ValueError):
+        project_service.auto_save(session_id="manual", project_id=saved["id"], layer_assignments=[assignment])
+    assert project_service._load_project_data(saved["id"])["layers"][0]["name"] == "old"
+
+
 def test_project_round_trip_preserves_layer_groups(tmp_path, monkeypatch):
     _use_temp_project_store(tmp_path, monkeypatch)
 
@@ -74,6 +123,21 @@ def test_project_round_trip_preserves_stable_layer_id(tmp_path, monkeypatch):
     imported = project_service.import_project(project_service.export_project(saved["id"]))
     imported_project = project_service.load_project(imported["id"])
     assert imported_project["layers"][0]["layer_id"] == "layer-stable-123"
+
+
+def test_project_round_trip_preserves_layer_opacity_separately(tmp_path, monkeypatch):
+    _use_temp_project_store(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="透明度工程", session_id="opacity-round-trip", provider="test",
+        map_state={}, messages=[], layers=[{
+            "filename": "区域A", "geojson": _GEOJSON,
+            "style": {"color": "#112233", "fillOpacity": 0.18}, "opacity": 0.6,
+        }],
+    )
+
+    layer = project_service.load_project(saved["id"])["layers"][0]
+    assert layer["style"] == {"color": "#112233", "fillOpacity": 0.18}
+    assert layer["opacity"] == 0.6
 
 
 def test_autosave_keeps_group_for_registered_existing_layer(tmp_path, monkeypatch):
@@ -147,6 +211,29 @@ def test_autosave_keeps_group_for_registered_existing_layer(tmp_path, monkeypatc
     )
     cleared = project_service.load_project(initial["id"])
     assert cleared["layers"][0]["symbology"] is None, "an explicit null clears the saved thematic style"
+
+
+def test_autosave_keeps_layer_opacity_separate_from_base_style(tmp_path, monkeypatch):
+    _use_temp_project_store(tmp_path, monkeypatch)
+    from backend.services import ai_service, tools
+    monkeypatch.setattr(ai_service, "conversation_history", {
+        "opacity-session": [{"role": "user", "content": "保存透明度"}]
+    })
+    monkeypatch.setattr(tools, "_registered_layers", {
+        "区域A": {"geojson": _GEOJSON, "geometry_types": ["Point"], "feature_count": 1}
+    })
+
+    saved = project_service.auto_save(
+        session_id="opacity-session", provider="test",
+        layer_assignments=[{
+            "names": ["区域A"], "style": {"color": "#112233", "fillOpacity": 0.18},
+            "opacity": 0.6,
+        }],
+    )
+
+    layer = project_service.load_project(saved["id"])["layers"][0]
+    assert layer["style"] == {"color": "#112233", "fillOpacity": 0.18}
+    assert layer["opacity"] == 0.6
 
 
 @pytest.mark.parametrize("member_name", [

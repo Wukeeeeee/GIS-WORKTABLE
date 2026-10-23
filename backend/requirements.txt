@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 fastapi>=0.139.0
-uvicorn==0.30.0
+uvicorn==0.31.1
 # openai：无直接 import，是 langchain-openai 的传递依赖；pin 上限防止其破坏 langchain 兼容（勿删）
 openai>=2.16.0,<2.45.0
 playwright>=1.40
@@ -42,4 +42,4 @@ pmtiles>=3.0.0
 mapbox-vector-tile>=2.0.0
 
 # ---- MCP Server（阶段三：对外开放 GIS 工具给外部 AI 客户端）----
-mcp>=1.0.0
+mcp>=1.28.1,<2

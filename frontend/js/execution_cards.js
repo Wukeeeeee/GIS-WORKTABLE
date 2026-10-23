@@ -13,6 +13,9 @@ window.GIS = window.GIS || {};
     root.setAttribute('aria-label', 'AI 执行步骤');
     var cards = new Map();
     var calls = new Map();
+    var completedCalls = new Set();
+    var callSequence = 0;
+    var closed = false;
     var appliedOps = new Set();
 
     function text(tag, className, value) {
@@ -22,16 +25,19 @@ window.GIS = window.GIS || {};
       return el;
     }
     var toolLabels = {
-      focus_map: ['定位地图', 'location'], reverse_geocode: ['查询坐标位置', 'location'], geocode: ['查询位置', 'location'],
+      focus_map: ['定位地图', 'location'], reverse_geocode: ['查询坐标位置', 'location'], amap_geocode: ['查询位置', 'location'],
       measure_distance: ['测量距离', 'distance'], fetch_weather_data: ['查询天气', 'weather'],
       get_elevation_data: ['获取高程数据', 'elevation'], search_web: ['搜索网页', 'search'],
       fetch_webpage: ['读取网页', 'web'], fetch_webpage_scrapling: ['读取网页', 'web'],
       fetch_gis_data_url: ['获取 GIS 数据', 'map'], execute_python: ['执行空间分析', 'code']
     };
     function parseArgs(input) {
-      if (input && typeof input === 'object') return input;
+      if (input && typeof input === 'object' && !Array.isArray(input)) return input;
       var raw = String(input || '');
-      try { return JSON.parse(raw); } catch (_) { return {_raw: raw}; }
+      try {
+        var parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+      } catch (_) { return {_raw: raw}; }
     }
     function taskDetails(name, input, fallback) {
       var info = toolLabels[name] || ['执行 GIS 任务', 'generic'];
@@ -47,8 +53,9 @@ window.GIS = window.GIS || {};
       }
       var args = parseArgs(input);
       var target = '';
-      var location = args.location || args.city || args.layer_name || args.layer || args.name || args.url;
-      if (location && typeof location === 'string') target = location.replace(/^https?:\/\//i, '').split(/[/?#]/)[0];
+      var location = args.location || args.city || args.address || args.layer_name || args.layer || args.name || args.url;
+      if (location && typeof location === 'string') target = /^https?:\/\//i.test(location)
+        ? location.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] : location;
       var raw = String(args._raw || '');
       if (!target) {
         var lon = raw.match(/(?:经度|longitude|\blon\b|\blng\b)[^\d-]*(-?\d+(?:\.\d+)?)/i);
@@ -116,7 +123,9 @@ window.GIS = window.GIS || {};
       var key = stepId || ('legacy-' + (cards.size + 1));
       var card = cards.get(key);
       if (card) return card;
-      card = { id: key, status: 'running', inFlight: 0, counts: {search: 0, read: 0}, outputs: [], pendingMapOps: 0, retries: 0, warning: false };
+      card = { id: key, status: 'running', inFlight: 0, counts: {search: 0, read: 0}, outputs: [], pendingMapOps: 0, warning: false };
+      card.failedCalls = new Map();
+      card.mapErrors = new Map();
       card.row = document.createElement('article');
       card.row.className = 'ai-step-card ai-step-running';
       var heading = document.createElement('div'); heading.className = 'ai-step-heading';
@@ -153,35 +162,63 @@ window.GIS = window.GIS || {};
       var value = String(output == null ? '' : output).replace(/\s+/g, ' ').trim();
       return value.length > 180 ? value.slice(0, 177) + '…' : value;
     }
+    function currentError(card) {
+      var failure = card.failedCalls.values().next().value;
+      card.error = failure ? failure.error : card.mapErrors.values().next().value || null;
+      return card.error;
+    }
+    function settleCard(card) {
+      var error = currentError(card);
+      if (card.inFlight) setStatus(card, 'running', error ? '仍在处理（存在失败）' : null);
+      else if (card.pendingMapOps) setStatus(card, 'running', '等待地图操作');
+      else if (error) setStatus(card, 'failed', card.failedCalls.size ? '步骤失败' : '地图操作失败');
+      else setStatus(card, card.warning ? 'warning' : 'success');
+      updateProgress(card);
+    }
     function addStart(evt) {
+      var callId = evt.tool_call_id ? String(evt.tool_call_id) : 'legacy-call-' + (++callSequence);
+      if (calls.has(callId) || completedCalls.has(callId)) return null;
       var card = ensureCard(evt.step_id, evt.step_label, evt.name, evt.input);
-      var retrying = card.status === 'failed' && card.inFlight === 0;
+      var retryOf = null;
+      if (card.inFlight === 0) card.failedCalls.forEach(function (failed, id) {
+        if (failed.name === evt.name) retryOf = id;
+      });
+      var retrying = retryOf !== null;
       var row = document.createElement('li'); row.className = 'ai-tool-record';
       var head = text('strong', '', evt.name || '工具'); row.appendChild(head);
       var input = text('pre', 'ai-tool-args', typeof evt.input === 'string' ? evt.input : JSON.stringify(evt.input || {}, null, 2));
       row.appendChild(input); card.recordList.appendChild(row);
-      var callId = evt.tool_call_id || ('legacy-call-' + calls.size);
-      calls.set(callId, {card: card, row: row, name: evt.name || '工具'});
-      if (retrying) card.retries++;
+      calls.set(callId, {id: callId, card: card, row: row, name: evt.name || '工具', retryOf: retryOf});
       card.inFlight++;
       if (evt.name === 'search_web') card.counts.search++;
       if (evt.name === 'fetch_webpage' || evt.name === 'fetch_webpage_scrapling') card.counts.read++;
-      card.error = null;
       setStatus(card, 'running', retrying ? '正在重试' : null); updateProgress(card);
       return card;
     }
     function addEnd(evt) {
-      var callId = evt.tool_call_id;
+      var callId = evt.tool_call_id ? String(evt.tool_call_id) : '';
+      if (callId && completedCalls.has(callId)) return null;
       var call = callId ? calls.get(callId) : null;
       if (!call && !callId) {
-        calls.forEach(function (candidate, id) { if (!call && candidate.name === evt.name) { call = candidate; calls.delete(id); } });
-      } else if (call) calls.delete(callId);
-      if (!call) return null;
+        calls.forEach(function (candidate) {
+          if (!call && candidate.name === evt.name && (!evt.step_id || candidate.card.id === evt.step_id)) call = candidate;
+        });
+      }
+      if (!call) {
+        // 兼容开始事件缺失的流，仍保留实际返回的结果及失败信息。
+        var orphanId = callId || 'legacy-call-' + (++callSequence);
+        addStart({tool_call_id: orphanId, step_id: evt.step_id, step_label: evt.step_label,
+          name: evt.name, input: evt.input || '（未收到调用参数）'});
+        call = calls.get(orphanId);
+        if (!call) return null;
+      }
+      calls.delete(call.id);
+      completedCalls.add(call.id);
       var card = call.card;
       card.inFlight = Math.max(0, card.inFlight - 1);
       var fullOutput = String(evt.output == null ? '' : evt.output).trim();
       var output = brief(fullOutput);
-      var isError = evt.is_error === true || evt.status === 'error' || toolFailureText.test(fullOutput);
+      var isError = evt.is_error === true || /^(error|failed|failure)$/i.test(evt.status || '') || toolFailureText.test(fullOutput);
       var isWarning = evt.status === 'partial' || evt.partial === true || evt.has_warning === true;
       var errorText = String(evt.error_message || '').trim();
       if (!isError && fullOutput) {
@@ -196,38 +233,43 @@ window.GIS = window.GIS || {};
       call.row.appendChild(resultEl);
       if (isError) {
         call.row.classList.add('ai-tool-failed');
-        card.error = errorText || output || '工具执行失败';
-        card.outputs.push('失败：' + brief(card.error));
-        setStatus(card, 'failed', '步骤失败');
-      } else if (output) {
-        card.outputs.push(brief(output));
+        call.error = errorText || output || '工具执行失败';
+        card.failedCalls.set(call.id, call);
+        card.outputs.push('失败：' + brief(call.error));
+      } else {
+        if (call.retryOf !== null) card.failedCalls.delete(call.retryOf);
+        if (output) card.outputs.push(output);
         if (isWarning) {
           card.warning = true;
           card.outputs.push('部分完成或有警告');
         }
       }
-      updateProgress(card);
-      if (!isError && !card.inFlight && !card.pendingMapOps && card.status === 'running') setStatus(card, card.warning ? 'warning' : 'success');
+      settleCard(card);
       return card;
     }
     function applyMapOps(evt) {
+      if (!Array.isArray(evt.layer_ops) || !evt.layer_ops.length) return;
       var card = ensureCard(evt.step_id, evt.step_label);
-      var ops = evt.layer_ops || [];
+      var ops = evt.layer_ops;
       ops.forEach(function (op) {
+        if (!op || typeof op !== 'object') return;
         if (op._stream_id && appliedOps.has(op._stream_id)) return;
         var applied = false;
-        if (op.action === 'center' && op.center) {
+        var opKey = op._stream_id || op.action + ':' + (op.name || '');
+        if (op.action === 'center' && Array.isArray(op.center) && op.center.length === 2
+            && op.center.every(function (value) { return typeof value === 'number' && Number.isFinite(value); })
+            && Math.abs(op.center[0]) <= 180 && Math.abs(op.center[1]) <= 90) {
           try {
+            var zoom = op.zoom == null ? 13 : Number(op.zoom);
+            if (!Number.isFinite(zoom)) throw new Error('地图缩放级别无效');
             if (window.GIS.renderers && window.GIS.renderers.is3D && window.GIS.renderers.is3D()) {
               var viewer = window.GIS.renderers.getViewer && window.GIS.renderers.getViewer();
               if (viewer && window.Cesium) {
-                var zoom = op.zoom || 13;
                 viewer.camera.flyTo({destination: window.Cesium.Cartesian3.fromDegrees(Number(op.center[0]), Number(op.center[1]), Math.max(500, Math.pow(2, 22 - zoom) * 60)), duration: 1.5});
                 applied = true;
               }
             } else if (window.GIS.map && window.GIS.map.setView) {
-              window.GIS.map.setView([Number(op.center[1]), Number(op.center[0])], op.zoom || 13);
-              applied = true;
+              applied = window.GIS.map.setView([op.center[1], op.center[0]], zoom) === true;
             }
           } catch (e) { applied = false; }
         } else if (op.action === 'fit' && op.name) {
@@ -235,26 +277,27 @@ window.GIS = window.GIS || {};
             if (window.GIS.renderers && window.GIS.renderers.is3D && window.GIS.renderers.is3D()) {
               var record = null;
               if (window.GIS.state && window.GIS.state.getLayers) window.GIS.state.getLayers().forEach(function (layer) { if (layer.name === op.name || layer._rawName === op.name) record = layer; });
-              if (record && record.bbox && window.GIS.renderers.flyToBbox) { window.GIS.renderers.flyToBbox(record.bbox, 1.5); applied = true; }
+              if (record && record.bbox && window.GIS.renderers.flyToBbox) applied = window.GIS.renderers.flyToBbox(record.bbox, 1.5) === true;
             } else {
               var layers = window.GIS.layers && window.GIS.layers.getLayers ? window.GIS.layers.getLayers() : [];
-              var found = layers.some(function (layer) { return layer._rawName === op.name || layer.filename === op.name || layer.layer_id === op.name; });
-              if (found) { window.GIS.map.fitLayer(op.name); applied = true; }
+              var found = layers.some(function (layer) { return layer.name === op.name || layer._rawName === op.name || layer.filename === op.name || layer.layer_id === op.name; });
+              if (found && window.GIS.map && window.GIS.map.fitLayer) applied = window.GIS.map.fitLayer(op.name) === true;
             }
           } catch (e) { applied = false; }
         }
         if (op._stream_id && applied) appliedOps.add(op._stream_id);
-        if (applied) card.pendingMapOps = Math.max(0, card.pendingMapOps - 1);
-        else { card.error = '地图操作未能应用：' + (op.name || op.action); setStatus(card, 'failed', '地图操作失败'); }
+        if (applied) {
+          card.pendingMapOps = Math.max(0, card.pendingMapOps - 1);
+          card.mapErrors.delete(opKey);
+        } else card.mapErrors.set(opKey, '地图操作未能应用：' + (op.name || op.action));
       });
-      updateProgress(card);
-      if (!card.inFlight && !card.pendingMapOps && !card.error) setStatus(card, 'success');
+      settleCard(card);
     }
     function handle(evt) {
-      if (!evt) return;
+      if (!evt || closed) return;
       if (evt.type === 'tool_start') {
         var c = addStart(evt);
-        if (evt.map_ops_pending) { c.pendingMapOps += evt.map_ops_pending; updateProgress(c); }
+        if (c && Number.isInteger(evt.map_ops_pending) && evt.map_ops_pending > 0) { c.pendingMapOps += evt.map_ops_pending; updateProgress(c); }
       } else if (evt.type === 'tool_end') addEnd(evt);
       else if (evt.type === 'layer_ops_delta') applyMapOps(evt);
       else if (evt.type === 'waiting_choice') {
@@ -263,21 +306,41 @@ window.GIS = window.GIS || {};
       root.hidden = cards.size === 0;
     }
     function finish(status, message) {
+      closed = true;
+      calls.clear();
       cards.forEach(function (card) {
         if (card.status !== 'running' && card.status !== 'waiting') return;
         if (card.status === 'waiting' && status === 'success') return;
-        card.inFlight = 0;
-        card.pendingMapOps = 0;
-        if (status === 'success') setStatus(card, card.error ? 'failed' : card.warning ? 'warning' : 'success');
+        if (status === 'success') {
+          if (currentError(card)) setStatus(card, 'failed');
+          else if (card.inFlight) {
+            setStatus(card, 'warning', '结果不完整');
+            card.outputs.push('未收到全部工具结果');
+          } else if (card.pendingMapOps) {
+            setStatus(card, 'failed', '地图操作未完成');
+            card.outputs.push('未确认地图操作已经应用');
+          } else setStatus(card, card.warning ? 'warning' : 'success');
+        }
         else if (status === 'cancelled') setStatus(card, 'cancelled');
         else if (status === 'interrupted') setStatus(card, 'interrupted');
         else if (status === 'waiting') setStatus(card, 'waiting');
         else setStatus(card, 'failed');
-        if (message && status !== 'success') { card.outputs.push(message); updateProgress(card); }
+        card.inFlight = 0;
+        card.pendingMapOps = 0;
+        if (message && status !== 'success') card.outputs.push(message);
+        updateProgress(card);
+      });
+    }
+    function resolveWaiting(cancelled) {
+      cards.forEach(function (card) {
+        if (card.status !== 'waiting') return;
+        setStatus(card, cancelled ? 'cancelled' : 'success', cancelled ? '已取消选择' : '已提交选择');
+        updateProgress(card);
       });
     }
     container.appendChild(root);
-    return {handle: handle, finish: finish, hasAppliedMapOp: function (id) { return !!id && appliedOps.has(id); }, element: root};
+    return {handle: handle, finish: finish, resolveWaiting: resolveWaiting,
+      hasAppliedMapOp: function (id) { return !!id && appliedOps.has(id); }, element: root};
   }
   window.GIS.executionCards = {create: create};
 })();

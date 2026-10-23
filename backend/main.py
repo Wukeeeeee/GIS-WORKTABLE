@@ -22,7 +22,10 @@ from typing import Optional
 import io
 from io import BytesIO
 import json
+import urllib.parse
 import subprocess, datetime, asyncio, functools
+import threading, uuid, time
+from concurrent.futures import ThreadPoolExecutor
 from backend.services.ai_service import chat_with_ai, clear_memory, test_key, request_cancel, _TEMP_OUTPUT_DIR
 from backend.services.llm_config import LLMConfig, resolve_llm_config
 from backend.services.tools import _register_layer, _unregister_layer
@@ -56,6 +59,12 @@ _GIT_COMMIT, _GIT_DIRTY = _read_git_version()
 
 app = FastAPI()
 
+# URL vector acquisition jobs are local process tasks: progress is polled by the UI,
+# while ArcGIS requests run off the ASGI event loop.
+_url_fetch_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="url-vector-fetch")
+_url_fetch_jobs = {}
+_url_fetch_jobs_lock = threading.Lock()
+
 # 启动 banner
 print("")
 print(r"""
@@ -72,8 +81,8 @@ print(r"""
     \_/\_/  \___/|_| \_\_|\_\ |_/_/   \_\____/|_____|_____|
 """)
 print("  ========================================================")
-print("    GIS-WORKTABLE  -  智能 GIS 工作平台")
-print("    AI Agent + GIS 专业知识库 + 空间分析工具链 + 自动化工作流")
+print("    GIS-WORKTABLE  -  Intelligent GIS Workbench")
+print("    AI Agent + GIS Knowledge + Spatial Analysis + Automation")
 print("  ========================================================")
 print("")
 
@@ -87,7 +96,7 @@ app.add_middleware(GZipMiddleware, minimum_size=10000)  # 10KB 以上自动 gzip
 
 # 动态支持 /output 产物文件访问（支持时间戳前缀自动解析与子目录查找，防止 404）
 @app.get("/output/{filename:path}")
-async def serve_output_file(filename: str):
+async def serve_output_file(filename: str, download: bool = False):
     import glob
     # 路径穿越防护：解析后必须仍在 _TEMP_OUTPUT_DIR 内
     _norm_base = os.path.normpath(_TEMP_OUTPUT_DIR)
@@ -99,7 +108,7 @@ async def serve_output_file(filename: str):
     if not _in_base or filename.startswith('\\\\') or ':' in filename.split(os.sep)[0]:
         raise HTTPException(status_code=403, detail="非法路径")
     if os.path.isfile(direct_path):
-        return FileResponse(direct_path)
+        return FileResponse(direct_path, filename=os.path.basename(direct_path) if download else None)
     
     base_name = os.path.basename(filename)
     matches = glob.glob(os.path.join(_TEMP_OUTPUT_DIR, f"*_{base_name}"))
@@ -110,7 +119,7 @@ async def serve_output_file(filename: str):
                     matches.append(os.path.join(root, f))
     if matches:
         matches.sort(key=os.path.getmtime, reverse=True)
-        return FileResponse(matches[0])
+        return FileResponse(matches[0], filename=os.path.basename(matches[0]) if download else None)
     
     raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
 
@@ -292,6 +301,7 @@ async def chat_stream(request: ChatRequest):
     from backend.services.graph import run_agent_stream
     from backend.services.ai_service import (
         _build_system_content, _build_langgraph_messages, _get_or_create_history,
+        _rebase_history_context,
         _try_handle_confirm_command, commit_assistant_reply,
     )
     from backend.services import pending_action as _pa
@@ -335,6 +345,7 @@ async def chat_stream(request: ChatRequest):
     # 技能路由可能等待远程模型；不能在事件循环中同步等待，阻塞健康检查和取消请求。
     system_content, skill_text, _ = await asyncio.to_thread(
         _build_system_content, cfg, request.message, session_id, force_skills, request.task_id)
+    history = _rebase_history_context(session_id, history)
 
     # 如果前端附带了待分析图层，将 GeoJSON 注入到用户消息中（同时进入 agent 上下文和校验器）
     original_message = request.message
@@ -398,6 +409,7 @@ async def chat_stream(request: ChatRequest):
                             session_id,
                             _evt.get("response", ""),
                             _evt.get("reasoning"),
+                            history_context=history,
                         )
                         # 记录日志（SSE 流式路径之前漏了，导致导出的日志当前会话为 0 条）
                         try:
@@ -565,15 +577,19 @@ async def health():
 @app.get("/api/layers/names")
 async def list_layer_names():
     """注册图层名列表（轻量，供手动面板下拉框精确匹配后端工具）"""
-    from backend.services.tools import _registered_layers
-    return {"names": list(_registered_layers.keys())}
+    from backend.services.tools import _registered_layers, _state_lock
+    with _state_lock:
+        names = list(_registered_layers.keys())
+    return {"names": names}
 
 
 @app.get("/api/layers")
 async def list_layers():
-    from backend.services.tools import _registered_layers
+    from backend.services.tools import _registered_layers, _state_lock
+    with _state_lock:
+        snapshot = list(_registered_layers.items())
     layers = []
-    for name, info in _registered_layers.items():
+    for name, info in snapshot:
         layers.append({
             "name": name,
             "geojson": info.get("geojson"),
@@ -584,42 +600,27 @@ async def list_layers():
 
 @app.post("/api/reset_state")
 async def api_reset_state():
-    from backend.services.tools import reset_state
-    reset_state()
+    from backend.services.tools import reset_state, acquire_shared_state_lock, release_shared_state_lock
+    if not await asyncio.to_thread(acquire_shared_state_lock, 0):
+        raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
+    try:
+        reset_state()
+    finally:
+        release_shared_state_lock()
     return {"status": "ok", "message": "状态已重置"}
 
-@app.get("/api/session_logs")
-async def session_logs():
-    from backend.services.tools import _exec_call_count
-    return {"logs": [], "exec_count": _exec_call_count}
-
-@app.post("/api/session_logs/clear")
-async def clear_session_logs():
-    import backend.services.tools as tools_mod
-    tools_mod._exec_call_count = 0
-    return {"status": "ok", "message": "日志已清除"}
-
-
 @app.get("/api/logs/stats")
-async def logs_stats():
-    from backend.services.log_service import get_temp_log, get_perm_log
-    temp = get_temp_log()
-    perm = get_perm_log()
-    return {
-        "temp_count": len(temp),
-        "perm_count": len(perm),
-        "log_dir": os.path.join(os.path.dirname(__file__), "..", "logs"),
-    }
+async def logs_stats(session_id: str = "default"):
+    from backend.services.log_service import get_log_stats
+    return await asyncio.to_thread(get_log_stats, session_id)
 
 
 @app.get("/api/logs/export")
-async def logs_export():
-    from backend.services.log_service import get_temp_log, get_perm_log
-    from fastapi.responses import Response
-    import datetime
-
-    temp = get_temp_log()
-    perm = get_perm_log()
+async def logs_export(session_id: str = "default"):
+    from backend.services.log_service import get_log_snapshot
+    snapshot = await asyncio.to_thread(get_log_snapshot, session_id)
+    temp, perm = snapshot["temp"], snapshot["permanent"]
+    legacy = snapshot["legacy_temp"]
 
     lines = []
     lines.append("# GIS-WORKTABLE 会话日志导出")
@@ -627,14 +628,18 @@ async def logs_export():
     lines.append(f"- 导出时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"- 当前会话问答记录：{len(temp)} 条")
     lines.append(f"- 历史问题记录：{len(perm)} 条")
+    if legacy:
+        lines.append(f"- 旧版共享会话记录：{len(legacy)} 条（未区分会话）")
     lines.append("")
     lines.append("---")
     lines.append("")
 
-    if temp:
-        lines.append(f"## 当前会话问答记录（{len(temp)} 条）")
+    for title, records in (("当前会话问答记录", temp), ("旧版共享会话记录（未区分会话）", legacy)):
+        if not records:
+            continue
+        lines.append(f"## {title}（{len(records)} 条）")
         lines.append("")
-        for i, r in enumerate(temp, 1):
+        for i, r in enumerate(records, 1):
             t = r.get("time", "")[:19].replace("T", " ")
             lines.append(f"### {i}. [{t}]")
             lines.append("")
@@ -675,7 +680,7 @@ async def logs_export():
             lines.append("---")
             lines.append("")
 
-    if not temp and not perm:
+    if not temp and not perm and not legacy:
         lines.append("暂无日志记录。")
         lines.append("")
 
@@ -689,9 +694,10 @@ async def logs_export():
 
 
 @app.post("/api/logs/clear")
-async def logs_clear():
+async def logs_clear(session_id: str = "default"):
     from backend.services.log_service import clear_temp_log
-    clear_temp_log()
+    if not clear_temp_log(session_id):
+        raise HTTPException(status_code=500, detail="当前会话日志清除失败")
     return {"status": "ok", "message": "当前会话日志已清除"}
 
 @app.get("/api/version")
@@ -707,7 +713,8 @@ async def version():
 # 前端点 "+" 按钮时调用，清空后端内存里的对话历史记录
 @app.delete("/api/chat/memory")
 async def clear_chat_memory(session_id: str = "default"):
-    clear_memory(session_id)
+    if not await asyncio.to_thread(clear_memory, session_id):
+        raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作，请稍后重试")
     return {"status": "ok", "message": "记忆已清除"}
 
 # ===== 测试 LLM 连接（通用） =====
@@ -763,31 +770,49 @@ def _is_safe_zip_member(name: str) -> bool:
     return bool(normalized) and not drive and not path.is_absolute() and ".." not in path.parts
 
 
+def _register_uploaded_vector(name, geojson):
+    import math
+    from backend.services.tools import _compute_bbox
+
+    bounds = _compute_bbox(geojson)
+    if (not all(isinstance(value, (int, float)) and math.isfinite(value) for value in bounds)
+            or not (-180 <= bounds[0] <= bounds[2] <= 180 and -90 <= bounds[1] <= bounds[3] <= 90)):
+        raise ValueError("坐标超出 WGS-84 范围；请提供正确 CRS 或转换为 EPSG:4326 后上传")
+    return _register_layer(name, geojson)
+
+
 @app.post('/api/upload')
 async def upload(file: UploadFile = File(...)):
     import os, tempfile, zipfile, orjson
+    from urllib.parse import quote
     loop = asyncio.get_event_loop()
     # UploadFile.filename is client-controlled. Treat both slash styles as
     # separators so Windows paths are safe even when the server runs elsewhere.
     filename = str(file.filename or '').replace('\\', '/').rsplit('/', 1)[-1]
-    if filename in ('', '.', '..'):
+    if (filename in ('', '.', '..') or len(filename) > 240
+            or any(ord(char) < 32 or char in '<>:"|?*' for char in filename)
+            or filename.rstrip(' .') != filename
+            or filename.split('.', 1)[0].upper() in {'CON', 'PRN', 'AUX', 'NUL',
+                *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}):
         return {"error": "无效的上传文件名"}
     ext = os.path.splitext(filename)[1].lower()
+    allowed = {'.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip',
+               '.csv', '.tif', '.tiff', '.pmtiles', '.parquet', '.geoparquet', '.fgb'}
+    if ext not in allowed:
+        return {"error": "不支持的文件格式: %s；Shapefile 请打包为 ZIP 上传" % (ext or "无扩展名")}
     upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     upload_fd = None
-    if ext in ('.geojson', '.json'):
-        # Same-named GeoJSON uploads must not overwrite either the saved file or
-        # the backend layer registration. Reserve a free path atomically so
-        # concurrent uploads also receive distinct names.
-        from backend.services.tools import get_registered_layers_snapshot
-        registered_names = {item.get('filename') or item.get('name') for item in get_registered_layers_snapshot()}
+    from backend.services.tools import get_registered_layers_snapshot
+    registered_names = {item.get('filename') or item.get('name') for item in get_registered_layers_snapshot()}
+    if ext not in ('.tif', '.tiff'):
+        # 所有格式原子预留文件名，避免同名 CSV/数据源覆盖仍在使用的文件。
         stem, file_ext = os.path.splitext(filename)
         suffix = 0
         while True:
             candidate = filename if suffix == 0 else f"{stem}_{suffix}{file_ext}"
             candidate_path = os.path.join(upload_dir, candidate)
-            if candidate in registered_names:
+            if candidate in registered_names or os.path.splitext(candidate)[0] in registered_names:
                 suffix += 1
                 continue
             try:
@@ -797,15 +822,17 @@ async def upload(file: UploadFile = File(...)):
             except FileExistsError:
                 suffix += 1
     elif ext in ('.tif', '.tiff'):
-        # Reserve both the uploaded TIFF and its converted PNG name. The TIFF
-        # is removed after conversion, so checking only its path would allow a
-        # later same-named upload to overwrite the raster already on the map.
+        # Reserve the source and preview together so a same-stem .tif/.tiff
+        # cannot overwrite a raster already on the map.
         stem, file_ext = os.path.splitext(filename)
         suffix = 0
         while True:
             candidate = filename if suffix == 0 else f"{stem}_{suffix}{file_ext}"
             candidate_path = os.path.join(upload_dir, candidate)
             candidate_png_path = os.path.join(upload_dir, f"{os.path.splitext(candidate)[0]}.png")
+            if candidate in registered_names or os.path.splitext(candidate)[0] in registered_names:
+                suffix += 1
+                continue
             try:
                 upload_fd = os.open(candidate_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o666)
             except FileExistsError:
@@ -830,19 +857,31 @@ async def upload(file: UploadFile = File(...)):
     saved_path = os.path.join(upload_dir, filename)
     png_path = os.path.join(upload_dir, f"{os.path.splitext(filename)[0]}.png") if ext in ('.tif', '.tiff') else None
     def _discard_saved_upload():
-        try:
-            os.unlink(saved_path)
-        except OSError:
-            pass
+        for path in (saved_path, png_path):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
-    # 流式落盘（8MB 分块）：上传不再整读进内存，GB 级文件内存峰值 ~10MB
-    with (os.fdopen(upload_fd, 'wb') if upload_fd is not None else open(saved_path, 'wb')) as f:
-        while True:
-            chunk = await file.read(8 * 1024 * 1024)
-            if not chunk:
-                break
-            f.write(chunk)
-    file_size = os.path.getsize(saved_path)
+    max_bytes = (64 if ext in ('.geojson', '.json', '.csv') else 300) * 1024 * 1024
+    file_size = 0
+    try:
+        with os.fdopen(upload_fd, 'wb') as f:
+            while True:
+                chunk = await file.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > max_bytes:
+                    break
+                f.write(chunk)
+    except BaseException:
+        _discard_saved_upload()
+        raise
+    if file_size > max_bytes:
+        _discard_saved_upload()
+        return {"error": "文件超过 %dMB 读取限制，请拆分后上传" % (max_bytes // (1024 * 1024))}
     content = None
     if ext in ('.geojson', '.json') and file_size <= 64 * 1024 * 1024:
         with open(saved_path, 'rb') as f:
@@ -858,16 +897,43 @@ async def upload(file: UploadFile = File(...)):
         except orjson.JSONDecodeError:
             _discard_saved_upload()
             return {"error": "GeoJSON 文件格式无效，请检查 JSON 语法后重新上传"}
+        if isinstance(geojson_data, dict) and geojson_data.get('crs'):
+            try:
+                def read_projected_geojson():
+                    import geopandas as gpd
+                    data = gpd.read_file(saved_path)
+                    if data.crs is None:
+                        raise ValueError("无法识别声明的坐标参考系")
+                    return data.to_crs('EPSG:4326').__geo_interface__
+                geojson_data = await asyncio.to_thread(read_projected_geojson)
+            except Exception as exc:
+                _discard_saved_upload()
+                return {"error": "GeoJSON 坐标转换失败: %s" % str(exc)[:200]}
+        if isinstance(geojson_data, dict) and geojson_data.get('type') in (
+            'Point', 'MultiPoint', 'LineString', 'MultiLineString', 'Polygon', 'MultiPolygon',
+        ):
+            geojson_data = {"type": "Feature", "properties": {}, "geometry": geojson_data}
         if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
-            _register_layer(filename, geojson_data)
-            return {"geojson": geojson_data, "name": filename}
+            try:
+                token = await asyncio.to_thread(_register_uploaded_vector, filename, geojson_data)
+            except (ValueError, TypeError, AttributeError) as exc:
+                _discard_saved_upload()
+                return {"error": "GeoJSON 格式无效: %s" % exc}
+            return {"geojson": geojson_data, "name": filename, "registration_token": token}
         # 支持 GeometryCollection → 转 FeatureCollection
         if isinstance(geojson_data, dict) and geojson_data.get('type') == 'GeometryCollection':
             geoms = geojson_data.get('geometries', [])
-            features = [{"type": "Feature", "geometry": g, "properties": {}} for g in geoms if g]
+            if not isinstance(geoms, list) or any(not isinstance(geom, dict) for geom in geoms):
+                _discard_saved_upload()
+                return {"error": "GeometryCollection 的 geometries 必须是几何对象列表"}
+            features = [{"type": "Feature", "geometry": g, "properties": {}} for g in geoms]
             fc = {"type": "FeatureCollection", "features": features}
-            _register_layer(filename, fc)
-            return {"geojson": fc, "name": filename}
+            try:
+                token = await asyncio.to_thread(_register_uploaded_vector, filename, fc)
+            except (ValueError, TypeError, AttributeError) as exc:
+                _discard_saved_upload()
+                return {"error": "GeoJSON 格式无效: %s" % exc}
+            return {"geojson": fc, "name": filename, "registration_token": token}
         _discard_saved_upload()
         return {"error": "文件不是有效的 GeoJSON 格式"}
 
@@ -883,11 +949,13 @@ async def upload(file: UploadFile = File(...)):
                 members = zf.namelist()
                 if any(not _is_safe_zip_member(member) for member in members):
                     return _reject_zip_upload("ZIP 包包含不安全的文件路径，已拒绝解压")
+                if len(members) > 10000 or sum(info.file_size for info in zf.infolist()) > 512 * 1024 * 1024:
+                    return _reject_zip_upload("ZIP 解压内容超过 512MB 或 10000 个文件限制，请拆分后上传")
                 shp_files = [n for n in members if n.lower().endswith('.shp')]
                 if not shp_files:
                     return _reject_zip_upload("ZIP 包中没有找到 .shp 文件")
                 with tempfile.TemporaryDirectory() as tmpdir:
-                    zf.extractall(tmpdir)
+                    await asyncio.to_thread(zf.extractall, tmpdir)
                     shp_path = os.path.join(tmpdir, shp_files[0])
                     if not os.path.exists(shp_path):
                         return _reject_zip_upload("无法读取 Shapefile")
@@ -895,10 +963,12 @@ async def upload(file: UploadFile = File(...)):
                     gdf = await loop.run_in_executor(None, functools.partial(gpd.read_file, shp_path))
                     if gdf.crs is None:
                         return _reject_zip_upload("矢量文件缺少坐标参考系，无法安全转换为 WGS-84；请补充 .prj 文件后重新上传")
-                    geojson_data = gdf.to_crs("EPSG:4326").__geo_interface__
-                    name = os.path.splitext(os.path.basename(shp_files[0]))[0]
-                    _register_layer(name, geojson_data)
-                    return {"geojson": geojson_data, "name": name}
+                    geojson_data = await asyncio.to_thread(lambda: gdf.to_crs("EPSG:4326").__geo_interface__)
+                    # The archive name was atomically reserved. An internal
+                    # common name such as data.shp would collide across ZIPs.
+                    name = os.path.splitext(filename)[0]
+                    token = await asyncio.to_thread(_register_uploaded_vector, name, geojson_data)
+                    return {"geojson": geojson_data, "name": name, "registration_token": token}
         except zipfile.BadZipFile:
             _discard_saved_upload()
             return {"error": "ZIP 文件损坏或格式无效，请重新压缩后上传"}
@@ -914,7 +984,7 @@ async def upload(file: UploadFile = File(...)):
             import geopandas as gpd
             import pyogrio
             # 探测所有图层，取首个非空图层
-            layers = pyogrio.list_layers(tmp_path)
+            layers = await asyncio.to_thread(pyogrio.list_layers, tmp_path)
             gdf = None
             for lname, _ in layers:
                 try:
@@ -929,10 +999,10 @@ async def upload(file: UploadFile = File(...)):
                 return {"error": "文件未包含有效的地理数据"}
             if gdf.crs is None:
                 return {"error": "矢量文件缺少坐标参考系，无法安全转换为 WGS-84"}
-            geojson_data = gdf.to_crs("EPSG:4326").__geo_interface__
+            geojson_data = await asyncio.to_thread(lambda: gdf.to_crs("EPSG:4326").__geo_interface__)
             name = os.path.splitext(filename)[0]
-            _register_layer(name, geojson_data)
-            return {"geojson": geojson_data, "name": name}
+            token = await asyncio.to_thread(_register_uploaded_vector, name, geojson_data)
+            return {"geojson": geojson_data, "name": name, "registration_token": token}
         except Exception as e:
             return {"error": f"无法读取 {ext} 文件: {str(e)[:200]}"}
         finally:
@@ -1014,17 +1084,18 @@ async def upload(file: UploadFile = File(...)):
                 bounds_wgs84 = transform_bounds(dst_crs, 'EPSG:4326', *bounds_mercator)
                 w, h = dst_width, dst_height
 
-            try: os.unlink(tif_path)
-            except: pass
-
+            from backend.services.tools import _register_raster_layer
+            raster_info = {
+                "filename": png_name, "url": f"/output/uploads/{quote(png_name, safe='')}",
+                "source_filename": filename, "source_name": name,
+                "source_url": f"/output/uploads/{quote(filename, safe='')}",
+                "bounds": list(bounds_wgs84), "width": w, "height": h,
+            }
+            token = await asyncio.to_thread(_register_raster_layer, name, raster_info, saved_path)
             return {
-                "raster_info": {
-                    "filename": png_name,
-                    "url": f"/output/uploads/{png_name}",
-                    "bounds": list(bounds_wgs84),
-                    "width": w,
-                    "height": h,
-                },
+                "name": name,
+                "raster_info": raster_info,
+                "registration_token": token,
                 "message": f"已加载栅格图层: {name}"
             }
         except _MissingGeoTiffCrsError as e:
@@ -1048,27 +1119,25 @@ async def upload(file: UploadFile = File(...)):
     # ===== CSV（保存文件，让AI处理转换） =====
     if ext == '.csv':
         try:
-            if file_size > 64 * 1024 * 1024:
-                return {"error": f"CSV 文件过大（{file_size/1024/1024:.0f}MB > 64MB），请先拆分或抽稀"}
-            with open(saved_path, 'rb') as f:
-                content_str = f.read().decode('utf-8-sig')
-            import pandas as pd
-            from io import StringIO
-            df = pd.read_csv(StringIO(content_str))
-            columns = df.columns.tolist()
-            preview = df.head(3).to_dict(orient='records')
+            def read_csv_preview():
+                import pandas as pd
+                with open(saved_path, 'r', encoding='utf-8-sig', newline='') as source:
+                    df = pd.read_csv(source)
+                return df.columns.tolist(), orjson.loads(df.head(3).to_json(orient='records')), len(df)
+            columns, preview, rows = await asyncio.to_thread(read_csv_preview)
 
             return {
                 "csv_info": {
                     "filename": filename,
-                    "rows": len(df),
+                    "rows": rows,
                     "columns": columns,
                     "preview": preview,
                     "path": saved_path
                 },
-                "message": f"CSV已保存，共{len(df)}行，列名：{', '.join(columns)}"
+                "message": f"CSV已保存，共{rows}行，列名：{', '.join(columns)}"
             }
         except Exception as e:
+            _discard_saved_upload()
             return {"error": f"CSV 读取失败: {str(e)[:200]}"}
 
     # ===== 云原生格式：PMTiles / GeoParquet / FlatGeobuf =====
@@ -1078,32 +1147,52 @@ async def upload(file: UploadFile = File(...)):
         try:
             if ext == '.pmtiles':
                 try:
-                    geojson, info = cn.pmtiles_vector_to_geojson(saved_path)
-                    _register_layer(name, geojson)
-                    return {"geojson": geojson, "name": name, "pmtiles_info": info}
+                    geojson, info = await asyncio.to_thread(cn.pmtiles_vector_to_geojson, saved_path)
+                    token = await asyncio.to_thread(_register_uploaded_vector, name, geojson)
+                    return {"geojson": geojson, "name": name, "registration_token": token, "pmtiles_info": info}
                 except cn.CloudNativeError:
                     # 栅格 PMTiles：中心瓦片作为影像叠加
-                    tile_bytes, bounds, fmt, info = cn.pmtiles_raster_tile_bounds(saved_path)
+                    tile_bytes, bounds, fmt, info = await asyncio.to_thread(cn.pmtiles_raster_tile_bounds, saved_path)
                     upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
                     os.makedirs(upload_dir, exist_ok=True)
                     tile_name = f"pmtiles_{name}.{fmt}"
-                    with open(os.path.join(upload_dir, tile_name), "wb") as f:
-                        f.write(tile_bytes)
+                    tile_suffix = 0
+                    while True:
+                        tile_name = f"pmtiles_{name}{'_' + str(tile_suffix) if tile_suffix else ''}.{fmt}"
+                        tile_path = os.path.join(upload_dir, tile_name)
+                        try:
+                            tile_fd = os.open(tile_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o666)
+                            break
+                        except FileExistsError:
+                            tile_suffix += 1
+                    try:
+                        with os.fdopen(tile_fd, "wb") as f:
+                            f.write(tile_bytes)
+                    except BaseException:
+                        try: os.unlink(tile_path)
+                        except OSError: pass
+                        raise
                     return {
+                        "name": name,
                         "raster_info": {
                             "filename": tile_name,
-                            "url": f"/output/uploads/{tile_name}",
+                            "url": f"/output/uploads/{quote(tile_name, safe='')}",
                             "bounds": [float(v) for v in bounds],
                         },
                         "message": f"已加载栅格 PMTiles: {name}",
                     }
             fmt = "GeoParquet" if ext in ('.parquet', '.geoparquet') else "FlatGeobuf"
-            geojson, meta = cn.cloud_vector_to_geojson(saved_path, fmt)
-            _register_layer(name, geojson)
-            return {"geojson": geojson, "name": name, "meta": meta}
+            geojson, meta = await asyncio.to_thread(cn.cloud_vector_to_geojson, saved_path, fmt)
+            token = await asyncio.to_thread(_register_uploaded_vector, name, geojson)
+            return {"geojson": geojson, "name": name, "registration_token": token, "meta": meta}
         except cn.CloudNativeError as e:
+            _discard_saved_upload()
             return {"error": str(e)}
+        except Exception as e:
+            _discard_saved_upload()
+            return {"error": "云原生文件读取失败: %s" % str(e)[:200]}
 
+    _discard_saved_upload()
     return {"error": f"不支持的文件格式: {ext}，支持: .geojson .json .gpkg .kml .kmz .gpx .dxf .tif .tiff .zip(含shp) .pmtiles .parquet .fgb"}
 
 	# ===== 工程保存/加载 =====
@@ -1119,7 +1208,7 @@ class ProjectSaveRequest(BaseModel):
 
 class ProjectAutoSaveRequest(BaseModel):
     layer_groups: list = []
-    layer_assignments: list = []
+    layer_assignments: list[dict] = []
 
 class ProjectRenameRequest(BaseModel):
     name: str
@@ -1131,13 +1220,16 @@ async def auto_save_project(
     req: Optional[ProjectAutoSaveRequest] = None,
 ):
     """由前端在对话完成后调用，自动保存当前工程"""
-    result = await asyncio.to_thread(
-        project_service.auto_save,
-        session_id=session_id,
-        project_id=project_id,
-        layer_groups=req.layer_groups if req else None,
-        layer_assignments=req.layer_assignments if req else None,
-    )
+    try:
+        result = await asyncio.to_thread(
+            project_service.auto_save,
+            session_id=session_id,
+            project_id=project_id,
+            layer_groups=req.layer_groups if req else None,
+            layer_assignments=req.layer_assignments if req else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
         return {"id": None, "note": "无消息，跳过保存"}
     return result
@@ -1149,28 +1241,32 @@ async def list_projects():
 
 @app.post("/api/projects")
 async def save_project(req: ProjectSaveRequest):
-    result = await asyncio.to_thread(
-        project_service.save_project,
-        project_id=req.project_id,
-        name=req.name or "未命名工程",
-        session_id=req.session_id,
-        provider=req.provider,
-        map_state=req.map_state,
-        messages=req.messages,
-        layers=req.layers,
-        layer_groups=req.layer_groups,
-    )
+    try:
+        result = await asyncio.to_thread(
+            project_service.save_project,
+            project_id=req.project_id,
+            name=req.name or "未命名工程",
+            session_id=req.session_id,
+            provider=req.provider,
+            map_state=req.map_state,
+            messages=req.messages,
+            layers=req.layers,
+            layer_groups=req.layer_groups,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return result
 
 @app.get("/api/projects/{project_id}")
 async def load_project(project_id: str):
     # activate_project 内部会做图层注册/边界计算等重活（含锁操作），
     # 必须挪出事件循环，否则大工程会卡死健康检查/取消等所有请求
-    result = await asyncio.to_thread(project_service.load_project, project_id)
+    try:
+        result = await asyncio.to_thread(project_service.open_project, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="工程不存在")
-    session_id = result.get("sessionId") or f"proj_{project_id}"
-    await asyncio.to_thread(project_service.activate_project, project_id, session_id=session_id)
     return result
 
 @app.get("/api/projects/{project_id}/assets/{filename}")
@@ -1200,7 +1296,10 @@ async def rename_project(project_id: str, req: ProjectRenameRequest):
 
 @app.get("/api/projects/{project_id}/export")
 async def export_project(project_id: str):
-    data = await asyncio.to_thread(project_service.export_project, project_id)
+    try:
+        data = await asyncio.to_thread(project_service.export_project, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if data is None:
         raise HTTPException(status_code=404, detail="工程不存在")
     return StreamingResponse(
@@ -1233,25 +1332,39 @@ async def inspect_layer(request: InspectLayerRequest):
 
 class UnregisterLayerRequest(BaseModel):
     name: str
+    registration_token: Optional[str] = None
 
 @app.post("/api/layer/unregister")
 async def unregister_layer(request: UnregisterLayerRequest):
-    _unregister_layer(request.name)
-    return {"success": True, "message": f"已取消注册图层: {request.name}"}
+    from backend.services import tools as registry_tools
+    with registry_tools._state_lock:
+        current = registry_tools._registered_layers.get(request.name)
+        stale = bool(request.registration_token is not None and current
+                     and current.get("registration_token") != request.registration_token)
+        removed = _unregister_layer(request.name, request.registration_token)
+    return {"success": True, "removed": removed, "stale": stale,
+            "message": f"已取消注册图层: {request.name}" if removed else "旧注册项已不存在或已更新，保留当前版本"}
 
 
 class RegisterLayerRequest(BaseModel):
     name: str
-    geojson: dict
+    geojson: Optional[dict] = None
+    raster: Optional[dict] = None
     group_name: Optional[str] = None
 
 @app.post("/api/layer/register")
 async def register_layer(request: RegisterLayerRequest):
     try:
-        _register_layer(request.name, request.geojson, group_name=request.group_name)
+        if request.raster is not None:
+            from backend.services.tools import _register_raster_layer
+            token = await asyncio.to_thread(_register_raster_layer, request.name, request.raster)
+        elif request.geojson is not None:
+            token = _register_layer(request.name, request.geojson, group_name=request.group_name)
+        else:
+            raise ValueError("图层缺少矢量或栅格数据")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    return {"success": True, "message": f"已注册图层: {request.name}"}
+    return {"success": True, "registration_token": token, "message": f"已注册图层: {request.name}"}
 
 
 # ===== SHP 导出接口 =====
@@ -1412,12 +1525,13 @@ class DataDiscoverRequest(BaseModel):
 
 
 class DataDownloadRequest(BaseModel):
+    handle: str = ""
     query: str = ""
     kind: str = ""
     area: str = ""
     bbox: str = ""
     provider: str = ""
-    file_format: str = "geojson"
+    file_format: str = ""
     time_start: str = ""
     time_end: str = ""
     layer_name: str = ""
@@ -1460,6 +1574,7 @@ async def api_data_download(request: DataDownloadRequest):
         asset = await loop.run_in_executor(
             None,
             lambda: data_discovery.download(
+                handle=request.handle,
                 query=request.query, kind=request.kind, area=request.area,
                 bbox=request.bbox, provider_id=request.provider,
                 file_format=request.file_format, time_start=request.time_start,
@@ -1691,27 +1806,35 @@ class HistoryRerunRequest(BaseModel):
 async def api_history_rerun(request: HistoryRerunRequest):
     """按编号重跑历史工具（前端历史面板「重跑」按钮）。
     返回结构与聊天侧一致：layers/layer_ops 由前端照常上图。"""
-    from backend.services.tools import tools as _tool_list, get_pending_state, reset_state
-    reg = {t.name: t for t in _tool_list}
-    rerun_tool = reg.get("rerun_history")
-    if rerun_tool is None:
-        raise HTTPException(status_code=500, detail="rerun_history 工具未注册")
-    reset_state()
-    resp = rerun_tool.invoke({"index": request.index})
-    pending = get_pending_state()
-    # rerun_history 的响应首句包含目标工具的真实执行状态；仅工具返回了一段
-    # “失败”文本并不代表重跑成功，前端必须据此决定是否应用本次产物。
-    status_line = str(resp).split("；", 1)[0]
-    rerun_ok = status_line.startswith(f"已重跑 #{request.index} ") and status_line.endswith("→ 成功")
-    return {
-        "response": resp,
-        "ok": rerun_ok,
-        "error": "" if rerun_ok else str(resp),
-        "layers": pending.get("layers", []),
-        "layer_ops": pending.get("layer_ops", []),
-        "images": pending.get("images", []),
-        "clear_layers": pending.get("clear_layers", False),
-    }
+    from backend.services.tools import (
+        tools as _tool_list, get_pending_state, reset_state,
+        acquire_shared_state_lock, release_shared_state_lock,
+    )
+    if not await asyncio.to_thread(acquire_shared_state_lock, 0):
+        raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
+    try:
+        reg = {t.name: t for t in _tool_list}
+        rerun_tool = reg.get("rerun_history")
+        if rerun_tool is None:
+            raise HTTPException(status_code=500, detail="rerun_history 工具未注册")
+        reset_state()
+        resp = rerun_tool.invoke({"index": request.index})
+        pending = get_pending_state()
+        # rerun_history 的响应首句包含目标工具的真实执行状态；仅工具返回了一段
+        # “失败”文本并不代表重跑成功，前端必须据此决定是否应用本次产物。
+        status_line = str(resp).split("；", 1)[0]
+        rerun_ok = status_line.startswith(f"已重跑 #{request.index} ") and status_line.endswith("→ 成功")
+        return {
+            "response": resp,
+            "ok": rerun_ok,
+            "error": "" if rerun_ok else str(resp),
+            "layers": pending.get("layers", []),
+            "layer_ops": pending.get("layer_ops", []),
+            "images": pending.get("images", []),
+            "clear_layers": pending.get("clear_layers", False),
+        }
+    finally:
+        release_shared_state_lock()
 
 
 # ===== 在线云原生数据加载（连接器面板「粘贴 URL」入口） =====
@@ -1820,13 +1943,139 @@ class ToolInvokeRequest(BaseModel):
     arguments: dict = {}                 # 工具参数
 
 
+class UrlVectorFetchRequest(BaseModel):
+    url: str
+    layer_id: str = ""
+    bbox: str = ""
+    where: str = "1=1"
+    mode: str = "preview"
+    limit: int = 1000
+    max_features: int = 100000
+    output_format: str = "geojson"
+    output_filename: str = ""
+
+
+class UrlInspectRequest(BaseModel):
+    url: str
+    layer_id: str = ""
+
+
+@app.post('/api/url-data/inspect')
+async def api_inspect_url_vector(request: UrlInspectRequest):
+    if not (request.url or "").strip():
+        raise HTTPException(status_code=400, detail="请输入 ArcGIS REST 图层 URL")
+    from backend.services import url_gis_service as _ugs
+    loop = asyncio.get_event_loop()
+    try:
+        inspect_url = request.url.strip()
+        if request.layer_id:
+            clean = inspect_url.split("?")[0].rstrip("/")
+            parsed = urllib.parse.urlsplit(inspect_url)
+            if not clean.endswith("/" + str(request.layer_id)):
+                inspect_url = clean + "/" + str(request.layer_id) + (("?" + parsed.query) if parsed.query else "")
+        result = await loop.run_in_executor(None, _ugs.inspect_gis_url, inspect_url)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)[:400])
+    result["url"] = _ugs._sanitize_source_url(inspect_url)
+    return result
+
+
+def _run_url_vector_fetch(job_id: str, request: UrlVectorFetchRequest, cancel_event):
+    started = time.time()
+    def progress(update):
+        with _url_fetch_jobs_lock:
+            job = _url_fetch_jobs.get(job_id)
+            if job:
+                job["progress"] = dict(update)
+    try:
+        from backend.services import url_gis_service as _ugs
+        result = _ugs.fetch_gis_data_url(
+            request.url, layer_id=request.layer_id, bbox=request.bbox, where=request.where,
+            mode=request.mode, limit=request.limit, max_features=request.max_features,
+            output_format=request.output_format, output_filename=request.output_filename,
+            progress_callback=progress, cancel_check=cancel_event.is_set,
+        )
+        output_urls = {
+            key: f"/output/downloads/{os.path.basename(result[path_key])}"
+            for key, path_key in (("data_url", "file_path"), ("recipe_url", "recipe_path"),
+                                  ("report_url", "report_path"), ("manifest_url", "manifest_path"))
+        }
+        safe_result = {key: value for key, value in result.items() if key not in {"file_path", "recipe_path", "report_path", "manifest_path", "geojson_data"}}
+        safe_result.update(output_urls)
+        # 获取函数正常返回表示结果文件已完整生成；仅协作式取消抛出的异常才标记取消。
+        # 非分页预览无法中断正在进行的 HTTP 请求，避免把已经生成的交付物隐藏掉。
+        state = "completed"
+        with _url_fetch_jobs_lock:
+            _url_fetch_jobs[job_id].update({"status": state, "result": safe_result, "finished_at": time.time()})
+        try:
+            from backend.services import history_service as _hs
+            artifacts = [{"filename": os.path.basename(result[k]), "path": f"downloads/{os.path.basename(result[k])}",
+                          "url": output_urls[url_key]} for k, url_key in (("file_path", "data_url"), ("recipe_path", "recipe_url"),
+                                                                          ("report_path", "report_url"), ("manifest_path", "manifest_url"))]
+            history_params = request.dict()
+            history_params["url"] = _ugs._sanitize_source_url(request.url)
+            _hs.record("fetch_gis_data_url", history_params, state == "completed", [],
+                       error="获取已由用户取消" if state == "cancelled" else "",
+                       duration_ms=int((time.time() - started) * 1000), file_artifacts=artifacts)
+        except Exception as history_error:
+            print(f"[URL Fetch] history record failed: {history_error}", flush=True)
+    except Exception as exc:
+        state = "cancelled" if cancel_event.is_set() else "unknown" if "完整性未知" in str(exc) else "failed"
+        with _url_fetch_jobs_lock:
+            _url_fetch_jobs[job_id].update({"status": state, "error": str(exc)[:500], "finished_at": time.time()})
+
+
+@app.post('/api/url-data/jobs')
+async def api_start_url_vector_fetch(request: UrlVectorFetchRequest):
+    if not (request.url or "").strip():
+        raise HTTPException(status_code=400, detail="请输入 ArcGIS REST 图层 URL")
+    if request.mode not in {"preview", "full"}:
+        raise HTTPException(status_code=400, detail="mode 只能是 preview 或 full")
+    job_id = uuid.uuid4().hex
+    cancel_event = threading.Event()
+    with _url_fetch_jobs_lock:
+        _url_fetch_jobs[job_id] = {"status": "running", "progress": {"phase": "inspecting", "completed": 0, "total": None},
+                                   "cancel_event": cancel_event, "created_at": time.time()}
+        finished = [key for key, value in _url_fetch_jobs.items()
+                    if value.get("status") not in {"running", "cancelling"}]
+        for key in finished[:-40]:
+            _url_fetch_jobs.pop(key, None)
+    _url_fetch_executor.submit(_run_url_vector_fetch, job_id, request, cancel_event)
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get('/api/url-data/jobs/{job_id}')
+async def api_get_url_vector_fetch(job_id: str):
+    with _url_fetch_jobs_lock:
+        job = _url_fetch_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="获取任务不存在或已过期")
+        return {key: job.get(key) for key in ("status", "progress", "result", "error", "created_at", "finished_at")}
+
+
+@app.delete('/api/url-data/jobs/{job_id}')
+async def api_cancel_url_vector_fetch(job_id: str):
+    with _url_fetch_jobs_lock:
+        job = _url_fetch_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="获取任务不存在或已过期")
+        if job.get("status") == "running":
+            job["cancel_event"].set()
+            job["status"] = "cancelling"
+        status = job.get("status")
+    return {"job_id": job_id, "status": status}
+
+
 @app.post('/api/tools/invoke')
 async def api_tools_invoke(request: ToolInvokeRequest):
     """直连执行一个 @tool 注册工具（前端手动面板用，不走 AI）。
 
     与聊天侧同链路：图层产物经 _push_layer 通道返回，执行自动进处理历史（可重跑）。
     """
-    from backend.services.tools import tools as _tool_list, get_pending_state, reset_state
+    from backend.services.tools import (
+        tools as _tool_list, get_pending_state, reset_state,
+        acquire_shared_state_lock, release_shared_state_lock,
+    )
     reg = {t.name: t for t in _tool_list}
     tool = reg.get(request.name)
     if tool is None:
@@ -1834,39 +2083,57 @@ async def api_tools_invoke(request: ToolInvokeRequest):
     args = request.arguments or {}
     if not isinstance(args, dict):
         raise HTTPException(status_code=400, detail="arguments 应为对象")
-    # 参数角色校验（ESRI 式参数类型系统的最小可用版）：只提示 + 自动纠错，不拦截
-    from backend.services.tool_args_guard import validate_tool_args
-    args, _arg_warnings = validate_tool_args(request.name, args)
-    if _arg_warnings:
-        args["_param_warnings"] = _arg_warnings
-    reset_state()
-    # 直连链路同样绑定 run/task，让工具产物（图片/文件）进历史与 SQLite 台账
-    from backend.services.tools import set_current_run as _scr, set_current_task as _sct
-    import uuid as _uuid_mod
-    _scr(_uuid_mod.uuid4().hex[:12])
-    from backend.services import task_manager as _tm
-    _sct(_tm.find_or_create_task('default', request.name))
-    loop = asyncio.get_event_loop()
+    if not await asyncio.to_thread(acquire_shared_state_lock, 0):
+        return {"ok": False, "busy": True, "error": "当前 GIS 工作区正在处理另一项操作"}
     try:
-        response = await loop.run_in_executor(
-            None, functools.partial(tool.invoke, args))
-        ok = True
-    except Exception as e:
-        response = f"工具执行失败: {str(e)[:400]}"
+        # 在工作区锁内检查图层参数，避免与并行图层更新竞争。
+        from backend.services.tool_args_guard import validate_tool_args
+        args, _arg_warnings = validate_tool_args(request.name, args)
+        reset_state()
+        # 直连链路同样绑定 run/task，让工具产物（图片/文件）进历史与 SQLite 台账
+        from backend.services.tools import set_current_run as _scr, set_current_task as _sct
+        import uuid as _uuid_mod
+        run_id = _uuid_mod.uuid4().hex[:12]
+        from backend.services import task_manager as _tm
+        task_id = _tm.find_or_create_task('default', request.name)
+        from backend.services import storage_service as _ss
+        _ss.record_run_start(run_id, "default", f"直接工具调用: {request.name}", task_id)
+        _scr(run_id)
+        _sct(task_id)
+        response = ""
         ok = False
-    pending = get_pending_state()
-    return {
-        "ok": ok,
-        "tool": request.name,
-        "param_warnings": _arg_warnings if _arg_warnings else [],
-        "response": response,
-        "layers": pending.get("layers", []),
-        "layer_ops": pending.get("layer_ops", []),
-        "images": pending.get("images", []),
-        "heatmap": pending.get("heatmap"),
-        "clear_layers": pending.get("clear_layers", False),
-        "qa_warnings": pending.get("qa_warnings", []),
-    }
+        loop = asyncio.get_event_loop()
+        try:
+            response = await loop.run_in_executor(
+                None, functools.partial(tool.invoke, args))
+            from backend.services.tools import _tool_result_failed
+            ok = not _tool_result_failed(request.name, response)
+        except Exception as e:
+            response = f"工具执行失败: {str(e)[:400]}"
+            ok = False
+        _ss.record_run_finish(
+            run_id, str(response), "success" if ok else "failed", "NOT_CHECKED")
+        pending = get_pending_state()
+        return {
+            "ok": ok,
+            "tool": request.name,
+            "param_warnings": _arg_warnings if _arg_warnings else [],
+            "response": response,
+            "layers": pending.get("layers", []),
+            "layer_ops": pending.get("layer_ops", []),
+            "images": pending.get("images", []),
+            "heatmap": pending.get("heatmap"),
+            "clear_layers": pending.get("clear_layers", False),
+            "qa_warnings": pending.get("qa_warnings", []),
+        }
+    finally:
+        try:
+            from backend.services.tools import set_current_run as _scr, set_current_task as _sct
+            _scr("")
+            _sct("")
+        except Exception:
+            pass
+        release_shared_state_lock()
 
 
 # ===== Task Manager API =====

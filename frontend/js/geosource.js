@@ -776,14 +776,14 @@
       }
 
       html += '  <div class="geosource-card-url-row">';
-      html += '    <input type="text" readonly class="geosource-url-input" value="' + window.GIS.utils.escapeHtml(s.service_url || s.official_url || '') + '" />';
-      html += '    <button class="geosource-copy-btn" onclick="window.GIS.geosource.copyUrl(\'' + encodeURIComponent(s.service_url || s.official_url || '') + '\', this)" title="复制 URL">';
+      html += '    <input type="text" readonly class="geosource-url-input" value="' + escapeAttribute(s.service_url || s.official_url || '') + '" />';
+      html += '    <button class="geosource-copy-btn" onclick="window.GIS.geosource.copyUrl(' + inlineJsString(encodeURIComponent(s.service_url || s.official_url || '')) + ', this)" title="复制 URL">';
       html += '      ' + UI_ICONS.copy + ' <span>复制</span>';
       html += '    </button>';
       html += '  </div>';
 
       html += '  <div class="geosource-card-actions">';
-      html += '    <button class="geosource-action-btn" onclick="window.GIS.geosource.toggleDetails(\'' + window.GIS.utils.escapeHtml(s.service_id) + '\', this)">';
+      html += '    <button class="geosource-action-btn" onclick="window.GIS.geosource.toggleDetails(' + index + ', this)">';
       html += '      ' + UI_ICONS.layers + ' <span>图层与详情</span>';
       html += '    </button>';
       if (canLoad && s.service_url) {
@@ -791,14 +791,15 @@
         html += '      ' + UI_ICONS.mapPlus + ' <span>' + (isRest ? '浏览并接入' : '加载图层') + '</span>';
         html += '    </button>';
       }
-      if (s.official_url || s.docs_url) {
-        html += '    <a class="geosource-action-btn" href="' + window.GIS.utils.escapeHtml(s.official_url || s.docs_url) + '" target="_blank" rel="noopener">';
+      var officialHref = safeHttpUrl(s.official_url || s.docs_url);
+      if (officialHref) {
+        html += '    <a class="geosource-action-btn" href="' + escapeAttribute(officialHref) + '" target="_blank" rel="noopener">';
         html += '      ' + UI_ICONS.externalLink + ' <span>官网/文档</span>';
         html += '    </a>';
       }
       html += '  </div>';
 
-      html += '  <div class="geosource-detail-box" id="detail_' + window.GIS.utils.escapeHtml(s.service_id) + '" style="display:none;"></div>';
+      html += '  <div class="geosource-detail-box" id="detail_' + index + '" style="display:none;"></div>';
       html += '</div>';
     });
 
@@ -822,6 +823,25 @@
       isStac: isStac,
       canLoad: isWms || isXyz || isRest || isGeoJson,
     };
+  }
+
+  function escapeAttribute(value) {
+    return window.GIS.utils.escapeHtml(String(value == null ? '' : value))
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function inlineJsString(value) {
+    return escapeAttribute(JSON.stringify(String(value == null ? '' : value)));
+  }
+
+  function safeHttpUrl(value) {
+    try {
+      var url = new URL(String(value), window.location.href);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+    } catch (e) {
+      return '';
+    }
   }
 
   function renderPagination() {
@@ -896,8 +916,11 @@
     });
   }
 
-  function toggleDetails(serviceId, btn) {
-    var box = document.getElementById('detail_' + serviceId);
+  function toggleDetails(index, btn) {
+    var service = _lastResults[index];
+    if (!service || service.service_id == null) return;
+    var serviceId = service.service_id;
+    var box = document.getElementById('detail_' + index);
     if (!box) return;
     if (box.style.display === 'block') {
       box.style.display = 'none';
@@ -924,9 +947,9 @@
         dHtml += '<div class="geosource-sublayer-list">';
         layers.forEach(function (l) {
           dHtml += '<div class="geosource-sublayer-item">';
-          dHtml += '  <span class="geosource-sublayer-name">[' + l.layer_idx + '] ' + window.GIS.utils.escapeHtml(l.layer_name) + '</span>';
+          dHtml += '  <span class="geosource-sublayer-name">[' + window.GIS.utils.escapeHtml(String(l.layer_idx)) + '] ' + window.GIS.utils.escapeHtml(l.layer_name) + '</span>';
           if (/WMS/i.test(det.protocol || '')) {
-            dHtml += '  <button class="geosource-sublayer-load-btn" onclick="window.GIS.geosource.loadWmsSublayer(\'' + encodeURIComponent(det.service_url) + '\', \'' + encodeURIComponent(l.layer_name) + '\', \'' + encodeURIComponent(det.service_name + ' - ' + l.layer_name) + '\')">' + UI_ICONS.mapPlus + ' 上图</button>';
+            dHtml += '  <button class="geosource-sublayer-load-btn" onclick="window.GIS.geosource.loadWmsSublayer(' + inlineJsString(encodeURIComponent(det.service_url)) + ', ' + inlineJsString(encodeURIComponent(l.layer_name)) + ', ' + inlineJsString(encodeURIComponent(det.service_name + ' - ' + l.layer_name)) + ')">' + UI_ICONS.mapPlus + ' 上图</button>';
           }
           dHtml += '</div>';
         });
@@ -1159,9 +1182,7 @@
   }
 
   window.GIS.geosource = {
-    init: init,
     show: show,
-    hide: hide,
     doSearch: doSearch,
     goToPage: goToPage,
     copyUrl: copyUrl,
@@ -1169,8 +1190,7 @@
     loadService: loadService,
     loadWmsSublayer: loadWmsSublayer,
     openWorldMap: openWorldMap,
-    closeWorldMap: closeWorldMap,
-    browseArcgis: browseArcgis
+    closeWorldMap: closeWorldMap
   };
 
   if (document.readyState === 'loading') {

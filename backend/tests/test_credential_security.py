@@ -40,27 +40,28 @@ class TestLoginToolSecurity:
     """测试登录工具不返回密码"""
 
     def test_login_gscloud_no_credential(self):
-        """测试未配置凭据时返回失败，不返回密码"""
+        """当前未实现自动登录，应明确返回不支持，不返回密码"""
         from backend.services.tools import login_gscloud
         result = json.loads(login_gscloud.invoke({}))
         assert result["success"] is False
-        assert "未配置" in result["reason"]
+        assert "不支持自动登录" in result["reason"]
         # 确保返回值里没有 password 字段
         assert "password" not in result
 
-    def test_login_gscloud_return_no_password(self):
-        """测试登录工具返回值不包含密码"""
+    def test_login_gscloud_does_not_claim_success_or_return_credentials(self):
+        """不论设置中是否有账号密码，都不能伪报登录成功或回传凭据"""
         from backend.services.credential_store import save_credential, delete_credential
         from backend.services.tools import login_gscloud
         # 配置测试凭据
         save_credential("gscloud", "testuser", "testpassword456")
         result = json.loads(login_gscloud.invoke({}))
+        assert result["success"] is False
+        assert "不支持自动登录" in result["reason"]
         # 返回值不应该包含密码
         result_str = json.dumps(result)
         assert "testpassword456" not in result_str
         assert "password" not in result
-        # 可以包含用户名
-        assert result.get("username") == "testuser"
+        assert "username" not in result
         # 清理
         delete_credential("gscloud")
 

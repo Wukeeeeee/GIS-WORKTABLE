@@ -50,9 +50,13 @@ def to_relative_path(path: str) -> str:
     """将物理路径转为统一以正斜杠分隔的相对于工作区根目录的相对路径"""
     if not path:
         return ""
-    norm = os.path.normpath(path)
-    root_norm = os.path.normpath(_REPO_ROOT)
-    if norm.lower().startswith(root_norm.lower()):
+    norm = os.path.abspath(os.path.normpath(path))
+    root_norm = os.path.abspath(os.path.normpath(_REPO_ROOT))
+    try:
+        common = os.path.commonpath((norm, root_norm))
+    except ValueError:  # 不同盘符等无法计算公共路径
+        common = ""
+    if common.casefold() == root_norm.casefold():
         rel = os.path.relpath(norm, root_norm)
     else:
         rel = norm
@@ -74,6 +78,8 @@ def get_connection() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     conn = sqlite3.connect(db_path, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    # SQLite 默认不执行外键约束；启用后 run_artifacts 才会真正关联到 runs。
+    conn.execute("PRAGMA foreign_keys=ON;")
     # 开启 WAL 模式以提升并发读写性能
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -138,9 +144,20 @@ def record_run_start(run_id: str, session_id: str, user_message: str, task_id: s
         with _LOCK:
             conn = get_connection()
             try:
+                # 同一 run_id 重启时，旧产物不能混入新一轮的事实记录。
+                conn.execute("DELETE FROM run_artifacts WHERE run_id = ?", (run_id,))
                 conn.execute("""
-                INSERT OR REPLACE INTO runs (run_id, task_id, session_id, user_message, status, created_at)
+                INSERT INTO runs (run_id, task_id, session_id, user_message, status, created_at)
                 VALUES (?, ?, ?, ?, 'running', ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    task_id = excluded.task_id,
+                    session_id = excluded.session_id,
+                    user_message = excluded.user_message,
+                    ai_response = NULL,
+                    status = 'running',
+                    guard_status = 'NOT_CHECKED',
+                    created_at = excluded.created_at,
+                    finished_at = NULL
                 """, (run_id, task_id, session_id, user_message, _now()))
                 conn.commit()
                 return True
@@ -229,7 +246,12 @@ def get_run_artifacts(run_id: str) -> List[Dict[str, Any]]:
                     item = dict(r)
                     abs_p = to_absolute_path(item["rel_path"])
                     item["abs_path"] = abs_p
-                    item["exists"] = os.path.exists(abs_p) and (os.path.getsize(abs_p) > 0 if os.path.isfile(abs_p) else True)
+                    try:
+                        item["exists"] = os.path.isfile(abs_p) and os.path.getsize(abs_p) > 0
+                    except OSError:
+                        # 文件可能在 exists/isfile 与 getsize 之间被删除或替换；
+                        # 单条产物失效不应让整个 run 的查询退化为空列表。
+                        item["exists"] = False
                     results.append(item)
                 return results
             finally:

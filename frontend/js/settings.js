@@ -11,6 +11,7 @@ window.GIS = window.GIS || {};
   'use strict';
 
   const GIS = window.GIS;
+  var _providerStatusGeneration = Object.create(null);
 
   // 复用已有 CSS 的模型选择器 check 图标
   const CHECK_SVG =
@@ -167,9 +168,47 @@ window.GIS = window.GIS || {};
     if (p.api_key) {
       if (status === 'online') return { text: '在线', cls: 'model-config-badge configured' };
       if (status === 'offline') return { text: '连接失败', cls: 'model-config-badge' };
+      if (status === 'checking') return { text: '检测中', cls: 'model-config-badge' };
       return { text: '已配置', cls: 'model-config-badge configured' };
     }
     return { text: '未配置', cls: 'model-config-badge' };
+  }
+
+  function refreshProviderBadge(id) {
+    var p = GIS.api.getProvider(id);
+    if (!p) return;
+    document.querySelectorAll('.model-config-card').forEach(function(card) {
+      if (card.dataset.providerId !== id) return;
+      var badge = card.querySelector('.model-config-header .model-config-badge');
+      if (!badge) return;
+      var status = providerStatusBadge(p);
+      badge.textContent = status.text;
+      badge.className = status.cls;
+    });
+  }
+
+  function invalidateProviderStatus(id) {
+    _providerStatusGeneration[id] = (_providerStatusGeneration[id] || 0) + 1;
+    GIS.api.setModelStatus(id, 'untested');
+    refreshProviderBadge(id);
+    if (GIS.api.getSelectedModel() === id) updateModelStatusDot();
+  }
+
+  function beginProviderStatusCheck(id) {
+    var generation = (_providerStatusGeneration[id] || 0) + 1;
+    _providerStatusGeneration[id] = generation;
+    GIS.api.setModelStatus(id, 'checking');
+    refreshProviderBadge(id);
+    if (GIS.api.getSelectedModel() === id) updateModelStatusDot();
+    return generation;
+  }
+
+  function finishProviderStatusCheck(id, generation, status) {
+    if (_providerStatusGeneration[id] !== generation) return false;
+    GIS.api.setModelStatus(id, status);
+    refreshProviderBadge(id);
+    if (GIS.api.getSelectedModel() === id) updateModelStatusDot();
+    return true;
   }
 
   function renderProviderList() {
@@ -319,6 +358,11 @@ window.GIS = window.GIS || {};
       p[field] = value;
     }
     GIS.api.upsertProvider(p);
+    if (field === 'name') {
+      if (GIS.api.getSelectedModel() === id) syncModelUI();
+      return;
+    }
+    invalidateProviderStatus(id);
   }
 
   async function testProviderRow(id, btn) {
@@ -337,18 +381,19 @@ window.GIS = window.GIS || {};
     btn.dataset.testing = 'true';
     btn.disabled = true;
     btn.textContent = '测速中...';
+    var checkGeneration = beginProviderStatusCheck(id);
     if (msgEl) { msgEl.innerHTML = '正在连接...'; msgEl.className = 'modal-test-result'; }
 
     try {
       var res = await GIS.api.testProvider(p);
-      GIS.api.setModelStatus(p.id, res.success ? 'online' : 'offline');
-      if (msgEl) {
+      var isCurrentCheck = finishProviderStatusCheck(p.id, checkGeneration, res.success ? 'online' : 'offline');
+      if (msgEl && isCurrentCheck) {
         msgEl.textContent = res.message;
         msgEl.className = 'modal-test-result ' + (res.success ? 'modal-test-success' : 'modal-test-error');
       }
     } catch (e) {
-      GIS.api.setModelStatus(p.id, 'offline');
-      if (msgEl) {
+      var isCurrentCheck = finishProviderStatusCheck(p.id, checkGeneration, 'offline');
+      if (msgEl && isCurrentCheck) {
         msgEl.textContent = '连接失败: ' + (e.message || e);
         msgEl.className = 'modal-test-result modal-test-error';
       }
@@ -357,12 +402,7 @@ window.GIS = window.GIS || {};
       btn.disabled = false;
       btn.textContent = '测速';
       // 刷新徽章（不重建整个列表，避免打断编辑）
-      var badge = card ? card.querySelector('.model-config-header .model-config-badge') : null;
-      if (badge) {
-        var st = providerStatusBadge(GIS.api.getProvider(id));
-        badge.textContent = st.text;
-        badge.className = st.cls;
-      }
+      refreshProviderBadge(id);
       updateModelStatusDot();
     }
   }
@@ -694,16 +734,22 @@ window.GIS = window.GIS || {};
     if (!dot) return;
     var cur = GIS.api.currentProvider();
     var status = cur ? GIS.api.getModelStatus(cur.id) : 'untested';
-    dot.classList.remove('online', 'offline', 'checking');
-    if (cur && status === 'offline') {
+    dot.classList.remove('online', 'offline', 'checking', 'untested');
+    if (!cur || !cur.api_key) {
+      dot.classList.add('untested');
+      dot.title = !cur ? '未选择模型' : (cur.name || 'AI 模型') + '：未配置 API Key';
+    } else if (status === 'offline') {
       dot.classList.add('offline');
       dot.title = (cur.name || 'AI 模型') + '：连接离线';
-    } else if (cur && status === 'checking') {
+    } else if (status === 'checking') {
       dot.classList.add('checking');
       dot.title = (cur.name || 'AI 模型') + '：检测中...';
-    } else {
+    } else if (status === 'online') {
       dot.classList.add('online');
-      dot.title = (cur ? cur.name : 'AI 模型') + '：就绪在线';
+      dot.title = (cur.name || 'AI 模型') + '：就绪在线';
+    } else {
+      dot.classList.add('untested');
+      dot.title = (cur.name || 'AI 模型') + '：尚未验证';
     }
     updateModelWarning();
     if (typeof updateGreeting === 'function') updateGreeting();
@@ -798,19 +844,16 @@ window.GIS = window.GIS || {};
       return;
     }
     var providers = GIS.api.getProviders().filter(function(p) { return !!p.api_key; });
-    var dot = document.getElementById('modelStatusDot');
     if (!providers.length) {
-      if (dot) { dot.classList.remove('online', 'offline'); dot.classList.add('offline'); }
+      updateModelStatusDot();
       return;
     }
     providers.forEach(function(p) {
-      if (dot) { dot.classList.remove('online', 'offline'); dot.classList.add('checking'); }
+      var checkGeneration = beginProviderStatusCheck(p.id);
       GIS.api.testProvider(p).then(function(res) {
-        GIS.api.setModelStatus(p.id, res.success ? 'online' : 'offline');
-        if (GIS.api.getSelectedModel() === p.id) updateModelStatusDot();
+        finishProviderStatusCheck(p.id, checkGeneration, res.success ? 'online' : 'offline');
       }).catch(function() {
-        GIS.api.setModelStatus(p.id, 'offline');
-        if (GIS.api.getSelectedModel() === p.id) updateModelStatusDot();
+        finishProviderStatusCheck(p.id, checkGeneration, 'offline');
       });
     });
   }
@@ -832,10 +875,6 @@ window.GIS = window.GIS || {};
   GIS.settings = {
     init,
     openModal,
-    closeModal,
-    updateModelStatusDot,
-    updateModelWarning,
-    syncModelUI,
   };
 })();
 
@@ -846,8 +885,15 @@ window.GIS = window.GIS || {};
     var refreshBtn = document.getElementById('logsRefreshBtn');
     var clearBtn = document.getElementById('logsClearBtn');
 
+    function logsUrl(path) {
+      var sid = window.GIS.project && window.GIS.project.getCurrentSessionId
+        ? window.GIS.project.getCurrentSessionId()
+        : 'default';
+      return path + '?session_id=' + encodeURIComponent(sid || 'default');
+    }
+
     function refreshStats() {
-      fetch('/api/logs/stats')
+      fetch(logsUrl('/api/logs/stats'))
         .then(function(r) { return r.json(); })
         .then(function(data) {
           var tempEl = document.getElementById('logsTempCount');
@@ -855,6 +901,13 @@ window.GIS = window.GIS || {};
           var pathEl = document.getElementById('logsPath');
           if (tempEl) tempEl.textContent = data.temp_count || 0;
           if (permEl) permEl.textContent = data.perm_count || 0;
+          var legacyNote = document.getElementById('logsLegacyNote');
+          if (legacyNote) {
+            var legacyCount = Number(data.legacy_temp_count) || 0;
+            legacyNote.hidden = legacyCount <= 0;
+            legacyNote.textContent = legacyCount > 0
+              ? '另有 ' + legacyCount + ' 条旧版共享会话记录，可通过导出查看。' : '';
+          }
           if (pathEl) pathEl.textContent = data.log_dir || 'logs/';
         })
         .catch(function() {});
@@ -862,7 +915,7 @@ window.GIS = window.GIS || {};
 
     if (exportBtn) {
       exportBtn.addEventListener('click', function() {
-        window.open('/api/logs/export', '_blank');
+        window.open(logsUrl('/api/logs/export'), '_blank');
       });
     }
     if (refreshBtn) {
@@ -871,7 +924,7 @@ window.GIS = window.GIS || {};
     if (clearBtn) {
       clearBtn.addEventListener('click', function() {
         if (!confirm('确定清除当前会话的所有日志吗？此操作不可恢复。')) return;
-        fetch('/api/logs/clear', { method: 'POST' })
+        fetch(logsUrl('/api/logs/clear'), { method: 'POST' })
           .then(function(r) { return r.json(); })
           .then(function() {
             refreshStats();

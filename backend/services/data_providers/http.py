@@ -39,7 +39,6 @@ def request_once(
     headers: Optional[dict] = None,
     timeout: float = DEFAULT_TIMEOUT,
     max_bytes: int = DEFAULT_MAX_BYTES,
-    stream: bool = True,
 ) -> bytes:
     """发送单次 HTTP 请求，返回响应字节。
 
@@ -55,13 +54,27 @@ def request_once(
     if headers:
         hdrs.update(headers)
 
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
+        raise ValueError("max_bytes 必须是非负整数")
+
+    resp = None
     try:
         resp = requests.request(
             method, url,
             params=params, data=data, json=json_body, headers=hdrs,
-            timeout=timeout, stream=stream,
+            timeout=timeout, stream=True,
         )
         resp.raise_for_status()
+        chunks = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=_CHUNK):
+            total += len(chunk)
+            if total > max_bytes:
+                raise DataValidationError(
+                    f"数据响应超过大小上限（{max_bytes // (1024 * 1024)} MB），已中断。",
+                    hint="数据过大，请缩小空间范围或按区域分块获取。",
+                )
+            chunks.append(chunk)
     except requests.exceptions.Timeout as e:
         raise DownloadTimeoutError(
             f"请求超时：{url}（{timeout} 秒无响应）",
@@ -80,24 +93,8 @@ def request_once(
         ) from e
     except requests.exceptions.RequestException as e:
         raise ProviderUnavailableError(f"数据源请求失败：{url}：{e}") from e
-
-    # 分块读取并限制大小（流式，避免一次性读入超大数据）
-    chunks = []
-    total = 0
-    try:
-        for chunk in resp.iter_content(chunk_size=_CHUNK):
-            total += len(chunk)
-            if total > max_bytes:
-                raise DataValidationError(
-                    f"数据响应超过大小上限（{max_bytes // (1024 * 1024)} MB），已中断。",
-                    hint="数据过大，请缩小空间范围或按区域分块获取。",
-                )
-            chunks.append(chunk)
-    except DataValidationError:
-        resp.close()
-        raise
     finally:
-        if not stream:
+        if resp is not None:
             resp.close()
     return b"".join(chunks)
 
@@ -175,12 +172,18 @@ def post_json(url: str, *, json_body: Optional[dict] = None,
         timeout=timeout, max_bytes=max_bytes, retries=retries,
     )
     try:
-        return json.loads(raw.decode("utf-8", errors="replace"))
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
     except (ValueError, UnicodeDecodeError) as e:
         raise DataValidationError(
             f"数据源返回内容无法解析为 JSON：{url}",
             hint="接口返回格式异常，已拒绝使用。",
         ) from e
+    if not isinstance(payload, dict):
+        raise DataValidationError(
+            f"数据源返回 JSON 根节点不是对象：{url}",
+            hint="接口返回格式异常，已拒绝使用。",
+        )
+    return payload
 
 
 def get_json(url: str, **kwargs) -> list | dict:
@@ -188,12 +191,18 @@ def get_json(url: str, **kwargs) -> list | dict:
     import json
     raw = get_bytes(url, **kwargs)
     try:
-        return json.loads(raw.decode("utf-8", errors="replace"))
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
     except (ValueError, UnicodeDecodeError) as e:
         raise DataValidationError(
             f"数据源返回内容无法解析为 JSON：{url}",
             hint="接口返回格式异常，属数据源侧问题，已拒绝使用。",
         ) from e
+    if not isinstance(payload, (list, dict)):
+        raise DataValidationError(
+            f"数据源返回 JSON 根节点类型无效：{url}",
+            hint="接口返回格式异常，已拒绝使用。",
+        )
+    return payload
 
 
 def post_overpass(query: str, url: str, *,
@@ -209,9 +218,15 @@ def post_overpass(query: str, url: str, *,
         timeout=timeout, max_bytes=max_bytes, retries=retries,
     )
     try:
-        return json.loads(raw.decode("utf-8", errors="replace"))
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
     except (ValueError, UnicodeDecodeError) as e:
         raise DataValidationError(
             f"Overpass 返回内容无法解析（{url[:60]}…），数据格式错误。",
             hint="该 Overpass 镜像返回异常，已拒绝使用该响应。",
         ) from e
+    if not isinstance(payload, dict):
+        raise DataValidationError(
+            f"Overpass 返回 JSON 根节点不是对象（{url[:60]}…）。",
+            hint="该 Overpass 镜像返回异常，已拒绝使用该响应。",
+        )
+    return payload

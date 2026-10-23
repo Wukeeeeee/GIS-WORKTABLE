@@ -34,7 +34,8 @@ function createHarness() {
   window.GIS.__setMapInstanceForTest(mapInstance);
   const layer = {};
   window.GIS.__setTestLayer('demo', layer);
-  return { map: window.GIS.map, mapInstance, layer, fitBoundsCalls, setZoom(value) { zoom = value; } };
+  return { map: window.GIS.map, mapInstance, layer, fitBoundsCalls,
+    setMapInstance: window.GIS.__setMapInstanceForTest, setZoom(value) { zoom = value; } };
 }
 
 test('toggleLayer keeps user visibility when scale visibility is recalculated', () => {
@@ -47,6 +48,27 @@ test('toggleLayer keeps user visibility when scale visibility is recalculated', 
 
   map.setLayerScaleRange('demo', 5, 10);
   assert.equal(mapInstance.hasLayer(layer), false);
+});
+
+test('fitLayer reports whether valid rendered bounds were actually applied', () => {
+  const { map, layer, fitBoundsCalls } = createHarness();
+  assert.equal(map.fitLayer('missing'), false);
+  assert.equal(map.fitLayer('demo'), false);
+  layer.getBounds = () => ({ isValid: () => false });
+  assert.equal(map.fitLayer('demo'), false);
+  assert.equal(fitBoundsCalls.length, 0);
+  layer.getBounds = () => ({ isValid: () => true });
+  assert.equal(map.fitLayer('demo'), true);
+  assert.equal(fitBoundsCalls.length, 1);
+});
+
+test('view operations report an uninitialized map instead of claiming success', () => {
+  const { map, mapInstance, setMapInstance } = createHarness();
+  mapInstance.setView = () => {};
+  assert.equal(map.setView([0, 0], 0), true);
+  setMapInstance(null);
+  assert.equal(map.setView([0, 0], 0), false);
+  assert.equal(map.fitLayer('demo'), false);
 });
 
 test('toggleLayer changes user visibility while the scale range currently hides the layer', () => {

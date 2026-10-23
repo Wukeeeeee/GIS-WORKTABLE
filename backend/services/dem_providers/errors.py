@@ -1,8 +1,7 @@
 """DEM Provider 错误体系。
 
-复用 backend.services.data_providers.errors 体系的 ProviderAuthError /
-DownloadError / DownloadTimeoutError / DataValidationError / ProviderUnavailableError，
-仅在 DEM 特有场景下扩展：
+复用 backend.services.data_providers.errors 的错误基类，
+并在 DEM 特有场景下扩展：
   - DEMAreaOutOfRangeError：请求范围超出 Provider 覆盖（如 Web Mercator 极区之外）
   - DEMResolutionUnsupportedError：要求的分辨率 Provider 不支持
   - DEMTooManyTilesError：请求范围过大（防止单次下载成千 tile）
@@ -15,10 +14,6 @@ from __future__ import annotations
 from backend.services.data_providers.errors import (
     DataProviderError,
     DataValidationError,
-    DownloadError,
-    DownloadTimeoutError,
-    ProviderAuthError,
-    ProviderUnavailableError,
 )
 
 
@@ -57,11 +52,4 @@ __all__ = [
     "DEMResolutionUnsupportedError",
     "DEMTooManyTilesError",
     "DEMTileDecodeError",
-    # 复用 data_providers
-    "DataProviderError",
-    "DataValidationError",
-    "DownloadError",
-    "DownloadTimeoutError",
-    "ProviderAuthError",
-    "ProviderUnavailableError",
 ]

@@ -1,0 +1,1 @@
+participant_id,date,source_url,workflow,phase,cold_prep_seconds,app_task_seconds,active_seconds,wait_seconds,completed,independent,help_count,preview_explained,completeness_explained,boundary_explained,failure_injected,recovery_completed,artifact_check_passed,reuse_intent,second_real_task_within_7d,notes

@@ -71,17 +71,13 @@ from backend.services.dem_providers import (
 
 
 # ============================================================
-# matplotlib 中文字体统一初始化（引用公共模块）
-# P2 优化：字体检测/fallback/rcParams 配置统一由
-# backend.services.matplotlib_font 模块管理，
-# tools.py / main.py / run_code 等模块统一调用，避免重复实现。
+# matplotlib_font 模块导入时执行一次全局初始化；沙箱代码复用同一配置片段。
 # ============================================================
-from backend.services.matplotlib_font import setup_chinese_font
-setup_chinese_font()
+from backend.services.matplotlib_font import get_sandbox_setup_code
 
 
 # ============================================================
-# 安全表达式求值（替代 eval/exec）
+# 表达式 AST 白名单校验（供字段计算与栅格计算器复用）
 # ============================================================
 
 _ALLOWED_OPS = {
@@ -91,14 +87,6 @@ _ALLOWED_OPS = {
     ast.And, ast.Or, ast.Not,
     ast.BitXor, ast.BitAnd, ast.BitOr,
 }
-
-
-def _safe_expr_eval(expression, variables):
-    """安全求值数学/逻辑表达式，只允许白名单操作和变量引用。"""
-    tree = ast.parse(expression, mode="eval")
-    _validate_ast(tree.body)
-    code = compile(tree, "<safe>", "eval")
-    return eval(code, {"__builtins__": {}}, variables)
 
 
 def _validate_ast(node):
@@ -166,6 +154,51 @@ def _validate_ast(node):
         raise ValueError(f"不支持的表达式语法: {type(node).__name__}")
 
 
+def _validate_field_calculation_ast(node, column_names):
+    """字段计算器仅允许字段、常量、运算和明确列出的标量函数。"""
+    safe_functions = {"abs", "round", "int", "float", "str", "len", "min", "max", "sum", "pow", "bool"}
+    if isinstance(node, ast.Expression):
+        _validate_field_calculation_ast(node.body, column_names)
+    elif isinstance(node, ast.BinOp):
+        if type(node.op) not in _ALLOWED_OPS:
+            raise ValueError(f"不支持的操作: {type(node.op).__name__}")
+        _validate_field_calculation_ast(node.left, column_names)
+        _validate_field_calculation_ast(node.right, column_names)
+    elif isinstance(node, ast.UnaryOp):
+        if type(node.op) not in _ALLOWED_OPS:
+            raise ValueError(f"不支持的操作: {type(node.op).__name__}")
+        _validate_field_calculation_ast(node.operand, column_names)
+    elif isinstance(node, ast.BoolOp):
+        if type(node.op) not in _ALLOWED_OPS:
+            raise ValueError(f"不支持的操作: {type(node.op).__name__}")
+        for value in node.values:
+            _validate_field_calculation_ast(value, column_names)
+    elif isinstance(node, ast.Compare):
+        _validate_field_calculation_ast(node.left, column_names)
+        for comparator in node.comparators:
+            _validate_field_calculation_ast(comparator, column_names)
+        allowed_comparisons = {ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE}
+        if any(type(op) not in allowed_comparisons for op in node.ops):
+            raise ValueError("不支持的比较操作")
+    elif isinstance(node, ast.IfExp):
+        _validate_field_calculation_ast(node.test, column_names)
+        _validate_field_calculation_ast(node.body, column_names)
+        _validate_field_calculation_ast(node.orelse, column_names)
+    elif isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name) or node.func.id not in safe_functions or node.keywords:
+            raise ValueError("只支持 abs/round/int/float/str/len/min/max/sum/pow/bool 函数")
+        for arg in node.args:
+            _validate_field_calculation_ast(arg, column_names)
+    elif isinstance(node, ast.Name):
+        if node.id not in column_names and node.id not in safe_functions:
+            raise ValueError(f"字段或函数「{node.id}」不在允许范围内")
+    elif isinstance(node, ast.Constant):
+        if not isinstance(node.value, (str, int, float, bool, type(None))):
+            raise ValueError("不支持该常量类型")
+    else:
+        raise ValueError(f"字段计算不支持该语法: {type(node).__name__}")
+
+
 # ============================================================
 # 共享状态（每次请求开始时由 reset_state() 清空）
 # ============================================================
@@ -200,6 +233,7 @@ _exec_log: list = []            # 执行日志：记录每次execute_python的�
 _temp_output_dir: str = ""          # 在 reset_state 时设置
 _workspace_dir: str = ""
 _registered_layers: dict = {}       # 已注册的图层信息
+_active_project_id = None
 _current_task_id: str = ""          # 当前任务 ID（由 graph.py 设置）
 _last_user_message: str = ""        # 本轮用户原始请求（由 graph.py 每轮设置，供选项类工具保存上下文）
 
@@ -317,6 +351,7 @@ def record_tool_artifact(filename: str, filepath: str, artifact_type: str = "ima
 import threading as _threading_mod
 _session_locks: dict = {}
 _session_locks_guard = _threading_mod.Lock()
+_shared_state_lock = _threading_mod.Lock()
 
 def session_lock_wait_seconds() -> float:
     """同 session 新请求在被占用时最多等待多少秒。
@@ -361,6 +396,22 @@ def release_session_lock(session_id: str):
             lock.release()
         except RuntimeError:
             pass
+
+
+def acquire_shared_state_lock(timeout: Optional[float] = None) -> bool:
+    """Serialize top-level operations that use this module's process-wide state."""
+    if timeout is None:
+        timeout = session_lock_wait_seconds()
+    if timeout and timeout > 0:
+        return _shared_state_lock.acquire(timeout=timeout)
+    return _shared_state_lock.acquire(blocking=False)
+
+
+def release_shared_state_lock() -> None:
+    try:
+        _shared_state_lock.release()
+    except RuntimeError:
+        pass
 
 def reset_state(amap_key: str = "", task_id: str = ""):
     """每次请求开始时调用，清空所有共享状态"""
@@ -436,10 +487,13 @@ def _geo_qa(geojson) -> list:
         return []
 
 
-def _unregister_layer(name: str):
+def _unregister_layer(name: str, registration_token: str = None):
     """从注册表中移除图层"""
     with _state_lock:
-        _registered_layers.pop(name, None)
+        current = _registered_layers.get(name)
+        if registration_token is not None and (not current or current.get("registration_token") != registration_token):
+            return False
+        return _registered_layers.pop(name, None) is not None
 
 
 def _normalize_geojson(geojson: dict) -> dict:
@@ -548,16 +602,19 @@ def _register_layer(name: str, geojson: dict, group_name: str = None):
 
     bbox = _compute_bbox(fc)
     with _state_lock:
+        registration_token = uuid.uuid4().hex
         previous = _registered_layers.get(name) or {}
         _registered_layers[name] = {
             "name": name,
             "layer_id": previous.get("layer_id") or uuid.uuid4().hex,
+            "registration_token": registration_token,
             "group_name": (group_name.strip() if isinstance(group_name, str) else previous.get("group_name", "")),
             "feature_count": len(features),
             "geometry_types": list(types) if types else ["未知"],
             "geojson": fc,
             "bbox": bbox,
         }
+        return registration_token
 
 
 def _update_registered_layer_data(name: str, geojson: dict):
@@ -605,6 +662,29 @@ def _layer_property_examples(geojson: dict, limit: int = 3) -> list:
     return examples
 
 
+def _register_raster_layer(name: str, raster: dict, source_path: str = None):
+    """Register a managed raster independently of its preview/map identifier."""
+    import uuid
+    if not isinstance(name, str) or not name.strip() or not isinstance(raster, dict):
+        raise ValueError("栅格图层名称或资源无效")
+    bounds = raster.get('bounds')
+    if (not isinstance(bounds, (list, tuple)) or len(bounds) != 4
+            or not all(isinstance(value, (int, float)) and math.isfinite(value) for value in bounds)
+            or not (-180 <= bounds[0] <= bounds[2] <= 180 and -90 <= bounds[1] <= bounds[3] <= 90)):
+        raise ValueError("栅格范围必须是有效的 WGS-84 范围")
+    if not source_path and any(raster.get(key) for key in ('source_asset', 'source_filename', 'source_url')):
+        from backend.services.project_service import _raster_original_path
+        source_path = _raster_original_path(raster)
+        if not source_path:
+            raise ValueError("栅格原始数据资源不存在")
+    token = uuid.uuid4().hex
+    with _state_lock:
+        _registered_layers[name] = {'geojson': None, 'geometry_types': ['Raster'], 'feature_count': 0,
+                                    'bbox': list(bounds), 'raster': dict(raster),
+                                    'raster_source_path': source_path, 'registration_token': token}
+    return token
+
+
 def get_registered_layers_snapshot() -> list:
     """返回当前所有注册图层的快照，包括属性样例，供 AI 识别图层内容。"""
     result = []
@@ -619,13 +699,16 @@ def get_registered_layers_snapshot() -> list:
             "bbox": info.get("bbox", []),
             "property_examples": _layer_property_examples(geojson),
             "source": "ai",
+            **({"raster": dict(info["raster"])} if isinstance(info.get("raster"), dict) else {}),
         })
     return result
 
 
 def reset_registered_layers(layers: list = None):
     """重置/替换当前注册的图层字典（切换工程或清空工程时调用，实现工程间严格图层隔离）"""
+    global _active_project_id
     with _state_lock:
+        _active_project_id = None
         _registered_layers.clear()
         _pending_layers.clear()
         _pending_layer_ops.clear()
@@ -635,7 +718,9 @@ def reset_registered_layers(layers: list = None):
                     continue
                 name = l.get("name") or l.get("filename")
                 geojson = l.get("geojson") or l.get("geojson_data")
-                if name and geojson:
+                if name and isinstance(l.get('raster'), dict):
+                    _register_raster_layer(name, l['raster'])
+                elif name and geojson:
                     _register_layer(name, geojson)
 
 
@@ -1444,7 +1529,6 @@ _os.makedirs('output', exist_ok=True)
         # P2: 动态注入公共模块生成的字体配置代码（替换占位符）
         _font_setup_code = ""
         if _needs_plot:
-            from backend.services.matplotlib_font import get_sandbox_setup_code
             _font_setup_code = get_sandbox_setup_code()
         _setup_blocks_filled = _setup_blocks.replace('{font_setup_code}', _font_setup_code)
         _final_code = _amap_injection + _osm_setup_code + _setup_blocks_filled.rstrip() + '\n\n' + code
@@ -1708,7 +1792,10 @@ def _search_osm_poi_fallback(keywords: str, city: str = "", location: str = "", 
 def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: int = 1000) -> str:
     """Search POIs with AMap when available, then automatically fall back to public OSM/Overpass.
     keywords: POI type/name; city: city or region; location: WGS-84 center as "lng,lat"; radius: meters."""
+    if isinstance(radius, bool) or not isinstance(radius, int) or not 1 <= radius <= 50000:
+        return "搜索半径必须是 1 到 50000 米之间的整数。"
     amap_error = ""
+    amap_warnings = []
     result = None
     if _current_amap_key:
         from backend.services.amap_service import search_poi as _search_poi
@@ -1718,16 +1805,23 @@ def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: i
         if location:
             try:
                 parts = location.split(",")
+                if len(parts) != 2:
+                    raise ValueError("location 必须为经度,纬度")
                 wgs_lng, wgs_lat = float(parts[0].strip()), float(parts[1].strip())
-                actual_location = f"{wgs_lng},{wgs_lat}"
+                if not (-180 <= wgs_lng <= 180 and -90 <= wgs_lat <= 90):
+                    raise ValueError("location 超出经纬度范围")
+                from backend.services.geo_coords import wgs84_to_gcj02
+                gcj_lng, gcj_lat = wgs84_to_gcj02(wgs_lng, wgs_lat)
+                actual_location = f"{gcj_lng},{gcj_lat}"
             except (ValueError, IndexError):
-                pass
+                return "中心点坐标无效，请使用 WGS-84 的「经度,纬度」格式。"
         result = _search_poi(
             keywords=keywords, city=city,
             location=actual_location if location else "",
             radius=radius, api_key=_current_amap_key,
         )
         amap_error = result.get("error", "")
+        amap_warnings = result.get("warnings") or []
         if not amap_error and result.get("count", 0) > 0:
             geojson = result["geojson"]
             count = result["count"]
@@ -1761,7 +1855,8 @@ def amap_poi_search(keywords: str, city: str = "", location: str = "", radius: i
     if source == "OpenStreetMap":
         return f"高德不可用（{amap_error}）；已自动回退到 OpenStreetMap，找到 {count} 个「{keywords}」POI，已加载 {feat_count} 个要素。OSM 数据由社区维护，中国地区覆盖可能不完整。"
     source_desc = "关键字搜索" if source == "text" else "周边搜索"
-    return f"高德 {source_desc} 完成：找到 {count} 个「{keywords}」POI，原始坐标 GCJ-02 已转 WGS-84，已加载 {feat_count} 个点到地图（图层名已标注）"
+    warning_text = ("；注意：" + "；".join(str(w) for w in amap_warnings)) if amap_warnings else ""
+    return f"高德 {source_desc} 完成：找到 {count} 个「{keywords}」POI，原始坐标 GCJ-02 已转 WGS-84，已加载 {feat_count} 个点到地图（图层名已标注）{warning_text}"
 
 
 # ============================================================
@@ -1817,8 +1912,9 @@ address: 地址/地名（如"广州塔""广州南站"）；city: 城市名（可
             for _k in _keys:
                 del _geocode_cache[_k]
         return _result
-    except Exception as e:
-        return f"地理编码失败: {str(e)[:200]}"
+    except Exception as exc:
+        # requests 异常可能带上含 API Key 的完整 URL。
+        return f"地理编码请求失败: {type(exc).__name__}"
 
 
 # ============================================================
@@ -2395,26 +2491,24 @@ def field_calculate(layer_name: str, expression: str, new_field: str, field_type
 
         safe_globals = {"__builtins__": {}}
         safe_locals = {
-            "gdf": gdf,
-            "np": np,
-            "pd": pd,
             "abs": abs, "round": round, "int": int, "float": float,
             "str": str, "len": len, "min": min, "max": max,
             "sum": sum, "pow": pow, "bool": bool,
         }
-        # 把所有字段注入局部变量，方便直接引用
-        for col in gdf.columns:
-            if col != "geometry" and col not in safe_locals:
-                pass  # 不用注入全部，通过 gdf.eval 访问
         try:
-            result = gdf.eval(expression)
+            _fc_tree = ast.parse(expression, mode="eval")
+            _validate_field_calculation_ast(
+                _fc_tree, set(gdf.columns) - {"geometry"}
+            )
+        except Exception as e:
+            return f"表达式计算失败：{str(e)[:200]}"
+
+        _fc_code = compile(_fc_tree, "<safe>", "eval")
+        try:
+            result = gdf.eval(expression, local_dict=safe_locals, global_dict=safe_globals)
             gdf[new_field] = result
         except Exception:
             try:
-                # 危险：eval 前必须过 AST 白名单校验，禁止属性链逃逸
-                _fc_tree = ast.parse(expression, mode="eval")
-                _validate_ast(_fc_tree.body)
-                _fc_code = compile(_fc_tree, "<safe>", "eval")
                 result = gdf.apply(lambda row: eval(_fc_code, safe_globals, {**safe_locals, **row.to_dict()}), axis=1)
                 gdf[new_field] = result
             except Exception as e2:
@@ -2459,70 +2553,21 @@ def clear_layers() -> str:
 
 
 # ============================================================
-# 工具: login_gscloud — 地理空间数据云登录（Credential Injection 模式）
+# 工具: login_gscloud — 地理空间数据云自动登录状态
 # ============================================================
-# 安全设计：Agent 只能调用 login_gscloud()，无参数。
-# 工具内部从安全凭据存储读取账号密码，直接用于登录。
-# 返回值只含 success/reason，绝对不返回密码、Cookie、Token。
-# Agent 无法调用 get_credential / get_password / read_password 等函数。
+# 当前无浏览器登录实现；明确告知 Agent 由用户手动登录和下载，避免模拟成功。
 
 @tool
 def login_gscloud() -> str:
-    """登录地理空间数据云（gscloud.cn）。
-    
-    【适用场景】
-    - 用户要求下载地理空间数据云的数据（DEM、Landsat、MODIS 等）
-    - 下载前需要先登录
-    
-    【安全说明】
-    - 账号密码由用户在设置页面配置，加密存储在本地
-    - 本工具内部自动读取凭据，Agent 无法看到或获取密码
-    - 返回值只包含登录成功/失败状态，不包含任何敏感信息
-    
-    【返回】
-    - 登录成功：返回会话状态说明
-    - 登录失败：返回失败原因（未配置凭据/账号密码错误/需要验证码等）
-    """
-    from backend.services.credential_store import get_credential, has_credential
-    
-    # 检查是否已配置凭据
-    if not has_credential("gscloud"):
-        return json.dumps({
-            "success": False,
-            "reason": "未配置地理空间数据云凭据，请在设置 → 地理服务中配置账号密码",
-        }, ensure_ascii=False)
-    
-    # 从安全存储读取凭据（仅此处可访问，不返回给 Agent）
-    cred = get_credential("gscloud")
-    if not cred or not cred.get("username") or not cred.get("password"):
-        return json.dumps({
-            "success": False,
-            "reason": "凭据不完整，请重新配置账号密码",
-        }, ensure_ascii=False)
-    
-    username = cred["username"]
-    # password 仅在本函数作用域内使用，不输出、不记录、不返回
-    _password = cred["password"]
-    
-    # TODO: 真正的浏览器自动化登录（Playwright/Selenium）
-    # 当前为框架验证：确认凭据存在且格式正确
-    # 真正实现时：启动浏览器 → 打开登录页 → 填入账号密码 → 提交 → 保存会话 Cookie
-    # Cookie 也加密存储，不返回给 Agent
-    
-    # 模拟登录结果（框架阶段）
-    login_ok = len(username) >= 3 and len(_password) >= 6
-    
-    if login_ok:
-        return json.dumps({
-            "success": True,
-            "message": "地理空间数据云登录成功，可以开始搜索和下载数据",
-            "username": username,  # 只返回用户名，不返回密码
-        }, ensure_ascii=False)
-    else:
-        return json.dumps({
-            "success": False,
-            "reason": "账号或密码格式不正确，请检查后重试",
-        }, ensure_ascii=False)
+    """说明当前版本不支持自动登录，引导用户手动获取数据。"""
+    return json.dumps({
+        "success": False,
+        "reason": "当前版本不支持自动登录地理空间数据云，也不会验证已保存的账号密码。",
+        "hint": (
+            "请在浏览器中登录 https://www.gscloud.cn 手动检索并下载数据，"
+            "再将下载文件上传到 GIS WorkTable。"
+        ),
+    }, ensure_ascii=False)
 
 
 # ============================================================
@@ -2534,12 +2579,15 @@ def get_session_logs(n: int = 20) -> str:
     """查看最近的问答日志，包含用户问题、AI回复、当时有哪些图层"""
     try:
         from backend.services.log_service import get_temp_log, get_perm_log
-        records = get_temp_log()
-        if not records:
-            return "暂无临时日志记录"
+        from backend.services import pending_action
+        records = get_temp_log(pending_action.get_active_session())
+        perm = get_perm_log(5)
+        if not records and not perm:
+            return "暂无日志记录"
         lines = [f"== 当前会话（{len(records)} 次问答） =="]
-        for i, r in enumerate(records[-n:], 1):
-            t = r.get("time", "")[-19:] if r.get("time") else ""
+        limit = max(1, min(100, int(n)))
+        for i, r in enumerate(records[-limit:], 1):
+            t = r.get("time", "")[:19].replace("T", " ") if r.get("time") else ""
             user_msg = r.get("user", "")[:80]
             ai_msg = r.get("ai", "")[:100]
             layers = r.get("layers", {})
@@ -2548,11 +2596,10 @@ def get_session_logs(n: int = 20) -> str:
             lines.append(f"   答：{ai_msg}")
             lines.append(f"   图层：{layer_info}")
 
-        perm = get_perm_log(5)
         if perm:
             lines.append(f"== 历史问题记录（{len(perm)} 条） ==")
             for r in perm:
-                pt = r.get("time", "")[-19:] if r.get("time") else ""
+                pt = r.get("time", "")[:19].replace("T", " ") if r.get("time") else ""
                 pu = r.get("user", "")[:60]
                 pa = r.get("ai", "")[:80]
                 lines.append(f"  [{pt}] 问：{pu}")
@@ -2603,14 +2650,16 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
         return f"已标记清除图层「{name}」的分级/唯一值符号化与对应图例"
     elif action == "rename":
         if not isinstance(new_name, str) or not new_name.strip():
-            return "新图层名不能为空；未重命名任何图层"
+            return "图层重命名失败: 新图层名不能为空；未重命名任何图层"
         new_name = new_name.strip()
-        if new_name != name and new_name in _registered_layers:
-            return f"图层「{new_name}」已存在；未重命名任何图层"
-        _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
-        info = _registered_layers.pop(name)
-        info["name"] = new_name
-        _registered_layers[new_name] = info
+        with _state_lock:
+            if name not in _registered_layers:
+                return f"图层重命名失败: 图层「{name}」已被移除，请刷新后重试"
+            if new_name != name and new_name in _registered_layers:
+                return f"图层重命名失败: 图层「{new_name}」已存在；未重命名任何图层"
+            _registered_layers[new_name] = _registered_layers.pop(name)
+            _registered_layers[new_name]["name"] = new_name
+            _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
         return f"已重命名图层: {name} → {new_name}"
     elif action == "fit":
         _pending_layer_ops.append({"action": "fit", "name": name})
@@ -3357,18 +3406,20 @@ def network_analysis(
     - origin / destination / facility: 坐标，格式为 "经度,纬度"（WGS84）。地名需先经 amap_geocode 转坐标。
     - events: 分号分隔坐标点；breaks: 逗号分隔阻抗米数；n: 最近设施数(默认 3)。"""
     from backend.services.network_service import (
-        build_graph_from_geojson, shortest_route,
-        service_area, closest_facilities,
+        shortest_route, service_area, closest_facilities,
     )
 
     # 收集分析所需的坐标，用于图层匹配
     need_coords = []
-    if origin:
-        need_coords.append(_parse_coord(origin))
-    if destination:
-        need_coords.append(_parse_coord(destination))
-    if facility:
-        need_coords.append(_parse_coord(facility))
+    try:
+        if origin:
+            need_coords.append(_parse_coord(origin))
+        if destination:
+            need_coords.append(_parse_coord(destination))
+        if facility:
+            need_coords.append(_parse_coord(facility))
+    except ValueError as e:
+        return f"坐标参数错误: {e}"
 
     # 根据坐标自动匹配图层
     if not layer_name:
@@ -3484,12 +3535,16 @@ def _find_layer_for_coord(lng: float, lat: float) -> str:
 def _parse_coord(s: str) -> tuple:
     """解析 "经度,纬度" 字符串"""
     parts = s.split(",")
-    if len(parts) < 2:
+    if len(parts) != 2:
         raise ValueError(f"坐标格式错误，需要 '经度,纬度' 格式，收到: '{s}'")
     try:
-        return float(parts[0].strip()), float(parts[1].strip())
+        longitude, latitude = float(parts[0].strip()), float(parts[1].strip())
     except ValueError:
         raise ValueError(f"坐标值非数字，收到: '{s}'")
+    if (not math.isfinite(longitude) or not math.isfinite(latitude)
+            or not -180 <= longitude <= 180 or not -90 <= latitude <= 90):
+        raise ValueError(f"经纬度超出有效范围，收到: '{s}'")
+    return longitude, latitude
 
 
 def _get_utm_crs(lon: float, lat: float) -> str:
@@ -3521,6 +3576,24 @@ def _layer_to_gdf(layer_name: str) -> tuple:
     import geopandas as gpd
     gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
     return gdf, layer_name
+
+
+def _to_local_metric_gdf(gdf):
+    """把局部地理数据转到覆盖范围对应的 UTM 米制坐标系。"""
+    crs = gdf.estimate_utm_crs()
+    if crs is None:
+        raise ValueError("无法为当前图层范围确定合适的米制投影")
+    return gdf.to_crs(crs)
+
+
+def _spatial_feature_coordinates(gdf):
+    """为每个点要素返回一个坐标，避免 MultiPoint 顶点数与属性行数不一致。"""
+    geometry = gdf.geometry
+    if geometry.isna().any() or geometry.is_empty.any():
+        raise ValueError("图层含空几何，请先清理")
+    if not geometry.geom_type.isin(["Point", "MultiPoint"]).all():
+        raise ValueError("该分析只支持点图层；线/面请先执行 spatial_centroid 取质心")
+    return geometry.centroid.get_coordinates().values
 
 
 def _gdf_to_layer(gdf, name: str, style: dict = None):
@@ -3565,6 +3638,11 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
     - unit: 'm'(米,默认) 或 'km'(千米)。
     - dissolve: 是否融合重叠缓冲区多边形（默认 False，保留各要素独立缓冲区）。"""
     try:
+        from backend.services.tool_args_guard import validate_tool_args
+        normalized, _ = validate_tool_args("spatial_buffer", {"unit": unit})
+        unit = normalized["unit"]
+        if unit not in ("m", "km"):
+            return f"缓冲区分析失败: 不支持的距离单位「{unit}」，仅支持 m 或 km"
         import geopandas as gpd
         from backend.services.spatial_robust import repair_geometry, estimate_tier, robust_note
         gdf, name = _layer_to_gdf(layer_name)
@@ -3587,31 +3665,32 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
         gdf_utm = gdf.to_crs(crs_utm)
         _cstats = None
         if tier["tier"] == "chunked":
-            from backend.services.spatial_robust import chunked_overlay
             _buf_parts = []
-            _minx, _miny, _maxx, _maxy = gdf_utm.total_bounds
-            _dx = (_maxx - _minx) / 4 or 1.0
-            _dy = (_maxy - _miny) / 4 or 1.0
-            from shapely.geometry import box as _box
+            _batch_count = min(16, len(gdf_utm))
+            _batch_size = math.ceil(len(gdf_utm) / _batch_count)
             _okc = 0
-            for _i in range(4):
-                for _j in range(4):
-                    _cell = _box(_minx + _i * _dx, _miny + _j * _dy, _minx + (_i + 1) * _dx, _miny + (_j + 1) * _dy)
-                    _sub = gdf_utm[gdf_utm.geometry.intersects(_cell)]
-                    if len(_sub) == 0:
-                        continue
-                    try:
-                        _buf_parts.append(_sub.copy())
-                        _buf_parts[-1]["geometry"] = _sub.geometry.buffer(distance_m)
-                        _okc += 1
-                    except Exception:
-                        pass
+            _attempted_batches = 0
+            for _start in range(0, len(gdf_utm), _batch_size):
+                _sub = gdf_utm.iloc[_start:_start + _batch_size]
+                _attempted_batches += 1
+                try:
+                    _buffered = _sub.copy()
+                    _buffered["geometry"] = _sub.geometry.buffer(distance_m)
+                    _buf_parts.append(_buffered)
+                    _okc += 1
+                except Exception:
+                    pass
             import pandas as _pd
-            _cstats = {"cells": 16, "ok_cells": _okc, "failed_cells": 16 - _okc}
+            _cstats = {
+                "cells": _attempted_batches,
+                "ok_cells": _okc,
+                "failed_cells": _attempted_batches - _okc,
+            }
             if _buf_parts:
                 gdf_utm = _pd.concat(_buf_parts, ignore_index=True)
                 gdf_utm = gpd.GeoDataFrame(gdf_utm, geometry="geometry", crs=crs_utm)
-                gdf_utm = gdf_utm.drop_duplicates(subset="geometry")
+            else:
+                return f"缓冲区分析失败: 所有分批缓冲均失败（{_cstats['failed_cells']} 批）"
         else:
             gdf_utm["geometry"] = gdf_utm.geometry.buffer(distance_m)
         if dissolve:
@@ -3991,7 +4070,7 @@ def spatial_union(layer_a: str, layer_b: str) -> str:
     """合并两个图层的全部几何区域。"""
     try:
         import geopandas as gpd
-        from backend.services.spatial_robust import repair_geometry, estimate_tier, chunked_overlay, robust_note
+        from backend.services.spatial_robust import repair_geometry, estimate_tier, robust_note
         gdf_a, name_a = _layer_to_gdf(layer_a)
         if gdf_a is None: return name_a
         gdf_b, name_b = _layer_to_gdf(layer_b)
@@ -4004,10 +4083,8 @@ def spatial_union(layer_a: str, layer_b: str) -> str:
             return f"合并失败: 输入图层没有有效几何"
         tier = estimate_tier(gdf_a if len(gdf_a) >= len(gdf_b) else gdf_b)
         _cstats = None
-        if tier["tier"] == "chunked":
-            result, _cstats = chunked_overlay(gdf_a, gdf_b, lambda a, b: gpd.overlay(a, b, how="union"))
-        else:
-            result = gpd.overlay(gdf_a, gdf_b, how="union")
+        # union 的 B 独有区域依赖完整 A 图层；按 A 分批会重复生成不同范围的 B 差集。
+        result = gpd.overlay(gdf_a, gdf_b, how="union")
         result_name = f"{name_a}__{name_b}"
         _gdf_to_layer(result, result_name)
         _note = robust_note(rstats, tier, _cstats)
@@ -4054,7 +4131,8 @@ def spatial_difference(layer_a: str, layer_b: str) -> str:
             if area_a:
                 line += f"（占「{name_a}」的 {res_area/area_a*100:.2f}%）"
             stat.append(line)
-        return "\n".join(stat)
+        stat.append(robust_note(rstats, tier, _cstats).strip("（）") or None)
+        return "\n".join([s for s in stat if s])
     except Exception as e:
         return f"差异分析失败: {str(e)[:300]}"
 
@@ -5262,17 +5340,8 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
     - layer_name: DEM 图层名（如已上传的 DEM 名称）。
     - analysis: 分析类型，'slope'(坡度,度0-90) / 'aspect'(坡向,度0-360) / 'hillshade'(山体阴影灰度图)。"""
     try:
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录，请先上传DEM文件"
-        # 按图层名匹配TIF
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件，请先上传DEM"
         import rasterio
@@ -5380,16 +5449,8 @@ def ndvi_analysis(layer_name: str, red_band: int = 3, nir_band: int = 4) -> str:
     - nir_band: 近红外波段序号(从1开始，默认 4；Landsat 8/9为5，Sentinel-2为8)。
     输出范围 [-1, 1] 的彩色渲染图层并上图。"""
     try:
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录，请先上传多光谱文件"
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
         import rasterio
@@ -5453,16 +5514,8 @@ def raster_calculator(layer_name: str, expression: str) -> str:
     波段用 B1/B2/B3… 引用，支持 + - * / ** ( ) 和函数。
     示例: '(B4-B3)/(B4+B3)'、'B1*2.5'、'B2-B1'。"""
     try:
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录"
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
         import rasterio
@@ -5674,16 +5727,8 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
     layer_name为上传DEM时创建的图层名。"""
     try:
         import numpy as np
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录"
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
         import rasterio
@@ -5820,7 +5865,7 @@ def create_workflow(workflow_json: str) -> str:
         import json as _json
         steps = _json.loads(workflow_json)
         if not isinstance(steps, list) or not steps:
-            return "workflow_json必须是非空数组"
+            return "工作流执行失败：workflow_json 必须是非空数组"
         outputs = {}
         results = []
         # 构建工具查找表
@@ -5830,11 +5875,17 @@ def create_workflow(workflow_json: str) -> str:
             tool_map[name] = t
         for idx, step in enumerate(steps):
             step_num = idx + 1
+            if not isinstance(step, dict):
+                return f"工作流执行失败：第{step_num}步必须是对象"
             tool_name = step.get("tool", "")
-            raw_params = dict(step.get("params", {}))
+            raw_params = step.get("params", {})
+            if not isinstance(raw_params, dict):
+                return f"工作流执行失败：第{step_num}步 params 必须是对象"
             output_name = step.get("output", f"step_{step_num}")
-            if tool_name not in tool_map:
-                return f"第{step_num}步: 未找到工具 '{tool_name}'"
+            if not isinstance(output_name, str) or not output_name.strip():
+                return f"工作流执行失败：第{step_num}步 output 必须是非空字符串"
+            if not isinstance(tool_name, str) or tool_name not in tool_map:
+                return f"工作流执行失败：第{step_num}步未找到工具 '{tool_name}'"
             # 解析 $prev / $N 引用
             resolved_params = {}
             for k, v in raw_params.items():
@@ -5842,32 +5893,33 @@ def create_workflow(workflow_json: str) -> str:
                     ref = v[1:]
                     if ref == "prev":
                         if not outputs:
-                            resolved_params[k] = v
-                        else:
-                            prev_out = list(outputs.values())[-1]
-                            resolved_params[k] = prev_out
+                            return f"工作流执行失败：第{step_num}步参数 {k} 引用了不存在的上一步输出"
+                        prev_out = list(outputs.values())[-1]
+                        resolved_params[k] = prev_out
                     elif ref.isdigit():
                         n = int(ref)
                         if n in outputs:
                             resolved_params[k] = outputs[n]
                         else:
-                            resolved_params[k] = v
+                            return f"工作流执行失败：第{step_num}步参数 {k} 引用了不存在的第 {n} 步输出"
                     else:
-                        resolved_params[k] = v
+                        return f"工作流执行失败：第{step_num}步参数 {k} 的输出引用格式无效：{v}"
                 else:
                     resolved_params[k] = v
             try:
                 tool_fn = tool_map[tool_name]
-                result_str = tool_fn.invoke(resolved_params)
+                step_result = tool_fn.invoke(resolved_params)
             except Exception as e:
-                return f"第{step_num}步 '{tool_name}' 执行失败: {str(e)[:200]}"
+                return f"工作流执行失败：第{step_num}步 '{tool_name}' 执行失败: {str(e)[:200]}"
+            if _tool_result_failed(tool_name, step_result):
+                return f"工作流执行失败：第{step_num}步 '{tool_name}' 执行失败: {str(step_result)[:200]}"
             step_output = output_name
             outputs[step_num] = step_output
             outputs[output_name] = step_output
-            results.append(f"步骤{step_num}({tool_name}) → {output_name}: {result_str[:100]}")
+            results.append(f"步骤{step_num}({tool_name}) → {output_name}: {str(step_result)[:100]}")
         return "工作流执行完成:\n" + "\n".join(results)
     except Exception as e:
-        return f"工作流失败: {str(e)[:300]}"
+        return f"工作流执行失败: {str(e)[:300]}"
 
 
 # ============================================================
@@ -5880,16 +5932,8 @@ def view_3d_terrain(layer_name: str, exaggeration: float = 2.0) -> str:
     exaggeration为垂直夸大系数（默认2.0）。
     结果在聊天窗口展示 Three.js 3D 场景。"""
     try:
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录"
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
         import rasterio
@@ -6089,16 +6133,8 @@ def terrain_profile(layer_name: str, line_coords: str) -> str:
     结果在聊天窗口显示高程剖面图表。"""
     try:
         import numpy as np
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录"
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件"
         import rasterio
@@ -6304,16 +6340,8 @@ def extract_contours(layer_name: str, interval: float = 0) -> str:
     layer_name为上传DEM时创建的图层名（如dem.tif→图层名为dem）。
     结果将作为新矢量图层加载到地图上。"""
     try:
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录，请先上传DEM文件"
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件，请先上传DEM"
         import rasterio
@@ -6494,17 +6522,8 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
     output_name: 结果图层名（可选，默认自动生成）。
     结果作为新栅格图层叠加到地图。"""
     try:
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录，请先上传栅格文件"
-
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的GeoTIFF文件，请先上传"
 
@@ -6643,7 +6662,7 @@ def discover_gis_data(query: str = "", kind: str = "", area: str = "",
     """检索开放 GIS 数据源元信息（OSM/Copernicus/USGS/地理空间数据云，返回句柄不下载）。
     - kind: 数据类型（roads/buildings/pois/waterways/landuse/transport/imagery/dem）。
     - area: 城市/区域名（如'长沙市'）或 bbox='minLng,minLat,maxLng,maxLat'。
-    - provider: osm/copernicus/usgs/gscloud，默认 auto。返回句柄 handle 供 download_gis_data 获取。"""
+    - provider: osm/copernicus/usgs/gscloud，默认 auto。可自动获取的结果会返回 handle 供 download_gis_data 使用。"""
     from backend.services import data_discovery
     try:
         r = data_discovery.discover(
@@ -6664,23 +6683,26 @@ def discover_gis_data(query: str = "", kind: str = "", area: str = "",
         parts.append("\n数据源说明：")
         for n in r["notes"]:
             parts.append(f"- {n['message']}" + (f"（{n['hint']}）" if n.get('hint') else ""))
-    if r["hits"]:
-        first_handle = r['hits'][0].get('handle', '')
+    first_handle = next((hit.get("handle") for hit in r["hits"] if hit.get("handle")), "")
+    if first_handle:
         parts.append(
             f"\n下一步：确认后直接调用 **download_gis_data(handle='{first_handle}')** 即可一键获取并加载到地图（免重复传参）。"
         )
+    elif r["hits"]:
+        parts.append("\n以上结果仅提供数据源指引，当前没有可自动获取的候选。")
     return "\n".join(parts)
 
 
 @tool
 def download_gis_data(handle: str = "", query: str = "", kind: str = "", area: str = "",
-                      bbox: str = "", provider: str = "", file_format: str = "geojson",
+                      bbox: str = "", provider: str = "", file_format: str = "",
                       time_start: str = "", time_end: str = "",
                       layer_name: str = "", max_items: int = 0) -> str:
     """从开放源下载 GIS 数据并自动加载到地图（OSM/Copernicus/USGS/GSCloud）。
     - handle: 前置 discover_gis_data 返回的句柄（优先传此参数，自动还原所有筛选）。
     - kind: roads/buildings/pois/waterways/landuse/transport 等；area: 城市名或 bbox。
-    - file_format: geojson(默认)/gpkg/shp；layer_name: 自定义图层名称。"""
+    - file_format: geojson(默认)/gpkg/shp；使用 handle 时默认沿用发现结果格式。
+    - layer_name: 自定义图层名称。"""
     from backend.services import data_discovery
     try:
         asset = data_discovery.download(
@@ -6891,20 +6913,30 @@ def hold_layer_for_confirm(name: str = "", geojson: str = "",
 # 工具: spatial_moran — Moran's I 空间自相关（全局 + 局部 LISA）
 # ============================================================
 
+_MAX_DENSE_SPATIAL_STATS_FEATURES = 3000
+
+
 @tool
 def spatial_moran(layer_name: str, field: str, weight_type: str = "distance",
-                  threshold: float = 0.01, k: int = 5, local: bool = True) -> str:
+                  threshold: float = 0.01, k: int = 5, local: bool = True,
+                  threshold_m: float = 0.0) -> str:
     """全局 Moran's I 空间自相关 + 局部 LISA 聚类分析（仅支持点/质心数值字段）。
     - layer_name: 图层名（点要素或质心）。
     - field: 待分析的数值型属性字段。
     - weight_type: 'distance'(默认距离阈值) 或 'knn'(K近邻)。
-    - threshold: 距离阈值（度，0.01 度约 1km）；k: 近邻数(默认 5)。
+    - threshold: 兼容旧调用的距离阈值（度）；threshold_m: 米制距离阈值（优先使用本地 UTM 投影计算）。
+    - k: 近邻数(默认 5)。
     - local: 是否生成局部 LISA 聚类图层（包含 HH/LL/HL/LH 字段，默认 True）。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
         import numpy as np
+        if not field:
+            numeric_fields = gdf.select_dtypes(include=[np.number]).columns.tolist()
+            if not numeric_fields:
+                return "图层没有可用于空间自相关分析的数值字段"
+            field = numeric_fields[0]
         if field not in gdf.columns:
             return f"字段「{field}」不存在，可用字段：{', '.join(gdf.select_dtypes(include=[np.number]).columns.tolist()) or '无'}"
         x = gdf[field].values.astype(float)
@@ -6913,7 +6945,26 @@ def spatial_moran(layer_name: str, field: str, weight_type: str = "distance",
         n = len(x)
         if n < 3:
             return f"要素数（{n}）太少，至少需要 3 个"
-        coords = gdf.geometry.get_coordinates().values
+        if n > _MAX_DENSE_SPATIAL_STATS_FEATURES:
+            return f"错误：空间自相关当前最多支持 {_MAX_DENSE_SPATIAL_STATS_FEATURES} 个要素；请先聚合或抽样，避免距离矩阵耗尽内存"
+        if weight_type not in ("distance", "knn"):
+            return "weight_type 仅支持 distance 或 knn"
+        distance_threshold = threshold
+        if weight_type == "knn":
+            if isinstance(k, bool) or not isinstance(k, int) or k < 1:
+                return "K 近邻数必须是正整数"
+            coords = _spatial_feature_coordinates(_to_local_metric_gdf(gdf))
+        elif threshold_m:
+            if not math.isfinite(float(threshold_m)) or float(threshold_m) <= 0:
+                return "米制距离阈值必须是大于 0 的有限数值"
+            metric_gdf = _to_local_metric_gdf(gdf)
+            coords = _spatial_feature_coordinates(metric_gdf)
+            distance_threshold = float(threshold_m)
+        else:
+            if not math.isfinite(float(threshold)) or float(threshold) <= 0:
+                return "距离阈值必须是大于 0 的有限数值"
+            distance_threshold = float(threshold)
+            coords = _spatial_feature_coordinates(gdf)
         # 构建空间权重矩阵
         if weight_type == "knn":
             from sklearn.neighbors import NearestNeighbors
@@ -6922,11 +6973,14 @@ def spatial_moran(layer_name: str, field: str, weight_type: str = "distance",
             _, idx = nn.kneighbors(coords)
             W = np.zeros((n, n))
             for i in range(n):
-                W[i, idx[i, 1:]] = 1.0
+                # Coincident points can tie ahead of the query itself.
+                # Remove the actual index instead of assuming it is first.
+                neighbors = idx[i][idx[i] != i][:k_eff]
+                W[i, neighbors] = 1.0
         else:
             from scipy.spatial.distance import cdist
             d = cdist(coords, coords)
-            W = (d <= threshold).astype(float)
+            W = (d <= distance_threshold).astype(float)
             np.fill_diagonal(W, 0.0)
         W_sum = W.sum()
         if W_sum == 0:
@@ -7022,31 +7076,50 @@ def spatial_moran(layer_name: str, field: str, weight_type: str = "distance",
 # ============================================================
 
 @tool
-def spatial_hotspot(layer_name: str, field: str, threshold: float = 0.01, k: int = 5) -> str:
+def spatial_hotspot(layer_name: str, field: str, threshold: float = 0.01,
+                    threshold_m: float = 0.0) -> str:
     """Getis-Ord Gi* 热点分析，探测统计显著的高值聚集(热点)与低值聚集(冷点)。
     - layer_name: 图层名（点要素或质心）。
     - field: 待分析字段（必须为非负数值）。
-    - threshold: 距离阈值（度，0.01 度约 1km，默认 0.01）。
+    - threshold: 兼容旧调用的距离阈值（度）；threshold_m: 米制距离阈值（优先使用本地 UTM 投影计算）。
     生成含 gi_z、gi_p 及 hotspot_type('热点'/'冷点'/'不显著') 的新图层并上图。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
         import numpy as np
+        if not field:
+            numeric_fields = gdf.select_dtypes(include=[np.number]).columns.tolist()
+            if not numeric_fields:
+                return "图层没有可用于热点分析的数值字段"
+            field = numeric_fields[0]
         if field not in gdf.columns:
             return f"字段「{field}」不存在"
         x = gdf[field].values.astype(float)
-        if np.isnan(x).any():
-            return "字段含空值，请先清洗"
+        if not np.isfinite(x).all():
+            return "字段含空值或无穷大，请先清洗"
         if (x < 0).any():
             return "Getis-Ord Gi* 要求字段非负，检测到负值"
         n = len(x)
         if n < 3:
             return f"要素数（{n}）太少"
-        coords = gdf.geometry.get_coordinates().values
+        if n > _MAX_DENSE_SPATIAL_STATS_FEATURES:
+            return f"错误：热点分析当前最多支持 {_MAX_DENSE_SPATIAL_STATS_FEATURES} 个要素；请先聚合或抽样，避免距离矩阵耗尽内存"
+        distance_threshold = threshold
+        if threshold_m:
+            if not math.isfinite(float(threshold_m)) or float(threshold_m) <= 0:
+                return "米制距离阈值必须是大于 0 的有限数值"
+            metric_gdf = _to_local_metric_gdf(gdf)
+            coords = _spatial_feature_coordinates(metric_gdf)
+            distance_threshold = float(threshold_m)
+        else:
+            if not math.isfinite(float(threshold)) or float(threshold) <= 0:
+                return "距离阈值必须是大于 0 的有限数值"
+            distance_threshold = float(threshold)
+            coords = _spatial_feature_coordinates(gdf)
         from scipy.spatial.distance import cdist
         d = cdist(coords, coords)
-        W = (d <= threshold).astype(float)  # 含自身（Gi* 定义）
+        W = (d <= distance_threshold).astype(float)  # 含自身（Gi* 定义）
         W_sum = W.sum()
         if W_sum == 0:
             return "权重全为零，请调大 threshold"
@@ -7087,12 +7160,18 @@ def spatial_hotspot(layer_name: str, field: str, threshold: float = 0.01, k: int
 # ============================================================
 
 @tool
-def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50) -> str:
+def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50,
+                bandwidth_m: float = 0.0, metric_units: bool = False) -> str:
     """核密度估计（KDE），将点事件转化为连续密度面格网并上图。
     - layer_name: 必须是点图层（Point/MultiPoint，面/线需先调 spatial_centroid 取质心）。
-    - bandwidth: 高斯核带宽（度，0.01 度约 1km；传 0 则自动按 Scott 法则估算）。
+    - bandwidth: 兼容旧调用的高斯核带宽（度）；bandwidth_m: 米制带宽（使用本地 UTM 投影计算）。
+      metric_units=True 时始终使用米制坐标，带宽传 0 按 Scott 法则估算。
     - grid_size: 输出格网边长（默认 50，即 50x50 格点）。生成含 density 与 density_km2 字段的图层。"""
     try:
+        if isinstance(grid_size, bool) or not isinstance(grid_size, int) or not 10 <= grid_size <= 200:
+            return "grid_size 必须是 10 到 200 之间的整数"
+        if not math.isfinite(float(bandwidth)) or float(bandwidth) < 0:
+            return "带宽必须是有限的非负数"
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
@@ -7106,17 +7185,33 @@ def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50) ->
             return (f"KDE 需要点图层，而「{name}」是 {'/'.join(sorted(_types)) or '未知'}。"
                     f"请先对「{name}」执行 spatial_centroid 取质心，再对质心图层做核密度估计。")
 
-        coords = gdf.geometry.get_coordinates().values
+        metric_mode = bool(metric_units or bandwidth_m)
+        metric_gdf = None
+        if metric_mode:
+            if not math.isfinite(float(bandwidth_m)) or float(bandwidth_m) < 0:
+                return "米制带宽必须是有限的非负数"
+            metric_gdf = _to_local_metric_gdf(gdf)
+            coords = metric_gdf.geometry.get_coordinates().values
+        else:
+            coords = gdf.geometry.get_coordinates().values
         n = len(coords)
         if n < 3:
             return f"点要素数（{n}）太少，KDE 至少需要 3 个点"
 
-        # --- 带宽：以「度」为单位的真实高斯核标准差 ---
+        # --- 带宽：真实高斯核标准差；米制模式在本地 UTM 坐标中计算 ---
         # 注意：scipy 的 gaussian_kde(bw_method=标量) 里这个标量是 Scott 因子的倍数、
         # 不是带宽本身，直接把 0.01 传进去得到的实际带宽只有约 0.0002 度（差 40 倍），
         # 密度面会退化成几个孤立点。这里自己算核，带宽单位就是度，语义与文档一致。
         std_x, std_y = coords[:, 0].std(), coords[:, 1].std()
-        if bandwidth and bandwidth > 0:
+        if metric_mode and bandwidth_m > 0:
+            h = float(bandwidth_m)
+            bw_desc = f"{h:.2f} 米（手动指定）"
+        elif metric_mode:
+            h = float(np.mean([std_x, std_y]) * (n ** (-1.0 / 6.0)))
+            if h <= 0:
+                h = 1000.0
+            bw_desc = f"{h:.2f} 米（Scott 法则自动估算）"
+        elif bandwidth and bandwidth > 0:
             h = float(bandwidth)
             bw_desc = f"{h:.5f} 度（手动指定）"
         else:
@@ -7125,7 +7220,7 @@ def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50) ->
                 h = 0.01
             bw_desc = f"{h:.5f} 度（Scott 法则自动估算）"
 
-        xmin, ymin, xmax, ymax = gdf.total_bounds
+        xmin, ymin, xmax, ymax = (metric_gdf if metric_mode else gdf).total_bounds
         pad_x = (xmax - xmin) * 0.1 if xmax > xmin else h
         pad_y = (ymax - ymin) * 0.1 if ymax > ymin else h
         xi = np.linspace(xmin - pad_x, xmax + pad_x, grid_size)
@@ -7135,15 +7230,23 @@ def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50) ->
         # 密度 = Σ exp(-0.5·(d/h)²) / (n · 2π · h²)，各向同性，单位：点/平方度
         norm = 1.0 / (n * 2.0 * np.pi * h * h)
         density = np.zeros(gx.size, dtype=float)
-        for _start in range(0, gx.size, 20000):  # 分块计算，控制内存峰值
-            _sl = slice(_start, _start + 20000)
-            dx = (gx.ravel()[_sl, None] - coords[None, :, 0]) / h
-            dy = (gy.ravel()[_sl, None] - coords[None, :, 1]) / h
-            density[_sl] = np.exp(-0.5 * (dx * dx + dy * dy)).sum(axis=1) * norm
+        # Bound both axes: grid-only chunks still allocate grid_count * n
+        # arrays, which can exhaust memory for large point uploads.
+        for _start in range(0, gx.size, 512):
+            _sl = slice(_start, _start + 512)
+            for _point_start in range(0, n, 1024):
+                _points = coords[_point_start:_point_start + 1024]
+                dx = (gx.ravel()[_sl, None] - _points[None, :, 0]) / h
+                dy = (gy.ravel()[_sl, None] - _points[None, :, 1]) / h
+                density[_sl] += np.exp(-0.5 * (dx * dx + dy * dy)).sum(axis=1) * norm
 
-        # 平方度 -> 平方千米（按图层中心纬度换算，让密度值能被读懂）
-        lat_mid = float(np.mean([ymin, ymax]))
-        km2_per_deg2 = 110.574 * 111.320 * max(np.cos(np.radians(lat_mid)), 1e-6)
+        # 兼容旧度制输出；米制模式直接换算平方米与平方千米。
+        if metric_mode:
+            density_km2 = density * 1e6
+        else:
+            lat_mid = float(np.mean([ymin, ymax]))
+            km2_per_deg2 = 110.574 * 111.320 * max(np.cos(np.radians(lat_mid)), 1e-6)
+            density_km2 = density / km2_per_deg2
 
         dmax = float(density.max())
         keep = density >= dmax * 0.01 if dmax > 0 else np.ones(density.size, dtype=bool)
@@ -7151,22 +7254,37 @@ def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50) ->
         grid_gdf = gpd.GeoDataFrame(
             {
                 "density": np.round(density[keep], 8),
-                "density_km2": np.round(density[keep] / km2_per_deg2, 6),
+                "density_km2": np.round(density_km2[keep], 6),
                 "geometry": [Point(x, y) for x, y in pts],
             },
-            crs="EPSG:4326",
+            crs=metric_gdf.crs if metric_mode else "EPSG:4326",
         )
+        if metric_mode:
+            grid_gdf = grid_gdf.to_crs("EPSG:4326")
         result_name = f"{name}_KDE"
         _gdf_to_layer(grid_gdf, result_name)
         _cell = (xi[-1] - xi[0]) / max(grid_size - 1, 1)
+        if metric_mode:
+            bandwidth_text = f"{h / 1000:.2f} km"
+            cell_text = f"{_cell / 1000:.3f} km"
+            density_text = (
+                f"{density[keep].min():.6f} ~ {dmax:.6f} 点/平方米"
+                f"（{density_km2[keep].min():.6f} ~ {density_km2.max():.6f} 点/km²）"
+            )
+        else:
+            bandwidth_text = f"{h * 110.574:.2f} km"
+            cell_text = f"{_cell * 110.574:.3f} km"
+            density_text = (
+                f"{density[keep].min():.6f} ~ {dmax:.6f} 点/平方度"
+                f"（约 {density_km2[keep].min():.6f} ~ {density_km2.max():.6f} 点/km²）"
+            )
         return (
             f"核密度估计完成，结果图层「{result_name}」已加载到地图。\n"
             f"- 输入点：{n} 个\n"
-            f"- 带宽：{bw_desc}（约 {h * 110.574:.2f} km）\n"
-            f"- 网格：{grid_size}x{grid_size}，格边长约 {_cell * 110.574:.3f} km\n"
+            f"- 带宽：{bw_desc}（约 {bandwidth_text}）\n"
+            f"- 网格：{grid_size}x{grid_size}，格边长约 {cell_text}\n"
             f"- 保留格点：{len(grid_gdf)} 个（已过滤密度低于峰值 1% 的格点）\n"
-            f"- 密度范围：{density[keep].min():.6f} ~ {dmax:.6f} 点/平方度"
-            f"（约 {density[keep].min() / km2_per_deg2:.6f} ~ {dmax / km2_per_deg2:.6f} 点/km²）"
+            f"- 密度范围：{density_text}"
         )
     except Exception as e:
         return f"KDE 分析失败: {str(e)[:300]}"
@@ -7183,16 +7301,8 @@ def _calc_spectral_index(layer_name: str, formula_name: str, calc_fn, cmap_name:
     """通用遥感指数计算：读取 GeoTIFF → 计算指数 → 生成彩色 PNG → 推送到地图。
     calc_fn(bands_dict) -> np.ndarray，bands_dict 的键是波段名（red/green/blue/nir/swir）。"""
     try:
-        upload_dir = os.path.join(_temp_output_dir, "uploads")
-        if not os.path.isdir(upload_dir):
-            return "未找到上传目录，请先上传多光谱 GeoTIFF 文件"
-        tif_path = None
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith((".tif", ".tiff")):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    tif_path = os.path.join(upload_dir, f)
-                    break
+        upload_dir = _raster_output_dir()
+        tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到图层 '{layer_name}' 对应的 GeoTIFF 文件"
         import rasterio
@@ -8576,6 +8686,7 @@ def execute_workflow(workflow_json: str) -> str:
             tool_registry=tool_registry,
             register_layer_fn=_register_layer,
             event_callback=None,  # SSE 事件由调用方处理
+            failure_detector=_tool_result_failed,
         )
         result = executor.execute(wf)
 
@@ -8646,10 +8757,11 @@ def query_spatial_sql(sql: str, result_layer_name: str = "") -> str:
     """使用标准 SQL (SELECT/WITH) 对当前已加载图层属性与要素进行极速只读查询与透视。
     表名为图层名。若包含几何或使用 SELECT *，自动将结果要素渲染为高亮新图层上图。
     - sql: 标准只读 SQL 语句。
-    - result_layer_name: 可选，生成结果图层的自定义名称。"""
+    - result_layer_name: 可选，生成结果图层的自定义名称。
+    - 查询执行上限 10 秒，结果上限 10 万行或 32 MB；超限会明确返回错误。"""
     try:
         from backend.services.sql_engine import execute_layer_sql
-        res = execute_layer_sql(sql, _registered_layers, create_result_layer=True, result_layer_name=result_layer_name)
+        res = execute_layer_sql(sql, _registered_layers, create_result_layer=True)
         if not res.get("ok"):
             return f"SQL 查询未通过: {res.get('error')}"
 
@@ -8690,9 +8802,12 @@ def get_elevation_data(
     - bbox: 边界框 [minLng, minLat, maxLng, maxLat]（WGS84，如 [112.93, 28.18, 112.97, 28.20]）或逗号分隔字符串。
     - resolution: 目标分辨率（度/像素，默认 0 为自动）。
     - provider: 数据源，默认 'aws_terrain'（全球免费免 Key）。
-    - output_format: 'geotiff'(默认落盘GeoTIFF供dem_analysis分析) 或 'numpy'。
+    - output_format: 当前仅支持 'geotiff'（落盘供 dem_analysis 等工具继续处理）。
     返回包含 min/max_elevation、geotiff_path、preview_url 及可用图层名 layer_name 的 JSON。"""
     try:
+        fmt = (output_format or "geotiff").lower().strip()
+        if fmt != "geotiff":
+            raise DataProviderError("DEM 获取当前仅支持 output_format='geotiff'。")
         bb = _parse_dem_bbox(bbox)
         prov = dem_provider_by_id(provider)
         if prov is None:
@@ -8712,8 +8827,7 @@ def get_elevation_data(
         os.makedirs(upload_dir, exist_ok=True)
         geotiff_path = os.path.join(upload_dir, f"{layer_name}.tif")
         png_path = os.path.join(upload_dir, f"{layer_name}.png")
-        if (output_format or "geotiff").lower().strip() == "geotiff":
-            _write_dem_geotiff(geotiff_path, result)
+        _write_dem_geotiff(geotiff_path, result)
         _write_dem_preview(png_path, result)
 
         # 推 dem_result 给前端叠加（与 dem_analysis/ndvi_analysis/raster_calculator 同一通道）
@@ -8906,7 +9020,7 @@ def load_pmtiles(source: str, layer_name: str = "", max_features: int = 5000) ->
     src = str(source).strip()
     name = (layer_name or os.path.splitext(os.path.basename(src))[0]).strip() or "PMTiles图层"
     try:
-        reader, header = cn._pmtiles_open(src)
+        header = cn.pmtiles_header(src)
         _tt = header.get("tile_type", 0)
         tile_type = int(_tt.value) if hasattr(_tt, "value") else int(_tt)
         if tile_type == 1:  # MVT 矢量
@@ -9136,15 +9250,29 @@ def geometry_convert(layer_name: str, target_type: str = "lines") -> str:
 
 
 def _find_uploaded_tif(layer_name: str):
-    """按图层名在 uploads 目录定位 GeoTIFF 文件"""
-    upload_dir = os.path.join(_temp_output_dir, "uploads")
+    """Resolve the selected raster exactly; a substring may identify another dataset."""
+    with _state_lock:
+        info = _registered_layers.get(layer_name)
+        if info and isinstance(info.get('raster'), dict):
+            source = info.get('raster_source_path')
+            return source if source and os.path.isfile(source) else None
+        if _active_project_id:
+            return None
+    upload_dir = _raster_output_dir()
     if os.path.isdir(upload_dir):
         for f in os.listdir(upload_dir):
             if f.lower().endswith(('.tif', '.tiff')):
                 base = os.path.splitext(f)[0]
-                if base == layer_name or layer_name in base:
+                if base == layer_name:
                     return os.path.join(upload_dir, f)
     return None
+
+
+def _raster_output_dir():
+    init_temp_dir()
+    path = os.path.join(_temp_output_dir, 'uploads')
+    os.makedirs(path, exist_ok=True)
+    return path
 
 
 def _raster_preview_op(src, data, out_name: str, label: str) -> str:
@@ -9201,7 +9329,7 @@ def raster_resample(layer_name: str, scale_factor: float = 2.0, method: str = "b
         resampling = {"nearest": Resampling.nearest, "bilinear": Resampling.bilinear,
                       "cubic": Resampling.cubic}.get(str(method).lower(), Resampling.bilinear)
         out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_重采样"
-        out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+        out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
         with rasterio.open(tif_path) as src:
             scale = max(0.05, min(32.0, float(scale_factor)))
             new_w = max(1, int(src.width / scale))
@@ -9234,7 +9362,7 @@ def raster_reproject(layer_name: str, target_crs: str = "EPSG:4326") -> str:
         if tif_path is None:
             return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
         out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_重投影"
-        out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+        out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
         with rasterio.open(tif_path) as src:
             transform, width, height = calculate_default_transform(
                 src.crs, target_crs, src.width, src.height, *src.bounds)
@@ -9463,11 +9591,14 @@ def fetch_gis_data_url(
     output_format: str = "geojson",
     output_filename: str = "",
     auto_render: bool = False,
+    mode: str = "preview",
+    max_features: int = 100000,
 ) -> str:
-    """从 GIS 在线 URL 提取矢量数据、标准化坐标系为 WGS84 并落盘（支持 ArcGIS REST/WFS/GeoJSON/GeoParquet/FlatGeobuf）。
+    """从 GIS URL 获取矢量数据并落盘；ArcGIS REST 支持限量预览和对象 ID 校验的完整获取。
     - url: 在线服务或文件地址；layer_id: 子图层 ID/名称；bbox: 空间范围过滤 'minx,miny,maxx,maxy'。
     - where: 属性过滤条件；limit: 最大要素数(默认 1000)；output_format: geojson(默认)/gpkg/csv。
-    - auto_render: 是否同时渲染上图(默认 False)。"""
+    - auto_render: 是否同时渲染上图(默认 False)；mode: preview(限量)/full(ArcGIS REST 完整获取)。
+    - max_features: full 模式资源上限(默认 100000，最大 1000000)。"""
     from backend.services import url_gis_service as ugs
     try:
         res = ugs.fetch_gis_data_url(
@@ -9478,13 +9609,15 @@ def fetch_gis_data_url(
             limit=limit,
             output_format=output_format,
             output_filename=output_filename,
+            mode=mode,
+            max_features=max_features,
         )
     except ugs.UrlGisError as e:
         return f"数据抓取失败: {e}"
     except Exception as e:
         return f"数据抓取异常: {str(e)[:300]}"
 
-    if res.get("feature_count", 0) == 0:
+    if not res.get("file_path"):
         return f"未抓取到有效要素: {res.get('message', '返回要素为 0')}"
 
     file_path = res["file_path"]
@@ -9511,10 +9644,14 @@ def fetch_gis_data_url(
         f"数据提取成功！\n"
         f"- 来源类型: {res.get('service_type')}\n"
         f"- 要素数量: {count} 个\n"
+        f"- 获取模式: {res.get('mode', 'preview')}；完整性: {res.get('completeness', 'unknown')}（{res.get('completeness_reason', '')}）\n"
         f"- 坐标系: {crs_str}\n"
         f"- 空间范围 (BBox): {res.get('bbox')}\n"
         f"- 包含字段 ({len(fields)} 个): {', '.join(fields[:10])}\n"
         f"- 本地保存路径: {file_path} ({round(res.get('file_size_bytes', 0) / 1024, 1)} KB){render_msg}\n"
+        f"- 检查报告: {res.get('report_path', '')}\n"
+        f"- 获取配方: {res.get('recipe_path', '')}\n"
+        f"- SHA-256: {res.get('sha256', '')}\n"
         f"- 样例属性: {json.dumps(res.get('sample_records', [])[:2], ensure_ascii=False)}"
     )
 
@@ -9711,7 +9848,7 @@ def raster_reclassify(layer_name: str, mapping: str = "", method: str = "mapping
             out_nodata = nodata if nodata is not None else np.nan
             arr = np.where(np.isfinite(out), out, out_nodata)
             out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_重分类"
-            out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+            out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
             with rasterio.open(out_path, "w", **_raster_out_profile(src, out_nodata)) as dst:
                 dst.write(arr.astype("float32"), 1)
             note = _raster_preview_op(src, arr[None, :, :], out_name, f"栅格重分类（{desc}）")
@@ -9794,7 +9931,7 @@ def raster_focal_stats(layer_name: str, stat: str = "mean", size: int = 3) -> st
             out_nodata = nodata if nodata is not None else np.nan
             arr = np.where(np.isfinite(res), res, out_nodata)
             out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_焦点{key}"
-            out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+            out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
             with rasterio.open(out_path, "w", **_raster_out_profile(src, out_nodata)) as dst:
                 dst.write(arr.astype("float32"), 1)
             note = _raster_preview_op(src, arr[None, :, :], out_name, f"焦点统计 {key} {s}x{s}")
@@ -9846,7 +9983,7 @@ def euclidean_distance(layer_name: str, source_value: float = None, out_name: st
             dmax = float(np.nanmax(dist))
             out_nodata = nodata if nodata is not None else np.nan
             arr = np.where(np.isfinite(dist), dist, out_nodata)
-            out_path = os.path.join(os.path.dirname(tif_path), suffix + ".tif")
+            out_path = os.path.join(_raster_output_dir(), suffix + ".tif")
             with rasterio.open(out_path, "w", **_raster_out_profile(src, out_nodata)) as dst:
                 dst.write(arr.astype("float32"), 1)
             note = _raster_preview_op(src, arr[None, :, :], suffix, f"欧氏距离（源：{src_desc}）")
@@ -9901,7 +10038,7 @@ def raster_extract_by_mask(raster_layer: str, zone_layer: str, inside: bool = Tr
             invalid = (~np.isfinite(band)) | np.isclose(band, out_nodata)
             keep = int((~invalid).sum())
             out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_掩膜{'内' if inside else '外'}"
-            out_path = os.path.join(os.path.dirname(tif_path), out_name + ".tif")
+            out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
             with rasterio.open(out_path, "w",
                                **_raster_out_profile(src, out_nodata, count=arr.shape[0])) as dst:
                 dst.write(arr)
@@ -10665,7 +10802,7 @@ def _stats_summary(tool: str, payload: dict) -> str:
 
 @tool
 def spatial_weights_matrix(layer_name: str, method: str = "queen", k: int = 8) -> str:
-    """构建并持久化空间权重矩阵（邻接矩阵）文件产物，供 spatial_moran / spatial_hotspot / spatial_regression 复用。
+    """构建并持久化空间权重矩阵（邻接矩阵）文件产物，供用户独立查看或下载。
     - layer_name: 图层名；queen/rook 邻接需要面图层，点/线图层请改用 method='knn'。
     - method: 'queen'(共享边或顶点，默认) / 'rook'(仅共享边) / 'knn'(K 近邻)。
     - k: knn 的近邻数（默认 8，自动收敛到 N-1）；knn 在本地 UTM 米制投影坐标上计算，避免经纬度欧氏距离失真。
@@ -10717,7 +10854,7 @@ def spatial_weights_matrix(layer_name: str, method: str = "queen", k: int = 8) -
             f"- 平均邻居数：{mean_nbrs:.3f}（最小 {int(counts.min()) if n else 0}，最大 {int(counts.max()) if n else 0}）\n"
             f"- 稀疏矩阵：{npz_path}\n"
             f"- 邻居表：{json_path}\n"
-            f"（本工具产物为磁盘文件而非地图图层，供 spatial_moran / spatial_hotspot / spatial_regression 复用）\n"
+            f"（本工具产物为磁盘文件而非地图图层；Moran、热点和回归分析当前各自构建权重，不读取此文件）\n"
             f"{summary}"
         )
     except Exception as e:
@@ -11507,11 +11644,10 @@ def metro_line(city: str, line: str = "") -> str:
     国内城市走高德地铁数据（GCJ-02 自动转 WGS-84），国际城市走 OSM Overpass（真实轨道折线，带官方色）。
     结果含站点数、起讫站、换乘站标记。"""
     try:
-        from backend.services.metro_service import build_metro_layers, norm_city, CN_CITY_CODES, INTL_CITY_BBOX
+        from backend.services.metro_service import build_metro_layers, norm_city, CN_CITY_CODES
         cnorm = norm_city(city)
         layers, summary = build_metro_layers(cnorm, line or "")
         out_names = []
-        from backend.services.tools import _push_layer, _register_layer
         for spec in layers:
             _push_layer(spec["name"], spec["geojson"], spec["style"])
             _register_layer(spec["name"], spec["geojson"])
@@ -11519,8 +11655,6 @@ def metro_line(city: str, line: str = "") -> str:
         return (f"地铁线路查询完成：{summary}\n"
                 f"- 已上图 {len(out_names)} 个图层：{', '.join(out_names)}\n"
                 f"- 来源：{'高德地铁数据（坐标已转 WGS-84）' if cnorm in CN_CITY_CODES else 'OSM 开源数据'}")
-    except ValueError as e:
-        return str(e)
     except Exception as e:
         return f"地铁查询失败: {str(e)[:300]}"
 
@@ -11691,6 +11825,7 @@ from langchain_core.tools import StructuredTool as _StructuredTool
 _TOOL_REGISTRY = {t.name: t for t in tools}
 
 _TOOL_FAILURE_MARKERS = {
+    "query_spatial_sql": ("SQL 查询未通过:", "SQL 查询执行异常:"),
     "spatial_buffer": ("工具执行失败:", "缓冲区分析失败:", "找到多个匹配：", "未找到图层"),
     "export_layer": ("工具执行失败:", "GeoJSON导出验证失败:", "找到多个匹配：", "未找到图层"),
     "datav_boundary": ("工具执行失败:", "找到多个匹配：", "未找到", "获取失败:", "查询失败:"),
@@ -11706,6 +11841,10 @@ def _tool_result_failed(tool_name, result):
     if not isinstance(result, str):
         return False
     text = result.strip()
+    if re.match(r"^(?:失败|错误|异常)[:：]", text):
+        return True
+    if re.match(r"^[^\s:：]{1,30}(?:失败|错误|异常)[:：]", text):
+        return True
     if text.startswith("{"):
         try:
             payload = json.loads(text)

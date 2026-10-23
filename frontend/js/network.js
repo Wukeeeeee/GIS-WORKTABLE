@@ -17,12 +17,9 @@ window.GIS = window.GIS || {};
   var _facility = null;
   var _waypoints = [];
   var _manualFacilities = [];
-  var _eventMarkers = [];
   var _resultLayers = [];
   var _networkMarkers = [];
   var _arrowMarker = null;
-  var _breaks = [1000, 3000, 5000];
-  var _n = 3;
   var _panelLeft = NaN;
   var _panelTop = NaN;
   var _solveRequestId = 0;
@@ -822,7 +819,7 @@ window.GIS = window.GIS || {};
         map.fitBounds(pathLayer.getBounds().pad(0.1));
 
         var coords = data.path.geometry.coordinates;
-        if (coords && coords.length > 1) {
+        if (data.path.geometry.type === 'LineString' && coords && coords.length > 1) {
           var midIdx = Math.floor(coords.length / 2);
           var mid = coords[midIdx];
           _arrowMarker = L.marker([mid[1], mid[0]], {
@@ -1091,18 +1088,9 @@ window.GIS = window.GIS || {};
   }
 
 
-  function isActive() {
-    return _active;
-  }
-
-
   GIS.network = {
-    init: init,
     activate: activate,
     deactivate: deactivate,
     toggle: toggle,
-    isActive: isActive,
-    onMapClick: onMapClick,
-    updateLayerList: _updateLayerList,
   };
 })();

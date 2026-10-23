@@ -134,6 +134,16 @@ def _setup(name, geojson):
 
 
 class TestSpatialBuffer:
+    @pytest.mark.parametrize("unit", ["feet", "ft", "光年", ""])
+    def test_buffer_rejects_unsupported_units_without_creating_output(self, unit):
+        _setup("pts", _POINTS)
+        before = set(_registered_layers)
+        result = spatial_buffer.invoke({"layer_name": "pts", "distance": 100, "unit": unit})
+        assert result.startswith("缓冲区分析失败:")
+        assert "仅支持 m 或 km" in result
+        assert set(_registered_layers) == before
+        assert len(_pending_layers) == 0
+
     def test_buffer_simple(self):
         _setup("square", _SQUARE_A)
         r = spatial_buffer.invoke({"layer_name": "square", "distance": 10, "unit": "m", "dissolve": False})

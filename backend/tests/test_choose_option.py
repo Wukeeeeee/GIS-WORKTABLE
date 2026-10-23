@@ -7,6 +7,27 @@ from backend.services import pending_action as pa
 from backend.services import tools
 
 
+def test_cancel_choice_is_handled_without_requesting_an_llm(monkeypatch):
+    from unittest.mock import Mock
+    from backend.services import ai_service
+
+    action = {"action": "choose_option", "summary": "选择数据源", "options": [{"label": "方案 A"}]}
+    monkeypatch.setattr(pa, "get_pending_action", lambda session_id: action)
+    clear = Mock()
+    select = Mock()
+    commit = Mock()
+    monkeypatch.setattr(pa, "clear_pending_action", clear)
+    monkeypatch.setattr(pa, "set_pending_action", select)
+    monkeypatch.setattr(ai_service, "_get_or_create_history", lambda *args: {})
+    monkeypatch.setattr(ai_service, "commit_assistant_reply", commit)
+    result = ai_service._try_handle_confirm_command("choice-test", "取消")
+    assert result is not None and "已取消" in result["response"]
+    assert result["layers"] == []
+    clear.assert_called_once_with("choice-test")
+    select.assert_not_called()
+    commit.assert_called_once()
+
+
 def test_ask_user_choice_sets_pending():
     """ask_user_choice 工具应设置 choose_option pending；数据源选择会固定插入 Esri 快速巡检"""
     pa.clear_pending_action("test_choice")

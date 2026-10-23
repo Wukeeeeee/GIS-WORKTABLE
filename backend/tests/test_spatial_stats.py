@@ -90,6 +90,56 @@ def _setup(name, geojson):
     return name
 
 
+@pytest.mark.parametrize('tool', [spatial_moran, spatial_hotspot])
+def test_dense_statistics_stop_before_allocating_an_unsafe_distance_matrix(monkeypatch, tool):
+    from backend.services import tools
+    _setup('cluster', _CLUSTER_POINTS)
+    monkeypatch.setattr(tools, '_MAX_DENSE_SPATIAL_STATS_FEATURES', 3)
+    result = tool.invoke({'layer_name': 'cluster', 'field': 'value'})
+    assert '聚合或抽样' in result
+    assert not [name for name in _registered_layers if name.endswith(('_MoranI', '_GiStar'))]
+
+
+def test_knn_removes_self_by_index_when_coincident_neighbors_tie(monkeypatch):
+    import numpy as np
+    import sklearn.neighbors
+    points = {'type': 'FeatureCollection', 'features': [
+        {'type': 'Feature', 'geometry': {'type': 'Point', 'coordinates': [0, 0]}, 'properties': {'value': value}}
+        for value in [1, 2, 4, 8]
+    ]}
+    _setup('ties', points)
+    class Neighbors:
+        def __init__(self, **kwargs): pass
+        def fit(self, coords): return self
+        def kneighbors(self, coords): return None, np.array([[1, 0], [0, 1], [0, 2], [0, 3]])
+    monkeypatch.setattr(sklearn.neighbors, 'NearestNeighbors', Neighbors)
+    result = spatial_moran.invoke({'layer_name': 'ties', 'field': 'value', 'weight_type': 'knn', 'k': 1})
+    assert '全局 Moran' in result
+    features = _registered_layers['ties_MoranI']['geojson']['features']
+    z = np.array([1, 2, 4, 8]) - 3.75
+    expected = z * z[[1, 0, 0, 0]] / (z @ z / 4)
+    assert [f['properties']['local_moran'] for f in features] == pytest.approx(expected, abs=1e-6)
+
+
+def test_kde_bounds_both_grid_and_point_chunks_without_changing_density(monkeypatch):
+    import numpy as np
+    from backend.services import tools
+    base = _KDE_POINTS['features']
+    _setup('small', _KDE_POINTS)
+    spatial_kde.invoke({'layer_name': 'small', 'bandwidth': .01, 'grid_size': 30})
+    expected = _registered_layers['small_KDE']['geojson']['features']
+    large = {'type': 'FeatureCollection', 'features': [dict(f, properties=dict(f['properties'])) for _ in range(180) for f in base]}
+    _setup('large', large)
+    shapes = []; original_exp = np.exp
+    def exp(values): shapes.append(values.shape); return original_exp(values)
+    monkeypatch.setattr(np, 'exp', exp)
+    spatial_kde.invoke({'layer_name': 'large', 'bandwidth': .01, 'grid_size': 30})
+    actual = _registered_layers['large_KDE']['geojson']['features']
+    assert shapes and all(rows <= 512 and columns <= 1024 for rows, columns in shapes)
+    assert len(actual) == len(expected)
+    assert [f['properties']['density'] for f in actual] == pytest.approx([f['properties']['density'] for f in expected])
+
+
 # ============================================================
 # spatial_moran — Moran's I
 # ============================================================

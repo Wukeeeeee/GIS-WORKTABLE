@@ -38,6 +38,8 @@ def _is_out_of_china(lng: float, lat: float) -> bool:
 
 def wgs84_to_gcj02(lng: float, lat: float) -> tuple:
     """WGS-84 → GCJ-02（内部用）"""
+    if _is_out_of_china(lng, lat):
+        return lng, lat
     a = 6378245.0
     ee = 0.00669342162296594323
     dlat = _transform_lat(lng - 105.0, lat - 35.0)

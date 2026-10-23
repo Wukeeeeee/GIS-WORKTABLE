@@ -11,7 +11,6 @@
 
   var _panel = null;
   var _body = null;
-  var _entries = [];
   var _refreshRequestId = 0;
   var _clearInFlight = false;
 
@@ -87,7 +86,6 @@
   }
 
   function render(entries) {
-    _entries = entries;
     if (!_body) return;
     if (!entries.length) {
       _body.innerHTML = '<div class="toolhist-empty">暂无记录：执行任意工具后在此查看</div>';
@@ -227,12 +225,15 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ index: index }),
     })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(function (result) {
         if (btn) { btn.disabled = false; btn.textContent = '重跑'; }
-        if (result && result.ok === false) {
+        if (!result || result.ok !== true) {
           if (GIS.chat && GIS.chat.addMessage) {
-            GIS.chat.addMessage('重跑失败: ' + (result.error || result.response || '工具未成功完成'), 'system');
+            GIS.chat.addMessage('重跑失败: ' + ((result && (result.error || result.response)) || '工具未成功完成'), 'system');
           }
           refresh();
           return;

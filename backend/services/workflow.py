@@ -8,6 +8,8 @@ GIS Workflow 执行引擎
 - 结果自动注册为图层
 """
 import json
+import os
+import tempfile
 import uuid
 import time
 from typing import Any, Dict, List, Optional
@@ -35,11 +37,11 @@ def new_workflow(name: str, description: str = "", nodes: List[Dict] = None) -> 
 
 
 def new_node(node_id: str, name: str, tool: str, inputs: Dict = None,
-             depends_on: List[str] = None, node_type: str = "tool") -> Dict:
+             depends_on: List[str] = None) -> Dict:
     """创建新的 Node 对象"""
     return {
         "id": node_id,
-        "type": node_type,  # tool / python / data
+        "type": "tool",
         "name": name,
         "tool": tool,
         "status": "pending",
@@ -55,11 +57,20 @@ def new_node(node_id: str, name: str, tool: str, inputs: Dict = None,
 
 def save_workflow(wf: Dict, file_path: str) -> bool:
     """持久化保存 Workflow 到文件 (.giswork / .json)"""
-    import os
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(wf, f, ensure_ascii=False, indent=2)
+        directory = os.path.dirname(os.path.abspath(file_path))
+        os.makedirs(directory, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix=".workflow-", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(wf, f, ensure_ascii=False, indent=2)
+            os.replace(temp_path, file_path)
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
         return True
     except Exception as e:
         print(f"[Workflow] 保存工作流失败: {e}", flush=True)
@@ -68,7 +79,6 @@ def save_workflow(wf: Dict, file_path: str) -> bool:
 
 def load_workflow(file_path: str) -> Optional[Dict]:
     """从文件加载 Workflow 对象"""
-    import os
     if not os.path.exists(file_path):
         return None
     try:
@@ -94,7 +104,7 @@ def materialize_from_history(task_id: str, workflow_name: str = "") -> Optional[
 
     wf_name = workflow_name or f"任务_{task_id[:8]}_分析工作流"
     nodes = []
-    layer_producers = {}  # layer_name -> node_id
+    layer_producers = {}  # layer_name -> (node_id, output_key)
 
     for idx, e in enumerate(entries):
         node_id = f"node_{idx + 1}"
@@ -106,10 +116,10 @@ def materialize_from_history(task_id: str, workflow_name: str = "") -> Optional[
         inputs = {}
         for k, v in raw_args.items():
             if isinstance(v, str) and v in layer_producers:
-                dep_node = layer_producers[v]
+                dep_node, output_key = layer_producers[v]
                 if dep_node not in depends_on:
                     depends_on.append(dep_node)
-                inputs[k] = f"${{{dep_node}.layer_name}}"
+                inputs[k] = f"${{{dep_node}.{output_key}}}"
             else:
                 inputs[k] = v
 
@@ -119,18 +129,20 @@ def materialize_from_history(task_id: str, workflow_name: str = "") -> Optional[
             tool=tool_name,
             inputs=inputs,
             depends_on=depends_on,
-            node_type="tool"
         )
 
         # 记录本节点产出的图层名（供后续节点建立依赖）
-        for out_layer in e.get("layer_ids", []):
+        for output_index, out_layer in enumerate(e.get("layer_ids", [])):
             if out_layer:
-                layer_producers[str(out_layer)] = node_id
+                output_key = "layer_name" if output_index == 0 else f"layer_name_{output_index + 1}"
+                layer_producers[str(out_layer)] = (node_id, output_key)
+                node["outputs"][output_key] = str(out_layer)
 
         # 若参数里显式指定了输出图层名
         for arg_key in ("output_layer", "result_layer", "target_layer", "name", "layer_name"):
             if arg_key in raw_args and isinstance(raw_args[arg_key], str):
-                layer_producers[raw_args[arg_key]] = node_id
+                node["outputs"].setdefault("layer_name", raw_args[arg_key])
+                layer_producers[raw_args[arg_key]] = (node_id, "layer_name")
 
         nodes.append(node)
 
@@ -150,36 +162,69 @@ def validate_workflow(wf: Dict, available_tools: List[str]) -> List[str]:
     """校验 Workflow 结构，返回错误列表（空列表表示通过）"""
     errors = []
 
-    if not wf.get("name"):
+    if not isinstance(wf, dict):
+        return ["Workflow 必须是对象"]
+
+    if not isinstance(wf.get("name"), str) or not wf["name"].strip():
         errors.append("Workflow 缺少 name 字段")
 
     nodes = wf.get("nodes", [])
+    if not isinstance(nodes, list):
+        return errors + ["Workflow 的 nodes 字段必须是列表"]
     if not nodes:
         errors.append("Workflow 没有任何节点")
         return errors
 
     node_ids = set()
     for i, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            errors.append(f"节点 {i} 必须是对象")
+            continue
         nid = node.get("id")
-        if not nid:
-            errors.append(f"节点 {i} 缺少 id")
+        if not isinstance(nid, str) or not nid.strip():
+            errors.append(f"节点 {i} 缺少有效的 id")
             continue
         if nid in node_ids:
             errors.append(f"节点 id 重复: {nid}")
         node_ids.add(nid)
 
-        if not node.get("tool"):
+        if not isinstance(node.get("name"), str) or not node["name"].strip():
+            errors.append(f"节点 {nid} 缺少有效的 name 字段")
+
+        if not isinstance(node.get("tool"), str) or not node["tool"].strip():
             errors.append(f"节点 {nid} 缺少 tool 字段")
         elif node["tool"] not in available_tools:
             errors.append(f"节点 {nid} 的工具不存在: {node['tool']}")
 
-        if node.get("status") and node["status"] not in NODE_STATUSES:
+        if not isinstance(node.get("inputs", {}), dict):
+            errors.append(f"节点 {nid} 的 inputs 字段必须是对象")
+        if not isinstance(node.get("outputs", {}), dict):
+            errors.append(f"节点 {nid} 的 outputs 字段必须是对象")
+
+        dependencies = node.get("depends_on", [])
+        if not isinstance(dependencies, list):
+            errors.append(f"节点 {nid} 的 depends_on 字段必须是列表")
+
+        if node.get("type", "tool") != "tool":
+            errors.append(f"节点 {nid} 的类型暂不支持: {node['type']}（仅支持 tool）")
+
+        if node.get("status") and (
+            not isinstance(node["status"], str) or node["status"] not in NODE_STATUSES
+        ):
             errors.append(f"节点 {nid} 的状态非法: {node['status']}")
 
     # 检查依赖
     for node in nodes:
+        if not isinstance(node, dict):
+            continue
         nid = node.get("id", "")
-        for dep in node.get("depends_on", []):
+        dependencies = node.get("depends_on", [])
+        if not isinstance(dependencies, list):
+            continue
+        for dep in dependencies:
+            if not isinstance(dep, str) or not dep:
+                errors.append(f"节点 {nid} 的依赖标识必须是非空字符串")
+                continue
             if dep not in node_ids:
                 errors.append(f"节点 {nid} 依赖不存在的节点: {dep}")
 
@@ -261,14 +306,24 @@ def topological_sort(nodes: List[Dict]) -> List[str]:
 
 def _tool_failure_message(result: Any) -> Optional[str]:
     """将工具返回的显式失败也标记为失败，避免只因返回了字符串就显示成功。"""
-    if isinstance(result, dict) and result.get("ok") is False:
-        return str(result.get("error") or result.get("message") or "工具返回 ok=false")
+    if isinstance(result, dict):
+        status = str(result.get("status", "")).strip().lower()
+        if (result.get("ok") is False or result.get("success") is False
+                or result.get("is_error") is True
+                or status in {"error", "failed", "failure"}):
+            return str(result.get("error") or result.get("message") or "工具明确返回失败状态")
     if isinstance(result, str):
         text = result.strip()
         failure_prefixes = (
             "工具执行失败:", "执行失败:", "工作流执行失败:", "Workflow 执行失败:",
+            "失败:", "失败：", "错误:", "错误：",
         )
         if text.startswith(failure_prefixes):
+            return text
+        first_line = text.splitlines()[0][:100] if text else ""
+        if any(marker in first_line for marker in ("失败:", "失败：", "未通过:", "未通过：")):
+            return text
+        if any(marker in text.lower() for marker in ("状态: failed", "状态：failed", "status: failed")):
             return text
     return None
 
@@ -276,15 +331,17 @@ class WorkflowExecutor:
     """Workflow 执行引擎，调用现有 Tool Registry"""
 
     def __init__(self, tool_registry: Dict, register_layer_fn=None,
-                 event_callback=None):
+                 event_callback=None, failure_detector=None):
         """
         tool_registry: {tool_name: tool_function}
         register_layer_fn: 注册图层的回调函数(name, geojson) -> None
         event_callback: 事件回调函数(event_dict) -> None，用于 SSE 推送
+        failure_detector: 可选工具级失败判定器，签名为 (tool_name, result) -> bool
         """
         self.tool_registry = tool_registry
         self.register_layer_fn = register_layer_fn
         self.event_callback = event_callback
+        self.failure_detector = failure_detector
 
     def _emit(self, event: Dict):
         if self.event_callback:
@@ -295,6 +352,24 @@ class WorkflowExecutor:
 
     def execute(self, wf: Dict) -> Dict:
         """执行整个 Workflow，返回更新后的 Workflow 对象"""
+        if not isinstance(wf, dict):
+            return {
+                "id": None, "name": "", "nodes": [], "status": "failed",
+                "error": "Workflow 必须是对象",
+            }
+        errors = validate_workflow(wf, list(self.tool_registry))
+        if errors:
+            wf["status"] = "failed"
+            wf["error"] = "; ".join(errors)
+            self._emit({
+                "type": "workflow_failed",
+                "workflow_id": wf.get("id"),
+                "error": wf["error"],
+            })
+            return wf
+
+        if not isinstance(wf.get("id"), str) or not wf["id"].strip():
+            wf["id"] = f"wf_{uuid.uuid4().hex[:12]}"
         wf["status"] = "running"
         wf["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self._emit({"type": "workflow_started", "workflow_id": wf["id"], "name": wf["name"]})
@@ -337,9 +412,18 @@ class WorkflowExecutor:
             try:
                 result = self._execute_node(node, upstream_outputs)
                 failure = _tool_failure_message(result)
+                if failure is None and self.failure_detector:
+                    try:
+                        if self.failure_detector(node["tool"], result):
+                            failure = str(result)[:500] or "工具返回失败状态"
+                    except Exception:
+                        pass
                 if failure:
                     raise RuntimeError(failure)
-                node["outputs"] = result if isinstance(result, dict) else {"result": result}
+                node["outputs"] = {
+                    **node.get("outputs", {}),
+                    **(result if isinstance(result, dict) else {"result": result}),
+                }
                 node["status"] = "success"
                 node["_finished_ts"] = time.time()
                 node["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -428,9 +512,15 @@ class WorkflowExecutor:
                 ref = val[2:-1]
                 if "." in ref:
                     dep_id, out_key = ref.split(".", 1)
-                    resolved[key] = upstream_outputs.get(dep_id, {}).get(out_key, val)
+                    if dep_id not in upstream_outputs:
+                        raise ValueError(f"输入引用 {val} 未声明对应 depends_on")
+                    if out_key not in upstream_outputs[dep_id]:
+                        raise ValueError(f"上游节点 {dep_id} 未产生输出 {out_key}")
+                    resolved[key] = upstream_outputs[dep_id][out_key]
                 else:
-                    resolved[key] = upstream_outputs.get(ref, val)
+                    if ref not in upstream_outputs:
+                        raise ValueError(f"输入引用 {val} 未声明对应 depends_on")
+                    resolved[key] = upstream_outputs[ref]
             else:
                 resolved[key] = val
         return resolved
@@ -441,12 +531,17 @@ class WorkflowExecutor:
         if not self.register_layer_fn:
             return
         outputs = node.get("outputs", {})
-        # 检查输出是否是 GeoJSON
-        for key, val in outputs.items():
-            if isinstance(val, dict) and val.get("type") in ("FeatureCollection", "Feature"):
-                layer_name = f"{node['name']}_结果"
-                try:
-                    self.register_layer_fn(layer_name, val)
-                except Exception:
-                    pass
-                break
+        # 支持直接返回 GeoJSON，或将其包在 geojson/其他输出字段中的工具。
+        geojson = outputs if outputs.get("type") in ("FeatureCollection", "Feature") else next(
+            (value for value in outputs.values()
+             if isinstance(value, dict) and value.get("type") in ("FeatureCollection", "Feature")),
+            None,
+        )
+        if geojson is None:
+            return
+        layer_name = f"{node['name']}_结果"
+        try:
+            self.register_layer_fn(layer_name, geojson)
+            outputs["layer_name"] = layer_name
+        except Exception:
+            pass

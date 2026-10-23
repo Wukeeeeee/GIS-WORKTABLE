@@ -1,6 +1,7 @@
 import io
 import os
 import zipfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,6 +21,12 @@ def _use_temp_projects(tmp_path, monkeypatch):
     source = uploads / "source.png"
     source.write_bytes(b"png-raster-asset")
     monkeypatch.setattr(ai_service, "_TEMP_OUTPUT_DIR", str(uploads.parent))
+    monkeypatch.setattr(main, "_TEMP_OUTPUT_DIR", str(uploads.parent))
+    monkeypatch.setattr(tools, "_temp_output_dir", str(uploads.parent))
+    monkeypatch.setattr(tools, "_active_project_id", None)
+    monkeypatch.setattr(tools, "_registered_layers", {})
+    monkeypatch.setattr(tools, "_pending_layers", [])
+    monkeypatch.setattr(tools, "_pending_layer_ops", [])
     return source
 
 
@@ -158,3 +165,137 @@ def test_autosave_includes_uploaded_raster_layers(tmp_path, monkeypatch):
     saved_layer = project_service.load_project(result["id"])["layers"][0]
     assert saved_layer["name"] == "高程"
     assert saved_layer["raster"]["asset"]
+
+
+def _upload_real_raster(tmp_path, monkeypatch):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+    _use_temp_projects(tmp_path, monkeypatch)
+    data = io.BytesIO()
+    with rasterio.open(data, 'w', driver='GTiff', width=4, height=4, count=1, dtype='float32',
+                       crs='EPSG:4326', transform=from_bounds(100, 30, 101, 31, 4, 4)) as dataset:
+        dataset.write(np.arange(1, 17, dtype='float32').reshape(4, 4), 1)
+    client = TestClient(main.app)
+    result = client.post('/api/upload', files={'file': ('original#1.tif', data.getvalue(), 'image/tiff')}).json()
+    assert result.get('registration_token'), result
+    saved = client.post('/api/projects', json={
+        'name': '原始栅格工程', 'session_id': 'raw-session', 'provider': 'test', 'map_state': {}, 'messages': [],
+        'layers': [{'filename': '自定义高程', 'raster': result['raster_info'], 'geometry_type': 'Raster'}],
+    }).json()
+    return client, result, saved, data.getvalue()
+
+
+def test_original_raster_survives_import_without_runtime_or_original_project_files(tmp_path, monkeypatch):
+    client, uploaded, saved, original = _upload_real_raster(tmp_path, monkeypatch)
+    runtime = Path(tools._temp_output_dir) / 'uploads'
+    (runtime / uploaded['raster_info']['source_filename']).unlink()
+    (runtime / uploaded['raster_info']['filename']).unlink()
+    exported = project_service.export_project(saved['id'])
+    with zipfile.ZipFile(io.BytesIO(exported)) as archive:
+        raw_members = [name for name in archive.namelist() if name.endswith('.tif')]
+        assert len(raw_members) == 1
+        assert archive.read(raw_members[0]) == original
+    imported = project_service.import_project(exported)
+    project_service.delete_project(saved['id'])
+    response = client.get('/api/projects/' + imported['id'])
+    assert response.status_code == 200
+    layer = response.json()['layers'][0]
+    assert layer['geojson'] is None and layer['registration_token']
+    assert client.get(layer['raster']['source_url']).content == original
+    located = tools._find_uploaded_tif('自定义高程')
+    assert str(Path(project_service._project_dir(imported['id']))) in located
+    result = tools.raster_calculator.invoke({'layer_name': '自定义高程', 'expression': 'B1*2'})
+    assert '范围 [2.00, 32.00]' in result
+    assert (runtime / '自定义高程_calc.png').exists()
+
+
+def test_raster_tool_outputs_do_not_modify_project_assets(tmp_path, monkeypatch):
+    client, uploaded, saved, _ = _upload_real_raster(tmp_path, monkeypatch)
+    client.get('/api/projects/' + saved['id'])
+    assets = Path(project_service._project_dir(saved['id'])) / 'assets'
+    before = {file.name: file.read_bytes() for file in assets.iterdir()}
+    result = tools.raster_resample.invoke({'layer_name': '自定义高程', 'scale_factor': 2, 'method': 'nearest'})
+    assert '重采样完成' in result
+    assert {file.name: file.read_bytes() for file in assets.iterdir()} == before
+    assert list((Path(tools._temp_output_dir) / 'uploads').glob('*_重采样.tif'))
+
+
+def test_failed_raster_replacement_preserves_original_assets(tmp_path, monkeypatch):
+    _, _, saved, _ = _upload_real_raster(tmp_path, monkeypatch)
+    loaded = project_service.load_project(saved['id'])
+    assets = Path(project_service._project_dir(saved['id'])) / 'assets'
+    before = {file.name: file.read_bytes() for file in assets.iterdir()}
+    broken = dict(loaded['layers'][0]['raster'], source_asset='missing.tif')
+    with pytest.raises(ValueError, match='原始数据资源不存在'):
+        project_service.save_project(saved['id'], '失败替换', 'raw-session', 'test', {}, [], [{'name': 'bad', 'raster': broken}])
+    assert {file.name: file.read_bytes() for file in assets.iterdir()} == before
+    assert project_service.load_project(saved['id'])['layers'][0]['name'] == '自定义高程'
+
+
+def test_activation_failure_keeps_the_previous_registry_and_history(tmp_path, monkeypatch):
+    _, _, saved, _ = _upload_real_raster(tmp_path, monkeypatch)
+    loaded = project_service.load_project(saved['id'])
+    raw = project_service._project_raster_path(saved['id'], loaded['layers'][0]['raster']['source_asset'])
+    Path(raw).unlink()
+    before = dict(tools._registered_layers)
+    tools._active_project_id = 'previous-project'
+    monkeypatch.setitem(ai_service.conversation_history, 'raw-session', [{'role': 'user', 'content': 'previous'}])
+    with pytest.raises(ValueError, match='原始数据资源不存在'):
+        project_service.activate_project(saved['id'])
+    assert tools._registered_layers == before
+    assert tools._active_project_id == 'previous-project'
+    assert ai_service.conversation_history['raw-session'][0]['content'] == 'previous'
+
+
+def test_renamed_raster_autosaves_once_and_keeps_raw_data(tmp_path, monkeypatch):
+    client, _, saved, _ = _upload_real_raster(tmp_path, monkeypatch)
+    loaded = client.get('/api/projects/' + saved['id']).json()
+    raster = loaded['layers'][0]['raster']
+    result = project_service.auto_save('raw-session', project_id=saved['id'], layer_assignments=[{
+        'name': '重命名高程', 'registry_name': '自定义高程', 'names': ['自定义高程', '重命名高程'], 'raster': raster,
+    }])
+    layers = project_service.load_project(result['id'])['layers']
+    assert len(layers) == 1 and layers[0]['name'] == '重命名高程'
+    assert layers[0]['raster']['source_asset'] == raster['source_asset']
+    assert layers[0]['geojson'] is None
+
+
+def test_active_project_lookup_never_falls_back_to_another_runtime_raster(tmp_path, monkeypatch):
+    client, uploaded, saved, _ = _upload_real_raster(tmp_path, monkeypatch)
+    assert tools._find_uploaded_tif(uploaded['name'])
+    client.get('/api/projects/' + saved['id'])
+    assert tools._find_uploaded_tif(uploaded['name']) is None
+    assert tools._find_uploaded_tif('自定义高程')
+
+
+def test_legacy_lookup_does_not_match_only_a_substring(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    path = Path(tools._temp_output_dir) / 'uploads' / 'dem_other.tif'
+    path.write_bytes(b'not selected')
+    assert tools._find_uploaded_tif('dem') is None
+    assert tools._find_uploaded_tif('dem_other') == str(path)
+
+
+def test_export_refuses_to_silently_omit_a_missing_original(tmp_path, monkeypatch):
+    _, _, saved, _ = _upload_real_raster(tmp_path, monkeypatch)
+    raster = project_service.load_project(saved['id'])['layers'][0]['raster']
+    Path(project_service._project_raster_path(saved['id'], raster['source_asset'])).unlink()
+    with pytest.raises(ValueError, match='缺失'):
+        project_service.export_project(saved['id'])
+
+
+@pytest.mark.parametrize('source_asset', ['../outside.tif', 'C:outside.tif', 'missing.tif'])
+def test_import_rejects_unsafe_or_missing_original_assets(tmp_path, monkeypatch, source_asset):
+    import json
+    _use_temp_projects(tmp_path, monkeypatch)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        zipped.writestr('project.json', json.dumps({'layers': [{'name': 'bad', 'raster': {
+            'asset': 'preview.png', 'source_asset': source_asset, 'bounds': [1, 2, 3, 4],
+        }}]}))
+        zipped.writestr('assets/preview.png', b'preview')
+    with pytest.raises(ValueError, match='栅格资源'):
+        project_service.import_project(archive.getvalue())
+    assert project_service.list_projects() == []
+    assert not list((tmp_path / 'projects').glob('proj_*'))

@@ -47,9 +47,22 @@ def _load():
     try:
         with open(_history_path(), encoding="utf-8") as f:
             data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("历史文件根节点必须是对象")
         entries = data.get("entries", [])
-        _ENTRIES.extend(entries)
-        _NEXT_INDEX[0] = max(data.get("next_index", 1), len(entries) + 1)
+        if not isinstance(entries, list):
+            raise ValueError("历史 entries 必须是列表")
+        _ENTRIES.extend(entry for entry in entries if isinstance(entry, dict))
+        next_index = data.get("next_index", 1)
+        if isinstance(next_index, bool) or not isinstance(next_index, int) or next_index < 1:
+            next_index = 1
+        max_index = max(
+            (entry.get("index", 0) for entry in _ENTRIES
+             if isinstance(entry.get("index", 0), int) and not isinstance(entry.get("index", 0), bool)),
+            default=0,
+        )
+        _NEXT_INDEX[0] = max(next_index, max_index + 1)
+        _trim_entries()
     except Exception:
         pass
     _LOADED[0] = True
@@ -57,13 +70,39 @@ def _load():
 
 def _persist():
     try:
-        with open(_history_path(), "w", encoding="utf-8") as f:
+        path = _history_path()
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(
-                {"next_index": _NEXT_INDEX[0], "entries": _ENTRIES[-_MAX_ENTRIES:]},
+                {"next_index": _NEXT_INDEX[0], "entries": _ENTRIES},
                 f, ensure_ascii=False, indent=2,
             )
+        os.replace(tmp_path, path)
     except Exception:
         pass
+
+
+def _trim_entries():
+    """总量最多 200 条，优先保留每任务最近 20 条，再按全局新近度补位。"""
+    if len(_ENTRIES) <= _MAX_ENTRIES:
+        return
+    kept_per_task = {}
+    selected = set()
+    for index in range(len(_ENTRIES) - 1, -1, -1):
+        entry = _ENTRIES[index]
+        task_id = str(entry.get("task_id") or "_none_")
+        kept = kept_per_task.get(task_id, 0)
+        if kept >= _PER_TASK_KEEP:
+            continue
+        selected.add(index)
+        kept_per_task[task_id] = kept + 1
+        if len(selected) >= _MAX_ENTRIES:
+            break
+    for index in range(len(_ENTRIES) - 1, -1, -1):
+        if len(selected) >= _MAX_ENTRIES:
+            break
+        selected.add(index)
+    _ENTRIES[:] = [_ENTRIES[index] for index in sorted(selected)]
 
 
 def record(tool_name: str, args: dict, ok: bool, layer_ids=None,
@@ -88,26 +127,7 @@ def record(tool_name: str, args: dict, ok: bool, layer_ids=None,
         }
         _NEXT_INDEX[0] += 1
         _ENTRIES.append(entry)
-        if len(_ENTRIES) > _MAX_ENTRIES * 2:
-            # 按任务分组截断：全局裁到 _MAX_ENTRIES，但每任务保底 _PER_TASK_KEEP 条，
-            # 防止高频任务把其他任务的记录整体挤出历史
-            from collections import Counter
-            # 目标：删除 len - _MAX_ENTRIES 条最旧的，但确保任何任务剩余 >= _PER_TASK_KEEP
-            _to_remove = len(_ENTRIES) - _MAX_ENTRIES
-            _kept_per_task = Counter()
-            _survivors = []
-            for e in reversed(_ENTRIES):
-                if _to_remove <= 0:
-                    _survivors.append(e)
-                    continue
-                _tid = e.get("task_id") or "_none_"
-                if _kept_per_task[_tid] < _PER_TASK_KEEP:
-                    _kept_per_task[_tid] += 1
-                    _survivors.append(e)
-                else:
-                    _to_remove -= 1
-            _survivors.reverse()
-            _ENTRIES[:] = _survivors
+        _trim_entries()
         _persist()
         return entry["index"]
 

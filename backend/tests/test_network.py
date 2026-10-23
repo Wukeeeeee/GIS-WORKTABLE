@@ -123,6 +123,60 @@ class TestShortestRoute:
         assert 400 < result["distance_m"] < 600  # 水平边约 426m
         assert result["node_count"] == 2
 
+    def test_same_snapped_node_returns_zero_distance_point_feature(self):
+        result = shortest_route(GRID_GEOJSON, _NODES["A"], _NODES["A"])
+
+        assert "error" not in result
+        assert result["path"]["geometry"] == {"type": "Point", "coordinates": list(_NODES["A"])}
+        assert result["distance_m"] == 0
+        assert result["distance_km"] == 0
+        assert result["steps"] == []
+        assert result["node_count"] == 1
+        assert result["segments"][0]["distance_m"] == 0
+
+    @pytest.mark.parametrize("bidirectional", [True, False])
+    def test_route_respects_oneway_in_feature_coordinate_order(self, bidirectional):
+        start, end = (0, 0), (0.01, 0)
+        roads = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"oneway": "yes"},
+             "geometry": {"type": "LineString", "coordinates": [start, end]}}
+        ]}
+
+        forward = shortest_route(roads, start, end, bidirectional=bidirectional)
+        reverse = shortest_route(roads, end, start, bidirectional=bidirectional)
+
+        assert "error" not in forward
+        assert [tuple(point) for point in forward["path"]["geometry"]["coordinates"]] == [start, end]
+        assert "error" in reverse
+
+    def test_reverse_oneway_and_non_route_graphs_keep_their_existing_direction_policy(self):
+        start, end = (0, 0), (0.01, 0)
+        roads = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"oneway": "-1"},
+             "geometry": {"type": "LineString", "coordinates": [start, end]}}
+        ]}
+
+        reverse = shortest_route(roads, end, start)
+        forward = shortest_route(roads, start, end)
+
+        assert "error" not in reverse
+        assert "error" in forward
+        assert set(build_graph_from_geojson(roads).edges) == {(start, end), (end, start)}
+
+    @pytest.mark.parametrize("bidirectional", [True, False])
+    def test_custom_weight_chooses_minimum_cost_instead_of_shortest_geometry(self, bidirectional):
+        start, via, end = (0, 0), (0, 0.01), (0.01, 0)
+        roads = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"cost": cost},
+             "geometry": {"type": "LineString", "coordinates": [a, b]}}
+            for a, b, cost in [(start, end, 100), (start, via, 1), (via, end, 1)]
+        ]}
+
+        result = shortest_route(roads, start, end, weight_field="cost", bidirectional=bidirectional)
+
+        assert "error" not in result
+        assert [tuple(p) for p in result["path"]["geometry"]["coordinates"]] == [start, via, end]
+
 
 
 

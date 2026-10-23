@@ -8,7 +8,15 @@ from backend.services import graph
 from backend.services.llm_config import LLMConfig
 
 
-def test_empty_stream_response_retries_original_request_with_tools(monkeypatch):
+@pytest.fixture
+def metered_usage(monkeypatch, tmp_path):
+    from backend.services import token_usage_service
+    monkeypatch.setattr(token_usage_service, "_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(token_usage_service, "_TOKEN_LOG_PATH", str(tmp_path / "tokens.jsonl"))
+    return token_usage_service.extract_and_record_token_usage
+
+
+def test_empty_stream_response_retries_original_request_with_tools(monkeypatch, metered_usage):
     recovery_calls = []
     bound_choices = []
     llm_configs = []
@@ -22,20 +30,23 @@ def test_empty_stream_response_retries_original_request_with_tools(monkeypatch):
         def stream(self, payload, config=None, **kwargs):
             # 模拟思考模型只产出 reasoning，没有正文或结构化工具调用。
             yield {"messages": list(payload["messages"]) + [
-                AIMessage(content="", additional_kwargs={"reasoning_content": "应该调用 get_registered_layers"})
+                AIMessage(content="", additional_kwargs={"reasoning_content": "应该调用 get_registered_layers"},
+                          usage_metadata={"input_tokens": 10, "output_tokens": 1, "total_tokens": 11})
             ]}
 
         def invoke(self, payload, config=None):
             recovery_calls.append(payload["messages"][-1].content)
             call = AIMessage(content="", tool_calls=[{
                 "name": "get_registered_layers", "args": {}, "id": "recovery-list-1", "type": "tool_call",
-            }])
+            }], usage_metadata={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7})
             result = ToolMessage(
                 content="当前图层：医院_POI(OSM)，共 12 个医院",
                 name="get_registered_layers",
                 tool_call_id="recovery-list-1",
             )
-            answer = AIMessage(content="已读取医院图层信息。")
+            answer = AIMessage(content="已读取医院图层信息。", usage_metadata={
+                "input_tokens": 7, "output_tokens": 3, "total_tokens": 10,
+            })
             return {"messages": list(payload["messages"]) + [call, result, answer]}
 
     from backend.services import storage_service
@@ -44,7 +55,7 @@ def test_empty_stream_response_retries_original_request_with_tools(monkeypatch):
     monkeypatch.setattr(graph.task_manager, "find_or_create_task", lambda *args, **kwargs: "recovery-test")
     monkeypatch.setattr(storage_service, "record_run_start", lambda *args, **kwargs: True)
     monkeypatch.setattr(storage_service, "record_run_finish", lambda *args, **kwargs: True)
-    monkeypatch.setattr(graph, "extract_and_record_token_usage", lambda **kwargs: {})
+    monkeypatch.setattr(graph, "extract_and_record_token_usage", metered_usage)
     monkeypatch.setattr(graph._tools_mod, "acquire_session_lock", lambda *args, **kwargs: True)
     monkeypatch.setattr(graph._tools_mod, "release_session_lock", lambda *args, **kwargs: None)
 
@@ -68,9 +79,12 @@ def test_empty_stream_response_retries_original_request_with_tools(monkeypatch):
     assert starts[0]["step_id"] == ends[0]["step_id"]
     assert done["response"] == "已读取医院图层信息。"
     assert done["response"] != "(空响应)"
+    assert done["token_usage"]["type"] == "api"
+    assert done["token_usage"]["input_tokens"] == 22
+    assert done["token_usage"]["output_tokens"] == 6
 
 
-def test_empty_nonstream_response_does_not_retry_with_tools_disabled(monkeypatch):
+def test_empty_nonstream_response_does_not_retry_with_tools_disabled(monkeypatch, metered_usage):
     recovery_calls = []
     agent_invocations = 0
     bound_choices = []
@@ -87,19 +101,22 @@ def test_empty_nonstream_response_does_not_retry_with_tools_disabled(monkeypatch
             agent_invocations += 1
             if agent_invocations == 1:
                 return {"messages": list(payload["messages"]) + [
-                    AIMessage(content="", additional_kwargs={"reasoning_content": "应该调用最近邻工具"})
+                    AIMessage(content="", additional_kwargs={"reasoning_content": "应该调用最近邻工具"},
+                              usage_metadata={"input_tokens": 10, "output_tokens": 1, "total_tokens": 11})
                 ]}
             recovery_calls.append(payload["messages"][-1].content)
             call = AIMessage(content="", tool_calls=[{
                 "name": "nearest_pair", "args": {"layer_name": "医院_POI(OSM)"},
                 "id": "recovery-pair-1", "type": "tool_call",
-            }])
+            }], usage_metadata={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7})
             result = ToolMessage(
                 content="最近的一对约 120 米",
                 name="nearest_pair",
                 tool_call_id="recovery-pair-1",
             )
-            answer = AIMessage(content="最近的两家医院相距约 120 米。")
+            answer = AIMessage(content="最近的两家医院相距约 120 米。", usage_metadata={
+                "input_tokens": 7, "output_tokens": 3, "total_tokens": 10,
+            })
             return {"messages": list(payload["messages"]) + [call, result, answer]}
 
     from backend.services import storage_service
@@ -108,7 +125,7 @@ def test_empty_nonstream_response_does_not_retry_with_tools_disabled(monkeypatch
     monkeypatch.setattr(graph.task_manager, "find_or_create_task", lambda *args, **kwargs: "recovery-test")
     monkeypatch.setattr(storage_service, "record_run_start", lambda *args, **kwargs: True)
     monkeypatch.setattr(storage_service, "record_run_finish", lambda *args, **kwargs: True)
-    monkeypatch.setattr(graph, "extract_and_record_token_usage", lambda **kwargs: {})
+    monkeypatch.setattr(graph, "extract_and_record_token_usage", metered_usage)
     monkeypatch.setattr(graph._tools_mod, "acquire_session_lock", lambda *args, **kwargs: True)
     monkeypatch.setattr(graph._tools_mod, "release_session_lock", lambda *args, **kwargs: None)
 
@@ -125,6 +142,9 @@ def test_empty_nonstream_response_does_not_retry_with_tools_disabled(monkeypatch
     assert llm_configs[-1].reasoning is False
     assert "不要调用工具" not in recovery_calls[0]
     assert result["response"] == "最近的两家医院相距约 120 米。"
+    assert result["token_usage"]["type"] == "api"
+    assert result["token_usage"]["input_tokens"] == 22
+    assert result["token_usage"]["output_tokens"] == 6
 
 
 def test_required_tool_choice_failure_falls_back_to_non_reasoning_auto_tools(monkeypatch):

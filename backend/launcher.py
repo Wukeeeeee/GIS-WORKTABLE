@@ -48,6 +48,28 @@ def port_available(port):
 
 
 def _process_is_alive(pid):
+    if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+        return False
+    if sys.platform == "win32":
+        # Windows 的 os.kill(pid, 0) 会调用 TerminateProcess，不能用于探活。
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE，只查询存活状态
+        if not handle:
+            # ERROR_INVALID_PARAMETER 表示 PID 不存在；权限不足等情况保守视为存活。
+            return ctypes.get_last_error() != 87
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) != 0  # WAIT_OBJECT_0 = 已退出
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
         return True
@@ -67,6 +89,8 @@ def _startup_lock_is_stale(lock_file, grace_seconds=120):
         owner = lock_file.read_text(encoding="ascii").strip()
     except FileNotFoundError:
         return True
+    except UnicodeError:
+        owner = ""  # 损坏的锁按旧版空锁的宽限期处理。
     except OSError:
         return False
 
@@ -117,9 +141,6 @@ def start_backend(port):
     while time.monotonic() < deadline:
         try:
             lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            os.write(lock_fd, str(os.getpid()).encode("ascii"))
-            os.fsync(lock_fd)
-            break
         except FileExistsError:
             time.sleep(0.5)
             if probe(port):
@@ -130,12 +151,25 @@ def start_backend(port):
                     lock_file.unlink()
                 except FileNotFoundError:
                     pass
-        except OSError:
-            time.sleep(0.5)
+            continue
+        except OSError as exc:
+            raise RuntimeError(f"Cannot acquire startup lock {lock_file}: {exc}") from exc
+        try:
+            owner = str(os.getpid()).encode("ascii")
+            if os.write(lock_fd, owner) != len(owner):
+                raise OSError("Incomplete startup lock write")
+            os.fsync(lock_fd)
+        except BaseException:
+            os.close(lock_fd)
+            lock_fd = None
+            lock_file.unlink(missing_ok=True)
+            raise
+        break
 
     if lock_fd is None:
         raise RuntimeError(f"Startup lock is still held on port {port}; wait for setup to finish. If no launcher is running, remove {lock_file} and retry.")
 
+    proc = None
     try:
         # Re-check probe once lock is held
         data = probe(port)
@@ -160,6 +194,18 @@ def start_backend(port):
                 raise RuntimeError(f"Backend process exited prematurely with code {proc.returncode}.")
             time.sleep(0.5)
         raise RuntimeError(f"Backend on port {port} not ready after 90 seconds; check the backend console window.")
+    except BaseException:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+            except ProcessLookupError:
+                pass
+        raise
     finally:
         if lock_fd is not None:
             try:
@@ -173,26 +219,33 @@ def start_backend(port):
 
 
 def stop_backend():
-    stopped_count = 0
+    found_count = 0
+    failures = 0
     for port in candidate_ports():
         data = probe(port)
         if data and type(data.get("pid")) is int and data["pid"] > 0:
             pid = data["pid"]
+            found_count += 1
             try:
                 os.kill(pid, signal.SIGTERM)
                 # Wait up to 5 seconds for port release
                 deadline = time.monotonic() + 5
-                while time.monotonic() < deadline and probe(port):
+                while True:
+                    current = probe(port)
+                    if not current or current.get("pid") != pid:
+                        break
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Backend still responds after waiting 5 seconds")
                     time.sleep(0.3)
                 print(f"Stopped GIS-WORKTABLE on port {port} (PID {pid}).")
-                stopped_count += 1
             except ProcessLookupError:
                 print(f"Process PID {pid} already stopped.")
             except Exception as e:
+                failures += 1
                 print(f"Error stopping PID {pid} on port {port}: {e}")
-    if stopped_count == 0:
+    if found_count == 0:
         print("No running GIS-WORKTABLE instance found on candidate ports.")
-    return 0
+    return 1 if failures else 0
 
 
 def open_browser(port):
@@ -205,7 +258,7 @@ def open_browser(port):
     if stamp_file.exists():
         try:
             last_open = float(stamp_file.read_text().strip())
-            if now - last_open < 3.0:
+            if 0 <= now - last_open < 3.0:
                 # Opened within 3 seconds, skip duplicate tab
                 return 0
         except Exception:

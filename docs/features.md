@@ -68,6 +68,6 @@
 
 ### MCP Server 与质量守卫
 
-- **MCP Server**（`python -m backend.services.mcp_server`）：stdio 传输，把全部 @tool 工具以 tools_list / tool_call / list_layers / get_task_status 四个 MCP 工具开放给 Claude Code、Cursor 等外部客户端；注册表自动反射、图层产物落盘会话目录、路径白名单 confinement（`GEOWORKTABLE_MCP_ROOTS`），配置示例见 [MCP Server 配置](mcp_server.md)
+- **MCP Server**（`python -m backend.services.mcp_server`）：stdio 传输，把全部 @tool 工具以 8 个 MCP 工具开放给 Claude Code、Cursor 等外部客户端，包括 tools_list / tool_call / list_layers / get_task_status / inspect_url / fetch_url_data / search_wikidata / search_osm；注册表自动反射、图层产物落盘会话目录、路径白名单 confinement（`GEOWORKTABLE_MCP_ROOTS`），配置示例见 [MCP Server 配置](mcp_server.md)
 - **地理质量自检（Geo QA）**：图层出通道时自动体检——CRS 未转换/经纬颠倒、空结果、无效几何、退化多边形变成显式警告而非静默错误
 - **E2E 测试**：伪造数据经 HTTP 走完整直连链（缓冲→裁剪→统计→分区统计→卷帘→历史重跑）；浏览器交互需要另外进行手动或自动化验收

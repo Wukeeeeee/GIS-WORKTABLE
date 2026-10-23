@@ -64,6 +64,25 @@
 
     makeResizable(panel, label);
     makeDraggable(panel, header);
+
+    // Keep the panel heading fixed while its existing body collapses through a grid track.
+    let panelContent = Array.from(panel.children).find(function(child) {
+      return child.classList.contains('workspace-panel-content');
+    });
+    if (!panelContent) {
+      panelContent = document.createElement('div');
+      panelContent.className = 'workspace-panel-content';
+      const inner = document.createElement('div');
+      inner.className = 'workspace-panel-content-inner';
+      const resizeHandle = Array.from(panel.children).find(function(child) {
+        return child.classList.contains('workspace-window-resize');
+      });
+      Array.from(panel.children).forEach(function(child) {
+        if (child !== header && child !== resizeHandle) inner.appendChild(child);
+      });
+      panelContent.appendChild(inner);
+      panel.insertBefore(panelContent, resizeHandle || null);
+    }
     panel.querySelectorAll('.spatial-field, .network-field').forEach(function(field) {
       const labelEl = field.querySelector('label');
       const input = field.querySelector('input[id], select[id], textarea[id]');
@@ -86,6 +105,8 @@
         fold.title = (folded ? '展开' : '折叠') + label;
         fold.setAttribute('aria-label', fold.title);
         fold.setAttribute('aria-expanded', String(!folded));
+        panelContent.inert = folded;
+        panelContent.setAttribute('aria-hidden', String(folded));
       }
       update(false);
       fold.onclick = function() {
@@ -504,8 +525,7 @@
 
     const task = _toolTasks[panelId] = {
       startTime: Date.now(),
-      btn: btn || panel.querySelector('.spatial-run-btn:not([disabled])') || (existingTask && existingTask.btn),
-      cancelled: false
+      btn: btn || panel.querySelector('.spatial-run-btn:not([disabled])') || (existingTask && existingTask.btn)
     };
 
     let output = panel.querySelector('.workspace-tool-feedback');
@@ -532,7 +552,6 @@
     if (cancelBtn) {
       cancelBtn.onclick = function() {
         if (task.timer) clearInterval(task.timer);
-        task.cancelled = true;
         // This stops the UI wait only; the request has no cancellation signal and may still
         // complete. Keep run buttons locked so a late result cannot overwrite a newer task.
         panel.setAttribute('aria-busy', 'true');
@@ -777,11 +796,11 @@
     if (!body || !chat || !layerPanel) return;
     document.body.classList.add('workbench');
     document.documentElement.classList.add('gis-workspace');
-    GIS.workspace = {toggleLayers:toggleLayers, setTab:setTab, toggleAI:toggleAI, closeDock:closeDock,
+    GIS.workspace = {toggleLayers:toggleLayers, toggleAI:toggleAI, closeDock:closeDock,
       panelBounds:panelBounds, clampPanel:clampPanel, centerPanel:centerPanel,
       preparePanel:preparePanel, expandPanel:expandPanel, toolFeedback:toolFeedback, toolPending:toolPending,
-      promptModal:promptModal, confirmModal:confirmModal, saveProjectModal:saveProjectModal,
-      loadProjectModal:loadProjectModal, openSaveProject:openSaveProject, openLoadProject:openLoadProject,
+      promptModal:promptModal, confirmModal:confirmModal,
+      openSaveProject:openSaveProject, openLoadProject:openLoadProject,
       renderRecentProjects:renderRecentProjects};
     const app = document.getElementById('app');
     const top = document.createElement('header');
@@ -833,8 +852,17 @@
     dock.className = 'workspace-dock';
     dock.innerHTML = '<div class="workspace-dock-header"><strong id="workspaceDockTitle">首页</strong><button id="workspaceDockClose" class="workspace-icon-btn" title="收起首页面板">'+icon('close')+'</button></div>' +
       '<section data-dock-pane="home" class="workspace-home">' +
+        '<div class="workspace-first-task">' +
+          '<strong>公开数据获取</strong>' +
+          '<p>粘贴 ArcGIS REST 地址，预览或下载图层。</p>' +
+          '<div class="workspace-first-task-actions">' +
+            '<button type="button" data-workspace-action="arcgis-own">输入地址</button>' +
+            '<button type="button" data-workspace-action="arcgis-sample">试用样例</button>' +
+          '</div>' +
+          '<small class="workspace-first-task-sample-note">样例人口数据较旧，仅用于演示。</small>' +
+        '</div>' +
         '<div class="workspace-recent-header" style="margin-top:4px;">' +
-          '<p class="workspace-section-label" style="margin:0;">最近工程历史</p>' +
+          '<p class="workspace-section-label" style="margin:0;">最近工程</p>' +
           '<div style="display:flex;gap:6px;">' +
             '<button type="button" class="workspace-save-cur-btn" data-workspace-action="new-project" style="background:transparent;border:1px solid var(--outline-variant);color:var(--on-surface);">新建</button>' +
             '<button type="button" class="workspace-save-cur-btn" data-workspace-action="save-project">保存当前</button>' +
@@ -946,9 +974,6 @@
     else if (action === 'save-project') {
       openSaveProject();
     }
-    else if (action === 'load-project') {
-      openLoadProject();
-    }
     else if (action === 'new-project') {
       confirmModal('新建工程确认', '新建工程将清空当前所有图层与会话记录。请确认重要成果已保存，是否继续？', function() {
         var clearPromise = GIS.chat && typeof GIS.chat.clearSession === 'function'
@@ -965,6 +990,14 @@
     }
     else if (action === 'data') GIS.geosource.show();
     else if (action === 'world') GIS.geosource.openWorldMap();
+    else if (action === 'arcgis-own' || action === 'arcgis-sample') {
+      var connector = GIS.connector;
+      if (!connector || typeof connector.openArcgis !== 'function') return;
+      connector.openArcgis(action === 'arcgis-sample' ? {
+        url: 'https://sampleserver6.arcgisonline.com/arcgis/rest/services/Census/MapServer',
+        layer_id: '2', mode: 'full', where: "STATE_NAME = 'Alabama'", bbox: ''
+      } : { url: '', layer_id: '', mode: 'preview', where: '1=1', bbox: '', selectUrl: true });
+    }
     else if (action === 'upload') document.getElementById('uploadTrigger').click();
     else if (action === 'settings' || action === 'connector') {
       document.getElementById(action === 'connector' ? 'connectorBtn' : 'settingsBtn').click();

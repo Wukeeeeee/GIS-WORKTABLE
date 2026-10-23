@@ -5,6 +5,9 @@ window.GIS = window.GIS || {};
   var panel = null;
   var visible = false;
   var _refreshTimer = null;
+  var _refreshRevision = 0;
+  var _healthRevision = 0;
+  var _sampleCounter = 0;
 
   var PANEL_HTML = [
     '<div class="debug-panel" id="debugPanel" style="display:none;">',
@@ -125,6 +128,8 @@ window.GIS = window.GIS || {};
 
   function refresh() {
     if (!panel || !visible) return;
+    var revision = ++_refreshRevision;
+    function current() { return visible && revision === _refreshRevision; }
     document.getElementById('debugModel').textContent = getModel();
     document.getElementById('debugAmapKey').textContent = getAmapKeyStatus();
 
@@ -132,8 +137,9 @@ window.GIS = window.GIS || {};
     if (!api) return;
 
     api.request('/api/layers').then(function(data) {
+      if (!current()) return;
       var list = document.getElementById('debugLayerList');
-      var layers = (data && data.layers) || [];
+      var layers = (data && Array.isArray(data.layers)) ? data.layers.filter(Boolean) : [];
       document.getElementById('debugLayerCount').textContent = layers.length;
       if (layers.length === 0) {
         list.innerHTML = '<div class="debug-empty">\u6682\u65e0\u56fe\u5c42</div>';
@@ -144,11 +150,12 @@ window.GIS = window.GIS || {};
         var name = l.name || l.filename || l.layer_id || '\u672a\u547d\u540d';
         var safeName = escapeMarkup(name);
         var gj = l.geojson;
-        var fc = gj && gj.features ? gj.features.length : '?';
-        var types = {};
-        if (gj && gj.features) {
-          gj.features.forEach(function(ft) {
-            var t = ft.geometry && ft.geometry.type || '?';
+        var features = gj && gj.type === 'Feature' ? [gj] : gj && Array.isArray(gj.features) ? gj.features : [];
+        var fc = features.length;
+        var types = Object.create(null);
+        if (features.length) {
+          features.forEach(function(ft) {
+            var t = ft && ft.geometry && ft.geometry.type || '?';
             types[t] = (types[t] || 0) + 1;
           });
         }
@@ -162,18 +169,25 @@ window.GIS = window.GIS || {};
       });
       list.innerHTML = html;
     }).catch(function() {
+      if (!current()) return;
       document.getElementById('debugLayerCount').textContent = '\u83b7\u53d6\u5931\u8d25';
       document.getElementById('debugLayerList').innerHTML = '';
     });
 
-    api.request('/api/session_logs').then(function(d) {
-      var logs = d && d.logs ? d.logs : [];
+    var sessionId = (GIS.project && GIS.project.getCurrentSessionId)
+      ? (GIS.project.getCurrentSessionId() || 'default')
+      : 'default';
+    api.request('/api/logs/stats?session_id=' + encodeURIComponent(sessionId)).then(function(d) {
+      if (!current()) return;
       var el = document.getElementById('debugSessionLogs');
-      if (el) el.textContent = logs.length + ' \u6761';
-    }).catch(function() {});
+      if (el) el.textContent = (Number(d && d.temp_count) || 0) + ' \u6761';
+    }).catch(function() {
+      if (current()) document.getElementById('debugSessionLogs').textContent = '获取失败';
+    });
   }
 
   function checkBackend() {
+    var revision = ++_healthRevision;
     var el = document.getElementById('debugBackendStatus');
     var connEl = document.getElementById('debugConnStatus');
     var api = GIS.api;
@@ -181,10 +195,13 @@ window.GIS = window.GIS || {};
     el.textContent = '\u68c0\u67e5\u4e2d...';
     connEl.textContent = '\u68c0\u67e5\u4e2d';
     api.healthCheck().then(function(d) {
+      if (!visible || revision !== _healthRevision) return;
+      if (!d || d.ok === false || !(d.ok === true || d.status === 'ok')) throw new Error('后端未连接');
       el.textContent = '\u2713 \u5728\u7ebf';
       connEl.textContent = '\u2713';
       connEl.className = 'debug-header-info debug-conn-ok';
     }).catch(function() {
+      if (!visible || revision !== _healthRevision) return;
       el.textContent = '\u2717 \u672a\u8fde\u63a5';
       connEl.textContent = '\u2717 \u65ad\u5f00';
       connEl.className = 'debug-header-info debug-conn-fail';
@@ -199,18 +216,18 @@ window.GIS = window.GIS || {};
       GIS.workspace.preparePanel('debugPanel', 'debugPanelHeader', 'debugPanelClose', '调试面板');
       GIS.workspace.expandPanel('debugPanel');
     }
-    GIS.debugPanelVisible = true;
     positionPanel();
     checkBackend();
     refresh();
-    if (!_refreshTimer) { _refreshTimer = setInterval(refresh, 5000); }
+    if (!_refreshTimer) { _refreshTimer = setInterval(function() { refresh(); checkBackend(); }, 5000); }
   }
 
   function hide() {
     if (!panel) return;
     visible = false;
+    _refreshRevision++;
+    _healthRevision++;
     panel.style.display = 'none';
-    GIS.debugPanelVisible = false;
     if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
   }
 
@@ -242,11 +259,13 @@ window.GIS = window.GIS || {};
   }
 
   function loadSampleData(key) {
-    var data = SAMPLE_DATA[key];
+    var source = SAMPLE_DATA[key];
+    var data = source && JSON.parse(JSON.stringify(source));
     if (!data || !data.features) return;
     var name = key + '.geojson';
+    var mapName = 'debug_sample_' + key + '_' + Date.now() + '_' + (++_sampleCounter);
     if (GIS.map && GIS.map.loadGeoJSON) {
-      GIS.map.loadGeoJSON(data, name);
+      GIS.map.loadGeoJSON(data, mapName);
     }
     if (GIS.layers && GIS.layers.addLayer) {
       var typeMap = {};
@@ -255,8 +274,9 @@ window.GIS = window.GIS || {};
         if (t) typeMap[t] = (typeMap[t] || 0) + 1;
       });
       GIS.layers.addLayer({
-        layer_id: name + '_' + Date.now(),
+        layer_id: mapName,
         filename: name,
+        _rawName: mapName,
         geometry_type: Object.keys(typeMap).sort().join(', '),
         geojson: data,
         source: 'sample',
@@ -318,7 +338,7 @@ window.GIS = window.GIS || {};
     });
   }
 
-  GIS.debug = { show: show, hide: hide, toggle: toggle, refresh: refresh };
+  GIS.debug = { toggle: toggle };
 
   document.addEventListener('DOMContentLoaded', function() {
     createPanel();

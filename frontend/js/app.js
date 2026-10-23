@@ -100,7 +100,14 @@ window.GIS = window.GIS || {};
       console.warn('[GIS] 设置模块未加载');
     }
 
-    // 9. 绑定全局快捷键 / 事件
+    // 9. 初始化连接器与在线数据入口
+    if (GIS.connector && typeof GIS.connector.init === 'function') {
+      GIS.connector.init();
+    } else {
+      console.warn('[GIS] 连接器模块未加载');
+    }
+
+    // 10. 绑定全局快捷键 / 事件
     bindGlobalEvents();
 
     console.log('[GIS] 应用初始化完成');

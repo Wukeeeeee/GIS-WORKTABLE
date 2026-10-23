@@ -16,9 +16,17 @@ function makeElement() {
       if (buttons[selector]) return buttons[selector];
       if (selector === 'div:last-child') return this.children[this.children.length - 1] || null;
       const className = selector[0] === '.' ? selector.slice(1) : '';
-      return this.children.find(child => (child.className || '').split(/\s+/).includes(className)) || null;
+      const child = this.children.find(item => (item.className || '').split(/\s+/).includes(className));
+      if (child) return child;
+      if (className && String(this.innerHTML || '').includes(className)) return buttons[selector] = makeElement();
+      for (const item of this.children) {
+        const found = item.querySelector(selector);
+        if (found) return found;
+      }
+      return null;
     },
-    fire(name, event) { (listeners[name] || []).forEach(callback => callback(event)); },
+    fire(name, event) { return Promise.all((listeners[name] || []).map(callback => callback(event))); },
+    click() { return this.fire('click'); },
   };
 }
 
@@ -27,6 +35,10 @@ function loadUploadModule(readFailure, uploadResponse) {
   const uploadCalls = [];
   const rasterOverlays = [];
   const layerAdds = [];
+  const vectorLoads = [];
+  const requests = [];
+  const reads = [];
+  const warnings = [];
   const elements = new Map();
   elements.set('chatMessages', makeElement());
   const document = {
@@ -39,29 +51,46 @@ function loadUploadModule(readFailure, uploadResponse) {
     },
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, makeElement());
-      return id === 'chatMessages' ? elements.get(id) : null;
+      return elements.get(id);
     },
   };
   document.body.appendChild = function(element) { element.parentNode = this; overlays.push(element); return element; };
   document.body.removeChild = function(element) { const index = overlays.indexOf(element); if (index >= 0) overlays.splice(index, 1); element.parentNode = null; };
   class FileReader {
     readAsText(file) {
+      reads.push(file);
       if (readFailure) { this.error = new Error('read failed'); this.onerror(); return; }
       this.result = file.content;
       this.onload();
     }
   }
+  class File {
+    constructor(parts, name, options = {}) {
+      this.name = name;
+      this.content = parts.map(part => typeof part === 'string' ? part : part.content || '').join('');
+      this.size = this.content.length;
+      Object.assign(this, options);
+    }
+    slice(start, end) { return { content: this.content.slice(start, end) }; }
+  }
   const window = { GIS: {
     utils: { escapeHtml: value => String(value) },
-    api: { upload(file) { uploadCalls.push(file.name); return Promise.resolve(uploadResponse || { error: 'test upload' }); } },
-    map: { addImageOverlay(...args) { rasterOverlays.push(args); } },
+    api: { upload(file, signal) { uploadCalls.push(file.name); requests.push({ file, signal });
+      return typeof uploadResponse === 'function' ? uploadResponse(file, signal)
+        : Promise.resolve(uploadResponse || { error: 'test upload' }); } },
+    map: { addImageOverlay(...args) { rasterOverlays.push(args); }, loadGeoJSON(...args) { vectorLoads.push(args); } },
     layers: { addLayer(...args) { layerAdds.push(args); } },
+    toast: { warn(message) { warnings.push(message); } },
   } };
-  const context = { window, document, FileReader, console, Promise, Map, Set, Array, Object, String, Number, Date, Math, RegExp,
+  const context = { window, document, File, FileReader, console: { log() {}, warn() {} }, Promise, Map, Set, Array, Object, String, Number, Date, Math, RegExp,
     AbortController, requestAnimationFrame(callback) { callback(); }, setTimeout() { return 1; }, clearTimeout() {} };
   const sourcePath = path.resolve(__dirname, '../js/upload.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
-  return { upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, layerAdds,
+  window.GIS.upload.init();
+  const input = elements.get('fileInput');
+  return { window, upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, layerAdds, vectorLoads, requests, reads, warnings,
+    selectFiles(files) { input.files = files; return input.fire('change', { target: input }); },
+    dropFiles(files) { return document.body.fire('drop', { preventDefault() {}, dataTransfer: { files } }); },
     chatMessages: elements.get('chatMessages') };
 }
 
@@ -69,7 +98,8 @@ test('CSV upload preview preserves quoted commas, escaped quotes, and embedded n
   const harness = loadUploadModule();
   const content = '\uFEFFname,note\r\n"New York, NY","line 1\r\nline 2"\r\n"said ""hi""",plain';
   const file = { name: 'places.csv', size: content.length, content, slice() { return { content }; } };
-  harness.upload.handleFiles([file]);
+  const pending = harness.selectFiles([file]);
+  await new Promise(resolve => setImmediate(resolve));
 
   const overlay = harness.overlays[0];
   assert.ok(overlay, 'CSV should open the pre-upload preview');
@@ -77,25 +107,24 @@ test('CSV upload preview preserves quoted commas, escaped quotes, and embedded n
   assert.match(overlay.innerHTML, /<td>New York, NY<\/td><td>line 1\r?\nline 2<\/td>/);
   assert.match(overlay.innerHTML, /<td>said "hi"<\/td><td>plain<\/td>/);
   overlay.querySelector('.preview-btn-cancel').fire('click');
+  await pending;
   assert.equal(harness.overlays.length, 0);
 });
 
 test('CSV preview read failure stops instead of implicitly confirming upload', async () => {
   const harness = loadUploadModule(true);
   const file = { name: 'unreadable.csv', size: 10, content: '', slice() { return this; } };
-  harness.upload.handleFiles([file]);
-  await new Promise(resolve => setImmediate(resolve));
+  await harness.selectFiles([file]);
 
   assert.deepEqual(harness.uploadCalls, []);
   assert.match(harness.chatMessages.children[0].children[0].innerHTML, /无法读取文件预览，文件未上传/);
 });
 
 test('uploaded raster layers use a stable map identity for independent visibility controls', async () => {
-  const harness = loadUploadModule(false, { raster_info: {
+  const harness = loadUploadModule(false, { name: 'elevation', registration_token: 'raster-version', raster_info: {
     url: '/output/uploads/elevation.png', bounds: [100, 30, 101, 31],
   } });
-  harness.upload.handleFiles([{ name: 'elevation.tif', size: 10 }]);
-  await new Promise(resolve => setImmediate(resolve));
+  await harness.selectFiles([{ name: 'elevation.tif', size: 10 }]);
 
   assert.equal(harness.rasterOverlays.length, 1);
   assert.equal(harness.layerAdds.length, 1);
@@ -103,6 +132,109 @@ test('uploaded raster layers use a stable map identity for independent visibilit
   const [layer] = harness.layerAdds[0];
   assert.equal(displayName, 'elevation');
   assert.match(mapLayerId, /^raster_\d+_[a-z0-9]+$/);
+  assert.equal(harness.layerAdds[0][0]._registeredName, 'elevation');
+  assert.equal(harness.layerAdds[0][0]._registrationTokens.elevation, 'raster-version');
   assert.equal(layer.layer_id, mapLayerId);
   assert.equal(layer._rawName, mapLayerId);
+});
+
+const tick = () => new Promise(resolve => setImmediate(resolve));
+function csv(name = 'points.csv', content = 'lon,lat\n10,20') {
+  return { name, size: content.length, content, slice(start, end) { return { content: content.slice(start, end) }; } };
+}
+
+test('initializing twice does not duplicate the actual file-selection handler', async () => {
+  const h = loadUploadModule();
+  h.upload.init();
+  assert.equal(h.upload.handleFiles, undefined);
+  await h.selectFiles([{ name: 'data.tif', size: 10 }]);
+  assert.equal(h.uploadCalls.length, 1);
+});
+
+test('extensionless dropped GeoJSON is uploaded with its detected extension and intact content', async () => {
+  const content = '{"type":"FeatureCollection","features":[]}';
+  const h = loadUploadModule(false, { name: 'points.geojson', geojson: JSON.parse(content), registration_token: 'version' });
+  const pending = h.dropFiles([csv('points', content)]);
+  await tick();
+  await h.overlays[0].querySelector('.preview-btn-confirm').fire('click');
+  await pending;
+  assert.equal(h.requests[0].file.name, 'points.geojson');
+  assert.equal(h.requests[0].file.content, content);
+  assert.equal(h.layerAdds[0][0]._registrationTokens['points.geojson'], 'version');
+});
+
+test('a large GeoJSON gets a bounded preview without reading the whole browser file', async () => {
+  const h = loadUploadModule();
+  const pending = h.selectFiles([{ name: 'large.geojson', size: 3 * 1024 * 1024 }]);
+  await tick();
+  assert.equal(h.reads.length, 0);
+  assert.match(h.overlays[0].innerHTML, /文件较大/);
+  await h.overlays[0].querySelector('.preview-btn-cancel').fire('click');
+  await pending;
+  assert.equal(h.uploadCalls.length, 0);
+});
+
+test('multiple previews are presented sequentially rather than stacked', async () => {
+  const h = loadUploadModule();
+  const pending = h.selectFiles([csv('one.csv'), csv('two.csv')]);
+  await tick();
+  assert.equal(h.overlays.length, 1);
+  assert.match(h.overlays[0].innerHTML, /one.csv/);
+  await h.overlays[0].querySelector('.preview-btn-cancel').fire('click');
+  await tick();
+  assert.equal(h.overlays.length, 1);
+  assert.match(h.overlays[0].innerHTML, /two.csv/);
+  await h.overlays[0].querySelector('.preview-btn-cancel').fire('click');
+  await pending;
+});
+
+test('canceling an upload prevents a late response from adding map layers', async () => {
+  let complete;
+  const h = loadUploadModule(false, () => new Promise(resolve => { complete = resolve; }));
+  const cleaned = [];
+  h.window.GIS.api.unregisterLayer = (...args) => { cleaned.push(args); return Promise.resolve({ success: true }); };
+  const pending = h.selectFiles([{ name: 'points.gpkg', size: 10 }]);
+  await tick();
+  await h.chatMessages.children[0].querySelector('.upload-cancel-btn').fire('click');
+  complete({ name: 'points', geojson: { type: 'FeatureCollection', features: [] }, registration_token: 'owned' });
+  await pending;
+  assert.equal(h.vectorLoads.length, 0);
+  assert.equal(h.layerAdds.length, 0);
+  assert.deepEqual(cleaned, [['points', 'owned']]);
+});
+
+test('CSV conversion uses the returned real path without interrupting an existing AI task', async () => {
+  const h = loadUploadModule(false, { csv_info: { filename: 'points.csv', path: 'E:/data/uploads/points.csv' } });
+  h.window._aiRunning = true;
+  const sent = [];
+  h.window.GIS.chat = { sendMessage(message) { sent.push(message); return Promise.resolve(); } };
+  const pending = h.selectFiles([csv()]);
+  await tick();
+  await h.overlays[0].querySelector('.preview-btn-confirm').fire('click');
+  await pending;
+  assert.equal(sent.length, 0);
+  const button = h.chatMessages.children[0].children.find(child => child.className === 'upload-convert-btn');
+  await button.fire('click');
+  assert.equal(sent.length, 0);
+  h.window._aiRunning = false;
+  await button.fire('click');
+  assert.match(sent[0], /E:\/data\/uploads\/points.csv/);
+});
+
+test('wide CSV previews cap rendered columns and field text', async () => {
+  const content = Array.from({ length: 80 }, (_, i) => 'column' + i).join(',') + '\n' + 'x'.repeat(1000);
+  const h = loadUploadModule();
+  const pending = h.selectFiles([csv('wide.csv', content)]);
+  await tick();
+  assert.equal((h.overlays[0].innerHTML.match(/<th>/g) || []).length, 50);
+  assert.doesNotMatch(h.overlays[0].innerHTML, /x{201}/);
+  await h.overlays[0].querySelector('.preview-btn-cancel').fire('click');
+  await pending;
+});
+
+test('format-specific file limits reject oversized input before preview or transfer', async () => {
+  const h = loadUploadModule();
+  await h.selectFiles([{ name: 'huge.csv', size: 65 * 1024 * 1024 }]);
+  assert.equal(h.reads.length, 0);
+  assert.equal(h.uploadCalls.length, 0);
 });

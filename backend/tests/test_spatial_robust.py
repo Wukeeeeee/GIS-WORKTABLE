@@ -94,8 +94,9 @@ def test_chunked_overlay_area_matches_ground_truth():
     b_big = box(0, 0.05, 0.05, 0.1)
     b = _gdf([b_big])
     merged, stats = chunked_overlay(a, b, lambda x, y: gpd.overlay(x, y, how="intersection"))
-    assert stats["cells"] == 16
-    assert stats["ok_cells"] >= 1
+    assert stats["cells"] == 4
+    assert stats["ok_cells"] == stats["cells"]
+    assert stats["failed_cells"] == 0
     import geopandas as _gpd
     _b_proj = _gpd.GeoDataFrame({"g": [b_big]}, geometry="g", crs=a.crs).to_crs(
         _gpd.GeoDataFrame({"g": [b_big]}, geometry="g", crs=a.crs).estimate_utm_crs())
@@ -118,6 +119,21 @@ def test_chunked_overlay_all_fail_raises():
 
     with pytest.raises(RuntimeError):
         chunked_overlay(a, b, boom)
+
+
+def test_chunked_difference_preserves_crossing_feature_once():
+    """跨分区的完整要素不能重复输出或漏减另一图层。"""
+    import geopandas as gpd
+    from shapely.geometry import box
+    from backend.services.spatial_robust import chunked_overlay
+
+    outer, cut = box(0, 0, 4, 4), box(1, 1, 3, 3)
+    result, _ = chunked_overlay(
+        _gdf([outer]), _gdf([cut]),
+        lambda a, b: gpd.overlay(a, b, how="difference"),
+    )
+    assert len(result) == 1
+    assert result.geometry.iloc[0].equals(outer.difference(cut))
 
 
 # ------------------------------------------------------------

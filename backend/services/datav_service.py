@@ -2,13 +2,18 @@
 DataV 行政区划边界获取工具
 从阿里云 DataV（国内可访问）获取省/市/区边界，转 WGS-84
 """
-import json, os, requests
+import hashlib
+import json
+import os
+import requests
+from urllib.parse import quote
 from backend.services.geo_coords import gcj02_to_wgs84
 
 # 缓存目录
 _CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "cache", "aoi")
 # 缓存版本号：坐标转换算法修复后 +1，旧版本缓存自动失效
 _CACHE_VERSION = 2
+_HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # 省级 adcode 字典
 _ADCODES = {
@@ -146,24 +151,32 @@ _AMBIGUOUS_DISTRICTS = {
 
 
 def get_ambiguous_candidates(name: str) -> list[dict] | None:
-    """检查输入地名是否存在多地重名。如果已包含地级市名（如“南京鼓楼区”），则不视作歧义"""
+    """检查输入地名是否存在多地重名，并按已提供的省/市限定候选。"""
     clean_name = (name or "").strip()
     if not clean_name:
         return None
     target_key = None
     for k in _AMBIGUOUS_DISTRICTS:
-        if clean_name == k or clean_name == k.rstrip("区"):
+        if clean_name.endswith(k) or clean_name.endswith(k.rstrip("区")):
             target_key = k
             break
     if not target_key:
         return None
     candidates = _AMBIGUOUS_DISTRICTS[target_key]
-    # 检查 clean_name 是否已经明确指定了具体城市或省份
-    for cand in candidates:
-        city_short = cand["city"].rstrip("市")
-        prov_short = cand["province"].rstrip("省").rstrip("市").rstrip("自治区")
-        if (city_short in clean_name or prov_short in clean_name):
-            return None
+    city_matches = [
+        cand for cand in candidates
+        if cand["city"] in clean_name or cand["city"].rstrip("市") in clean_name
+    ]
+    if city_matches:
+        return city_matches if len(city_matches) > 1 else None
+
+    province_matches = [
+        cand for cand in candidates
+        if cand["province"] in clean_name
+        or cand["province"].rstrip("省").rstrip("市").rstrip("自治区") in clean_name
+    ]
+    if province_matches:
+        return province_matches if len(province_matches) > 1 else None
     return candidates
 
 
@@ -176,19 +189,24 @@ def _find_adcode(name: str) -> int:
     if not clean_name:
         return 0
 
-    # 1. 优先从消歧列表中精确匹配组合全称（如 "江苏省南京市鼓楼区", "南京市鼓楼区", "南京鼓楼区", "福州鼓楼"）
+    # 1. 优先按城市/省份限定同名区县；无法唯一确定时不猜第一个。
     for base_district, candidates in _AMBIGUOUS_DISTRICTS.items():
-        for cand in candidates:
-            label = cand["label"]
-            city = cand["city"]
-            prov = cand["province"]
-            city_short = city.rstrip("市")
-            prov_short = prov.rstrip("省").rstrip("市").rstrip("自治区")
-            base_short = base_district.rstrip("区")
-            if clean_name in (label, f"{city}{base_district}", f"{prov}{city}{base_district}", f"{city_short}{base_district}", f"{city_short}{base_short}"):
-                return cand["adcode"]
-            if (city_short in clean_name or city in clean_name) and (base_district in clean_name or base_short in clean_name):
-                return cand["adcode"]
+        if not (clean_name.endswith(base_district) or clean_name.endswith(base_district.rstrip("区"))):
+            continue
+        city_matches = [
+            cand for cand in candidates
+            if cand["city"] in clean_name or cand["city"].rstrip("市") in clean_name
+        ]
+        if city_matches:
+            return city_matches[0]["adcode"] if len(city_matches) == 1 else 0
+        province_matches = [
+            cand for cand in candidates
+            if cand["province"] in clean_name
+            or cand["province"].rstrip("省").rstrip("市").rstrip("自治区") in clean_name
+        ]
+        if province_matches:
+            return province_matches[0]["adcode"] if len(province_matches) == 1 else 0
+        return 0
 
     # 2. 先在省份字典里查
     if clean_name in _ADCODES:
@@ -215,9 +233,10 @@ def _find_adcode(name: str) -> int:
 
 def _convert(coords):
     """递归将 GCJ-02 坐标转为 WGS-84"""
-    if not coords: return coords
+    if not coords:
+        return coords
     if isinstance(coords[0], (int, float)):
-        return list(gcj02_to_wgs84(coords[0], coords[1]))
+        return [*gcj02_to_wgs84(coords[0], coords[1]), *coords[2:]]
     return [_convert(c) for c in coords]
 
 
@@ -236,7 +255,10 @@ def fetch_boundary_by_adcode(adcode: int | str) -> dict | None:
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                cached = json.load(f)
+            if isinstance(cached, dict) and cached.get("_cache_version") == _CACHE_VERSION:
+                cached.pop("_cache_version", None)
+                return cached
         except Exception:
             pass
     try:
@@ -251,22 +273,28 @@ def fetch_boundary_by_adcode(adcode: int | str) -> dict | None:
             if feat.get("geometry", {}).get("coordinates"):
                 feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
         try:
+            data["_cache_version"] = _CACHE_VERSION
             with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False)
         except Exception:
             pass
+        data.pop("_cache_version", None)
         return data
     except Exception:
         return None
 
 
-def fetch_boundary(name: str) -> dict:
+def fetch_boundary(name: str) -> dict | None:
     """
     从 DataV 获取行政区划边界，返回 GeoJSON（已转 WGS-84）
     支持省/市/区三级，例如：广东省、广州市、天河区
     """
+    name = (name or "").strip()
+    if not name:
+        return None
     os.makedirs(_CACHE_DIR, exist_ok=True)
-    cache_path = os.path.join(_CACHE_DIR, f"datav_{name}.json")
+    cache_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:32]
+    cache_path = os.path.join(_CACHE_DIR, f"datav_{cache_key}.json")
 
     # 检查缓存（校验版本：坐标转换算法升级后旧缓存自动失效，防止错误坐标永久命中）
     if os.path.exists(cache_path):
@@ -280,7 +308,7 @@ def fetch_boundary(name: str) -> dict:
             pass
 
     # 先用名称直接请求
-    url = f"https://geo.datav.aliyun.com/areas_v3/bound/{name}_full.json"
+    url = f"https://geo.datav.aliyun.com/areas_v3/bound/{quote(name, safe='')}_full.json"
     resp = requests.get(url, timeout=15, headers=_HEADERS)
 
     # 失败则用 adcode

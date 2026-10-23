@@ -21,6 +21,7 @@ import os
 
 # 初始化标记，确保只执行一次
 _initialized = False
+_configured_font = None
 
 
 def _detect_chinese_font():
@@ -82,9 +83,12 @@ def setup_chinese_font(force=False):
     Returns:
         str: 配置的字体名称，或 None（未找到中文字体时）
     """
-    global _initialized
+    global _initialized, _configured_font
     if _initialized and not force:
-        return None
+        return _configured_font
+    if force:
+        _initialized = False
+        _configured_font = None
 
     try:
         import matplotlib
@@ -95,14 +99,16 @@ def setup_chinese_font(force=False):
         font_name = None
 
         # 第一级：路径检测
-        detected_name, font_path = _detect_chinese_font()
+        _, font_path = _detect_chinese_font()
         if font_path and os.path.exists(font_path):
             try:
                 fm.fontManager.addfont(font_path)
                 prop = fm.FontProperties(fname=font_path)
                 font_name = prop.get_name()
             except Exception:
-                font_name = detected_name  # 使用预期名称
+                # 文件存在不代表 matplotlib 能加载它；不要把未注册的名称
+                # 当成已配置成功，否则会跳过 fontManager fallback 扫描。
+                font_name = None
 
         # 第二级：fontManager 兜底扫描
         if not font_name:
@@ -120,9 +126,9 @@ def setup_chinese_font(force=False):
                 plt.rcParams["font.sans-serif"] = [font_name] + sans_list
             plt.rcParams["font.family"] = "sans-serif"
             plt.rcParams["axes.unicode_minus"] = False
-            print(f"[matplotlib_font] 中文字体已配置: {font_name}")
+            print(f"[matplotlib_font] Chinese font configured: {font_name}")
         else:
-            print("[matplotlib_font] 警告: 未找到中文字体，图表中文可能显示为方块")
+            print("[matplotlib_font] Warning: no Chinese font found; chart labels may appear as squares")
 
         # 统一设置 ggplot 风格（与原 run_code 沙箱保持一致）
         try:
@@ -131,9 +137,12 @@ def setup_chinese_font(force=False):
             pass
 
         _initialized = True
+        _configured_font = font_name
         return font_name
 
     except Exception as e:
+        _initialized = False
+        _configured_font = None
         print(f"[matplotlib_font] 字体初始化异常: {e}")
         return None
 

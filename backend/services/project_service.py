@@ -1,5 +1,16 @@
-import os, json, hashlib, gzip, shutil, uuid, datetime, time, zipfile, io, re, stat
+import os, json, hashlib, gzip, shutil, uuid, datetime, zipfile, io, re, stat, math, threading
+from functools import wraps
 from urllib.parse import unquote, urlsplit
+
+_PROJECT_LOCK = threading.RLock()
+
+
+def _with_project_lock(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        with _PROJECT_LOCK:
+            return func(*args, **kwargs)
+    return wrapped
 
 def extract_clean_title(content: str, max_len: int = 30) -> str:
     """从可能包含引用回复、图层注入等系统前缀的用户消息中，提取真实提问作为工程名/摘要"""
@@ -47,6 +58,15 @@ _MAX_PROJECTS = 30
 # 内存引用计数（启动时从 index.json 重建）
 _blob_refcount = {}
 
+
+def _valid_opacity(value) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and 0 <= value <= 1
+    except (OverflowError, TypeError):
+        return False
+
 # ============================================================
 # 路径辅助
 # ============================================================
@@ -55,12 +75,26 @@ def _ensure_dirs():
     os.makedirs(_BLOB_DIR, exist_ok=True)
 
 def _project_dir(pid: str) -> str:
-    return os.path.join(_PROJECT_DIR, f"proj_{pid}")
+    if not isinstance(pid, str) or not pid or pid in {".", ".."}:
+        raise ValueError("无效 project_id")
+    if os.path.basename(pid) != pid or "/" in pid or "\\" in pid or "\0" in pid:
+        raise ValueError("无效 project_id")
+    root = os.path.realpath(_PROJECT_DIR)
+    project_dir = os.path.realpath(os.path.join(root, f"proj_{pid}"))
+    try:
+        common = os.path.commonpath((root, project_dir))
+    except ValueError as exc:
+        raise ValueError("无效 project_id") from exc
+    if os.path.normcase(common) != os.path.normcase(root):
+        raise ValueError("无效 project_id")
+    return project_dir
 
 def _project_path(pid: str) -> str:
     return os.path.join(_project_dir(pid), "project.json")
 
 def _blob_path(sha: str) -> str:
+    if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{12}", sha) is None:
+        raise ValueError("无效 blob 标识")
     return os.path.join(_BLOB_DIR, f"{sha}.geojson.gz")
 
 def _project_raster_path(pid: str, filename: str) -> str | None:
@@ -69,20 +103,27 @@ def _project_raster_path(pid: str, filename: str) -> str | None:
     if not isinstance(filename, str) or not filename or os.path.basename(filename) != filename:
         return None
     project_root = os.path.realpath(_PROJECT_DIR)
-    project_dir = os.path.realpath(_project_dir(pid))
-    if os.path.commonpath([project_root, project_dir]) != project_root:
+    try:
+        project_dir = os.path.realpath(_project_dir(pid))
+        project_common = os.path.commonpath([project_root, project_dir])
+    except ValueError:
+        return None
+    if os.path.normcase(project_common) != os.path.normcase(project_root):
         return None
     assets_dir = os.path.realpath(os.path.join(project_dir, "assets"))
     path = os.path.realpath(os.path.join(assets_dir, filename))
-    return path if os.path.commonpath([assets_dir, path]) == assets_dir else None
+    try:
+        assets_common = os.path.commonpath([assets_dir, path])
+    except ValueError:
+        return None
+    return path if os.path.normcase(assets_common) == os.path.normcase(assets_dir) else None
 
 def _raster_source_path(raster: dict) -> str | None:
     asset = raster.get("asset")
     source_pid = raster.get("project_id")
     if asset and source_pid:
         path = _project_raster_path(source_pid, asset)
-        if path and os.path.isfile(path):
-            return path
+        return path if path and os.path.isfile(path) else None
     url_path = unquote(urlsplit(str(raster.get("url") or "")).path)
     prefix = "/output/uploads/"
     filename = url_path[len(prefix):] if url_path.startswith(prefix) else ""
@@ -91,14 +132,28 @@ def _raster_source_path(raster: dict) -> str | None:
     from backend.services.ai_service import _TEMP_OUTPUT_DIR
     path = os.path.realpath(os.path.join(_TEMP_OUTPUT_DIR, "uploads", filename))
     uploads_dir = os.path.realpath(os.path.join(_TEMP_OUTPUT_DIR, "uploads"))
-    return path if os.path.commonpath([uploads_dir, path]) == uploads_dir and os.path.isfile(path) else None
+    return path if os.path.normcase(os.path.commonpath([uploads_dir, path])) == os.path.normcase(uploads_dir) and os.path.isfile(path) else None
 
-def _store_project_raster(pid: str, raster: dict) -> dict:
-    source = _raster_source_path(raster)
-    if not source:
-        raise ValueError("栅格图层资源不存在，无法保存工程")
+def _raster_original_path(raster: dict) -> str | None:
+    """Resolve only managed project/upload sources, never arbitrary local paths."""
+    original = {"asset": raster.get("source_asset"), "project_id": raster.get("project_id"),
+                "url": raster.get("source_url")}
+    if not original["url"] and not original["asset"]:
+        filename = raster.get("source_filename")
+        if isinstance(filename, str) and filename and os.path.basename(filename) == filename:
+            from urllib.parse import quote
+            original["url"] = "/output/uploads/" + quote(filename, safe='')
+    source = _raster_source_path(original)
+    return source if source and os.path.splitext(source)[1].lower() in {".tif", ".tiff"} else None
+
+
+def _raster_asset_names(raster: dict) -> set[str]:
+    return {raster[key] for key in ("asset", "source_asset") if isinstance(raster.get(key), str) and raster[key]}
+
+
+def _store_raster_asset(pid: str, source: str, allowed_extensions: set[str]) -> str:
     extension = os.path.splitext(source)[1].lower()
-    if extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+    if extension not in allowed_extensions:
         raise ValueError("工程栅格资源格式不受支持")
     digest = hashlib.sha256()
     with open(source, "rb") as file:
@@ -107,8 +162,24 @@ def _store_project_raster(pid: str, raster: dict) -> dict:
     filename = digest.hexdigest()[:20] + extension
     target = _project_raster_path(pid, filename)
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    if os.path.realpath(source) != os.path.realpath(target):
-        shutil.copyfile(source, target)
+    if not os.path.exists(target):
+        import tempfile
+        fd, staging = tempfile.mkstemp(prefix='.raster-', dir=os.path.dirname(target))
+        try:
+            with os.fdopen(fd, 'wb') as output, open(source, 'rb') as original:
+                shutil.copyfileobj(original, output)
+            os.replace(staging, target)
+        finally:
+            if os.path.exists(staging):
+                os.unlink(staging)
+    return filename
+
+
+def _store_project_raster(pid: str, raster: dict) -> dict:
+    source = _raster_source_path(raster)
+    if not source:
+        raise ValueError("栅格图层资源不存在，无法保存工程")
+    filename = _store_raster_asset(pid, source, {".png", ".jpg", ".jpeg", ".webp"})
     saved = {key: raster[key] for key in ("bounds", "width", "height") if key in raster}
     saved.update({
         "filename": os.path.basename(str(raster.get("filename") or filename)),
@@ -116,11 +187,20 @@ def _store_project_raster(pid: str, raster: dict) -> dict:
         "project_id": pid,
         "url": f"/api/projects/{pid}/assets/{filename}",
     })
+    if any(raster.get(key) for key in ("source_asset", "source_url", "source_filename")):
+        original = _raster_original_path(raster)
+        if not original:
+            raise ValueError("栅格原始数据资源不存在，无法保存工程")
+        original_asset = _store_raster_asset(pid, original, {".tif", ".tiff"})
+        saved.update({"source_asset": original_asset,
+                      "source_filename": os.path.basename(str(raster.get("source_filename") or original_asset)),
+                      "source_url": f"/api/projects/{pid}/assets/{original_asset}"})
     return saved
 
+@_with_project_lock
 def get_project_raster_asset(pid: str, filename: str) -> str | None:
     proj = _load_project_data(pid)
-    if not proj or not any((layer.get("raster") or {}).get("asset") == filename for layer in proj.get("layers", [])):
+    if not proj or not any(filename in _raster_asset_names(layer.get("raster") or {}) for layer in proj.get("layers", [])):
         return None
     path = _project_raster_path(pid, filename)
     return path if path and os.path.isfile(path) else None
@@ -176,16 +256,25 @@ def _blob_put(geojson: dict) -> str:
     return sha
 
 def _blob_get(sha: str) -> dict | None:
-    path = _blob_path(sha)
+    try:
+        path = _blob_path(sha)
+    except ValueError:
+        return None
     if not os.path.exists(path):
         return None
     with gzip.open(path, "rt", encoding="utf-8") as f:
         return json.load(f)
 
 def _blob_remove(sha: str):
+    if not isinstance(sha, str):
+        return
     _blob_refcount[sha] = _blob_refcount.get(sha, 0) - 1
     if _blob_refcount[sha] <= 0:
-        path = _blob_path(sha)
+        try:
+            path = _blob_path(sha)
+        except ValueError:
+            _blob_refcount.pop(sha, None)
+            return
         if os.path.exists(path):
             os.remove(path)
         _blob_refcount.pop(sha, None)
@@ -195,26 +284,78 @@ def _blob_remove(sha: str):
 # ============================================================
 
 def _load_index() -> dict:
-    if not os.path.exists(_INDEX_PATH):
-        return {"projects": {}}
-    with open(_INDEX_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(_INDEX_PATH, "r", encoding="utf-8") as f:
+            index = json.load(f)
+        projects = index.get("projects") if isinstance(index, dict) else None
+        if (isinstance(projects, dict)
+                and all(isinstance(pid, str) and isinstance(summary, dict)
+                        for pid, summary in projects.items())):
+            return index
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        pass
+
+    # Index 可能在旧版本崩溃或手动编辑后损坏；从各工程文件重建摘要，避免服务启动失败。
+    projects = {}
+    if os.path.isdir(_PROJECT_DIR):
+        for entry in os.listdir(_PROJECT_DIR):
+            if not entry.startswith("proj_"):
+                continue
+            pid = entry[len("proj_"):]
+            proj = _load_project_data(pid)
+            if not proj:
+                continue
+            messages = proj.get("messages") if isinstance(proj.get("messages"), list) else []
+            layers = proj.get("layers") if isinstance(proj.get("layers"), list) else []
+            preview = next((extract_clean_title(msg.get("content", ""), 60)
+                            for msg in messages
+                            if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("content")), "")
+            projects[pid] = {
+                "id": pid,
+                "name": proj.get("name") or f"工程 {pid[:4]}",
+                "createdAt": proj.get("createdAt", ""),
+                "updatedAt": proj.get("updatedAt", ""),
+                "msgPreview": preview,
+                "layerCount": len(layers),
+                "messageCount": len(messages),
+                "provider": proj.get("provider", ""),
+            }
+    rebuilt = {"projects": projects}
+    try:
+        _save_index(rebuilt)
+    except OSError:
+        # Keep serving the recovered view even if the index cannot be repaired on disk.
+        pass
+    return rebuilt
 
 def _save_index(index: dict):
     _ensure_dirs()
-    with open(_INDEX_PATH, "w", encoding="utf-8") as f:
-        json.dump(index, f, ensure_ascii=False, indent=2)
+    temp_path = _INDEX_PATH + f".{uuid.uuid4().hex}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(index, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, _INDEX_PATH)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 def _rebuild_refcount():
     _blob_refcount.clear()
     index = _load_index()
-    for pid, info in index.get("projects", {}).items():
+    for pid in index.get("projects", {}):
         proj = _load_project_data(pid)
-        if proj:
-            for layer in proj.get("layers", []):
+        if proj and isinstance(proj.get("layers"), list):
+            for layer in proj["layers"]:
+                if not isinstance(layer, dict):
+                    continue
                 blob = layer.get("blob")
-                if blob:
-                    _blob_refcount[blob] = _blob_refcount.get(blob, 0) + 1
+                if not blob:
+                    continue
+                try:
+                    _blob_path(blob)
+                except ValueError:
+                    continue
+                _blob_refcount[blob] = _blob_refcount.get(blob, 0) + 1
 
 # ============================================================
 # 工程 CRUD
@@ -227,11 +368,16 @@ def _now_str() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 def _load_project_data(pid: str) -> dict | None:
-    path = _project_path(pid)
-    if not os.path.exists(path):
+    try:
+        path = _project_path(pid)
+    except ValueError:
         return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 def _save_project_data(pid: str, data: dict):
     _ensure_dirs()
@@ -247,6 +393,7 @@ def _save_project_data(pid: str, data: dict):
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+@_with_project_lock
 def save_project(
     project_id: str | None,
     name: str,
@@ -273,10 +420,11 @@ def save_project(
         layer.get("blob") for layer in (existing or {}).get("layers", []) if layer.get("blob")
     ]
     old_raster_assets = {
-        raster.get("asset")
+        asset
         for layer in (existing or {}).get("layers", [])
         for raster in [layer.get("raster")]
-        if isinstance(raster, dict) and isinstance(raster.get("asset"), str)
+        if isinstance(raster, dict)
+        for asset in _raster_asset_names(raster)
     }
 
     # 存储图层 → CAS blob
@@ -285,7 +433,7 @@ def save_project(
     new_blob_refs = []
     try:
         for idx, layer in enumerate(layers):
-            geojson = layer.get("geojson") or layer.get("geojson_data")
+            geojson = None if isinstance(layer.get('raster'), dict) else layer.get("geojson") or layer.get("geojson_data")
             if geojson:
                 blob = _blob_put(geojson)
                 new_blob_refs.append(blob)
@@ -294,13 +442,14 @@ def save_project(
             raster = layer.get("raster") if isinstance(layer.get("raster"), dict) else None
             if raster:
                 raster = _store_project_raster(pid, raster)
-                raster_assets.add(raster["asset"])
+                raster_assets.update(_raster_asset_names(raster))
             layer_refs.append({
                 "layer_id": layer.get("layer_id") if isinstance(layer.get("layer_id"), str) and layer.get("layer_id").strip() else None,
                 "name": layer.get("filename") or layer.get("name", "未命名"),
                 "blob": blob,
                 "color": layer.get("color", "#1c1b1b"),
                 "style": layer.get("style") if isinstance(layer.get("style"), dict) else {},
+                "opacity": layer.get("opacity") if _valid_opacity(layer.get("opacity")) else 1,
                 "symbology": layer.get("symbology") if isinstance(layer.get("symbology"), dict) else None,
                 "visible": layer.get("visible", True) if layer.get("visible") is not False else False,
                 "geometry_type": layer.get("geometry_type", "未知"),
@@ -389,10 +538,13 @@ def save_project(
             _delete_project_data(old_pid, index)
     _save_index(index)
 
-    return {"id": pid, "name": name or f"工程 {pid[:4]}", "updatedAt": now}
+    return {"id": pid, "name": sanitized_name, "updatedAt": now}
 
 def _project_exists(pid: str) -> bool:
-    return os.path.exists(_project_path(pid))
+    try:
+        return os.path.exists(_project_path(pid))
+    except ValueError:
+        return False
 
 def _delete_project_data(pid: str, index: dict = None):
     """删除工程数据，释放 blob 引用"""
@@ -402,7 +554,14 @@ def _delete_project_data(pid: str, index: dict = None):
             blob = layer.get("blob")
             if blob:
                 _blob_remove(blob)
-    d = _project_dir(pid)
+    try:
+        d = _project_dir(pid)
+    except ValueError:
+        if index is None:
+            index = _load_index()
+        index["projects"].pop(pid, None)
+        _save_index(index)
+        return
     if os.path.exists(d):
         shutil.rmtree(d)
     if index is None:
@@ -410,6 +569,7 @@ def _delete_project_data(pid: str, index: dict = None):
     index["projects"].pop(pid, None)
     _save_index(index)
 
+@_with_project_lock
 def load_project(pid: str) -> dict | None:
     proj = _load_project_data(pid)
     if not proj:
@@ -426,6 +586,8 @@ def load_project(pid: str) -> dict | None:
         if isinstance(raster, dict) and raster.get("asset"):
             raster = {**raster, "project_id": pid,
                       "url": f"/api/projects/{pid}/assets/{raster['asset']}"}
+            if raster.get("source_asset"):
+                raster["source_url"] = f"/api/projects/{pid}/assets/{raster['source_asset']}"
         resolved_layers.append({
             **layer,
             "geojson": geojson,
@@ -434,48 +596,76 @@ def load_project(pid: str) -> dict | None:
     result = {**proj, "layers": resolved_layers}
     return result
 
+@_with_project_lock
 def activate_project(pid: str, session_id: str = None) -> dict | None:
     """激活指定工程：加载工程并将其历史消息和图层恢复到后端，实现工程隔离与上下文精准记忆"""
     data = load_project(pid)
     if not data:
         return None
     sid = session_id or data.get("sessionId") or f"proj_{pid}"
-    try:
-        from backend.services.ai_service import conversation_history
-        from backend.services.tools import reset_registered_layers
+    from backend.services.ai_service import conversation_history
+    from backend.services import tools as registry
+    layers = data.get("layers", [])
+    with registry._state_lock:
+        old = dict(registry._registered_layers)
+        old_project = registry._active_project_id
+        old_pending = list(registry._pending_layers)
+        old_ops = list(registry._pending_layer_ops)
+        try:
+            registry.reset_registered_layers(layers)
+            registry._active_project_id = pid
+            tokens = {name: info.get('registration_token') for name, info in registry._registered_layers.items()}
+        except Exception:
+            registry._registered_layers.clear()
+            registry._registered_layers.update(old)
+            registry._active_project_id = old_project
+            registry._pending_layers[:] = old_pending
+            registry._pending_layer_ops[:] = old_ops
+            raise
+    conversation_history[sid] = list(data.get("messages", []))
+    return {"sessionId": sid, "layerCount": len(data.get("layers", [])),
+            "registration_tokens": tokens}
 
-        # 1. 恢复消息历史
-        conversation_history[sid] = list(data.get("messages", []))
-        # 2. 恢复图层到 tools._registered_layers
-        layers = data.get("layers", [])
-        reset_registered_layers(layers)
-    except Exception:
-        pass
-    return {"sessionId": sid, "layerCount": len(data.get("layers", []))}
+@_with_project_lock
+def open_project(pid: str) -> dict | None:
+    """Return the same project snapshot whose resources were activated."""
+    data = load_project(pid)
+    if data is None:
+        return None
+    activated = activate_project(pid)
+    tokens = activated['registration_tokens']
+    for layer in data.get('layers', []):
+        layer['registration_token'] = tokens.get(layer.get('name') or layer.get('filename'))
+    return data
 
+
+@_with_project_lock
 def list_projects() -> list:
     index = _load_index()
     projs = list(index.get("projects", {}).values())
     projs.sort(key=lambda p: p.get("updatedAt", ""), reverse=True)
     return projs
 
+@_with_project_lock
 def delete_project(pid: str):
     index = _load_index()
     _delete_project_data(pid, index)
 
+@_with_project_lock
 def delete_all_projects():
     index = _load_index()
     for pid in list(index.get("projects", {}).keys()):
         _delete_project_data(pid, index)
     # 清理残留文件夹
-    import shutil
-    for d in os.listdir(_PROJECT_DIR):
-        full = os.path.join(_PROJECT_DIR, d)
-        if d.startswith("proj_") and os.path.isdir(full):
-            shutil.rmtree(full, ignore_errors=True)
+    if os.path.isdir(_PROJECT_DIR):
+        for d in os.listdir(_PROJECT_DIR):
+            full = os.path.join(_PROJECT_DIR, d)
+            if d.startswith("proj_") and os.path.isdir(full):
+                shutil.rmtree(full, ignore_errors=True)
     global _blob_refcount
     _blob_refcount.clear()
 
+@_with_project_lock
 def rename_project(pid: str, new_name: str):
     proj = _load_project_data(pid)
     if not proj:
@@ -488,6 +678,7 @@ def rename_project(pid: str, new_name: str):
     _save_index(index)
     return {"id": pid, "name": new_name}
 
+@_with_project_lock
 def export_project(pid: str) -> bytes:
     proj = _load_project_data(pid)
     if not proj:
@@ -501,19 +692,25 @@ def export_project(pid: str) -> bytes:
         for layer in proj.get("layers", []):
             blob = layer.get("blob")
             if blob:
-                blob_path = _blob_path(blob)
+                try:
+                    blob_path = _blob_path(blob)
+                except ValueError:
+                    continue
                 if os.path.exists(blob_path):
                     zf.write(blob_path, f"blobs/{blob}.geojson.gz")
             raster = layer.get("raster")
-            asset = raster.get("asset") if isinstance(raster, dict) else None
-            if asset and asset not in archived_raster_assets:
+            for asset in _raster_asset_names(raster) if isinstance(raster, dict) else []:
+                if asset in archived_raster_assets:
+                    continue
                 asset_path = _project_raster_path(pid, asset)
-                if asset_path and os.path.exists(asset_path):
-                    zf.write(asset_path, f"assets/{asset}")
-                    archived_raster_assets.add(asset)
+                if not asset_path or not os.path.isfile(asset_path):
+                    raise ValueError("工程栅格资源缺失，无法导出完整工程")
+                zf.write(asset_path, f"assets/{asset}")
+                archived_raster_assets.add(asset)
     buf.seek(0)
     return buf.read()
 
+@_with_project_lock
 def import_project(zip_bytes: bytes) -> dict:
     _ensure_dirs()
     pid = _generate_id()
@@ -523,6 +720,9 @@ def import_project(zip_bytes: bytes) -> dict:
     try:
         with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
             _extract_project_archive(zf, target_dir)
+    except zipfile.BadZipFile as exc:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise ValueError("导入的工程文件无效：ZIP 包损坏") from exc
     except Exception:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise
@@ -532,8 +732,39 @@ def import_project(zip_bytes: bytes) -> dict:
         shutil.rmtree(target_dir)
         raise ValueError("导入的工程文件无效：缺少 project.json")
 
-    with open(proj_path, "r", encoding="utf-8") as f:
-        proj_data = json.load(f)
+    try:
+        with open(proj_path, "r", encoding="utf-8") as f:
+            proj_data = json.load(f)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise ValueError("导入的工程文件无效：project.json 无法读取") from exc
+    if (not isinstance(proj_data, dict)
+            or not isinstance(proj_data.get("layers", []), list)
+            or any(not isinstance(layer, dict) for layer in proj_data.get("layers", []))
+            or not isinstance(proj_data.get("messages", []), list)):
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise ValueError("导入的工程文件无效：project.json 结构不正确")
+    for layer in proj_data.get("layers", []):
+        blob = layer.get("blob")
+        if blob is not None and (not isinstance(blob, str) or re.fullmatch(r"[0-9a-f]{12}", blob) is None):
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise ValueError("导入的工程文件包含无效 blob 标识")
+        raster = layer.get("raster")
+        if raster is not None and not isinstance(raster, dict):
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise ValueError("导入的工程文件包含无效栅格资源")
+        for key in ("asset", "source_asset") if isinstance(raster, dict) else []:
+            asset = raster.get(key)
+            if asset is None:
+                continue
+            if (not isinstance(asset, str) or not asset
+                    or os.path.basename(asset) != asset
+                    or any(sep in asset for sep in ("/", "\\", ":", "\0"))):
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise ValueError("导入的工程文件包含无效栅格资源路径")
+            if not os.path.isfile(os.path.join(target_dir, 'assets', asset)):
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise ValueError("导入的工程文件缺少栅格资源")
 
     # 迁移 blob 到全局 blob 目录
     imported_blobs = os.path.join(target_dir, "blobs")
@@ -567,6 +798,7 @@ def import_project(zip_bytes: bytes) -> dict:
     _rebuild_refcount()
     return {"id": pid, "name": proj_data.get("name", "导入工程")}
 
+@_with_project_lock
 def auto_save(
     session_id: str = "default", provider: str = "", map_state: dict = None,
     project_id: str = None, layer_groups: list | None = None,
@@ -574,18 +806,50 @@ def auto_save(
 ):
     """由 ai_service 或前端在每轮对话后调用，自动保存当前会话"""
     from backend.services.ai_service import conversation_history
-    from backend.services.tools import _registered_layers
+    from backend.services.tools import _registered_layers, _state_lock
 
     messages = conversation_history.get(session_id, [])
-    if not messages:
+    if not messages and not project_id and not layer_assignments:
         return None
 
     existing_proj = None
     layers = []
-    for name, info in _registered_layers.items():
+    allowed_names = None
+    if layer_assignments is not None:
+        if not isinstance(layer_assignments, list):
+            raise ValueError("图层状态必须是列表，未自动保存")
+        allowed_names = set()
+        for assignment in layer_assignments:
+            if not isinstance(assignment, dict):
+                raise ValueError("图层状态必须是对象，未自动保存")
+            canonical = assignment.get("registry_name")
+            aliases = assignment.get("names", [])
+            if (canonical is not None and not isinstance(canonical, str)
+                    or not isinstance(aliases, list)
+                    or any(not isinstance(alias, str) or not alias.strip() for alias in aliases)):
+                raise ValueError("图层注册名称格式无效，未自动保存")
+            if isinstance(canonical, str) and canonical:
+                allowed_names.add(canonical)
+            else:
+                allowed_names.update(aliases)
+            if not canonical and not aliases and not isinstance(assignment.get("raster"), dict):
+                raise ValueError("图层缺少注册名称，未自动保存")
+    with _state_lock:
+        registry = dict(_registered_layers)
+    for assignment in layer_assignments or []:
+        if isinstance(assignment.get("raster"), dict):
+            continue
+        canonical = assignment.get("registry_name")
+        matches = [canonical] if canonical else assignment.get("names", [])
+        if not any(name in registry for name in matches):
+            raise ValueError("图层「%s」尚未完成注册，未自动保存" % (canonical or assignment.get("name") or "未命名"))
+    for name, info in registry.items():
+        if allowed_names is not None and name not in allowed_names:
+            continue
         layers.append({
             "name": name,
             "geojson": info.get("geojson"),
+            "raster": info.get("raster"),
             "geometry_type": ", ".join(info.get("geometry_types", [])),
             "feature_count": info.get("feature_count", 0),
             "source": "ai",
@@ -603,6 +867,8 @@ def auto_save(
 
     if existing_pid:
         existing_proj = _load_project_data(existing_pid)
+        if session_id not in conversation_history and existing_proj:
+            messages = existing_proj.get("messages", [])
     existing_layers_by_name = {
         layer.get("name"): layer for layer in (existing_proj or {}).get("layers", []) if layer.get("name")
     }
@@ -617,9 +883,11 @@ def auto_save(
                     "visible": assignment.get("visible") if isinstance(assignment.get("visible"), bool) else None,
                     "layer_id": assignment.get("layer_id") if isinstance(assignment.get("layer_id"), str) and assignment.get("layer_id").strip() else None,
                     "style": assignment.get("style") if isinstance(assignment.get("style"), dict) else None,
+                    "opacity": assignment.get("opacity") if _valid_opacity(assignment.get("opacity")) else None,
                     "symbology": assignment.get("symbology") if isinstance(assignment.get("symbology"), dict) else None,
                     "has_symbology": "symbology" in assignment,
                     "raster": assignment.get("raster") if isinstance(assignment.get("raster"), dict) else None,
+                    "name": assignment.get("name"),
                 }
     for layer in layers:
         layer_name = layer.get("name")
@@ -631,18 +899,24 @@ def auto_save(
             previous = existing_layers_by_name.get(layer_name)
             layer["layer_id"] = assignment["layer_id"] or (previous or {}).get("layer_id")
             layer["style"] = assignment["style"] if assignment["style"] is not None else (previous or {}).get("style", {})
+            if assignment["opacity"] is not None:
+                layer["opacity"] = assignment["opacity"]
+            else:
+                layer["opacity"] = (previous or {}).get("opacity", 1)
             if assignment["has_symbology"]:
                 layer["symbology"] = assignment["symbology"]
             elif previous and previous.get("symbology"):
                 layer["symbology"] = previous["symbology"]
             if assignment["raster"]:
                 layer["raster"] = assignment["raster"]
+                layer['name'] = assignment['name'] or layer_name
         else:
             previous = existing_layers_by_name.get(layer_name)
             if previous:
                 layer["groupId"] = previous.get("groupId")
                 layer["layer_id"] = previous.get("layer_id")
                 layer["style"] = previous.get("style", {})
+                layer["opacity"] = previous.get("opacity", 1)
                 layer["symbology"] = previous.get("symbology")
 
     for assignment in layer_assignments or []:
@@ -664,6 +938,7 @@ def auto_save(
             "source": "upload",
             "raster": assignment["raster"],
             "style": assignment.get("style") if isinstance(assignment.get("style"), dict) else {},
+            "opacity": assignment.get("opacity") if _valid_opacity(assignment.get("opacity")) else 1,
             "visible": assignment.get("visible") is not False,
             "groupId": assignment.get("groupId") or None,
         })

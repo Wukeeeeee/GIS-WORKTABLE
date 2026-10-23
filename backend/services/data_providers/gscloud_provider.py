@@ -64,6 +64,11 @@ class GSCloudProvider(DataProvider):
         )]
 
     def download(self, request: DataRequest) -> dict:
+        if request.kind not in RASTER_KINDS:
+            raise DataProviderError(
+                f"地理空间数据云只支持栅格类型：{', '.join(RASTER_KINDS)}。",
+                provider=self.provider_id,
+            )
         raise ProviderAuthError(
             "地理空间数据云需要账号登录，本项目不自动获取其数据。",
             provider=self.provider_id,
@@ -72,10 +77,10 @@ class GSCloudProvider(DataProvider):
 
 
 def _bbox_text(request: DataRequest) -> str:
-    try:
+    if request.bbox:
         from backend.services.data_providers.geocode import bbox_to_text
-        if request.bbox:
-            return bbox_to_text(request.bbox)
-    except Exception:
-        pass
-    return request.area or ""
+        return bbox_to_text(request.bbox)
+    area = (request.area or "").strip()
+    if not area:
+        raise DataProviderError("缺少空间范围：请提供 area 或 bbox。", provider="gscloud")
+    return area

@@ -95,6 +95,7 @@ test('loading a project renders project names and saved user messages as text', 
 
 test('restoring legacy same-name layers without IDs delegates unique ID creation to the layer registry', async () => {
   const addedLayers = [];
+  const opacities = [];
   const mapNames = [];
   const hiddenMapNames = [];
   const payload = {
@@ -150,7 +151,7 @@ test('autosave sends stable layer IDs alongside names and display state', async 
 
   await window.GIS.project.autoSave();
   assert.deepEqual(JSON.parse(JSON.stringify(capturedAssignments)), [{
-    layer_id: 'layer-persisted', style: { color: '#336699', fillOpacity: 0.24 },
+    layer_id: 'layer-persisted', registry_name: 'registered', style: { color: '#336699', fillOpacity: 0.24 },
     names: ['registered', 'raw', 'display'],
     groupId: 'group_2', visible: false,
     symbology: null,
@@ -187,6 +188,7 @@ test('autosave waits for the latest layer registration and skips saving stale da
 
 test('project restore forwards saved layer style to the layer registry', async () => {
   const addedLayers = [];
+  const opacities = [];
   const payload = {
     id: 'styled-project', name: '样式工程', messages: [], mapState: {},
     layers: [{ layer_id: 'styled-layer', name: '行政区', color: '#336699',
@@ -196,7 +198,7 @@ test('project restore forwards saved layer style to the layer registry', async (
   const window = { GIS: {
     api: { loadProject() { return Promise.resolve(payload); } },
     chat: { clear() {}, addMessage() {} },
-    map: { clearAll() {}, loadGeoJSON() {} },
+    map: { clearAll() {}, loadGeoJSON() {}, setLayerOpacity(...args) { opacities.push(args); } },
     layers: { setGroupState() {}, clearAll() {}, addLayer(layer) { addedLayers.push({ ...layer }); }, syncLayerOrder() {} },
   } };
   const document = { getElementById() { return null; } };
@@ -206,7 +208,9 @@ test('project restore forwards saved layer style to the layer registry', async (
   }, { filename: sourcePath });
 
   assert.equal(await window.GIS.project.loadProject('styled-project'), true);
-  assert.deepEqual({ ...addedLayers[0].style }, payload.layers[0].style);
+  assert.deepEqual({ ...addedLayers[0].style }, { color: '#336699', fillOpacity: 0.24, weight: 3 });
+  assert.equal(addedLayers[0].opacity, 0.6);
+  assert.deepEqual(opacities, [['project_styled-project_layer_0', 0.6]]);
 });
 
 test('project restore recreates saved raster overlays and their layer-panel visibility', async () => {
@@ -218,7 +222,7 @@ test('project restore recreates saved raster overlays and their layer-panel visi
     asset: 'abc.png', bounds: [100, 30, 101, 31], width: 512, height: 256 };
   const payload = { id: 'raster-project', name: '栅格工程', messages: [], mapState: {},
     layers: [{ layer_id: 'raster-layer', name: '高程', geometry_type: 'Raster', visible: false,
-      style: { opacity: 0.4 }, raster }] };
+      style: { opacity: 0.4 }, raster, registration_token: 'restored-version' }] };
   const window = { GIS: {
     api: { loadProject() { return Promise.resolve(payload); } },
     chat: { clear() {}, addMessage() {} },
@@ -245,6 +249,8 @@ test('project restore recreates saved raster overlays and their layer-panel visi
   assert.equal(addedLayers[0].visible, false);
   assert.equal(addedLayers[0].opacity, 0.4);
   assert.deepEqual({ ...addedLayers[0].raster }, raster);
+  assert.equal(addedLayers[0]._registeredName, '高程');
+  assert.equal(addedLayers[0]._registrationTokens['高程'], 'restored-version');
 });
 
 test('project restore reapplies saved thematic symbology after registering the layer', async () => {
@@ -282,6 +288,7 @@ test('project restore reapplies saved thematic symbology after registering the l
 test('manual and automatic saves capture style changes from the real shared state', async () => {
   let manual;
   let automatic;
+  const opacities = [];
   const window = { GIS: {
     api: {
       saveProject(data) { manual = data; return Promise.resolve({ id: 'saved' }); },
@@ -289,7 +296,7 @@ test('manual and automatic saves capture style changes from the real shared stat
         automatic = assignments; return Promise.resolve({ id: 'saved' });
       },
     },
-    map: { loadGeoJSON() {}, setLayerStyle() {}, getLayer() { return null; }, applySymbology() {} },
+    map: { loadGeoJSON() {}, setLayerStyle() {}, setLayerOpacity(...args) { opacities.push(args); }, getLayer() { return null; }, applySymbology() {} },
   } };
   const document = { readyState: 'loading', addEventListener() {}, getElementById() { return null; } };
   const context = vm.createContext({ window, document, console, Promise, Date, Math, Number, String, Object, Array, JSON, Set, Map });
@@ -307,9 +314,11 @@ test('manual and automatic saves capture style changes from the real shared stat
   await window.GIS.project.save('样式工程');
   await window.GIS.project.autoSave();
 
-  const expected = { color: '#336699', fillOpacity: 0.24, weight: 3, opacity: 0 };
+  const expected = { color: '#336699', fillOpacity: 0.24, weight: 3 };
   assert.deepEqual({ ...manual.layers[0].style }, expected);
   assert.deepEqual({ ...automatic[0].style }, expected);
+  assert.equal(manual.layers[0].opacity, 0);
+  assert.equal(automatic[0].opacity, 0);
   assert.equal(manual.layers[0].symbology.method, 'quantile');
   assert.deepEqual(Array.from(manual.layers[0].symbology.breaks), [10, 20, 30]);
   assert.deepEqual(JSON.parse(JSON.stringify(automatic[0].symbology)), JSON.parse(JSON.stringify(manual.layers[0].symbology)));

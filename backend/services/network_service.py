@@ -4,10 +4,9 @@ networkx + shapely 驱动：路线、服务区、最近设施
 """
 
 import networkx as nx
-from shapely.geometry import Point, LineString, Polygon, shape
-from shapely.ops import nearest_points, unary_union
+from shapely.geometry import Point, LineString
+from shapely.ops import unary_union
 import geopandas as gpd
-import numpy as np
 import json
 import math
 import hashlib
@@ -19,27 +18,23 @@ import hashlib
 
 _graph_cache = {}  # cache_key → (graph, geojson_hash)
 
-def _get_cached_graph(geojson: dict) -> nx.DiGraph:
+def _get_cached_graph(geojson: dict, respect_oneway: bool = False) -> nx.DiGraph:
     """
     从缓存获取图，如果 GeoJSON 未变化则复用缓存的图。
     """
     geo_str = json.dumps(geojson, ensure_ascii=False, sort_keys=True)
-    h = hashlib.md5(geo_str.encode('utf-8')).hexdigest()
+    cache_input = geo_str + ('|respect_oneway' if respect_oneway else '')
+    h = hashlib.md5(cache_input.encode('utf-8')).hexdigest()
     if h in _graph_cache:
         return _graph_cache[h][0]
-    g = build_graph_from_geojson(geojson)
+    g = build_graph_from_geojson(geojson, respect_oneway=respect_oneway)
     # 只缓存到内存，限制最大缓存数
-    if len(_graph_cache) > 20:
+    if len(_graph_cache) >= 20:
         # 清除最旧的缓存
         oldest = next(iter(_graph_cache))
         del _graph_cache[oldest]
     _graph_cache[h] = (g, h)
     return g
-
-def clear_graph_cache():
-    """清除图缓存（工程切换时调用）"""
-    _graph_cache.clear()
-
 
 # ============================================================
 # 工具函数
@@ -54,22 +49,18 @@ def _haversine(p1, p2):
     return 6371000 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 
-def _parse_coord(s):
-    """解析 'lng,lat' 字符串为 (lng, lat)"""
-    parts = s.split(",")
-    if len(parts) < 2:
-        raise ValueError(f"坐标格式错误，需要 'lng,lat' 格式，收到: '{s}'")
-    try:
-        return float(parts[0].strip()), float(parts[1].strip())
-    except ValueError:
-        raise ValueError(f"坐标值非数字，收到: '{s}'")
-
-
 # ============================================================
 # 建图
 # ============================================================
 
-def build_graph_from_geojson(geojson: dict, weight_field: str = "") -> nx.DiGraph:
+def _add_min_cost_edge(graph: nx.DiGraph, start, end, weight: float, distance: float) -> None:
+    """保留同一方向端点间成本最低的边，避免重复路段覆盖更优边。"""
+    existing = graph.get_edge_data(start, end)
+    if existing is None or (weight, distance) < (existing["weight"], existing["distance"]):
+        graph.add_edge(start, end, weight=weight, distance=distance)
+
+
+def build_graph_from_geojson(geojson: dict, weight_field: str = "", respect_oneway: bool = False) -> nx.DiGraph:
     """
     将路网 GeoJSON 转为 networkx 有向加权图。
     
@@ -104,11 +95,19 @@ def build_graph_from_geojson(geojson: dict, weight_field: str = "") -> nx.DiGrap
                     raw = props.get(weight_field)
                     if raw is not None:
                         try:
-                            w = float(raw)
-                        except (ValueError, TypeError):
+                            candidate = float(raw)
+                            if math.isfinite(candidate) and candidate >= 0:
+                                w = candidate
+                        except (OverflowError, ValueError, TypeError):
                             pass
-                g.add_edge(p1, p2, weight=w, distance=d)
-                g.add_edge(p2, p1, weight=w, distance=d)
+                oneway_value = str(props.get("oneway", "")).strip().lower()
+                if respect_oneway and oneway_value in ("yes", "true", "1"):
+                    _add_min_cost_edge(g, p1, p2, w, d)
+                elif respect_oneway and oneway_value == "-1":
+                    _add_min_cost_edge(g, p2, p1, w, d)
+                else:
+                    _add_min_cost_edge(g, p1, p2, w, d)
+                    _add_min_cost_edge(g, p2, p1, w, d)
 
     return g
 
@@ -161,12 +160,13 @@ def snap_to_network(geojson: dict, point: tuple, max_dist: float = 500) -> dict:
 # 最短路径
 # ============================================================
 
-def _route_segment(graph, from_node, to_node, bidirectional: bool = True):
+def _route_segment(graph, from_node, to_node, bidirectional: bool = True, distance_heuristic: bool = True):
     """计算单段路径，返回 (path_nodes, distance, steps) 或 None
     
     默认使用双向 Dijkstra（起点终点同时搜，相遇即最优），
     比单向 A* 快约 2x。
     bidirectional=False 时回退到 A*（启发式 = 球面距离）。
+    自定义成本单位不明时禁用距离启发式，以保持最优性。
     """
     try:
         if bidirectional:
@@ -176,10 +176,10 @@ def _route_segment(graph, from_node, to_node, bidirectional: bool = True):
         else:
             path_nodes = nx.astar_path(
                 graph, from_node, to_node,
-                heuristic=lambda a, b: _haversine(a, b),
+                heuristic=(lambda a, b: _haversine(a, b)) if distance_heuristic else None,
                 weight="weight"
             )
-    except (nx.NetworkXNoPath, Exception):
+    except nx.NetworkXNoPath:
         return None
 
     distance = 0.0
@@ -219,7 +219,7 @@ def shortest_route(
             "segments": [...],
         }
     """
-    graph = _get_cached_graph(geojson) if not weight_field else build_graph_from_geojson(geojson, weight_field)
+    graph = _get_cached_graph(geojson, respect_oneway=True) if not weight_field else build_graph_from_geojson(geojson, weight_field, respect_oneway=True)
     if not graph.nodes:
         return {"error": "路网为空，无法分析"}
 
@@ -235,7 +235,9 @@ def shortest_route(
     total_distance = 0.0
     all_path_nodes = []
     for i in range(len(all_nodes) - 1):
-        result = _route_segment(graph, all_nodes[i], all_nodes[i+1], bidirectional)
+        # Custom costs can use any units; metres are not a valid lower bound.
+        result = _route_segment(graph, all_nodes[i], all_nodes[i+1], bidirectional,
+                                distance_heuristic=not bool(weight_field))
         if result is None:
             return {"error": f"第 {i+1} 段无法连通，路网可能不连续"}
         path_nodes, seg_dist, seg_steps = result
@@ -257,12 +259,15 @@ def shortest_route(
             "node_count": len(path_nodes) + (1 if i > 0 else 0),
         })
 
-    line = LineString(all_path_nodes)
+    # A route snapped to the same node has one location and zero travel distance.
+    # GeoJSON LineString requires at least two positions, so represent that result
+    # as a Point; callers already consume the returned feature as generic GeoJSON.
+    path_geometry = Point(all_path_nodes[0]) if len(all_path_nodes) == 1 else LineString(all_path_nodes)
     path_geojson = {
         "type": "Feature",
         "geometry": {
-            "type": "LineString",
-            "coordinates": list(line.coords),
+            "type": path_geometry.geom_type,
+            "coordinates": list(path_geometry.coords) if path_geometry.geom_type == "LineString" else [path_geometry.x, path_geometry.y],
         },
         "properties": {
             "distance_m": round(total_distance, 1),
@@ -303,7 +308,20 @@ def service_area(
     if breaks is None:
         breaks = [1000, 3000, 5000]
 
-    graph = _get_cached_graph(geojson) if not weight_field else build_graph_from_geojson(geojson, weight_field)
+    if isinstance(breaks, (str, bytes)):
+        return {"error": "服务区断值必须是非负有限数值列表"}
+    try:
+        if any(isinstance(value, bool) for value in breaks):
+            return {"error": "服务区断值必须是非负有限数值"}
+        breaks_sorted = sorted({float(value) for value in breaks})
+    except (OverflowError, TypeError, ValueError):
+        return {"error": "服务区断值必须是非负有限数值"}
+    if (not breaks_sorted
+            or any(not math.isfinite(value) or value < 0 for value in breaks_sorted)):
+        return {"error": "服务区断值必须是非负有限数值"}
+
+    graph = (_get_cached_graph(geojson, respect_oneway=True) if not weight_field
+             else build_graph_from_geojson(geojson, weight_field, respect_oneway=True))
     if not graph.nodes:
         return {"error": "路网为空，无法分析"}
 
@@ -311,7 +329,6 @@ def service_area(
     if not facility_node:
         return {"error": "设施点距路网超过阈值"}
 
-    breaks_sorted = sorted(breaks)
     # 从设施点出发 BFS/双向 Dijkstra，累加距离
     distances = nx.single_source_dijkstra_path_length(graph, facility_node, weight="weight")
     
@@ -320,6 +337,8 @@ def service_area(
     area_infos = []
     prev_break = 0
     for brk in breaks_sorted:
+        from_break = prev_break
+        prev_break = brk
         nodes_in_range = [n for n, d in distances.items() if d <= brk]
         if not nodes_in_range:
             continue
@@ -348,12 +367,11 @@ def service_area(
             "properties": {
                 "break_m": brk,
                 "area_km2": area_km2,
-                "from_m": prev_break,
+                "from_m": from_break,
                 "to_m": brk,
             },
         })
         area_infos.append({"break": brk, "area_km2": area_km2})
-        prev_break = brk
 
     if not polygons:
         return {"error": "服务区计算失败，范围太小或路网不连通"}
@@ -392,7 +410,11 @@ def closest_facilities(
             "summary": [{"facility_idx": int, "distance_m": float, ...}, ...]
         }
     """
-    graph = _get_cached_graph(geojson) if not weight_field else build_graph_from_geojson(geojson, weight_field)
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        return {"error": "最近设施返回数量 n 必须为正整数"}
+
+    graph = (_get_cached_graph(geojson, respect_oneway=True) if not weight_field
+             else build_graph_from_geojson(geojson, weight_field, respect_oneway=True))
     if not graph.nodes:
         return {"error": "路网为空，无法分析"}
 
@@ -407,13 +429,17 @@ def closest_facilities(
             continue
         try:
             path_nodes = nx.astar_path(
-                graph, fac_node, event_node,
-                heuristic=lambda a, b: _haversine(a, b),
+                graph, event_node, fac_node,
+                heuristic=(lambda a, b: _haversine(a, b)) if not weight_field else None,
                 weight="weight"
             )
             d = sum(graph[path_nodes[j]][path_nodes[j+1]]["distance"]
                     for j in range(len(path_nodes) - 1))
-            line = LineString(path_nodes)
+            path_geometry = (Point(path_nodes[0]) if len(path_nodes) == 1
+                             else LineString(path_nodes))
+            geometry = ({"type": "Point", "coordinates": [path_geometry.x, path_geometry.y]}
+                        if path_geometry.geom_type == "Point"
+                        else {"type": "LineString", "coordinates": list(path_geometry.coords)})
             results.append({
                 "facility_idx": i,
                 "facility_coord": fac,
@@ -421,17 +447,14 @@ def closest_facilities(
                 "distance_km": round(d / 1000, 2),
                 "path": {
                     "type": "Feature",
-                    "geometry": {
-                        "type": "LineString",
-                        "coordinates": list(line.coords),
-                    },
+                    "geometry": geometry,
                     "properties": {
                         "facility_idx": i,
                         "distance_m": round(d, 1),
                     },
                 },
             })
-        except (nx.NetworkXNoPath, Exception):
+        except nx.NetworkXNoPath:
             continue
 
     results.sort(key=lambda r: r["distance_m"])

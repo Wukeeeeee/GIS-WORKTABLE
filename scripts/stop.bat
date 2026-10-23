@@ -11,4 +11,6 @@ if not defined PY if exist "%~dp0..\.venv\Scripts\python.exe" set "PY=%~dp0..\.v
 if not defined PY if defined GIS_PYTHON set "PY=%GIS_PYTHON%"
 if not defined PY set "PY=python"
 "%PY%" -m backend.launcher stop
-if errorlevel 1 pause
+set "STOP_EXIT_CODE=%ERRORLEVEL%"
+if not "%STOP_EXIT_CODE%"=="0" pause
+exit /b %STOP_EXIT_CODE%

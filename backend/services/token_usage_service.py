@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Token 计量基建：从 AIMessage 提取 usage_metadata，无 metadata 时用字符数 ÷ 3.0 兜底，并追加到 logs/token_usage.jsonl"""
+"""汇总本轮返回消息中的接口用量，并估算缺少接口用量的调用。"""
 import os
 import json
-import time
 import datetime
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 from langchain_core.messages import AIMessage, BaseMessage
 
 _LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs")
@@ -18,64 +17,74 @@ def extract_and_record_token_usage(
     tool_count: int = 0,
     schema_chars: int = 0,
     duration_ms: int = 0,
+    input_message_count: int = 0,
+    previous_attempts: List[List[BaseMessage]] | None = None,
 ) -> Dict[str, Any]:
-    """从给定的消息链中汇总最后一轮或整个回合的 token 消耗。
-    
-    规则：
-    1. 优先从 AIMessage.usage_metadata 读取官方数据（标记为 'api'）
-    2. 若未返回 usage_metadata，统计所有 messages 字符数并除以 3.0 进行校准估算（标记为 'estimate'）
-    3. 写入 logs/token_usage.jsonl
-    4. 返回前端友好的结构体字典
+    """统计 input_message_count 之后的 AI 消息，历史消息只作为输入上下文。
+
+    每条新 AI 消息优先采用完整、非负的 usage_metadata（包括零用量）；
+    否则按该次调用的前序消息、工具 schema 和回复内容估算。
+    任一调用需要估算时 type 为 estimate，避免把混合计量误报为纯接口数据。
+    previous_attempts 保留被重试替换的消息链，按消息 ID（无 ID 时按对象）去重。
+    此统计基于返回消息链，不代表供应商账单。
     """
+    if (isinstance(input_message_count, bool) or not isinstance(input_message_count, int)
+            or input_message_count < 0):
+        raise ValueError("input_message_count 必须是非负整数")
     total_input = 0
     total_output = 0
-    has_api_usage = False
+    api_calls = estimated_calls = 0
+    counts_cache = {}
 
-    # 尝试从消息中寻找 usage_metadata
-    for m in messages:
-        if isinstance(m, AIMessage):
-            meta = getattr(m, "usage_metadata", None)
-            if isinstance(meta, dict) and (meta.get("input_tokens") or meta.get("output_tokens")):
-                total_input += int(meta.get("input_tokens", 0))
-                total_output += int(meta.get("output_tokens", 0))
-                has_api_usage = True
+    def message_counts(message):
+        if id(message) in counts_cache:
+            return counts_cache[id(message)]
+        content = getattr(message, "content", "")
+        if isinstance(content, list):
+            content = "".join(
+                block if isinstance(block, str) else block.get("text", "")
+                for block in content if isinstance(block, str)
+                or isinstance(block, dict) and isinstance(block.get("text"), str)
+            )
+        text = content if isinstance(content, str) else ""
+        if isinstance(message, AIMessage):
+            reasoning = message.additional_kwargs.get("reasoning_content")
+            if isinstance(reasoning, str):
+                text += reasoning
+            if message.tool_calls:
+                text += json.dumps(message.tool_calls, ensure_ascii=False)
+        cjk = sum(1 for ch in text if '\u4e00' <= ch <= '\u9fff')
+        counts_cache[id(message)] = (cjk, len(text) - cjk)
+        return counts_cache[id(message)]
 
-    if has_api_usage and (total_input > 0 or total_output > 0):
-        usage_type = "api"
-    else:
-        # 兜底：字符数估算。修复：原 3.0 粗比率对中文（1字/token）与
-        # 英文 schema（4 chars/token）都偏差大。现按 CJK / 非 CJK 分别计数：
-        #   CJK 字符  1 token/字；非 CJK 字符  4 chars/token（OpenAI 实测近似）
-        usage_type = "estimate"
-        def _count_cjk_other(s: str) -> tuple:
-            if not s:
-                return 0, 0
-            cjk = sum(1 for ch in s if '\u4e00' <= ch <= '\u9fff')
-            return cjk, len(s) - cjk
+    def estimate(cjk, other):
+        return max(1, int(cjk + other / 4.0)) if cjk or other else 0
 
-        input_cjk = 0
-        input_other = int(schema_chars or 0)
-        output_cjk = 0
-        output_other = 0
-
-        for m in messages:
-            content = getattr(m, "content", "")
-            if isinstance(content, str):
-                cjk, other = _count_cjk_other(content)
-                if isinstance(m, AIMessage):
-                    output_cjk += cjk
-                    output_other += other
+    seen_calls = set()
+    for chain in [*(previous_attempts or []), messages]:
+        prefix_cjk = prefix_other = 0
+        for index, message in enumerate(chain):
+            cjk, other = message_counts(message)
+            call_key = ("id", message.id) if message.id else ("object", id(message))
+            if (isinstance(message, AIMessage) and index >= input_message_count
+                    and call_key not in seen_calls):
+                seen_calls.add(call_key)
+                meta = getattr(message, "usage_metadata", None)
+                if isinstance(meta, dict) and all(
+                    isinstance(meta.get(key), int) and not isinstance(meta[key], bool) and meta[key] >= 0
+                    for key in ("input_tokens", "output_tokens")
+                ):
+                    total_input += meta["input_tokens"]
+                    total_output += meta["output_tokens"]
+                    api_calls += 1
                 else:
-                    input_cjk += cjk
-                    input_other += other
+                    total_input += estimate(prefix_cjk, prefix_other + max(0, int(schema_chars or 0)))
+                    total_output += estimate(cjk, other)
+                    estimated_calls += 1
+            prefix_cjk += cjk
+            prefix_other += other
 
-        def _calc_tokens(cjk: int, other: int) -> int:
-            if cjk == 0 and other == 0:
-                return 0
-            return max(1, int(cjk * 1.0 + other / 4.0))
-
-        total_input = _calc_tokens(input_cjk, input_other)
-        total_output = _calc_tokens(output_cjk, output_other)
+    usage_type = "api" if api_calls and not estimated_calls else "estimate"
 
     usage_record = {
         "timestamp": datetime.datetime.now().isoformat(),
@@ -88,9 +97,11 @@ def extract_and_record_token_usage(
         "tool_count": tool_count,
         "schema_chars": schema_chars,
         "duration_ms": duration_ms,
+        "api_calls": api_calls,
+        "estimated_calls": estimated_calls,
     }
 
-    # 异步/容错写入 logs/token_usage.jsonl
+    # 容错写入 logs/token_usage.jsonl
     try:
         os.makedirs(_LOG_DIR, exist_ok=True)
         with open(_TOKEN_LOG_PATH, "a", encoding="utf-8") as f:

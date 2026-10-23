@@ -43,7 +43,7 @@ class USGSProvider(DataProvider):
         return ProviderCapability(
             provider_id=self.provider_id,
             name=self.name,
-            auth=AuthLevel.ACCOUNT,
+            auth=AuthLevel.PUBLIC,
             auth_note=(
                 "Landsat 目录可匿名检索；DEM/完整影像下载需 EarthExplorer"
                 " 注册登录（USGS M2M 或网页）。账号密码不会写入项目。"
@@ -57,7 +57,7 @@ class USGSProvider(DataProvider):
         )
 
     def search(self, request: DataRequest) -> list:
-        if request.kind not in RASTER_KINDS:
+        if request.kind not in ("imagery", "dem"):
             raise DataProviderError(
                 f"USGS 只支持栅格类型：imagery / dem。", provider=self.provider_id)
         bbox = self._bbox(request)
@@ -76,10 +76,14 @@ class USGSProvider(DataProvider):
         return self._search_landsat(request, bbox)
 
     def download(self, request: DataRequest) -> dict:
+        if request.kind not in ("imagery", "dem"):
+            raise DataProviderError(
+                "USGS 只支持栅格类型：imagery / dem。", provider=self.provider_id)
+        data_label = "DEM" if request.kind == "dem" else "遥感影像"
         raise ProviderAuthError(
-            "第一阶段未启用 USGS 遥感影像自动下载。",
+            f"第一阶段未启用 USGS {data_label}自动下载。",
             provider=self.provider_id,
-            hint="可用 discover 查看 Landsat 场景元信息；影像获取需 EarthExplorer 账号，属下一阶段。",
+            hint="可用 discover 查看数据源信息；下载需 EarthExplorer 账号，属下一阶段。",
         )
 
     # ----- 内部 -----
@@ -100,7 +104,17 @@ class USGSProvider(DataProvider):
             "limit": min(request.max_items or 10, 50),
         }
         resp = http.post_json(LANDSAT_STAC_SEARCH, json_body=body, retries=1)
-        features = resp.get("features") or []
+        if not isinstance(resp, dict) or not isinstance(resp.get("features"), list):
+            raise DataProviderError(
+                "USGS Landsat STAC 返回结构无效（缺少 features 列表）。",
+                provider=self.provider_id,
+            )
+        features = resp["features"]
+        if any(not isinstance(feature, dict) for feature in features):
+            raise DataProviderError(
+                "USGS Landsat STAC features 中包含无效条目。",
+                provider=self.provider_id,
+            )
         if not features:
             raise DataNotFoundError(
                 f"Landsat 在 {request.area or geocode.bbox_to_text(bbox)} 范围内"
@@ -109,11 +123,20 @@ class USGSProvider(DataProvider):
                 hint="Landsat 重访周期约 8-16 天，请放宽时间范围。",
             )
         hits = []
-        for f in features[: (request.max_items or 10)]:
-            props = f.get("properties") or {}
-            dt = (props.get("datetime") or "")[:10]
+        for f in features[: min(request.max_items or 10, 50)]:
+            props = f.get("properties")
+            props = props if isinstance(props, dict) else {}
+            links = f.get("links")
+            self_link = next((
+                link.get("href") for link in links
+                if isinstance(link, dict)
+                and link.get("rel") == "self"
+                and isinstance(link.get("href"), str)
+            ), LANDSAT_STAC_SEARCH) if isinstance(links, list) else LANDSAT_STAC_SEARCH
+            dt = str(props.get("datetime") or "")[:10]
+            title = str(f.get("id") or "Landsat scene")
             hits.append(DataHit(
-                title=f.get("id", "Landsat scene"),
+                title=title,
                 provider=self.name,
                 provider_id=self.provider_id,
                 kind=request.kind,
@@ -127,7 +150,7 @@ class USGSProvider(DataProvider):
                 time_end=dt,
                 auth=AuthLevel.ACCOUNT,
                 downloadable=False,
-                source_url=LANDSAT_STAC_SEARCH,
+                source_url=self_link,
                 note="Landsat C2L1 场景元信息；影像下载需 EarthExplorer 登录。",
             ))
         return hits
@@ -140,13 +163,18 @@ def _dt_range(request: DataRequest) -> str:
     s = (request.time_start or "").strip()
     e = (request.time_end or "").strip()
 
-    def iso(t: str, default: _dt.datetime):
-        if not t:
-            return default.isoformat()
-        t = t.replace(" ", "T")
-        return t if "T" in t else f"{t}T00:00:00Z"
+    if not s and not e:
+        return f"{start.isoformat()}/{today.isoformat()}"
 
-    return f"{iso(s, start)}/{iso(e, today)}"
+    def iso(t: str, is_end: bool = False):
+        if not t or t == "..":
+            return ".."
+        t = t.replace(" ", "T")
+        if "T" in t:
+            return t
+        return f"{t}T23:59:59Z" if is_end else f"{t}T00:00:00Z"
+
+    return f"{iso(s)}/{iso(e, is_end=True)}"
 
 
 def _window_text(dstr: str) -> str:

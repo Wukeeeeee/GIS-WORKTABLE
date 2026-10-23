@@ -38,13 +38,14 @@ FC vs LangGraph 对比:
 """
 
 import json
+import queue
 import re
+import threading
 import uuid
 import time
-import threading
+from functools import wraps
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
 from backend.services.llm_config import (
@@ -63,14 +64,6 @@ from backend.services.token_usage_service import extract_and_record_token_usage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 
-# 按 session 保存最近一次构建的 agent graph，供取消/中断定位；避免全局单值并发覆盖
-_graph_lock = threading.Lock()
-_cached_graphs = {}
-
-# 每 session 已补执行一次 的标记（防 _need_force_exec 在同一用户消息下重复触发死循环 / 多次强制补执行）
-_force_exec_lock = threading.Lock()
-_force_exec_done = set()
-
 # The map context-menu location analysis is read-only. Keep its capability set
 # explicit so the model cannot create/remove layers even if it ignores prompt text.
 _READ_ONLY_LOCATION_TOOL_NAMES = frozenset({
@@ -85,36 +78,6 @@ def _tools_for_request(read_only_location_analysis: bool = False):
         return tools
     return [tool for tool in tools if getattr(tool, "name", "") in _READ_ONLY_LOCATION_TOOL_NAMES]
 
-def set_cached_graph(session_id: str, agent) -> None:
-    sid = session_id or "default"
-    with _graph_lock:
-        _cached_graphs[sid] = agent
-
-def get_cached_graph(session_id: str):
-    sid = session_id or "default"
-    with _graph_lock:
-        return _cached_graphs.get(sid)
-
-def clear_cached_graph(session_id: str) -> None:
-    sid = session_id or "default"
-    with _graph_lock:
-        _cached_graphs.pop(sid, None)
-
-def _force_exec_key(session_id: str, original_message: str) -> str:
-    return f"{session_id or 'default'}::{(original_message or '').strip()[:200]}"
-
-def _force_exec_should_run(key: str) -> bool:
-    with _force_exec_lock:
-        if key in _force_exec_done:
-            return False
-        _force_exec_done.add(key)
-        return True
-
-def _force_exec_clear(key: str) -> None:
-    with _force_exec_lock:
-        _force_exec_done.discard(key)
-
-
 _PLAIN_CHAT_PATTERN = re.compile(
     r"(?:你好(?:呀|啊|哇)?|您好|嗨|哈喽|hello|hi|hey|早上好|晚上好|"
     r"谢谢(?:你)?|多谢|感谢|好的|好|收到|明白了|再见|拜拜|"
@@ -123,7 +86,7 @@ _PLAIN_CHAT_PATTERN = re.compile(
 )
 
 
-def _should_use_agent(messages: list, session_id: str, start_registered=None) -> bool:
+def _should_use_agent(messages: list, session_id: str) -> bool:
     """Shared tool-routing decision for streamed and non-streamed requests."""
     if not messages:
         return False
@@ -138,87 +101,6 @@ def _should_use_agent(messages: list, session_id: str, start_registered=None) ->
     # 只有明确的闲聊才能省略工具。任务是否需要工具交给绑定了工具的模型判断，
     # 避免自然表达（如“把两点连上线”）因漏掉关键词而彻底失去工具能力。
     return has_pending or not bool(_PLAIN_CHAT_PATTERN.fullmatch(content.strip()))
-
-
-# ============================================================
-# 自校验 Verifier Agent（Agent 2）
-# ============================================================
-
-_VERIFIER_SYSTEM_PROMPT = """你是一个 GIS 结果验证专家。判断以下 Agent 输出是否满足用户请求。
-
-规则：
-1. 输出结果是否直接回应用户的问题？如果不相关，判定不通过。
-2. 如果用户要求加载地图数据/生成图层，是否有对应的 GeoJSON/图层生成？
-3. 如果用户要求画图/图表，是否有图表文件生成？
-4. 如果用户要求分析数据，回复中是否包含分析结论？
-5. 输出的文字是否存在明显的错误或矛盾？
-
-注意：你只关注"用户的请求是否被满足"，不关注代码实现细节。
-如果结果是合理的，即使不完美也判定通过。
-
-只需输出一行 JSON（不要其他文字）：
-{"pass": true/false, "reason": "一句话原因"}
-
-示例：
-{"pass": true, "reason": "成功获取广州市边界并加载到地图"}
-{"pass": false, "reason": "用户要求生成热力图，但输出中只有边界数据，没有热力图"}"""
-
-
-def _run_verifier(llm: ChatOpenAI, original_message: str, response: str, pending: dict) -> dict:
-    """执行校验，返回 {"pass": bool, "reason": str}"""
-    has_gis_result = bool(
-        pending.get("layers") or
-        pending.get("images") or
-        pending.get("heatmap") or
-        pending.get("clear_layers") or
-        pending.get("layer_ops")
-    )
-    # 纯文本对话，不需要校验
-    if not has_gis_result and len(response) < 100:
-        return {"pass": True, "reason": "简单文本回答，跳过校验"}
-
-    # 构造工具使用摘要
-    summary_parts = []
-    if pending.get("layers"):
-        layer_names = [l.get("name", "未命名") for l in pending["layers"]]
-        summary_parts.append(f"生成了 {len(pending['layers'])} 个图层：{', '.join(layer_names[:3])}")
-    if pending.get("images"):
-        summary_parts.append(f"生成了 {len(pending['images'])} 个图表/文件")
-    if pending.get("heatmap"):
-        summary_parts.append("生成了热力图")
-    if pending.get("clear_layers"):
-        summary_parts.append("清空了地图图层")
-    if pending.get("layer_ops"):
-        summary_parts.append(f"执行了 {len(pending['layer_ops'])} 个图层操作")
-    tool_summary = "；".join(summary_parts) if summary_parts else "无 GIS 操作"
-
-    try:
-        verifier_messages = [
-            SystemMessage(content=_VERIFIER_SYSTEM_PROMPT),
-            HumanMessage(
-                content=(
-                    f"用户请求：{original_message}\n\n"
-                    f"Agent 操作摘要：{tool_summary}\n\n"
-                    f"Agent 文字回复：{response[:2000]}"
-                )
-            ),
-        ]
-        result = llm.invoke(verifier_messages, max_tokens=200)
-        text = result.content.strip()
-
-        # 尝试解析 JSON
-        if text.startswith("{"):
-            parsed = json.loads(text)
-            return {"pass": bool(parsed.get("pass", True)), "reason": str(parsed.get("reason", ""))}
-
-        # fallback：正则提取
-        m = re.search(r'["\']?pass["\']?\s*:\s*(true|false)', text, re.IGNORECASE)
-        if m:
-            return {"pass": m.group(1).lower() == "true", "reason": text[:100]}
-        return {"pass": True, "reason": "无法解析校验结果，默认通过"}
-    except Exception as e:
-        print(f"[GIS] Verifier 异常（不影响主流程）: {e}", flush=True)
-        return {"pass": True, "reason": f"校验异常，默认通过"}
 
 
 # ============================================================
@@ -318,18 +200,122 @@ def _compact_messages(msgs: list) -> list:
     return out
 
 _GRAPH_RECURSION_LIMIT = int(__import__("os").environ.get("GIS_GRAPH_RECURSION", "120"))
+_AGENT_LOCK_LEASE = threading.local()
 
 
-def _invoke_agent_with_budget(agent, payload, limit):
-    """总时长预算版 agent.invoke：
-    - 超预算 -> 返回 ("timeout", None)，由调用方降级收尾（复用已有 result 或强制文本收尾）
-    - recursion_limit 收紧为可配置（默认 120，经环境变量可降）
-    """
+class _DeferredLockLease:
+    """Keep request locks held until timed-out background workers have stopped."""
+
+    def __init__(self, release_locks):
+        self._release_locks = release_locks
+        self._guard = threading.Lock()
+        self._workers = 0
+        self._finished = False
+        self._released = False
+
+    def worker_started(self):
+        with self._guard:
+            self._workers += 1
+
+    def worker_finished(self):
+        release = False
+        with self._guard:
+            self._workers -= 1
+            if self._finished and self._workers == 0 and not self._released:
+                self._released = True
+                release = True
+        if release:
+            self._release_locks()
+
+    def finish(self):
+        release = False
+        with self._guard:
+            self._finished = True
+            if self._workers == 0 and not self._released:
+                self._released = True
+                release = True
+        if release:
+            self._release_locks()
+
+    def track_future(self, future):
+        self.worker_started()
+        future.add_done_callback(lambda _: self.worker_finished())
+
+
+def _invoke_agent_with_budget(agent, payload, limit, timeout_s):
+    """在调用方剩余总时长预算内等待一次 agent.invoke。"""
+    executor = _cf_mod.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(agent.invoke, payload, {"recursion_limit": limit})
     try:
-        res = agent.invoke(payload, {"recursion_limit": limit})
-        return ("ok", res)
+        return "ok", future.result(timeout=max(0.0, float(timeout_s)))
+    except _cf_mod.TimeoutError as e:
+        if future.done():
+            return "err", e
+        lease = getattr(_AGENT_LOCK_LEASE, "current", None)
+        if lease is not None:
+            lease.track_future(future)
+        future.cancel()
+        return "timeout", TimeoutError("graph total budget exceeded")
     except Exception as e:
         return ("err", e)
+    finally:
+        # Python cannot stop an already-running worker thread; do not block the
+        # request thread while the underlying model/tool call winds down.
+        executor.shutdown(wait=False)
+
+
+def _stream_with_deadline(stream, deadline, lease=None):
+    """Consume a blocking LangGraph stream without exceeding the caller deadline."""
+    events = queue.Queue(maxsize=1)
+    stopped = threading.Event()
+
+    def publish(event):
+        while not stopped.is_set():
+            try:
+                events.put(event, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def produce():
+        try:
+            for item in stream:
+                if not publish(("item", item)):
+                    return
+        except BaseException as error:
+            publish(("error", error))
+        else:
+            publish(("done", None))
+        finally:
+            if lease is not None:
+                lease.worker_finished()
+
+    worker = threading.Thread(target=produce, name="gis-agent-stream", daemon=True)
+    if lease is not None:
+        lease.worker_started()
+    try:
+        worker.start()
+    except BaseException:
+        if lease is not None:
+            lease.worker_finished()
+        raise
+    try:
+        while True:
+            remaining = deadline - _time_mod.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("graph stream total budget exceeded")
+            try:
+                kind, value = events.get(timeout=remaining)
+            except queue.Empty as error:
+                raise TimeoutError("graph stream total budget exceeded") from error
+            if kind == "done":
+                return
+            if kind == "error":
+                raise value
+            yield value
+    finally:
+        stopped.set()
 
 
 def _tool_not_callable(e: Exception) -> bool:
@@ -498,7 +484,8 @@ _RECOVERY_PROMPT_EMPTY = (
 
 def _invoke_empty_response_recovery(agent, messages: list, recursion_limit: int = 60,
                                     cfg: LLMConfig = None, available_tools: list = None,
-                                    recovery_prompt: str = _RECOVERY_PROMPT_EMPTY):
+                                    recovery_prompt: str = _RECOVERY_PROMPT_EMPTY,
+                                    timeout_s: float | None = None):
     """空正文/空口承诺时，关闭推理并强制发出结构化工具调用，再执行 ReAct 循环。"""
     recovery_agent = agent
     fallback_agent = agent
@@ -523,14 +510,25 @@ def _invoke_empty_response_recovery(agent, messages: list, recursion_limit: int 
             print(f"[GIS] 无法启用强制工具调用恢复，退回关闭推理的普通工具模式: {bind_error}", flush=True)
 
     payload = {"messages": list(messages) + [HumanMessage(content=recovery_prompt)]}
+    deadline = None if timeout_s is None else _time_mod.monotonic() + max(0.0, float(timeout_s))
+
+    def invoke_bounded(target):
+        if deadline is None:
+            return target.invoke(payload, {"recursion_limit": recursion_limit})
+        remaining = deadline - _time_mod.monotonic()
+        status, result = _invoke_agent_with_budget(target, payload, recursion_limit, remaining)
+        if status == "ok":
+            return result
+        raise result
+
     try:
-        return recovery_agent.invoke(payload, {"recursion_limit": recursion_limit})
+        return invoke_bounded(recovery_agent)
     except Exception as recovery_error:
         if recovery_agent is fallback_agent:
             raise
         # Provider 可能不支持 tool_choice=required。保留有界回退，至少重试一次普通工具模式。
         print(f"[GIS] 强制工具调用恢复失败，退回普通工具调用: {recovery_error}", flush=True)
-        return fallback_agent.invoke(payload, {"recursion_limit": recursion_limit})
+        return invoke_bounded(fallback_agent)
 
 
 def _tool_result_fallback(msgs: list) -> str:
@@ -583,6 +581,56 @@ def _ensure_ops_layers_present(pending: dict):
         print(f"[GIS] ops-layers 补推失败（忽略）: {_e}", flush=True)
 
 
+def _with_session_lock(func):
+    """确保同步 Agent 入口在所有返回和异常路径上都释放会话锁。"""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        session_id = kwargs.get("session_id", args[5] if len(args) > 5 else "default") or "default"
+        if not _tools_mod.acquire_session_lock(session_id):
+            return {
+                "response": "当前会话已有请求在处理中，请等待上一条完成后再发送新消息。",
+                "reasoning": None, "layers": [], "images": [], "heatmap": None,
+                "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+                "confirm_pending": None,
+                "busy": True,
+            }
+        try:
+            shared_acquired = _tools_mod.acquire_shared_state_lock(0)
+        except BaseException:
+            _tools_mod.release_session_lock(session_id)
+            raise
+        if not shared_acquired:
+            _tools_mod.release_session_lock(session_id)
+            return {
+                "response": "当前 GIS 工作区正在处理另一项操作，请稍后重试。",
+                "reasoning": None, "layers": [], "images": [], "heatmap": None,
+                "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+                "confirm_pending": None, "busy": True,
+            }
+        lease = _DeferredLockLease(lambda: (
+            _tools_mod.release_shared_state_lock(),
+            _tools_mod.release_session_lock(session_id),
+        ))
+        previous_lease = getattr(_AGENT_LOCK_LEASE, "current", None)
+        _AGENT_LOCK_LEASE.current = lease
+        try:
+            return func(*args, **kwargs)
+        finally:
+            _AGENT_LOCK_LEASE.current = previous_lease
+            lease.finish()
+    return wrapped
+
+
+def _record_run_finish(run_id: str, response: str, status: str, guard_status: str = "NOT_CHECKED") -> None:
+    """Best-effort close for every run that already has a start record."""
+    try:
+        from backend.services import storage_service
+        storage_service.record_run_finish(run_id, response, status, guard_status)
+    except Exception:
+        pass
+
+
+@_with_session_lock
 def run_agent(
     messages: list,
     cfg: LLMConfig,
@@ -592,7 +640,7 @@ def run_agent(
     session_id: str = "default",
     task_id: str = None,
 ) -> dict:
-    """运行 LangGraph Agent + 自校验
+    """运行 LangGraph Agent 并对最终产物执行确定性真实性检查。
 
     用 create_react_agent 替换原来的 while/if 手写循环。
     Agent 自动管理：LLM 调用 → 工具调用 → 结果观察 → 继续工具调用 → ... → 文本回复
@@ -617,18 +665,8 @@ def run_agent(
         }
     """
     # 重置共享状态（tools.py 中的全局变量）
-    ai_service_mod = None
     import backend.services.ai_service as _ai_cancel_svc
     _ai_cancel_svc.clear_session_cancel(session_id or "default")
-    # 同 session 并发互斥：已被占用时快速返回，不排队（防止全局态互踩/图层丢失）
-    if not _tools_mod.acquire_session_lock(session_id or "default"):
-        return {
-            "response": "当前会话已有请求在处理中，请等待上一条完成后再发送新消息。",
-            "reasoning": None, "layers": [], "images": [], "heatmap": None,
-            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
-            "confirm_pending": None,
-            "busy": True,
-        }
     reset_state(amap_key)
     _tools_mod.set_last_user_message(original_message or "")
     # 提取最近多轮上下文（供工具层消歧与实体复用）
@@ -640,7 +678,6 @@ def run_agent(
     _tools_mod.set_conversation_context("\n".join(_ctx_texts))
     # === P1-1: Agent 运行状态与 SQLite 台账 ===
     _run_id = uuid.uuid4().hex[:12]
-    _run_status = "planning"
     _run_started_at = time.time()
     _run_retry_count = 0
     _tools_mod.set_current_run(_run_id)
@@ -662,13 +699,18 @@ def run_agent(
         pass
 
     # 构建 LLM
-    llm = build_llm(cfg)
+    try:
+        llm = build_llm(cfg)
+    except Exception:
+        _record_run_finish(_run_id, "模型初始化失败", "error")
+        raise
 
     # 简单文本对话（无关键词）直接调 LLM，不走 LangGraph 省掉框架开销
     # A+ 优化：去掉"帮我"等易误判词，短路时用精简版 system prompt
-    _simple = not _should_use_agent(messages, session_id, _start_registered)
+    _simple = not _should_use_agent(messages, session_id)
     if _simple:
         if _ai_svc.is_session_cancelled(session_id or "default"):
+            _record_run_finish(_run_id, "用户已取消", "cancelled")
             return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
                     "heatmap": None, "clear_layers": False, "layer_ops": [],
                     "pending_suggestions": None}
@@ -682,7 +724,7 @@ def run_agent(
                 _simple = False
             else:
                 try:
-                    storage_service.record_run_finish(_run_id, _quick_text, "success", "BYPASS")
+                    _record_run_finish(_run_id, _quick_text, "success", "BYPASS")
                 except Exception:
                     pass
                 return {
@@ -701,12 +743,17 @@ def run_agent(
                 _err_str = "API 请求频率超限（429），请稍后重试。"
             elif "timeout" in _err_str.lower():
                 _err_str = "API 请求超时，请检查网络连接或稍后重试。"
+            _record_run_finish(_run_id, f"AI 回复失败: {_err_str[:200]}", "error")
             return {"response": f"AI 回复失败: {_err_str[:200]}", "reasoning": None,
                 "layers": [], "images": [], "heatmap": None,
                 "clear_layers": False, "layer_ops": [], "pending_suggestions": None}
 
     # 构建 LangGraph ReAct Agent
-    agent = create_react_agent(llm, tools)
+    try:
+        agent = create_react_agent(llm, tools)
+    except Exception:
+        _record_run_finish(_run_id, "Agent 初始化失败", "error")
+        raise
 
     # 快照进入本轮 invoke 之前的 pending 状态（失败重试时只保留"本次 invoke 产生的差量"）
     _pre_invoke_pending = None
@@ -720,21 +767,28 @@ def run_agent(
     # 在长工具链末尾偶发把工具对象当普通函数调用 → TypeError "'StructuredTool' object is not callable"。
     # 处理：自动降级重试一次（追加“请纯文本收尾，不再调工具”），有界且保留已产出图层/数据。
     result = None
+    _usage_attempts = []
     _invoke_pending = None
     _msgs = list(messages)
-    _run_status = "calling_llm"
     _budget_deadline = _time_mod.monotonic() + _GRAPH_TOTAL_TIMEOUT_S
     _budget_hit = False
     for _attempt in range(2):
         try:
             if _ai_svc.is_session_cancelled(session_id or "default"):
+                _record_run_finish(_run_id, "用户已取消", "cancelled")
                 return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
                         "heatmap": None, "clear_layers": False, "layer_ops": [],
                         "pending_suggestions": None}
             if _time_mod.monotonic() > _budget_deadline:
                 _budget_hit = True
                 raise TimeoutError(f"graph total budget exceeded ({_GRAPH_TOTAL_TIMEOUT_S:.0f}s)")
-            _status, _inv = _invoke_agent_with_budget(agent, {"messages": _msgs}, _GRAPH_RECURSION_LIMIT)
+            _remaining_budget = _budget_deadline - _time_mod.monotonic()
+            _status, _inv = _invoke_agent_with_budget(
+                agent, {"messages": _msgs}, _GRAPH_RECURSION_LIMIT, _remaining_budget,
+            )
+            if _status == "timeout":
+                _budget_hit = True
+                raise _inv
             if _status == "ok":
                 result = _inv
                 # 重试成功：把 invoke 前快照的 pending 差量合并回原 pending 列表（去重）
@@ -764,6 +818,7 @@ def run_agent(
             import traceback
             traceback.print_exc()
             if _budget_hit:
+                _record_run_finish(_run_id, "任务执行时长已达上限", "timeout")
                 return {
                     "response": "任务执行时长已达上限（约 %d 秒），已自动停止以避免无效消耗。\n\n请基于本轮已生成的图层/数据继续操作，或把任务拆分成更小的步骤后重试。" % int(_GRAPH_TOTAL_TIMEOUT_S),
                     "reasoning": None, "layers": [], "images": [],
@@ -780,6 +835,7 @@ def run_agent(
                 if _recovery_text:
                     result = {"messages": list(messages) + [AIMessage(content=_recovery_text)]}
                     break
+                _record_run_finish(_run_id, "工具调度发生异常，未重放任务", "error")
                 return {
                     "response": "工具调度发生异常，已停止自动重放以避免重复执行。请检查工具记录后重试。",
                     "reasoning": None, "layers": [], "images": [],
@@ -804,6 +860,7 @@ def run_agent(
                 print(f"[GIS] 递归超限: {error_msg}", flush=True)
             else:
                 friendly = f"AI 服务调用失败: {error_msg}"
+            _record_run_finish(_run_id, friendly, "error")
             return {
                 "response": friendly, "reasoning": None,
                 "layers": [],
@@ -816,6 +873,7 @@ def run_agent(
 
     # 提取最终回复
     final_messages = result.get("messages", [])
+    _usage_attempts.append(list(final_messages))
     final_text, final_reasoning = _last_ai_text(final_messages)
 
     # === P0-2: 检查 LLM finish_reason ===
@@ -844,13 +902,16 @@ def run_agent(
                 final_text = (final_text or "") + "\n\n[注意] 模型服务资源不足，回复可能不完整，请稍后重试。"
             break
 
+    _run_finish_status = "success"
     # 空响应处理：此前会追加“不要调用工具”，可能直接压掉模型原本要执行的 GIS 请求。
     if not final_text and not _has_tool_messages(final_messages) and _count_tool_calls(final_messages) == 0:
         print(f"[GIS] 空响应且没有工具调用（{_empty_response_diagnostic(final_messages)}），关闭推理并强制调用工具重试", flush=True)
         try:
             _retry = _invoke_empty_response_recovery(
-                agent, messages, recursion_limit=60, cfg=cfg, available_tools=tools)
+                agent, messages, recursion_limit=60, cfg=cfg, available_tools=tools,
+                timeout_s=max(0.0, _budget_deadline - _time_mod.monotonic()))
             _retry_msgs = _retry.get("messages", [])
+            _usage_attempts.append(list(_retry_msgs))
             _retry_text, _retry_reasoning = _last_ai_text(_retry_msgs)
             _retry_tools = _count_tool_calls(_retry_msgs) > 0 or _has_tool_messages(_retry_msgs)
             if _retry_text:
@@ -864,6 +925,10 @@ def run_agent(
                 _invoke_pending = get_pending_state()
         except Exception as _re:
             print(f"[GIS] 空响应执行重试失败: {_re}", flush=True)
+            if isinstance(_re, TimeoutError) and "budget exceeded" in str(_re).lower():
+                _budget_hit = True
+                _run_finish_status = "timeout"
+                final_text = "自动恢复达到执行时限，本轮结果可能不完整；请缩小任务范围后重试。"
         if not final_text:
             final_text = "模型本轮没有生成答复，也没有实际调用工具；已自动重试但仍未完成。这次没有完成计算，请重试该请求。"
     if not final_text:
@@ -896,8 +961,8 @@ def run_agent(
     print(f"[GIS DEBUG] 初始工具调用: {_initial_tool_calls} 次, 有工具消息: {_initial_has_tools}", flush=True)
     
     _need_force_exec = (not _waiting_choice) and (_promise_without_action(final_text, final_messages) or _is_unexecuted_code_or_disclaimer(final_text, final_messages))
-    _force_key = _force_exec_key(session_id, original_message)
-    _allow_force = _need_force_exec and _force_exec_should_run(_force_key)
+    # 每轮请求只检查一次并最多补执行一轮；状态放在局部变量中，避免相同文本的后续新请求被误拦。
+    _allow_force = _need_force_exec
     if _allow_force:
         try:
             print("[GIS] 检测到未执行承诺或未执行制图代码，强制补一轮真实工具执行", flush=True)
@@ -908,8 +973,10 @@ def run_agent(
             )
             _forced = _invoke_empty_response_recovery(
                 agent, final_messages, recursion_limit=60, cfg=cfg,
-                available_tools=tools, recovery_prompt=_prompt_text)
+                available_tools=tools, recovery_prompt=_prompt_text,
+                timeout_s=max(0.0, _budget_deadline - _time_mod.monotonic()))
             _fm = _forced.get("messages", [])
+            _usage_attempts.append(list(_fm))
             if _fm:
                 # 检查强制执行是否真的调用了工具
                 _forced_tool_calls = _count_tool_calls(_fm)
@@ -931,20 +998,10 @@ def run_agent(
                     final_text = final_text + "\n\n【注意】当前AI模型可能不支持工具调用，无法自动执行操作。请尝试更换支持tool calling的模型（如GPT-4、DeepSeek等）。"
         except Exception as _pe:
             print(f"[GIS] 强制补执行失败（保留原结果）: {_pe}", flush=True)
-        # 已至少尝试过一次 force exec （成功或未成功），不再给当前消息无限补执行
-        # _force_exec_done 已累计该消息 key，同消息再触发 _need_force_exec 也会直接跳过。
-    elif _need_force_exec and not _allow_force:
-        # 助可观测性：同消息二次触发提示
-        print("[GIS] 本消息已触发过一次 force-exec，跳过再补执行以避免死循环", flush=True)
-
-    # === 自校验已停用（2026-09-05）===
-    # 原因：Verifier 每轮额外一次 LLM 调用，增加延迟和 API 成本；
-    # 实际运行中极少抓到错误（大量默认通过的兜底逻辑导致放行率高）。
-    # _run_verifier 函数保留，如需恢复取消下方注释即可。
-    # if original_message and len(original_message) > 3:
-    #     verdict = _run_verifier(build_llm(disable_reasoning(cfg)), original_message, final_text, pending)
-    #     ...
-
+            if isinstance(_pe, TimeoutError) and "budget exceeded" in str(_pe).lower():
+                _budget_hit = True
+                _run_finish_status = "timeout"
+                final_text = (final_text or "") + "\n\n[注意] 自动补执行达到时限，结果可能不完整。"
     # === 正文净化：本轮已执行的 Python 源码折叠为一行，避免几百行代码盖住交付物 ===
     final_text = _strip_executed_code_blocks(final_text, final_messages, original_message or "")
 
@@ -962,18 +1019,16 @@ def run_agent(
     )
 
     # 结束记录落入 SQLite 台账
-    try:
-        from backend.services import storage_service
-        _g_status = "PASS" if _guard.get("ok") else "FAIL"
-        storage_service.record_run_finish(_run_id, final_text, "success", _g_status)
-    except Exception:
-        pass
+    _g_status = "PASS" if _guard.get("ok") else "FAIL"
+    _record_run_finish(_run_id, final_text, _run_finish_status, _g_status)
 
     # === Token 计量基建：提取与持久化 ===
     _dur_ms = int((time.time() - _run_started_at) * 1000)
     _schema_chars = len(json.dumps([convert_to_openai_tool(t) for t in tools], ensure_ascii=False))
     _token_usage = extract_and_record_token_usage(
         messages=final_messages,
+        input_message_count=len(messages),
+        previous_attempts=_usage_attempts,
         model_name=cfg.model,
         task_id=_task_id,
         tool_count=len(tools),
@@ -1000,8 +1055,6 @@ def run_agent(
 # ============================================================
 # Agent 流式执行（SSE 实时进度）
 # ============================================================
-
-# _cached_graph 在模块顶部已初始化
 
 def _stream_step_descriptor(tool_name: str, args: dict, user_text: str, active_web: dict | None = None) -> tuple[str, str, str]:
     """Build a compact task-step key/label from actual tool arguments and the user request."""
@@ -1085,6 +1138,25 @@ def _stream_tool_failure(content: object) -> tuple[bool, str]:
     return failed, (text[:240] if failed else "")
 
 
+def _stream_tool_warning(content: object) -> bool:
+    """读取完整结果的部分成功标记，避免 SSE 文本截断丢失警告。"""
+    value = content
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(value, dict):
+        return False
+    warning = (value.get("partial") is True or value.get("has_warning") is True
+               or str(value.get("status", "")).lower() == "partial"
+               or any(isinstance(value.get(key), list) and value[key] for key in ("warnings", "qa_warnings")))
+    try:
+        return bool(warning or float(value.get("skipped_count") or 0) > 0)
+    except (TypeError, ValueError, OverflowError):
+        return bool(warning)
+
+
 def _run_agent_stream_impl(
     messages: list,
     cfg: LLMConfig,
@@ -1095,6 +1167,7 @@ def _run_agent_stream_impl(
     mode: str = "full",
     read_only_location_analysis: bool = False,
     task_id: str = None,
+    run_context: dict | None = None,
 ):
     """运行 Agent 并逐步 yield 事件（供 SSE 端点使用）
 
@@ -1146,11 +1219,21 @@ def _run_agent_stream_impl(
         storage_service.record_run_start(_run_id, session_id or "default", original_message or "", _task_id)
     except Exception:
         pass
+    if run_context is not None:
+        run_context["run_id"] = _run_id
+        run_context["finished"] = False
+    _run_finish_status = "success"
 
     # 简单问题快速 bypass（A+ 优化：精简 prompt + 去掉易误判词）
-    _simple = not _should_use_agent(messages, session_id, _start_registered)
+    _simple = not _should_use_agent(messages, session_id)
     if _simple:
-        _resp = llm.invoke(messages)
+        try:
+            _resp = llm.invoke(messages)
+        except Exception:
+            _record_run_finish(_run_id, "AI 回复失败", "error")
+            if run_context is not None:
+                run_context["finished"] = True
+            raise
         _quick_text = _clean_ai_text(_resp.content or "")
         if _looks_like_incomplete_promise(_quick_text):
             # 快路径不带任何工具：模型只是"口头承诺去获取/生成"时必须改走 Agent
@@ -1158,9 +1241,11 @@ def _run_agent_stream_impl(
             _simple = False
         else:
             try:
-                storage_service.record_run_finish(_run_id, _quick_text, "success", "BYPASS")
+                _record_run_finish(_run_id, _quick_text, "success", "BYPASS")
             except Exception:
                 pass
+            if run_context is not None:
+                run_context["finished"] = True
             yield "data: {\"type\":\"thinking\"}\n\n"
             result = {
                 "response": _quick_text or "模型本轮没有返回可见答复，请重试。",
@@ -1172,9 +1257,13 @@ def _run_agent_stream_impl(
             yield "data: " + json.dumps({"type": "done", **result}, ensure_ascii=False) + "\n\n"
             return
 
-    agent = create_react_agent(llm, available_tools)
-
-    set_cached_graph(session_id or "default", agent)
+    try:
+        agent = create_react_agent(llm, available_tools)
+    except Exception:
+        _record_run_finish(_run_id, "Agent 初始化失败", "error")
+        if run_context is not None:
+            run_context["finished"] = True
+        raise
 
     # 预算用：本轮工具 schema 字符数（粗估，不重复 JSON 序列化）
     try:
@@ -1182,16 +1271,24 @@ def _run_agent_stream_impl(
     except Exception:
         _schema_chars_est = 60000
 
+    _usage_attempts = []
     _ai_waiting_choice = False  # 初始化，防止 stream 提前异常/空流时 L1021 引用未定义变量
     try:
-        msgs = []  # 初始化，防止空流时 verifier 引用未定义变量
-        for step in agent.stream(
-            {"messages": messages},
-            {"recursion_limit": 120},
-            stream_mode="values",
+        msgs = []  # 初始化，防止空流时后续结果整理引用未定义变量
+        for step in _stream_with_deadline(
+            agent.stream(
+                {"messages": messages},
+                {"recursion_limit": 120},
+                stream_mode="values",
+            ),
+            _stream_budget_deadline,
+            lease=getattr(_AGENT_LOCK_LEASE, "current", None),
         ):
             # 每次循环检查是否被取消
             if _ai_svc.is_session_cancelled(session_id or "default"):
+                _record_run_finish(_run_id, "用户已取消", "cancelled")
+                if run_context is not None:
+                    run_context["finished"] = True
                 yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
                 return
 
@@ -1243,6 +1340,7 @@ def _run_agent_stream_impl(
             msgs = step.get("messages", [])
             if not msgs:
                 continue
+            _usage_attempts.append(list(msgs))
             # --- 上下文膨胀兜底 1：截断过大的工具结果 ---
             if GRAPH_TOOL_OUT_MAX_CHARS > 0:
                 for _m in msgs:
@@ -1282,7 +1380,7 @@ def _run_agent_stream_impl(
                     event = json.dumps({
                         "type": "tool_start",
                         "name": _tool_name,
-                        "input": str(tc.get("args", {}))[:1200],
+                        "input": json.dumps(_tool_args, ensure_ascii=False, default=str)[:1200],
                         "tool_call_id": _call_id,
                         "step_id": _step_id,
                         "step_label": _step_label,
@@ -1311,6 +1409,7 @@ def _run_agent_stream_impl(
                     "step_label": _call_meta["step_label"],
                     "status": "error" if _tool_error else "success",
                     "is_error": _tool_error,
+                    "has_warning": _stream_tool_warning(last.content),
                     "error_message": _error_message if _tool_error else "",
                 }, ensure_ascii=False)
                 yield f"data: {event}\n\n"
@@ -1362,6 +1461,9 @@ def _run_agent_stream_impl(
     except Exception as e:
         import traceback
         traceback.print_exc()
+        _budget_timeout = isinstance(e, TimeoutError) and "budget exceeded" in str(e).lower()
+        if _budget_timeout:
+            _run_finish_status = "timeout"
         # 框架角例容错：StructuredTool 被当普通函数调用的偶发 TypeError →
         # 自动“纯文本收尾”一次（保留前面已产出的图层），尽量不让整轮失败。
         if _tool_not_callable(e):
@@ -1373,6 +1475,7 @@ def _run_agent_stream_impl(
                 print("[GIS] 工具调度 TypeError，流式纯文本收尾", flush=True)
                 msgs.append(AIMessage(content=_fb_text))
             else:
+                _run_finish_status = "error"
                 event = json.dumps({"type": "error", "message": str(e)})
                 yield f"data: {event}\n\n"
         else:
@@ -1381,7 +1484,7 @@ def _run_agent_stream_impl(
             # 背景：非流式 path 有 _is_temp 重试，流式没有；服务端（如 DeepSeek）
             # 间歇性崩溃时，第一次 stream 中途断流，重试往往即可恢复。
             _err_lower0 = _err_str.lower()
-            _is_temp_stream = any(k in _err_lower0 for k in [
+            _is_temp_stream = (not _budget_timeout) and any(k in _err_lower0 for k in [
                 "timeout", "timed out", "connection", "502", "503", "504",
                 "rate limit", "429", "temporarily", "server error",
                 "api connection", "network", "reset by peer", "internal server",
@@ -1392,10 +1495,12 @@ def _run_agent_stream_impl(
                 try:
                     print("[GIS] 流式遇到临时性服务端异常，整轮重试一次: " + _err_str[:100], flush=True)
                     import time as _rt; _rt.sleep(1.5)
-                    _retry_res = agent.invoke(
-                        {"messages": list(messages)},
-                        {"recursion_limit": 60},
+                    _retry_status, _retry_res = _invoke_agent_with_budget(
+                        agent, {"messages": list(messages)}, 60,
+                        max(0.0, _stream_budget_deadline - _time_mod.monotonic()),
                     )
+                    if _retry_status != "ok":
+                        raise _retry_res
                     _rm = _retry_res.get("messages", [])
                     if _rm:
                         _r_text, _r_reason = _last_ai_text(_rm)
@@ -1424,6 +1529,8 @@ def _run_agent_stream_impl(
             else:
                 _stream_retry_done = False
             if not _stream_retry_done:
+                if not _budget_timeout:
+                    _run_finish_status = "error"
                 if "402" in _err_str or "Insufficient Balance" in _err_str:
                     _err_str = "API 余额不足（402），请充值或在设置中更换有余额的 API Key 后重试。"
                 elif "401" in _err_str or "invalid_api_key" in _err_str:
@@ -1457,8 +1564,10 @@ def _run_agent_stream_impl(
         yield f"data: {note}\n\n"
         try:
             _retry = _invoke_empty_response_recovery(
-                agent, messages, recursion_limit=60, cfg=cfg, available_tools=available_tools)
+                agent, messages, recursion_limit=60, cfg=cfg, available_tools=available_tools,
+                timeout_s=max(0.0, _stream_budget_deadline - _time_mod.monotonic()))
             _retry_msgs = _retry.get("messages", [])
+            _usage_attempts.append(list(_retry_msgs))
             _retry_text, _retry_reasoning = _last_ai_text(_retry_msgs)
             _retry_tools = _count_tool_calls(_retry_msgs) > 0 or _has_tool_messages(_retry_msgs)
             if _retry_text:
@@ -1484,7 +1593,7 @@ def _run_agent_stream_impl(
                             _call_id = str(_tc.get("id") or ("legacy-" + uuid.uuid4().hex[:12]))
                             _retry_call_steps[_call_id] = (_step_id, _step_label, _tool_name)
                             event = json.dumps({
-                                "type": "tool_start", "name": _tool_name, "input": str(_tool_args)[:1200],
+                                "type": "tool_start", "name": _tool_name, "input": json.dumps(_tool_args, ensure_ascii=False, default=str)[:1200],
                                 "tool_call_id": _call_id, "step_id": _step_id, "step_label": _step_label,
                             }, ensure_ascii=False)
                             yield f"data: {event}\n\n"
@@ -1497,18 +1606,26 @@ def _run_agent_stream_impl(
                                 _tool_name, {}, original_message or "", _stream_active_web
                             )
                             _step_id = _retry_step_ids.setdefault(_step_key, "step-" + uuid.uuid4().hex[:12])
+                        _content_error, _error_message = _stream_tool_failure(_retry_msg.content)
+                        _tool_error = getattr(_retry_msg, "status", None) == "error" or _content_error
                         event = json.dumps({
                             "type": "tool_end", "name": _tool_name,
                             "output": str(_retry_msg.content or "")[:1200],
                             "tool_call_id": _call_id,
                             "step_id": _step_id, "step_label": _step_label,
-                            "status": "error" if getattr(_retry_msg, "status", None) == "error" else "success",
+                            "status": "error" if _tool_error else "success",
+                            "is_error": _tool_error,
+                            "error_message": _error_message if _tool_error else "",
+                            "has_warning": _stream_tool_warning(_retry_msg.content),
                         }, ensure_ascii=False)
                         yield f"data: {event}\n\n"
                 pending = get_pending_state()
                 _ensure_ops_layers_present(pending)
         except Exception as _re:
             print(f"[GIS] 流式空响应执行重试失败: {_re}", flush=True)
+            if isinstance(_re, TimeoutError) and "budget exceeded" in str(_re).lower():
+                _run_finish_status = "timeout"
+                final_text = "自动恢复达到执行时限，本轮结果可能不完整；请缩小任务范围后重试。"
         if not final_text:
             final_text = "模型本轮没有生成答复，也没有实际调用工具；已自动重试但仍未完成。这次没有完成计算，请重试该请求。"
     if not final_text:
@@ -1548,8 +1665,8 @@ def _run_agent_stream_impl(
     print(f"[GIS DEBUG] 流式初始工具调用: {_initial_tool_calls} 次, 有工具消息: {_initial_has_tools}", flush=True)
     
     _need_force_exec = _promise_without_action(final_text, msgs) or _is_unexecuted_code_or_disclaimer(final_text, msgs)
-    _force_key = _force_exec_key(session_id, original_message)
-    _allow_force = _need_force_exec and _force_exec_should_run(_force_key)
+    # 每轮请求只检查一次并最多补执行一轮；状态放在局部变量中，避免相同文本的后续新请求被误拦。
+    _allow_force = _need_force_exec
     if _allow_force:
         try:
             print("[GIS] 流式：检测到未执行承诺或未执行制图代码，强制补一轮真实工具执行", flush=True)
@@ -1561,8 +1678,10 @@ def _run_agent_stream_impl(
             )
             _forced = _invoke_empty_response_recovery(
                 agent, msgs, recursion_limit=60, cfg=cfg,
-                available_tools=available_tools, recovery_prompt=_prompt_text)
+                available_tools=available_tools, recovery_prompt=_prompt_text,
+                timeout_s=max(0.0, _stream_budget_deadline - _time_mod.monotonic()))
             _fm = _forced.get("messages", [])
+            _usage_attempts.append(list(_fm))
             if _fm:
                 # 检查强制执行是否真的调用了工具
                 _forced_tool_calls = _count_tool_calls(_fm)
@@ -1584,12 +1703,9 @@ def _run_agent_stream_impl(
                     final_text = final_text + "\n\n【注意】当前AI模型可能不支持工具调用，无法自动执行操作。请尝试更换支持tool calling的模型（如GPT-4、DeepSeek等）。"
         except Exception as _pe:
             print(f"[GIS] 流式强制补执行失败（保留原结果）: {_pe}", flush=True)
-        # 已尝试过一次 force exec，同一 (session,message) 不再重复补执行
-
-    # === 自校验已停用（2026-09-05，流式版本）===
-    # 同 run_agent：节省一次 LLM 调用，降低延迟和成本。
-    # yield "data: {\"type\":\"verifying\"}\n\n" 行已一并移除。
-
+            if isinstance(_pe, TimeoutError) and "budget exceeded" in str(_pe).lower():
+                _run_finish_status = "timeout"
+                final_text = (final_text or "") + "\n\n【注意】自动补执行达到时限，结果可能不完整。"
     # === 正文净化：本轮已执行的 Python 源码折叠为一行，避免几百行代码盖住交付物 ===
     final_text = _strip_executed_code_blocks(final_text, msgs, original_message or "")
 
@@ -1606,18 +1722,18 @@ def _run_agent_stream_impl(
         session_id, _start_registered, [l.get("name") for l in pending.get("layers", [])]
     )
 
-    try:
-        from backend.services import storage_service
-        _g_status = "PASS" if _guard.get("ok") else "FAIL"
-        storage_service.record_run_finish(_run_id, final_text, "success", _g_status)
-    except Exception:
-        pass
+    _g_status = "PASS" if _guard.get("ok") else "FAIL"
+    _record_run_finish(_run_id, final_text, _run_finish_status, _g_status)
+    if run_context is not None:
+        run_context["finished"] = True
 
     # === Token 计量基建：提取与持久化 ===
     _dur_ms = int((time.time() - _run_started_at) * 1000)
     _schema_chars = len(json.dumps([convert_to_openai_tool(t) for t in available_tools], ensure_ascii=False))
     _token_usage = extract_and_record_token_usage(
         messages=msgs,
+        input_message_count=len(messages),
+        previous_attempts=_usage_attempts,
         model_name=cfg.model,
         task_id=_task_id,
         tool_count=len(available_tools),
@@ -1671,6 +1787,25 @@ def run_agent_stream(
         }, ensure_ascii=False)
         yield f"data: {busy_event}\n\n"
         return
+    if not _tools_mod.acquire_shared_state_lock(0):
+        _tools_mod.release_session_lock(sid)
+        busy_event = json.dumps({
+            "type": "done",
+            "response": "当前 GIS 工作区正在处理另一项操作，请稍后重试。",
+            "reasoning": None, "layers": [], "images": [], "heatmap": None,
+            "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
+            "confirm_pending": None,
+            "busy": True,
+        }, ensure_ascii=False)
+        yield f"data: {busy_event}\n\n"
+        return
+    run_context = {}
+    lease = _DeferredLockLease(lambda: (
+        _tools_mod.release_shared_state_lock(),
+        _tools_mod.release_session_lock(sid),
+    ))
+    previous_lease = getattr(_AGENT_LOCK_LEASE, "current", None)
+    _AGENT_LOCK_LEASE.current = lease
     try:
         yield from _run_agent_stream_impl(
             messages=messages,
@@ -1682,6 +1817,10 @@ def run_agent_stream(
             mode=mode,
             read_only_location_analysis=read_only_location_analysis,
             task_id=task_id,
+            run_context=run_context,
         )
     finally:
-        _tools_mod.release_session_lock(sid)
+        _AGENT_LOCK_LEASE.current = previous_lease
+        if run_context.get("run_id") and not run_context.get("finished"):
+            _record_run_finish(run_context["run_id"], "流式请求中断", "interrupted")
+        lease.finish()

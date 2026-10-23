@@ -8,6 +8,18 @@ window.GIS = window.GIS || {};
   let _currentProjectId = null;
   let _currentSessionId = _createSessionId();
   let _loadGeneration = 0;
+  let _saveQueue = Promise.resolve();
+
+  function _queueProjectSave(work) {
+    var request = _saveQueue.then(work);
+    _saveQueue = request.catch(function() {});
+    return request;
+  }
+
+  function _registrySyncFailed(result) {
+    if (Array.isArray(result)) return result.some(_registrySyncFailed);
+    return result === false || !!(result && (result.success === false || result.ok === false));
+  }
 
   function _escapeMarkup(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
@@ -122,17 +134,41 @@ window.GIS = window.GIS || {};
       return GIS.layers.getLayers().map(function(layer) {
         var shared = GIS.state && typeof GIS.state.getLayer === 'function'
           ? GIS.state.getLayer(layer.layer_id) : null;
-        var style = Object.assign({}, layer.color ? { color: layer.color } : {}, layer.style || {});
-        if (layer.opacity !== undefined) style.opacity = layer.opacity;
+        var panelStyle = Object.assign({}, layer.color ? { color: layer.color } : {}, layer.style || {});
+        var style = Object.assign({}, panelStyle);
         // Shared state replaces its style object when controls change it; the
         // panel may still reference the original object from layer creation.
         Object.assign(style, shared && shared.style || {});
+        // Keep the layer-wide opacity multiplier separate from base symbol opacity.
+        if (layer.opacity !== undefined) {
+          if (panelStyle.opacity === undefined) delete style.opacity;
+          else style.opacity = panelStyle.opacity;
+        }
         var symbology = GIS.layers && typeof GIS.layers.getSymbologyState === 'function'
           ? GIS.layers.getSymbologyState(layer.layer_id) : null;
         return Object.assign({}, layer, { style: style, symbology: symbology });
       });
     }
     return [];
+  }
+
+  function _collectLayerAssignments() {
+    return _collectLayers().map(function(layer) {
+      return {
+        layer_id: layer.layer_id || null,
+        registry_name: layer._registeredName || layer._rawName || layer.filename || null,
+        style: layer.style || (layer.color ? { color: layer.color } : null),
+        opacity: layer.opacity,
+        symbology: layer.symbology || null,
+        names: [layer._registeredName, layer._rawName, layer.filename].filter(function(name, index, all) {
+          return !!name && all.indexOf(name) === index;
+        }),
+        groupId: layer.groupId || null,
+        visible: layer.visible !== false,
+        name: layer.filename || layer.name || '图层',
+        raster: layer.raster || null,
+      };
+    });
   }
 
   function _renderHistoryList(projects) {
@@ -288,7 +324,13 @@ window.GIS = window.GIS || {};
           var proto = (layer.service_type || layer.protocol || '').toLowerCase();
 
           if (layer.geojson && GIS.map && GIS.map.loadGeoJSON) {
-            try { GIS.map.loadGeoJSON(layer.geojson, mapLayerName, layer.style || {}); } catch(_) {}
+            var restoredStyle = Object.assign({}, layer.style || {});
+            var legacyOpacity = layer.opacity === undefined && restoredStyle.opacity !== undefined;
+            var vectorOpacity = Number(layer.opacity !== undefined ? layer.opacity :
+              (legacyOpacity ? restoredStyle.opacity : 1));
+            if (legacyOpacity) delete restoredStyle.opacity;
+            if (!Number.isFinite(vectorOpacity)) vectorOpacity = 1;
+            try { GIS.map.loadGeoJSON(layer.geojson, mapLayerName, restoredStyle); } catch(_) {}
             if (GIS.layers && GIS.layers.addLayer) {
               var restoredLayer = GIS.layers.addLayer({
                 layer_id: restoredLayerId,
@@ -298,7 +340,8 @@ window.GIS = window.GIS || {};
                 geometry_type: layer.geometry_type || 'Vector',
                 crs: layer.crs || 'WGS-84',
                 color: layerColor,
-                style: layer.style || { color: layerColor },
+                style: restoredStyle,
+                opacity: vectorOpacity,
                 visible: isVis,
                 source: layer.source || 'ai',
                 groupId: layer.groupId || null,
@@ -311,6 +354,10 @@ window.GIS = window.GIS || {};
                   restoredLayer && restoredLayer.layer_id || layer.layer_id,
                   layer.symbology
                 );
+              }
+              if (GIS.map.setLayerOpacity) GIS.map.setLayerOpacity(mapLayerName, vectorOpacity);
+              if (restoredLayer && GIS.state && GIS.state.setOpacity) {
+                GIS.state.setOpacity(restoredLayer.layer_id, vectorOpacity);
               }
             }
           } else if (layer.raster && layer.raster.url && Array.isArray(layer.raster.bounds) &&
@@ -325,7 +372,7 @@ window.GIS = window.GIS || {};
               GIS.map.setLayerOpacity(mapLayerName, rasterOpacity);
             }
             if (GIS.layers && GIS.layers.addLayer) {
-              GIS.layers.addLayer({
+              var restoredRaster = {
                 layer_id: restoredLayerId,
                 filename: layerName,
                 _rawName: mapLayerName,
@@ -335,9 +382,15 @@ window.GIS = window.GIS || {};
                 style: layer.style || {},
                 opacity: Number.isFinite(rasterOpacity) ? rasterOpacity : 1,
                 raster: layer.raster,
+                _registeredName: layerName,
                 visible: isVis,
                 groupId: layer.groupId || null,
-              }, true);
+              };
+              if (typeof layer.registration_token === 'string') {
+                restoredRaster._registrationTokens = Object.create(null);
+                restoredRaster._registrationTokens[layerName] = layer.registration_token;
+              }
+              GIS.layers.addLayer(restoredRaster, true);
             }
           } else if (serviceUrl && proto.indexOf('wms') >= 0 && GIS.geosource && GIS.geosource.loadWmsSublayer) {
             GIS.geosource.loadWmsSublayer(
@@ -491,53 +544,54 @@ window.GIS = window.GIS || {};
   GIS.project = {
     init: init,
     save: function(customName) {
-      var topNameEl = document.getElementById('workspaceCurrentProjectName');
-      var projName = customName || (topNameEl ? topNameEl.textContent : '未命名工程');
-      return GIS.api.saveProject({
-        project_id: _currentProjectId,
-        name: projName,
-        session_id: _currentSessionId,
-        provider: _getProvider(),
-        map_state: _getMapState(),
-        messages: _collectMessages(),
-        layers: _collectLayers(),
-        layer_groups: GIS.layers && typeof GIS.layers.getGroupState === 'function'
-          ? GIS.layers.getGroupState() : [],
-      }).then(function(res) {
-        if (res && res.id) _currentProjectId = res.id;
-        return res;
+      var sessionId = _currentSessionId;
+      var generation = _loadGeneration;
+      return _queueProjectSave(function() {
+        if (_currentSessionId !== sessionId || _loadGeneration !== generation) throw new Error('工程已切换，已取消旧工程的保存');
+        var projectId = _currentProjectId;
+        var topNameEl = document.getElementById('workspaceCurrentProjectName');
+        var projName = customName || (topNameEl ? topNameEl.textContent : '未命名工程');
+        return GIS.api.saveProject({
+          project_id: projectId,
+          name: projName,
+          session_id: sessionId,
+          provider: _getProvider(),
+          map_state: _getMapState(),
+          messages: _collectMessages(),
+          layers: _collectLayers(),
+          layer_groups: GIS.layers && typeof GIS.layers.getGroupState === 'function'
+            ? GIS.layers.getGroupState() : [],
+        }).then(function(res) {
+          if (res && res.id && _currentSessionId === sessionId && _loadGeneration === generation && _currentProjectId === projectId) {
+            _currentProjectId = res.id;
+          }
+          return res;
+        });
       });
     },
     autoSave: function() {
-      var currentLayers = _collectLayers();
-      var layerAssignments = currentLayers.map(function(layer) {
-        return {
-          layer_id: layer.layer_id || null,
-          style: layer.style || (layer.color ? { color: layer.color } : null),
-          symbology: layer.symbology || null,
-          names: [layer._registeredName, layer._rawName, layer.filename].filter(function(name, index, all) {
-            return !!name && all.indexOf(name) === index;
-          }),
-          groupId: layer.groupId || null,
-          visible: layer.visible !== false,
-          name: layer.filename || layer.name || '图层',
-          raster: layer.raster || null,
-        };
-      });
-      var layerGroups = GIS.layers && typeof GIS.layers.getGroupState === 'function'
-        ? GIS.layers.getGroupState() : [];
-      var layerSyncs = GIS.layers && typeof GIS.layers.waitForRegistrySync === 'function'
-        ? GIS.layers.waitForRegistrySync()
-        : Promise.all(currentLayers.filter(function(layer) {
-          return layer.geojson && layer._registrationPromise;
-        }).map(function(layer) { return Promise.resolve(layer._registrationPromise); }));
-      return Promise.resolve(layerSyncs).then(function(syncResults) {
-        if (syncResults.some(function(result) { return result === false; })) {
+      var sessionId = _currentSessionId;
+      var generation = _loadGeneration;
+      return _queueProjectSave(async function() {
+        if (_currentSessionId !== sessionId || _loadGeneration !== generation) return null;
+        var currentLayers = _collectLayers();
+        var layerSyncs = GIS.layers && typeof GIS.layers.waitForRegistrySync === 'function'
+          ? GIS.layers.waitForRegistrySync()
+          : Promise.all(currentLayers.filter(function(layer) {
+            return layer.geojson && layer._registrationPromise;
+          }).map(function(layer) { return Promise.resolve(layer._registrationPromise); }));
+        var syncResults = await layerSyncs;
+        if (_currentSessionId !== sessionId || _loadGeneration !== generation) return null;
+        if (!Array.isArray(syncResults) || _registrySyncFailed(syncResults)) {
           throw new Error('图层数据尚未同步到后端，已跳过自动保存以避免保存旧数据');
         }
-        return GIS.api.autoSaveProject(_currentSessionId, _currentProjectId, layerGroups, layerAssignments);
-      }).then(function(res) {
-        if (res && res.id) _currentProjectId = res.id;
+        var projectId = _currentProjectId;
+        var layerGroups = GIS.layers && typeof GIS.layers.getGroupState === 'function'
+          ? GIS.layers.getGroupState() : [];
+        var res = await GIS.api.autoSaveProject(sessionId, projectId, layerGroups, _collectLayerAssignments());
+        if (res && res.id && _currentSessionId === sessionId && _loadGeneration === generation && _currentProjectId === projectId) {
+          _currentProjectId = res.id;
+        }
         return res;
       }).catch(function(error) {
         console.warn('[GIS Project] 自动保存失败', error);
@@ -548,16 +602,16 @@ window.GIS = window.GIS || {};
       return _exportProject(pid || _currentProjectId, customName);
     },
     showHistory: _showHistory,
-    hideHistory: _hideHistory,
     loadProject: _loadProject,
     getCurrentProjectId: function() { return _currentProjectId; },
     setCurrentProjectId: function(id) {
+      _loadGeneration += 1;
       _currentProjectId = id;
       if (!id) _currentSessionId = _createSessionId();
     },
     getCurrentSessionId: function() { return _currentSessionId; },
-    setCurrentSessionId: function(sid) { _currentSessionId = sid; },
     resetSession: function() {
+      _loadGeneration += 1;
       _currentProjectId = null;
       _currentSessionId = _createSessionId();
       return _currentSessionId;

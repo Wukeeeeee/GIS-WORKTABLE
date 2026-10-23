@@ -1,6 +1,6 @@
 /**
  * GIS AI WorkTable — API 接口层
- * 函数签名已预留，实现由你完成
+ * 后端请求、模型配置与文件操作
  *
  * 使用: window.GIS.api.xxx()
  * BASE_URL: http://localhost:8000
@@ -250,7 +250,7 @@ window.GIS.api = (() => {
     var list = getProviders();
     setProviders(list.filter(function(p) { return p.id !== id; }));
     // 若删的是当前选中项，回退到第一条
-    if (_lsGet(MODEL_STORAGE_KEY) === id) setSelectedProvider(list.length ? list[0].id : 'glm-routed');
+    if (_lsGet(MODEL_STORAGE_KEY) === id) setSelectedModel(list.length ? list[0].id : 'glm-routed');
   }
 
   /** 复制一个 Provider（新 id） */
@@ -263,19 +263,8 @@ window.GIS.api = (() => {
     return addProvider(copy);
   }
 
-  // ===== 兼容别名：老代码 getApiKey()/getGLMApiKey()/getAgnesApiKey() =====
+  // 旧 Provider 配置缺失时，从迁移前的存储键读取默认密钥。
   function _entryKey(id) { var p = getProvider(id); return p ? (p.api_key || '') : ''; }
-  function _setEntryKey(id, key) {
-    var list = getProviders();
-    var p = list.find(function(x) { return x.id === id; });
-    if (p) { p.api_key = key || ''; setProviders(list); }
-  }
-  function getApiKey()    { return _entryKey('deepseek-routed'); }
-  function setApiKey(key) { _setEntryKey('deepseek-routed', key); }
-  function getGLMApiKey() { return _entryKey('glm-routed'); }
-  function setGLMApiKey(key) { _setEntryKey('glm-routed', key); }
-  function getAgnesApiKey() { return _entryKey('agnes'); }
-  function setAgnesApiKey(key) { _setEntryKey('agnes', key); }
 
   /** 从 localStorage 读取保存的高德地图密钥（保持独立，不并入 Provider 列表） */
   function getAmapKey() {
@@ -333,8 +322,6 @@ window.GIS.api = (() => {
       } catch(e) {}
     }
   }
-  function setSelectedProvider(id) { setSelectedModel(id); }
-
   /** 从后端同步并保活用户的 Provider/API Key 配置（跨浏览器、跨重启、跨域名） */
   async function syncUserSettingsFromBackend() {
     try {
@@ -449,12 +436,7 @@ window.GIS.api = (() => {
       _lsSet(MODEL_STATUS_KEY, JSON.stringify(stored));
     } catch (e) {}
   }
-  function clearModelStatus() {
-    _lsRemove(MODEL_STATUS_KEY);
-  }
-
   async function request(endpoint, options = {}) {
-    // 通用 fetch 请求（暂未使用）
     const url = `${BASE_URL}${endpoint}`;
     try {
       const res = await fetch(url, {
@@ -486,19 +468,20 @@ window.GIS.api = (() => {
     return res.json();
   }
 
-  /** 直连工具执行前同步：确保前端图层在后端注册表可解析。
-   *  绘制/状态内建的图层只在前端存在，后端工具按注册名查图层；
-   *  大图层（>2 万要素）跳过同步，避免整包传输。 */
+  /** 直连工具执行前同步；失败必须阻止后续工具使用过时数据。 */
   async function syncLayer(name) {
-    try {
-      const l = GIS.layers && GIS.layers.getLayerByName ? GIS.layers.getLayerByName(name) : null;
-      if (!l || !l.geojson) return;
-      const fc = l.geojson;
-      const n = fc.type === 'FeatureCollection' ? (fc.features || []).length : 1;
-      if (n > 20000) return;
-      await registerLayer(l.filename || name, fc);
-    } catch (e) {
-      console.warn('[GIS API] 图层同步失败', name, e);
+    if (GIS.layers && GIS.layers.syncToolLayer) {
+      if (await GIS.layers.syncToolLayer(name) === false) {
+        throw new Error('图层「' + name + '」同步失败，请检查连接后重试');
+      }
+      return;
+    }
+    const layer = GIS.layers && GIS.layers.getLayerByName ? GIS.layers.getLayerByName(name) : null;
+    if (!layer || (!layer.geojson && !layer.raster)) return;
+    const result = await registerLayer(name, layer.geojson, layer.raster);
+    if (result && typeof result.registration_token === 'string') {
+      const tokens = layer._registrationTokens || (layer._registrationTokens = Object.create(null));
+      tokens[name] = result.registration_token;
     }
   }
 
@@ -575,68 +558,40 @@ window.GIS.api = (() => {
     return res.json();
   }
 
-  // ===== 兼容旧测速入口 =====
-  /** 向后端发一个测试请求，验证 DeepSeek 密钥能不能用 */
-  async function testApiKey(apiKey) {
-    const res = await fetch(`${BASE_URL}/api/test-key`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'deepseek', api_key: apiKey }),
-    });
-    if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
-    return res.json();
-  }
-
-  /** 向后端发一个测试请求，验证 GLM 密钥能不能用 */
-  async function testGLMApiKey(apiKey) {
-    const res = await fetch(`${BASE_URL}/api/test-key`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'glm', api_key: apiKey }),
-    });
-    if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
-    return res.json();
-  }
-
-  /** 向后端发一个测试请求，验证 Agnes 密钥能不能用 */
-  async function testAgnesApiKey(apiKey) {
-    const res = await fetch(`${BASE_URL}/api/test-key`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: 'agnes', api_key: apiKey }),
-    });
-    if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
-    return res.json();
-  }
-
-  /** 通知后端取消注册已删除的图层 */
-  async function unregisterLayer(name) {
-    const res = await fetch(`${BASE_URL}/api/layer/unregister`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-    if (!res.ok) throw new Error(`取消注册图层失败: HTTP ${res.status}`);
-    const data = await res.json();
-    if (data && data.success === false) throw new Error(data.message || '取消注册图层失败');
-    return data;
-  }
-
-  /** 通知后端注册新加载的图层（名字 + GeoJSON） */
-  async function registerLayer(name, geojson) {
-    const res = await fetch(`${BASE_URL}/api/layer/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, geojson }),
-    });
-    if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
-      try { detail = (await res.json()).detail || detail; } catch (_) {}
-      throw new Error(`注册图层失败: ${detail}`);
+  async function _layerRegistryRequest(action, payload, timeout) {
+    const controller = new AbortController();
+    const timer = setTimeout(function() { controller.abort(); }, timeout);
+    try {
+      const res = await fetch(`${BASE_URL}/api/layer/${action}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { detail = (await res.json()).detail || detail; } catch (_) {}
+        throw new Error(`图层同步失败: ${detail}`);
+      }
+      const data = await res.json();
+      if (!data || data.success !== true) throw new Error(data && data.message || '后台未确认图层同步成功');
+      return data;
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('图层同步请求超时，请稍后重试');
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
-    const data = await res.json();
-    if (data && data.success === false) throw new Error(data.message || '注册图层失败');
-    return data;
+  }
+
+  /** 只取消本次持有的注册版本，保护后来重建的同名图层。 */
+  async function unregisterLayer(name, registrationToken) {
+    return _layerRegistryRequest('unregister', { name, registration_token: registrationToken }, 15000);
+  }
+
+  /** 通知后端注册新加载的图层（名字 + GeoJSON）。 */
+  async function registerLayer(name, geojson, raster) {
+    return _layerRegistryRequest('register', { name, geojson, raster }, 60000);
   }
 
   /** 检查图层元数据（前端可先算基础信息，后端补充 CRS 等） */
@@ -648,16 +603,6 @@ window.GIS.api = (() => {
     });
     if (!res.ok) throw new Error(`Inspect API error: ${res.status}`);
     return res.json();
-  }
-
-  // ===== 边界加载 =====
-  /** 从OSM加载行政边界，返回GeoJSON */
-  async function getBoundary(place) {
-    const res = await fetch(`${BASE_URL}/api/boundary?place=${encodeURIComponent(place)}`);
-    if (!res.ok) throw new Error(`获取边界失败: ${res.status}`);
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-    return data; // { geojson: ..., name: "..." }
   }
 
   // ===== 项目保存/加载 =====
@@ -804,36 +749,24 @@ window.GIS.api = (() => {
     return request(`/api/geosource/service/${encodeURIComponent(serviceId)}`);
   }
 
-  async function geosourceQuerySql(query) {
-    return request('/api/geosource/query-sql', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
-    });
-  }
-
   return {
     request, upload, chat, clearMemory, healthCheck,
-    getBoundary,
     saveProject, loadProject, listProjects,
     deleteProject, deleteAllProjects, renameProject, exportProject, importProject, autoSaveProject,
-    healthCheck, testApiKey, testGLMApiKey, testAgnesApiKey, testProvider,
-    getApiKey, setApiKey, getGLMApiKey, setGLMApiKey,
-    getAgnesApiKey, setAgnesApiKey,
+    testProvider,
     getAmapKey, setAmapKey,
     getGeoCredentials, setGeoCredentials, setGeoCredential,
-    getSelectedModel, setSelectedModel, setSelectedProvider,
+    getSelectedModel, setSelectedModel,
     getProviders, setProviders, getProvider,
     addProvider, upsertProvider, removeProvider, duplicateProvider,
     currentProvider, resolveProvider,
-    getModelStatus, setModelStatus, clearModelStatus,
+    getModelStatus, setModelStatus,
     inspectLayer, unregisterLayer, registerLayer, syncLayer,
     exportShp,
     invokeTool,
-    geosourceStats, geosourceSearch, geosourceDetail, geosourceQuerySql,
+    geosourceStats, geosourceSearch, geosourceDetail,
     syncUserSettingsFromBackend,
-    BASE_URL, PROVIDERS_STORAGE_KEY,
-    DS_STORAGE_KEY, GLM_STORAGE_KEY, AGNES_STORAGE_KEY, AMAP_STORAGE_KEY, MODEL_STORAGE_KEY, MODEL_STATUS_KEY,
+    BASE_URL,
   };
 })();
 
