@@ -330,6 +330,11 @@ window.GIS = window.GIS || {};
         if (message && status !== 'success') card.outputs.push(message);
         updateProgress(card);
       });
+      return {
+        partial: status === 'success' && Array.from(cards.values()).some(function(card) {
+          return card.status === 'failed' || card.status === 'warning';
+        }),
+      };
     }
     function resolveWaiting(cancelled) {
       cards.forEach(function (card) {

@@ -7,12 +7,15 @@ import os
 import sys
 import uuid
 import random
+import sys
+import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from backend.services import tools
 from backend.services.tools import (
     network_analysis,
+    download_road_network,
     ask_user_choice,
     _register_layer,
     _registered_layers,
@@ -25,6 +28,29 @@ from backend.services.ai_service import _load_skill_from_file
 
 class TestNetworkAnalysisE2E:
     """网络分析端到端"""
+
+    def test_service_area_result_discloses_approximate_boundary(self, monkeypatch):
+        name = f"net_area_{uuid.uuid4().hex[:6]}"
+        coords = [(0, 0), (0.003, 0), (0.003, 0.003), (0, 0.003)]
+        geojson = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {}, "geometry": {
+                "type": "LineString", "coordinates": [list(coords[i]), list(coords[(i + 1) % len(coords)])],
+            }}
+            for i in range(len(coords))
+        ]}
+        monkeypatch.setattr(tools, "_registered_layers", {
+            name: {"geojson": geojson, "bbox": [0, 0, 0.003, 0.003]},
+        })
+        pushed = []
+        monkeypatch.setattr(tools, "_push_layer", lambda *args: pushed.append(args))
+
+        func = getattr(network_analysis, 'func', network_analysis)
+        result = func(layer_name=name, analysis_type="service_area",
+                      facility="0.003,0.003", breaks="1000")
+
+        assert "凸包" in result
+        assert "0.001°缓冲" in result
+        assert len(pushed) == 1
 
     def test_network_with_invalid_layer(self):
         """非路网图层应返回友好错误"""
@@ -48,6 +74,145 @@ class TestNetworkAnalysisE2E:
         result = func(layer_name="nonexistent_net_xyz", analysis_type="shortest_path", origin="113.0,23.0", destination="113.1,23.1")
         assert result is not None
         assert "不存在" in result or "未找到" in result or "错误" in result
+
+    def test_invalid_closest_facility_event_coordinate_is_a_friendly_validation_error(self, monkeypatch):
+        name = "invalid_event_network"
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "LineString", "coordinates": [[0, 0], [0.01, 0]]},
+        }]}
+        monkeypatch.setattr(tools, "_registered_layers", {
+            name: {"geojson": geojson, "bbox": [0, 0, 0.01, 0]},
+        })
+
+        func = getattr(network_analysis, "func", network_analysis)
+        result = func(layer_name=name, analysis_type="closest_facility",
+                      origin="0,0", events="not-a-coordinate")
+
+        assert result.startswith("坐标参数错误:")
+        assert "Traceback" not in result
+
+    def test_network_runtime_error_does_not_expose_traceback(self, monkeypatch):
+        name = "runtime_error_network"
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "LineString", "coordinates": [[0, 0], [0.01, 0]]},
+        }]}
+        monkeypatch.setattr(tools, "_registered_layers", {
+            name: {"geojson": geojson, "bbox": [0, 0, 0.01, 0]},
+        })
+        from backend.services import network_service
+
+        def fail_route(*args, **kwargs):
+            raise RuntimeError("controlled route failure")
+
+        monkeypatch.setattr(network_service, "shortest_route", fail_route)
+        func = getattr(network_analysis, "func", network_analysis)
+        result = func(layer_name=name, analysis_type="route", origin="0,0", destination="0.01,0")
+
+        assert "controlled route failure" in result
+        assert "Traceback" not in result
+
+    def test_closest_facility_reports_events_that_cannot_snap_to_network(self, monkeypatch):
+        name = "partial_facility_network"
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "LineString", "coordinates": [[0, 0], [0.01, 0]]},
+        }]}
+        monkeypatch.setattr(tools, "_registered_layers", {
+            name: {"geojson": geojson, "bbox": [-1, -1, 1, 1]},
+        })
+
+        func = getattr(network_analysis, "func", network_analysis)
+        result = func(layer_name=name, analysis_type="closest_facility",
+                      origin="0,0", events="0.01,0;1,1")
+
+        assert "最近设施分析完成" in result
+        assert "未吸附设施序号（从 1 开始，未纳入结果）：2" in result
+
+
+class TestDownloadRoadNetwork:
+    def _stub_osmnx(self, monkeypatch, graph_from_place, graph_from_bbox):
+        fake_osmnx = types.SimpleNamespace(
+            settings=types.SimpleNamespace(),
+            graph_from_place=graph_from_place,
+            graph_from_bbox=graph_from_bbox,
+            graph_to_gdfs=lambda graph: ([], types.SimpleNamespace(empty=True)),
+        )
+        monkeypatch.setitem(sys.modules, "osmnx", fake_osmnx)
+
+    def test_rejects_invalid_bbox_and_network_type_before_external_request(self, monkeypatch):
+        calls = []
+
+        def record_call(**kwargs):
+            calls.append(kwargs)
+            return object()
+
+        self._stub_osmnx(monkeypatch, record_call, record_call)
+        func = getattr(download_road_network, "func", download_road_network)
+
+        invalid_requests = [
+            ("1,0,0,1", "drive"),
+            ("0,91,1,92", "drive"),
+            ("0,0,1,1", "flight"),
+        ]
+        results = [func(location_name=location, network_type=network_type)
+                   for location, network_type in invalid_requests]
+
+        assert calls == []
+        assert all("已从 OSM 下载" not in result for result in results)
+        assert "BBox" in results[0] and "BBox" in results[1]
+        assert "network_type" in results[2]
+
+    def test_osm_failure_returns_summary_without_traceback(self, monkeypatch):
+        def fail_request(*args, **kwargs):
+            raise RuntimeError("controlled OSM failure")
+
+        self._stub_osmnx(monkeypatch, fail_request, fail_request)
+        func = getattr(download_road_network, "func", download_road_network)
+
+        result = func(location_name="Test City", network_type="drive")
+
+        assert "controlled OSM failure" in result
+        assert "Traceback" not in result
+
+    def test_successful_download_registers_a_usable_network_layer(self, monkeypatch):
+        graph = object()
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"highway": "residential"},
+            "geometry": {"type": "LineString", "coordinates": [[0, 0], [0.01, 0]]},
+        }]}
+
+        class MockNodes:
+            def __len__(self):
+                return 2
+
+        class MockEdges:
+            empty = False
+            __geo_interface__ = geojson
+
+            def __len__(self):
+                return 1
+
+        fake_osmnx = types.SimpleNamespace(
+            settings=types.SimpleNamespace(),
+            graph_from_place=lambda *args, **kwargs: graph,
+            graph_from_bbox=lambda **kwargs: graph,
+            graph_to_gdfs=lambda value: (MockNodes(), MockEdges()),
+        )
+        monkeypatch.setitem(sys.modules, "osmnx", fake_osmnx)
+        location = "Mock Network City " + uuid.uuid4().hex[:6]
+        func = getattr(download_road_network, "func", download_road_network)
+
+        result = func(location_name=location, network_type="drive")
+        layer_name = f"{location}_路网(drive)"
+        route = getattr(network_analysis, "func", network_analysis)(
+            layer_name=layer_name, analysis_type="route", origin="0,0", destination="0.01,0",
+        )
+
+        assert "1 条道路" in result
+        assert layer_name in tools._registered_layers
+        assert "路径分析完成" in route
 
 
 class TestUserChoiceE2E:

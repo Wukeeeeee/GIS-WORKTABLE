@@ -399,7 +399,8 @@ window.GIS = window.GIS || {};
     }).then(function (result) {
       if (GIS.workspace && !GIS.workspace.toolFeedback('rasterToolsPanel', result)) return;
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
-      resultBody.textContent = result.response || '';
+      var parameterWarnings = Array.isArray(result.param_warnings) ? result.param_warnings.map(String).filter(Boolean) : [];
+      resultBody.textContent = [result.response || '', parameterWarnings.length ? '参数提示：' + parameterWarnings.join('；') : ''].filter(Boolean).join('\n\n');
     }).catch(function (err) {
       if (GIS.workspace) GIS.workspace.toolFeedback('rasterToolsPanel', null, err);
       resultBody.textContent = '执行失败: ' + err.message;

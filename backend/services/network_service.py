@@ -423,9 +423,12 @@ def closest_facilities(
         return {"error": "事件点距路网超过阈值"}
 
     results = []
+    unsnapped_facility_indices = []
+    unreachable_facility_indices = []
     for i, fac in enumerate(facilities):
         fac_node = find_nearest_node(graph, fac)
         if not fac_node:
+            unsnapped_facility_indices.append(i)
             continue
         try:
             path_nodes = nx.astar_path(
@@ -455,13 +458,18 @@ def closest_facilities(
                 },
             })
         except nx.NetworkXNoPath:
+            unreachable_facility_indices.append(i)
             continue
 
     results.sort(key=lambda r: r["distance_m"])
     top = results[:n]
 
     if not top:
-        return {"error": "所有设施均无法连通"}
+        return {
+            "error": "所有设施均无法连通",
+            "unsnapped_facility_indices": unsnapped_facility_indices,
+            "unreachable_facility_indices": unreachable_facility_indices,
+        }
 
     return {
         "paths": [r["path"] for r in top],
@@ -474,4 +482,6 @@ def closest_facilities(
             }
             for idx, r in enumerate(top)
         ],
+        "unsnapped_facility_indices": unsnapped_facility_indices,
+        "unreachable_facility_indices": unreachable_facility_indices,
     }

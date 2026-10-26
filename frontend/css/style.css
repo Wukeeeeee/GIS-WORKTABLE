@@ -3899,7 +3899,9 @@ html.theme-dark .data-null {
 #panelHistory .task-card.task-status-planning { border-left: 3px solid #f57c00; }
 #panelHistory .task-card.task-status-executing { border-left: 3px solid #1976d2; }
 #panelHistory .task-card.task-status-success { border-left: 3px solid #2e7d32; }
+#panelHistory .task-card.task-status-partial { border-left: 3px solid #ef6c00; }
 #panelHistory .task-card.task-status-failed { border-left: 3px solid #d32f2f; }
+#panelHistory .task-card.task-status-interrupted { border-left: 3px solid #ef6c00; }
 #panelHistory .task-card-header {
   display: flex;
   align-items: center;
@@ -3928,7 +3930,9 @@ html.theme-dark .data-null {
 #panelHistory .task-badge-planning { background: #fff3e0; color: #e65100; }
 #panelHistory .task-badge-executing { background: #e3f2fd; color: #1565c0; }
 #panelHistory .task-badge-success { background: #e8f5e9; color: #2e7d32; }
+#panelHistory .task-badge-partial { background: #fff3e0; color: #e65100; }
 #panelHistory .task-badge-failed { background: #ffebee; color: #c62828; }
+#panelHistory .task-badge-interrupted { background: #fff3e0; color: #e65100; }
 #panelHistory .task-goal-text {
   font-size: var(--fs-11);
   font-weight: 500;
@@ -4068,7 +4072,9 @@ html.theme-dark #panelHistory .task-goal-text {
 html.theme-dark #panelHistory .task-badge-planning { background: #4e3500; color: #ffb74d; }
 html.theme-dark #panelHistory .task-badge-executing { background: #0d2b45; color: #64b5f6; }
 html.theme-dark #panelHistory .task-badge-success { background: #1b3a1b; color: #81c784; }
+html.theme-dark #panelHistory .task-badge-partial { background: #4e3500; color: #ffb74d; }
 html.theme-dark #panelHistory .task-badge-failed { background: #3a1b1b; color: #ef9a9a; }
+html.theme-dark #panelHistory .task-badge-interrupted { background: #4e3500; color: #ffb74d; }
 
 /* ============================================================
    历史会话面板（替代聊天消息区域）
@@ -5578,6 +5584,15 @@ body.gis-mode-3d .map-coords {
   text-align: center;
   color: var(--ui-gray-400);
   font-size: 12px;
+}
+.toolhist-warning {
+  margin: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff3e0;
+  color: #8a4b08;
+  font-size: 12px;
+  line-height: 1.5;
 }
 .toolhist-item {
   border: 1px solid var(--ui-gray-200);

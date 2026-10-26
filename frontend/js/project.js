@@ -307,6 +307,7 @@ window.GIS = window.GIS || {};
       }
       if (data.layers && data.layers.length > 0) {
         var restoredLayerIds = new Set();
+        var restoreWarnings = [];
         data.layers.forEach(function(layer, layerIndex) {
           var layerName = layer.name || '图层';
           var layerColor = layer.color || '#1c1b1b';
@@ -330,7 +331,16 @@ window.GIS = window.GIS || {};
               (legacyOpacity ? restoredStyle.opacity : 1));
             if (legacyOpacity) delete restoredStyle.opacity;
             if (!Number.isFinite(vectorOpacity)) vectorOpacity = 1;
-            try { GIS.map.loadGeoJSON(layer.geojson, mapLayerName, restoredStyle); } catch(_) {}
+            try {
+              var renderedVector = GIS.map.loadGeoJSON(layer.geojson, mapLayerName, restoredStyle);
+              if (renderedVector === null) {
+                restoreWarnings.push(layerName);
+                return;
+              }
+            } catch(_) {
+              restoreWarnings.push(layerName);
+              return;
+            }
             if (GIS.layers && GIS.layers.addLayer) {
               var restoredLayer = GIS.layers.addLayer({
                 layer_id: restoredLayerId,
@@ -344,6 +354,7 @@ window.GIS = window.GIS || {};
                 opacity: vectorOpacity,
                 visible: isVis,
                 source: layer.source || 'ai',
+                provenance: layer.provenance || null,
                 groupId: layer.groupId || null,
               });
               if (!isVis && GIS.map.setLayerVisible) {
@@ -364,7 +375,7 @@ window.GIS = window.GIS || {};
               GIS.map && GIS.map.addImageOverlay) {
             var rasterOpacity = Number(layer.opacity !== undefined ? layer.opacity :
               (layer.style && layer.style.opacity !== undefined ? layer.style.opacity : 1));
-            GIS.map.addImageOverlay(layer.raster.url, layer.raster.bounds, mapLayerName, mapLayerName);
+            GIS.map.addImageOverlay(layer.raster.url, layer.raster.bounds, mapLayerName, layerName);
             if (!isVis && GIS.map.setLayerVisible) {
               GIS.map.setLayerVisible(mapLayerName, false);
             }
@@ -415,6 +426,12 @@ window.GIS = window.GIS || {};
         });
         if (GIS.layers && typeof GIS.layers.syncLayerOrder === 'function') {
           GIS.layers.syncLayerOrder();
+        }
+        if (restoreWarnings.length) {
+          var failedNames = restoreWarnings.slice(0, 3).map(_escapeMarkup).join('、');
+          var extraCount = restoreWarnings.length - 3;
+          var failedSummary = extraCount > 0 ? failedNames + '等 ' + extraCount + ' 个图层' : failedNames;
+          GIS.chat.addMessage('工程已部分恢复：' + failedSummary + '未能显示，请检查数据后重试。', 'system');
         }
       }
       var savedMapView = _readSavedMapView(data.mapState);

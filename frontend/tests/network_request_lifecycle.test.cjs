@@ -30,6 +30,7 @@ function createHarness(config = {}) {
   const map = {
     on(type, handler) { if (type === 'click') this.clickHandler = handler; },
     off() {},
+    fitBounds() {},
     getContainer() { return mapContainer; },
     removeLayer() {},
   };
@@ -45,6 +46,7 @@ function createHarness(config = {}) {
     layers: {
       getLayerNames() { return ['roads']; },
       getLayerGeoJSON(name) { return name === 'roads' ? roadData : null; },
+      addLayer() {},
     },
   } };
   const document = {
@@ -70,6 +72,10 @@ function createHarness(config = {}) {
   const L = {
     latLng(lat, lng) { return { lat, lng }; },
     circleMarker() { return { addTo() { return this; }, bindTooltip() { return this; } }; },
+    geoJSON() {
+      const bounds = { isValid() { return true; }, pad() { return this; }, extend() { return this; } };
+      return { addTo() { return this; }, getBounds() { return bounds; } };
+    },
   };
   const sourcePath = path.resolve(__dirname, '../js/network.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
@@ -88,6 +94,21 @@ async function setRoutePoints(harness) {
   harness.getElement('btnDest').onclick();
   harness.map.clickHandler({ latlng: { lng: -72, lat: 41 } });
   await new Promise(resolve => setImmediate(resolve));
+}
+
+async function setClosestFacilityInputs(harness) {
+  harness.window.GIS.network.activate();
+  const closestTab = new Element('closest-facility-tab');
+  closestTab.dataset.type = 'closest_facility';
+  harness.getElement('networkTabs').listeners.click({ target: { closest: () => closestTab } });
+  harness.getElement('btnEventOrigin').onclick();
+  harness.map.clickHandler({ latlng: { lng: -73, lat: 40 } });
+  await new Promise(resolve => setImmediate(resolve));
+  harness.getElement('networkAddFacilityBtn').onclick();
+  harness.map.clickHandler({ latlng: { lng: -72.99, lat: 40 } });
+  harness.getElement('networkAddFacilityBtn').onclick();
+  harness.map.clickHandler({ latlng: { lng: -72.98, lat: 40 } });
+  harness.getElement('networkSolveBtn').listeners.click();
 }
 
 test('network solve results are ignored after the user switches analysis modes', async () => {
@@ -127,6 +148,46 @@ test('network solve treats non-2xx JSON responses without an error field as fail
   assert.equal(harness.getElement('networkStatus').textContent, '求解失败: HTTP 500');
   assert.equal(harness.getElement('networkLoader').style.display, 'none');
   assert.equal(harness.getElement('networkSolveBtn').disabled, false);
+});
+
+test('closest-facility results label facilities from one and explain omitted inputs', async () => {
+  const harness = createHarness();
+  await setClosestFacilityInputs(harness);
+  harness.finishSolve()({
+    ok: true,
+    json: () => Promise.resolve({
+      paths: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: [[-73, 40], [-72.99, 40]] } }],
+      summary: [{ rank: 1, facility_idx: 0, distance_km: 0.8 }],
+      unsnapped_facility_indices: [1],
+      unreachable_facility_indices: [2],
+    }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  const result = harness.getElement('networkResultBody').innerHTML;
+  assert.match(result, /设施1:/);
+  assert.doesNotMatch(result, /设施0:/);
+  assert.match(result, /超出 500 m 吸附范围的设施序号（从 1 开始）：2/);
+  assert.match(result, /与事件点路网不可达的设施序号（从 1 开始）：3/);
+  assert.equal(harness.getElement('networkStatus').textContent, '最近设施分析完成（部分设施未纳入结果）');
+});
+
+test('closest-facility total failures retain backend snap and reachability diagnostics', async () => {
+  const harness = createHarness();
+  await setClosestFacilityInputs(harness);
+  harness.finishSolve()({
+    ok: true,
+    json: () => Promise.resolve({
+      error: '所有设施均无法连通',
+      unsnapped_facility_indices: [0],
+      unreachable_facility_indices: [1],
+    }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.match(harness.getElement('networkStatus').textContent, /所有设施均无法连通/);
+  assert.match(harness.getElement('networkStatus').textContent, /吸附范围的设施序号（从 1 开始）：1/);
+  assert.match(harness.getElement('networkStatus').textContent, /路网不可达的设施序号（从 1 开始）：2/);
 });
 
 test('late point snap cannot become an input for a newly selected network mode', async () => {

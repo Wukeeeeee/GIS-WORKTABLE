@@ -20,6 +20,8 @@ _LOADED = [False]
 _MAX_ENTRIES = 200
 _PER_TASK_KEEP = 20  # 截断时每任务至少保留的条数（防旧任务记录被整段清零）
 _CUSTOM_PATH = [None]
+_LOAD_ERROR = [None]
+_PERSIST_ERROR = [None]
 
 
 def _history_path() -> str:
@@ -39,6 +41,8 @@ def set_history_file(path: str):
         _ENTRIES.clear()
         _NEXT_INDEX[0] = 1
         _LOADED[0] = False
+        _LOAD_ERROR[0] = None
+        _PERSIST_ERROR[0] = None
 
 
 def _load():
@@ -63,12 +67,21 @@ def _load():
         )
         _NEXT_INDEX[0] = max(next_index, max_index + 1)
         _trim_entries()
-    except Exception:
+    except FileNotFoundError:
+        # A new history store is a normal first-run condition.
         pass
+    except Exception:
+        # Do not treat unreadable history as empty: the next record must not
+        # overwrite a file that may still contain recoverable user history.
+        _LOAD_ERROR[0] = "处理历史文件无法读取；为保留原文件，已暂停写入。"
     _LOADED[0] = True
 
 
-def _persist():
+def _persist(allow_unreadable_replace: bool = False) -> bool:
+    if _LOAD_ERROR[0] and not allow_unreadable_replace:
+        _PERSIST_ERROR[0] = _LOAD_ERROR[0]
+        return False
+    tmp_path = None
     try:
         path = _history_path()
         tmp_path = path + ".tmp"
@@ -78,8 +91,27 @@ def _persist():
                 f, ensure_ascii=False, indent=2,
             )
         os.replace(tmp_path, path)
+        _LOAD_ERROR[0] = None
+        _PERSIST_ERROR[0] = None
+        return True
     except Exception:
-        pass
+        _PERSIST_ERROR[0] = "处理历史未能写入磁盘；当前记录仅保留在本次运行内存中。"
+        if allow_unreadable_replace and _LOAD_ERROR[0]:
+            _PERSIST_ERROR[0] = "清空历史未能写入磁盘；原历史文件仍保留。"
+        return False
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def get_storage_warning():
+    """返回历史文件读写警告；正常时为 None。"""
+    with _LOCK:
+        _load()
+        return _LOAD_ERROR[0] or _PERSIST_ERROR[0]
 
 
 def _trim_entries():
@@ -179,7 +211,14 @@ def get_entries_by_task(task_id: str, only_ok: bool = True) -> list:
 def clear():
     """清空全部历史（含落盘文件）"""
     with _LOCK:
+        _load()
+        previous_entries = list(_ENTRIES)
+        previous_next_index = _NEXT_INDEX[0]
         _ENTRIES.clear()
         _NEXT_INDEX[0] = 1
         _LOADED[0] = True
-        _persist()
+        if not _persist(allow_unreadable_replace=True):
+            _ENTRIES[:] = previous_entries
+            _NEXT_INDEX[0] = previous_next_index
+            return False
+        return True

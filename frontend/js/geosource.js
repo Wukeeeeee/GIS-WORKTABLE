@@ -19,6 +19,54 @@
   var _searchRequestId = 0;
   var _arcgisBusy = false;
 
+  function isEnglish() {
+    return !!(window.GIS.i18n && window.GIS.i18n.isEnglish());
+  }
+
+  function uiText(english, chinese) {
+    return isEnglish() ? english : chinese;
+  }
+
+  function countryLabel(value) {
+    if (!isEnglish()) return value;
+    var names = {
+      '全球': 'Global', '中国': 'China', '美国': 'United States', '德国': 'Germany',
+      '英国': 'United Kingdom', '法国': 'France', '加拿大': 'Canada', '澳大利亚': 'Australia',
+      '日本': 'Japan', '土耳其': 'Turkey', '荷兰': 'Netherlands', '南非': 'South Africa',
+      '欧盟': 'European Union', '西班牙': 'Spain', '意大利': 'Italy', '瑞士': 'Switzerland',
+      '印度尼西亚': 'Indonesia', '挪威': 'Norway', '新西兰': 'New Zealand',
+      '芬兰': 'Finland', '巴西': 'Brazil', '印度': 'India', '墨西哥': 'Mexico',
+      '韩国': 'South Korea', '瑞典': 'Sweden', '丹麦': 'Denmark'
+    };
+    return names[value] || value;
+  }
+
+  function categoryLabel(value) {
+    if (!isEnglish()) return value;
+    var names = {
+      '高程': 'Elevation', 'DEM': 'Elevation', '遥感': 'Remote sensing', '气象': 'Weather',
+      '水利': 'Water', '土地利用': 'Land use', '交通': 'Transport',
+      '水文': 'Hydrology', '人口': 'Population', '开放政府数据': 'Open government data',
+      '商业供应商': 'Commercial vendor', '测绘': 'Surveying and mapping',
+      '科研': 'Research', '大学科研': 'University research', '政府': 'Government',
+      '经济': 'Economy', '金融': 'Finance', '公交': 'Public transit',
+      '铁路': 'Rail', '社会': 'Society', '国际组织': 'International organization',
+      '互联网公共数据': 'Public web data', '开源项目': 'Open-source project',
+      '未知': 'Unspecified', '全球': 'Global'
+    };
+    return names[value] || value;
+  }
+
+  function frequencyLabel(value) {
+    if (!isEnglish()) return value;
+    var names = {
+      '实时': 'Real time', '每日': 'Daily', '每周': 'Weekly', '每月': 'Monthly',
+      '季度': 'Quarterly', '每年': 'Annual', '年度': 'Annual', '不定期': 'Irregular',
+      '未知': 'Unknown'
+    };
+    return names[value] || value;
+  }
+
   function openWorldMap() {
     if (window.innerWidth <= 700 && window.GIS.workspace) window.GIS.workspace.closeDock();
     var overlay = document.getElementById('worldMapOverlay');
@@ -607,6 +655,14 @@
       });
     }
 
+    document.addEventListener('gis:languagechange', function() {
+      loadStats();
+      if (_lastResults.length) {
+        renderResults(_lastResults);
+        renderPagination();
+      }
+    });
+
     // 异步加载全库统计信息
     loadStats();
   }
@@ -615,9 +671,16 @@
     if (!_modal) _modal = document.getElementById('geosourceModal');
     if (!_modal) return;
     _modal.style.display = 'flex';
+    if (window.GIS.i18n && typeof window.GIS.i18n.translate === 'function') {
+      window.GIS.i18n.translate(_modal);
+    }
+    loadStats();
     var kwInput = document.getElementById('geosourceKeyword');
     if (kwInput) kwInput.focus();
-    if (!skipInitialSearch && _lastResults.length === 0) {
+    if (_lastResults.length) {
+      renderResults(_lastResults);
+      renderPagination();
+    } else if (!skipInitialSearch && _lastResults.length === 0) {
       doSearch(1);
     }
   }
@@ -635,11 +698,13 @@
 
       var badge = document.getElementById('geosourceModalStatsBadge');
       if (badge) {
-        badge.textContent = totalSvc + ' 服务 · ' + totalLyr + ' 图层';
+        badge.textContent = isEnglish()
+          ? totalSvc + ' services · ' + totalLyr + ' layers'
+          : totalSvc + ' 服务 · ' + totalLyr + ' 图层';
       }
       var cardBadge = document.getElementById('geosourceServiceBadge');
       if (cardBadge) {
-        cardBadge.textContent = totalSvc + ' 服务';
+        cardBadge.textContent = totalSvc + (isEnglish() ? ' services' : ' 服务');
       }
 
       // 动态将真实覆盖的国家/地区注入国家筛选下拉列表
@@ -647,12 +712,12 @@
         var countrySelect = document.getElementById('geosourceCountry');
         if (countrySelect) {
           var currentVal = countrySelect.value;
-          var html = '<option value="">全部国家/地区</option>';
+          var html = '<option value="">' + uiText('All countries/regions', '全部国家/地区') + '</option>';
           data.top_countries.forEach(function (c) {
             var name = c.country || '';
             if (!name) return;
             var cnt = typeof c.count === 'number' ? ' (' + c.count + ')' : '';
-            html += '<option value="' + window.GIS.utils.escapeHtml(name) + '">' + window.GIS.utils.escapeHtml(name) + cnt + '</option>';
+            html += '<option value="' + window.GIS.utils.escapeHtml(name) + '">' + window.GIS.utils.escapeHtml(countryLabel(name)) + cnt + '</option>';
           });
           countrySelect.innerHTML = html;
           if (currentVal) countrySelect.value = currentVal;
@@ -676,7 +741,7 @@
 
     var listEl = document.getElementById('geosourceResultsList');
     if (listEl) {
-      listEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--on-surface-variant,#444748);font-size:13px;">正在检索全球空间数据源...</div>';
+      listEl.innerHTML = '<div style="text-align:center;padding:40px;color:var(--on-surface-variant,#444748);font-size:13px;">' + uiText('Searching the geospatial data catalog…', '正在检索全球空间数据源...') + '</div>';
     }
 
     var params = {
@@ -708,7 +773,7 @@
       if (requestId !== _searchRequestId) return;
       _isLoading = false;
       if (listEl) {
-        listEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--error,#ba1a1a);font-size:13px;">检索失败: ' + window.GIS.utils.escapeHtml(err.message || String(err)) + '</div>';
+        listEl.innerHTML = '<div style="text-align:center;padding:30px;color:var(--error,#ba1a1a);font-size:13px;">' + uiText('Search failed: ', '检索失败: ') + window.GIS.utils.escapeHtml(err.message || String(err)) + '</div>';
       }
     });
   }
@@ -717,18 +782,20 @@
     var listEl = document.getElementById('geosourceResultsList');
     var countEl = document.getElementById('geosourceResultCount');
     if (countEl) {
-      countEl.innerHTML = '找到 <strong>' + _totalCount + '</strong> 个空间服务（当前显示 ' + results.length + ' 条）';
+      countEl.innerHTML = isEnglish()
+        ? 'Found <strong>' + _totalCount + '</strong> services (showing ' + results.length + ')'
+        : '找到 <strong>' + _totalCount + '</strong> 个空间服务（当前显示 ' + results.length + ' 条）';
     }
     if (!listEl) return;
 
     if (!results || results.length === 0) {
-      listEl.innerHTML = '<div style="text-align:center;padding:50px;color:var(--outline,#747878);font-size:13px;">未找到匹配服务，请尝试更换关键词或清除筛选条件。</div>';
+      listEl.innerHTML = '<div style="text-align:center;padding:50px;color:var(--outline,#747878);font-size:13px;">' + uiText('No matching services. Try another keyword or clear some filters.', '未找到匹配服务，请尝试更换关键词或清除筛选条件。') + '</div>';
       return;
     }
 
     var html = '';
     results.forEach(function (s, index) {
-      var proto = (s.protocol || '通用').trim();
+      var proto = (s.protocol || uiText('General', '通用')).trim();
       var capability = classifyService(s);
       var isWms = capability.isWms;
       var isXyz = capability.isXyz;
@@ -752,19 +819,19 @@
 
       html += '  <div class="geosource-card-meta">';
       if (s.country) {
-        html += '<span class="geosource-tag">' + UI_ICONS.pin + ' ' + window.GIS.utils.escapeHtml(s.country) + '</span>';
+        html += '<span class="geosource-tag">' + UI_ICONS.pin + ' ' + window.GIS.utils.escapeHtml(countryLabel(s.country)) + '</span>';
       }
       if (s.category) {
-        html += '<span class="geosource-tag">' + UI_ICONS.tag + ' ' + window.GIS.utils.escapeHtml(s.category) + '</span>';
+        html += '<span class="geosource-tag">' + UI_ICONS.tag + ' ' + window.GIS.utils.escapeHtml(categoryLabel(s.category)) + '</span>';
       }
       if (s.provider) {
         html += '<span class="geosource-tag">' + UI_ICONS.building + ' ' + window.GIS.utils.escapeHtml(s.provider) + '</span>';
       }
       if (s.need_no_key === '是') {
-        html += '<span class="geosource-tag tag-success">' + UI_ICONS.check + ' 免Key</span>';
+        html += '<span class="geosource-tag tag-success">' + UI_ICONS.check + ' ' + uiText('No API key', '免Key') + '</span>';
       }
       if (s.is_free === '是') {
-        html += '<span class="geosource-tag tag-info">' + UI_ICONS.check + ' 免费</span>';
+        html += '<span class="geosource-tag tag-info">' + UI_ICONS.check + ' ' + uiText('Free', '免费') + '</span>';
       }
       if (s.crs) {
         html += '<span class="geosource-tag">' + UI_ICONS.globe + ' ' + window.GIS.utils.escapeHtml(s.crs) + '</span>';
@@ -777,24 +844,24 @@
 
       html += '  <div class="geosource-card-url-row">';
       html += '    <input type="text" readonly class="geosource-url-input" value="' + escapeAttribute(s.service_url || s.official_url || '') + '" />';
-      html += '    <button class="geosource-copy-btn" onclick="window.GIS.geosource.copyUrl(' + inlineJsString(encodeURIComponent(s.service_url || s.official_url || '')) + ', this)" title="复制 URL">';
-      html += '      ' + UI_ICONS.copy + ' <span>复制</span>';
+      html += '    <button class="geosource-copy-btn" onclick="window.GIS.geosource.copyUrl(' + inlineJsString(encodeURIComponent(s.service_url || s.official_url || '')) + ', this)" title="' + uiText('Copy URL', '复制 URL') + '">';
+      html += '      ' + UI_ICONS.copy + ' <span>' + uiText('Copy', '复制') + '</span>';
       html += '    </button>';
       html += '  </div>';
 
       html += '  <div class="geosource-card-actions">';
       html += '    <button class="geosource-action-btn" onclick="window.GIS.geosource.toggleDetails(' + index + ', this)">';
-      html += '      ' + UI_ICONS.layers + ' <span>图层与详情</span>';
+      html += '      ' + UI_ICONS.layers + ' <span>' + uiText('Layers and details', '图层与详情') + '</span>';
       html += '    </button>';
       if (canLoad && s.service_url) {
         html += '    <button class="geosource-action-btn btn-primary" onclick="window.GIS.geosource.loadService(' + index + ', this)">';
-        html += '      ' + UI_ICONS.mapPlus + ' <span>' + (isRest ? '浏览并接入' : '加载图层') + '</span>';
+        html += '      ' + UI_ICONS.mapPlus + ' <span>' + (isRest ? uiText('Browse and connect', '浏览并接入') : uiText('Add layer', '加载图层')) + '</span>';
         html += '    </button>';
       }
       var officialHref = safeHttpUrl(s.official_url || s.docs_url);
       if (officialHref) {
         html += '    <a class="geosource-action-btn" href="' + escapeAttribute(officialHref) + '" target="_blank" rel="noopener">';
-        html += '      ' + UI_ICONS.externalLink + ' <span>官网/文档</span>';
+        html += '      ' + UI_ICONS.externalLink + ' <span>' + uiText('Website / docs', '官网/文档') + '</span>';
         html += '    </a>';
       }
       html += '  </div>';
@@ -859,7 +926,7 @@
     var html = '';
 
     // 上一页
-    html += '<button class="geosource-page-btn" onclick="window.GIS.geosource.goToPage(' + (_currentPage - 1) + ')" ' + (_currentPage <= 1 ? 'disabled' : '') + ' title="上一页">';
+    html += '<button class="geosource-page-btn" onclick="window.GIS.geosource.goToPage(' + (_currentPage - 1) + ')" ' + (_currentPage <= 1 ? 'disabled' : '') + ' title="' + uiText('Previous page', '上一页') + '">';
     html += UI_ICONS.chevronLeft;
     html += '</button>';
 
@@ -885,7 +952,7 @@
     }
 
     // 下一页
-    html += '<button class="geosource-page-btn" onclick="window.GIS.geosource.goToPage(' + (_currentPage + 1) + ')" ' + (_currentPage >= _totalPages ? 'disabled' : '') + ' title="下一页">';
+    html += '<button class="geosource-page-btn" onclick="window.GIS.geosource.goToPage(' + (_currentPage + 1) + ')" ' + (_currentPage >= _totalPages ? 'disabled' : '') + ' title="' + uiText('Next page', '下一页') + '">';
     html += UI_ICONS.chevronRight;
     html += '</button>';
 
@@ -902,17 +969,17 @@
     if (!url) return;
     navigator.clipboard.writeText(url).then(function () {
       if (window.GIS.toast && typeof window.GIS.toast.success === 'function') {
-        window.GIS.toast.success('服务 URL 已复制到剪贴板');
+        window.GIS.toast.success(uiText('Service URL copied to clipboard', '服务 URL 已复制到剪贴板'));
       }
       btn.classList.add('copied');
       var span = btn.querySelector('span');
-      if (span) span.textContent = '已复制';
+      if (span) span.textContent = uiText('Copied', '已复制');
       setTimeout(function () {
         btn.classList.remove('copied');
-        if (span) span.textContent = '复制';
+        if (span) span.textContent = uiText('Copy', '复制');
       }, 1500);
     }).catch(function () {
-      prompt('请按 Ctrl+C 复制服务端点 URL:', url);
+      prompt(uiText('Press Ctrl+C to copy the service endpoint URL:', '请按 Ctrl+C 复制服务端点 URL:'), url);
     });
   }
 
@@ -924,44 +991,44 @@
     if (!box) return;
     if (box.style.display === 'block') {
       box.style.display = 'none';
-      btn.innerHTML = UI_ICONS.layers + ' <span>图层与详情</span>';
+      btn.innerHTML = UI_ICONS.layers + ' <span>' + uiText('Layers and details', '图层与详情') + '</span>';
       return;
     }
 
-    btn.innerHTML = UI_ICONS.layers + ' <span>加载中...</span>';
+    btn.innerHTML = UI_ICONS.layers + ' <span>' + uiText('Loading…', '加载中...') + '</span>';
     window.GIS.api.geosourceDetail(serviceId).then(function (det) {
-      btn.innerHTML = UI_ICONS.chevronUp + ' <span>收起详情</span>';
+      btn.innerHTML = UI_ICONS.chevronUp + ' <span>' + uiText('Hide details', '收起详情') + '</span>';
       box.style.display = 'block';
 
       var layers = det.layers || [];
       var dHtml = '<div class="geosource-detail-content">';
       dHtml += '<div style="font-size:11px;color:var(--on-surface-variant,#444748);margin-bottom:8px;line-height:1.5;">';
-      dHtml += '<strong>数据协议:</strong> ' + window.GIS.utils.escapeHtml(det.protocol || '-') + ' &nbsp;|&nbsp; ';
-      dHtml += '<strong>格式:</strong> ' + window.GIS.utils.escapeHtml(det.format || '-') + ' &nbsp;|&nbsp; ';
-      dHtml += '<strong>更新频率:</strong> ' + window.GIS.utils.escapeHtml(det.update_frequency || '-') + ' &nbsp;|&nbsp; ';
-      dHtml += '<strong>覆盖范围:</strong> ' + window.GIS.utils.escapeHtml(det.spatial_coverage || '-');
+      dHtml += '<strong>' + uiText('Protocol:', '数据协议:') + '</strong> ' + window.GIS.utils.escapeHtml(det.protocol || '-') + ' &nbsp;|&nbsp; ';
+      dHtml += '<strong>' + uiText('Format:', '格式:') + '</strong> ' + window.GIS.utils.escapeHtml(det.format || '-') + ' &nbsp;|&nbsp; ';
+      dHtml += '<strong>' + uiText('Update frequency:', '更新频率:') + '</strong> ' + window.GIS.utils.escapeHtml(frequencyLabel(det.update_frequency || '-')) + ' &nbsp;|&nbsp; ';
+      dHtml += '<strong>' + uiText('Coverage:', '覆盖范围:') + '</strong> ' + window.GIS.utils.escapeHtml(countryLabel(det.spatial_coverage || '-'));
       dHtml += '</div>';
 
       if (layers.length > 0) {
-        dHtml += '<div style="font-weight:600;font-size:12px;margin:8px 0 4px;color:var(--on-surface,#1c1b1b);">包含图层列表 (' + layers.length + ' 个):</div>';
+        dHtml += '<div style="font-weight:600;font-size:12px;margin:8px 0 4px;color:var(--on-surface,#1c1b1b);">' + (isEnglish() ? 'Layers (' + layers.length + '):' : '包含图层列表 (' + layers.length + ' 个):') + '</div>';
         dHtml += '<div class="geosource-sublayer-list">';
         layers.forEach(function (l) {
           dHtml += '<div class="geosource-sublayer-item">';
           dHtml += '  <span class="geosource-sublayer-name">[' + window.GIS.utils.escapeHtml(String(l.layer_idx)) + '] ' + window.GIS.utils.escapeHtml(l.layer_name) + '</span>';
           if (/WMS/i.test(det.protocol || '')) {
-            dHtml += '  <button class="geosource-sublayer-load-btn" onclick="window.GIS.geosource.loadWmsSublayer(' + inlineJsString(encodeURIComponent(det.service_url)) + ', ' + inlineJsString(encodeURIComponent(l.layer_name)) + ', ' + inlineJsString(encodeURIComponent(det.service_name + ' - ' + l.layer_name)) + ')">' + UI_ICONS.mapPlus + ' 上图</button>';
+            dHtml += '  <button class="geosource-sublayer-load-btn" onclick="window.GIS.geosource.loadWmsSublayer(' + inlineJsString(encodeURIComponent(det.service_url)) + ', ' + inlineJsString(encodeURIComponent(l.layer_name)) + ', ' + inlineJsString(encodeURIComponent(det.service_name + ' - ' + l.layer_name)) + ')">' + UI_ICONS.mapPlus + ' ' + uiText('Add to map', '上图') + '</button>';
           }
           dHtml += '</div>';
         });
         dHtml += '</div>';
       } else {
-        dHtml += '<div style="font-size:11px;color:var(--outline,#747878);">该服务未列出单独命名的子图层，直接通过主服务 URL 访问。</div>';
+        dHtml += '<div style="font-size:11px;color:var(--outline,#747878);">' + uiText('No separately named sublayers are listed. Access the service using its base URL.', '该服务未列出单独命名的子图层，直接通过主服务 URL 访问。') + '</div>';
       }
       dHtml += '</div>';
       box.innerHTML = dHtml;
     }).catch(function (e) {
-      btn.innerHTML = UI_ICONS.layers + ' <span>图层与详情</span>';
-      alert('获取详情失败: ' + e.message);
+      btn.innerHTML = UI_ICONS.layers + ' <span>' + uiText('Layers and details', '图层与详情') + '</span>';
+      alert(uiText('Could not get service details: ', '获取详情失败: ') + e.message);
     });
   }
 
@@ -1052,41 +1119,47 @@
   }
 
   function _enforceMaxLayersRule(incomingName) {
-    if (!window.GIS.layers || typeof window.GIS.layers.getLayers !== 'function') return;
+    if (!window.GIS.layers || typeof window.GIS.layers.getLayers !== 'function') return true;
     var list = window.GIS.layers.getLayers() || [];
-    if (!list.length) return;
+    if (!list.length) return true;
 
-    // 1. 同名图层覆盖：如果已存在完全同名的图层，先替换掉该旧图层
+    // 仅允许重新加载同名 GeoSource 图层；不能覆盖分析、上传或手动图层。
     for (var i = list.length - 1; i >= 0; i--) {
       var existing = list[i];
       var exName = existing._rawName || existing.filename || existing.name || '';
       if (exName && exName === incomingName) {
+        if (existing.source !== 'geosource') {
+          if (window.GIS.toast && typeof window.GIS.toast.error === 'function') {
+            window.GIS.toast.error(uiText(
+              'A layer with this name already exists. Rename it or remove it before loading this service.',
+              '已有同名非 GeoSource 图层，请先重命名或手动移除后再加载。'
+            ));
+          }
+          return false;
+        }
         if (typeof window.GIS.layers.removeLayer === 'function') {
           window.GIS.layers.removeLayer(existing.layer_id, false, true);
         }
       }
     }
 
-    // 重新获取列表
+    // 保留现有三层上限，但达到上限时不自动淘汰用户已有图层。
     list = window.GIS.layers.getLayers() || [];
-
-    // 2. 全局最多 3 个图层严格上限（支持同时保留州级 + 县级等共 2~3 个图层；超过 3 个才触发淘汰）
     var MAX_LAYERS = 3;
-    while (list.length >= MAX_LAYERS) {
-      var oldest = list[0];
-      var removedName = oldest._rawName || oldest.filename || oldest.name || '图层';
-      if (typeof window.GIS.layers.removeLayer === 'function') {
-        window.GIS.layers.removeLayer(oldest.layer_id, false, false);
+    if (list.length >= MAX_LAYERS) {
+      if (window.GIS.toast && typeof window.GIS.toast.warn === 'function') {
+        window.GIS.toast.warn(uiText(
+          'The map overlay limit is 3 layers. Remove one manually before loading this service.',
+          '地图叠加图层上限为 3 个，请先手动移除一个图层后再加载。'
+        ));
       }
-      if (window.GIS.toast && typeof window.GIS.toast.info === 'function') {
-        window.GIS.toast.info('已达最多 3 个叠加图层上限，已自动替换最早图层「' + removedName + '」');
-      }
-      list = window.GIS.layers.getLayers() || [];
+      return false;
     }
+    return true;
   }
 
   function loadGeoJsonLayer(gj, name, crs) {
-    _enforceMaxLayersRule(name);
+    if (!_enforceMaxLayersRule(name)) return false;
     if (window.GIS.map && typeof window.GIS.map.loadGeoJSON === 'function') {
       window.GIS.map.loadGeoJSON(gj, name);
     }
@@ -1101,6 +1174,7 @@
       }, false);
     }
     notifySuccess(name);
+    return true;
   }
 
   function loadWmsSublayer(encUrl, encLayerName, encName, groupId) {
@@ -1111,7 +1185,7 @@
     // 清理 WMS URL 中的 GetCapabilities 参数，确保标准 WMS 瓦片请求正常拼接
     var cleanUrl = rawUrl.replace(/[\?&]request=getcapabilities.*$/i, '').replace(/[\?&]service=wms.*$/i, '');
 
-    _enforceMaxLayersRule(name);
+    if (!_enforceMaxLayersRule(name)) return false;
 
     if (window.GIS.map && typeof window.GIS.map.addWmsLayer === 'function') {
       window.GIS.map.addWmsLayer(cleanUrl, layerName, name);
@@ -1127,13 +1201,15 @@
         }, true);
       }
       notifySuccess(name);
+      return true;
     } else {
       alert('地图组件未初始化或不支持加载 WMS 图层');
+      return false;
     }
   }
 
   function loadXyzLayer(url, name) {
-    _enforceMaxLayersRule(name);
+    if (!_enforceMaxLayersRule(name)) return false;
     if (window.GIS.map && typeof window.GIS.map.addTileLayer === 'function') {
       window.GIS.map.addTileLayer(url, name);
       if (window.GIS.layers && typeof window.GIS.layers.addLayer === 'function') {
@@ -1147,8 +1223,10 @@
         }, true);
       }
       notifySuccess(name);
+      return true;
     } else {
       alert('地图组件未初始化或不支持加载瓦片图层');
+      return false;
     }
   }
 

@@ -141,6 +141,51 @@ def test_controlled_stream_events_correlate_parallel_calls_and_apply_map_delta(m
     assert any(event.get("type") == "done" for event in events)
 
 
+def test_stream_does_not_retry_whole_turn_after_tool_result_then_connection_error(monkeypatch):
+    from types import SimpleNamespace
+    from backend.services import graph
+    from backend.services.llm_config import LLMConfig
+
+    retry_calls = []
+
+    class FakeAgent:
+        def stream(self, payload, config=None, **kwargs):
+            base = list(payload["messages"])
+            call = {"name": "export_layer", "args": {"layer_name": "result"},
+                    "id": "export-1", "type": "tool_call"}
+            ai = AIMessage(content="", tool_calls=[call])
+            yield {"messages": base + [ai]}
+            yield {"messages": base + [ai, ToolMessage(
+                content="GeoJSON已生成：/output/result.geojson",
+                name="export_layer", tool_call_id="export-1",
+            )]}
+            raise ConnectionError("connection reset by peer")
+
+    class FakeLLM:
+        def invoke(self, *args, **kwargs):
+            return SimpleNamespace(content="")
+
+    def fake_retry(*args, **kwargs):
+        retry_calls.append(True)
+        return "ok", {"messages": [AIMessage(content="重试后的答复")]}
+
+    monkeypatch.setattr(graph, "build_llm", lambda cfg: FakeLLM())
+    monkeypatch.setattr(graph, "create_react_agent", lambda llm, tools: FakeAgent())
+    monkeypatch.setattr(graph, "_invoke_agent_with_budget", fake_retry)
+    user_text = "导出 result 图层"
+    events_raw = list(graph.run_agent_stream(
+        [SystemMessage(content="test"), HumanMessage(content=user_text)],
+        cfg=LLMConfig(api_key="mock", base_url="http://mock", model="mock"),
+        original_message=user_text, session_id="stream-retry-after-tool-result",
+    ))
+    events = [json.loads(line[6:]) for line in events_raw if line.startswith("data: ")]
+
+    assert retry_calls == []
+    assert any(event.get("type") == "tool_end" and event.get("tool_call_id") == "export-1" for event in events)
+    assert any(event.get("type") == "error" for event in events)
+    assert any(event.get("type") == "done" for event in events)
+
+
 @pytest.mark.parametrize("content,expected", [
     ({"partial": True}, True), ({"warnings": ["skipped"]}, True),
     ({"qa_warnings": ["invalid"]}, True), ({"skipped_count": "2"}, True),
@@ -151,3 +196,83 @@ def test_stream_preserves_explicit_partial_result_metadata(content, expected):
     assert _stream_tool_warning(content) is expected
     if isinstance(content, dict):
         assert _stream_tool_warning(json.dumps(content)) is expected
+
+
+def test_workflow_progress_maps_node_completion_failure_and_skip():
+    from backend.services.graph import _workflow_progress_tool_events
+
+    active = {}
+    common = {
+        "type": "workflow_progress", "invocation_id": "wf-call-1",
+        "workflow_name": "缓冲工作流",
+    }
+    started = _workflow_progress_tool_events({
+        **common, "event": {"type": "workflow_node_started", "node_id": "buffer",
+                            "name": "生成缓冲", "tool": "spatial_buffer"},
+    }, active)
+    completed = _workflow_progress_tool_events({
+        **common, "event": {"type": "workflow_node_completed", "node_id": "buffer",
+                            "name": "生成缓冲", "tool": "spatial_buffer"},
+    }, active)
+    assert started[0]["type"] == "tool_start"
+    assert completed[0]["type"] == "tool_end"
+    assert started[0]["tool_call_id"] == completed[0]["tool_call_id"]
+    assert completed[0]["status"] == "success"
+
+    failed = _workflow_progress_tool_events({
+        **common, "event": {"type": "workflow_node_failed", "node_id": "centroid",
+                            "name": "计算质心", "tool": "spatial_centroid", "error": "坏几何"},
+    }, active)
+    skipped = _workflow_progress_tool_events({
+        **common, "event": {"type": "workflow_node_skipped", "node_id": "export",
+                            "name": "导出结果", "tool": "export_layer", "error": "上游失败，跳过"},
+    }, active)
+    assert [event["type"] for event in failed] == ["tool_start", "tool_end"]
+    assert failed[-1]["status"] == "error" and failed[-1]["error_message"] == "坏几何"
+    assert [event["type"] for event in skipped] == ["tool_start", "tool_end"]
+    assert skipped[-1]["status"] == "partial" and skipped[-1]["has_warning"] is True
+
+
+def test_controlled_stream_forwards_langgraph_custom_workflow_events(monkeypatch):
+    from types import SimpleNamespace
+    from backend.services import graph
+    from backend.services.llm_config import LLMConfig
+
+    class FakeAgent:
+        def stream(self, payload, config=None, **kwargs):
+            assert kwargs.get("stream_mode") == ["values", "custom"]
+            base = list(payload["messages"])
+            call = {"name": "execute_workflow", "args": {"workflow_json": "{}"},
+                    "id": "workflow-call-1", "type": "tool_call"}
+            ai = AIMessage(content="", tool_calls=[call])
+            yield {"messages": base + [ai]}
+            custom = {"type": "workflow_progress", "invocation_id": "wf-call-1",
+                      "workflow_name": "缓冲工作流"}
+            yield ("custom", {**custom, "event": {
+                "type": "workflow_node_started", "node_id": "buffer",
+                "name": "生成缓冲", "tool": "spatial_buffer"}})
+            yield ("custom", {**custom, "event": {
+                "type": "workflow_node_completed", "node_id": "buffer",
+                "name": "生成缓冲", "tool": "spatial_buffer"}})
+            result = ToolMessage(content="工作流执行完成", name="execute_workflow", tool_call_id="workflow-call-1")
+            yield {"messages": base + [ai, result]}
+            yield {"messages": base + [ai, result, AIMessage(content="缓冲分析已完成。") ]}
+
+    class FakeLLM:
+        def invoke(self, *args, **kwargs):
+            return SimpleNamespace(content="")
+
+    monkeypatch.setattr(graph, "build_llm", lambda cfg: FakeLLM())
+    monkeypatch.setattr(graph, "create_react_agent", lambda llm, tools: FakeAgent())
+    raw = list(graph.run_agent_stream(
+        [SystemMessage(content="test"), HumanMessage(content="执行缓冲工作流")],
+        cfg=LLMConfig(api_key="mock", base_url="http://mock", model="mock"),
+        original_message="执行缓冲工作流", session_id="workflow-custom-progress",
+    ))
+    events = [json.loads(line[6:]) for line in raw if line.startswith("data: ")]
+    node_start = next(event for event in events if event.get("name") == "spatial_buffer" and event["type"] == "tool_start")
+    node_end = next(event for event in events if event.get("name") == "spatial_buffer" and event["type"] == "tool_end")
+    assert node_start["tool_call_id"] == node_end["tool_call_id"]
+    assert node_start["step_label"] == "缓冲工作流 · 生成缓冲"
+    assert node_end["status"] == "success"
+    assert any(event.get("type") == "done" for event in events)

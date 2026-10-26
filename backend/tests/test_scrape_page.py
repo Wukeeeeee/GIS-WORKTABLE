@@ -75,7 +75,7 @@ def test_scrape_and_fetch_unwrap_markdown_links(monkeypatch):
     assert seen == [expected, expected]
 
 
-def test_fetch_webpage_reports_browser_failure_without_traceback(monkeypatch):
+def test_fetch_webpage_reports_browser_failure_without_traceback_or_url_details(monkeypatch):
     _without_scrapling(monkeypatch)
     monkeypatch.setattr(
         gis_tools.subprocess, "run",
@@ -86,7 +86,12 @@ def test_fetch_webpage_reports_browser_failure_without_traceback(monkeypatch):
         })(),
     )
 
-    result = gis_tools._fetch_webpage_impl_inner("https://example.test")
+    result = gis_tools._fetch_webpage_impl_inner(
+        "https://user:password@example.test/private?token=secret-value"
+    )
 
-    assert "net::ERR_NAME_NOT_RESOLVED" in result
+    assert "目标站点未能加载：https://example.test" in result
+    assert "net::ERR_NAME_NOT_RESOLVED" not in result
+    assert "password" not in result
+    assert "secret-value" not in result
     assert "Traceback" not in result

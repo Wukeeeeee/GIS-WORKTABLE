@@ -19,7 +19,7 @@ def inspect_geojson(geojson: dict) -> dict:
     Returns:
         dict: {
             feature_count, geometry_type, attr_fields, attr_types,
-            bbox, crs, crs_known, null_geom_count, invalid_geom_count
+            bbox, crs, crs_known, coordinate_units, null_geom_count, invalid_geom_count
         }
     """
     if not isinstance(geojson, dict):
@@ -103,6 +103,7 @@ def inspect_geojson(geojson: dict) -> dict:
         "bbox": bbox,
         "crs": crs_info.get("crs", "未知"),
         "crs_known": crs_info.get("known", False),
+        "coordinate_units": crs_info.get("coordinate_units"),
         "null_geom_count": null_geom,
         "invalid_geom_count": invalid_geom,
         "coord_sample": all_coords[:3] if all_coords else [],
@@ -160,15 +161,24 @@ def _detect_crs(geojson: dict) -> dict:
         if not isinstance(name, str):
             name = ""
         normalized = re.sub(r"[^A-Z0-9]", "", name.upper())
-        if (re.search(r"(?<!\d)4326(?!\d)", name)
-                or normalized.endswith("CRS84")
-                or normalized in {"WGS84", "WGS1984"}):
-            return {"crs": "EPSG:4326 (WGS-84)", "known": True}
-        if (re.search(r"(?<!\d)(?:3857|900913)(?!\d)", name)
-                or "PSEUDOMERCATOR" in normalized):
-            return {"crs": "EPSG:3857 (Web Mercator)", "known": True}
+        if normalized in {"CRS84", "WGS84", "WGS1984"}:
+            return {"crs": "EPSG:4326 (WGS-84)", "known": True, "coordinate_units": "degree"}
         if name:
-            return {"crs": name, "known": True}
+            try:
+                from pyproj import CRS
+                parsed_crs = CRS.from_user_input(name)
+            except Exception:
+                # Preserve the supplied identifier for diagnosis, but don't
+                # show an invalid/unrecognized CRS with the UI's green badge.
+                return {"crs": name, "known": False, "coordinate_units": None}
+            authority = parsed_crs.to_authority()
+            axes = parsed_crs.axis_info
+            coordinate_units = axes[0].unit_name if axes else None
+            if authority in (("EPSG", "4326"), ("OGC", "CRS84")):
+                return {"crs": "EPSG:4326 (WGS-84)", "known": True, "coordinate_units": coordinate_units or "degree"}
+            if parsed_crs.to_epsg() in (3857, 900913):
+                return {"crs": "EPSG:3857 (Web Mercator)", "known": True, "coordinate_units": coordinate_units}
+            return {"crs": name, "known": True, "coordinate_units": coordinate_units}
 
     # 检查坐标范围推断
     features = []
@@ -196,6 +206,6 @@ def _detect_crs(geojson: dict) -> dict:
 
         # 纬度在 -90~90，经度在 -180~180 → WGS-84
         if -90 <= min_lat <= 90 and -90 <= max_lat <= 90 and -180 <= min_lng <= 180 and -180 <= max_lng <= 180:
-            return {"crs": "EPSG:4326 (WGS-84)", "known": True}
+            return {"crs": "EPSG:4326 (WGS-84)", "known": True, "coordinate_units": "degree"}
 
-    return {"crs": "未知（无法从数据推断）", "known": False}
+    return {"crs": "未知（无法从数据推断）", "known": False, "coordinate_units": None}

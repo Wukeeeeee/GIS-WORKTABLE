@@ -30,6 +30,7 @@ def test_geotiff_upload_reprojects_pixels_and_extent_for_leaflet(tmp_path, monke
         )
 
     assert response.status_code == 200
+    assert "raster_info" in response.json(), response.json()
     raster_info = response.json()["raster_info"]
     output_path = tmp_path / "uploads" / raster_info["filename"]
     with Image.open(output_path) as image:
@@ -47,6 +48,34 @@ def test_geotiff_upload_reprojects_pixels_and_extent_for_leaflet(tmp_path, monke
     assert raster_info["width"] == width
     assert raster_info["height"] == height
     assert np.allclose(raster_info["bounds"], expected_bounds)
+
+
+def test_large_geotiff_uses_bounded_preview_and_preserves_full_resolution_source(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "_TEMP_OUTPUT_DIR", str(tmp_path))
+    raster_bytes = BytesIO()
+    values = np.full((2000, 3000), 100, dtype=np.uint8)
+    with rasterio.open(
+        raster_bytes, "w", driver="GTiff", width=3000, height=2000, count=1,
+        dtype="uint8", crs="EPSG:4326", transform=from_bounds(10, 20, 11, 21, 3000, 2000),
+    ) as dataset:
+        dataset.write(values, 1)
+    source_bytes = raster_bytes.getvalue()
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/upload",
+            files={"file": ("large-dem.tif", source_bytes, "image/tiff")},
+        )
+
+    assert response.status_code == 200
+    assert "raster_info" in response.json(), response.json()
+    raster_info = response.json()["raster_info"]
+    assert raster_info["source_width"] == 3000
+    assert raster_info["source_height"] == 2000
+    assert raster_info["preview_downsampled"] is True
+    assert raster_info["width"] * raster_info["height"] <= main._MAX_RASTER_PREVIEW_PIXELS
+    assert any("后续栅格分析仍使用保留的原始 GeoTIFF" in warning for warning in raster_info["quality_warnings"])
+    assert (tmp_path / "uploads" / "large-dem.tif").read_bytes() == source_bytes
 
 
 def test_same_named_geotiff_uploads_keep_separate_png_assets(tmp_path, monkeypatch):

@@ -51,7 +51,7 @@ test('map export draws Leaflet SVG vector overlays before map labels and legend'
     return { display: 'block', font: '', fontSize: '12px', color: '#333',
       getPropertyValue(name) { return node.computed[name] || ''; } };
   } };
-  const document = { getElementById() { return null; } };
+  const document = { getElementById() { return null; }, addEventListener() {} };
   const URL = { createObjectURL() { return 'blob:test'; }, revokeObjectURL() {} };
   class XMLSerializer { serializeToString(node) { serialized.push(node); return '<svg />'; } }
   const source = fs.readFileSync(path.resolve(__dirname, '../js/map.js'), 'utf8')
@@ -78,7 +78,7 @@ test('map image graticule labels longitude and latitude from the visible map bou
     measureText(text) { return { width: text.length * 6 }; }, fillRect() {}, fillText(text) { labels.push(text); },
   };
   const window = { GIS: {} };
-  const document = {};
+  const document = { addEventListener() {} };
   const source = fs.readFileSync(path.resolve(__dirname, '../js/map.js'), 'utf8')
     .replace('GIS.map = {', 'GIS.__setMapInstanceForTest = function(value) { mapInstance = value; };\n  GIS.__drawMapGraticuleForTest = _drawMapGraticule;\n  GIS.map = {');
   const context = vm.createContext({ window, document, console, Promise, Date, Math, Number, String,
@@ -118,6 +118,7 @@ test('PNG export starts a composed image download and reports the filename witho
   const window = { GIS: { chat: { addMessage(message) { messages.push(message); } } } };
   const document = {
     body,
+    addEventListener() {},
     getElementById(id) { return id === 'map' ? mapEl : null; },
     createElement(tag) { return tag === 'canvas' ? canvas : link; },
   };
@@ -166,6 +167,7 @@ test('JPEG aliases use matching image MIME and extension; unsupported formats ar
   const window = { GIS: { chat: { addMessage(message) { messages.push(message); } } } };
   const document = {
     body,
+    addEventListener() {},
     getElementById(id) { return id === 'map' ? mapEl : null; },
     createElement(tag) { return tag === 'canvas' ? canvas : link; },
   };
@@ -204,6 +206,7 @@ test('PDF layout embeds the current thematic legend and restores the map legend 
       getPropertyValue() { return ''; } };
   }, open() { return printWindow; } };
   const document = {
+    addEventListener() {},
     getElementById(id) { return id === 'map' ? mapEl : id === 'mapFloatingLegend' ? legendPanel : null; },
     createElement(tag) { return tag === 'canvas' ? { getContext() { return ctx; }, toDataURL() { return 'data:image/png;base64,map'; } } : {}; },
   };

@@ -4,14 +4,18 @@
 
 # GIS WorkTable
 
-结合自然语言 AI Agent 与手动工具的开源 GIS 工作台，用于空间数据处理、分析及 2D/3D 地图可视化。
+[English README](README.en.md)
+
+面向 GIS 学习和空间分析验证的 AI 原生地理工作台。用户可以用自然语言请求 AI 调用现有数据与 GIS 工具，并在地图、图层和工程中检查、继续处理结果；手动工具也可独立使用。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg)](backend/requirements.txt)
 
-[快速开始](#快速开始) · [功能说明](docs/features.md) · [架构](docs/architecture.md) · [参与贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)
+[快速开始](#快速开始) · [比赛演示步骤](docs/competition/demo-runbook.zh-CN.md) · [功能说明](docs/features.md) · [架构](docs/architecture.md) · [参与贡献](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)
 
 适合 GIS 学习、空间分析原型验证和工作流演示。项目持续开发中；桌面客户端为实验性功能，分析结果需要结合数据质量、坐标系和方法适用性核验。
+
+国内演示以简体中文为主。可下载并导入[便携演示工程](frontend/samples/GIS-WorkTable-Competition-Demo.giswork)，按[比赛演示步骤](docs/competition/demo-runbook.zh-CN.md)复现本地缓冲分析；在线公开服务演示为可选步骤，受网络和服务状态影响。
 
 ## 工作台预览
 
@@ -19,7 +23,7 @@
 
 已验证的操作及未验证范围见 [工具验证记录](docs/tool-validation.md)，近期改动见 [更新日志](CHANGELOG.md)。
 
-## 近期维护（2026-10-24）
+## 近期维护（2026-10-26）
 
 本轮按模块追踪“入口 → 执行 → 结果 → 保存”，集中修复中途断开的调用与状态：
 
@@ -32,8 +36,11 @@
 | 数据源与空间分析 | 修复地铁字段、线路匹配及数据交付衔接；修正重复坐标的近邻选择，并限制统计计算的内存占用 |
 | 启动与桌面客户端 | 修复进程探活、启动超时、失败反馈、退出清理和多实例隔离；完善本机 MCP 接入 |
 | 日志与内部清理 | 加固凭据写入、任务/日志持久化及错误脱敏；移除无消费方的状态，过时测试改为覆盖当前入口 |
+| 交接与导入可靠性 | 上传交接失败时回滚地图、图层面板和后台注册；共享状态桥接保留注册版本令牌；工程 ZIP 导入增加请求体、条目数与解压容量限制 |
 
-逐模块扫描仍在继续。自动化回归、真实数据检查和未验收范围分别记录在 [扫描进度](docs/validation/module-scan-progress.md)；通过本地检查不代表所有在线服务、真实模型或完整界面均已验收。
+本轮模块审查与高价值缺陷修复已收尾。自动化回归、真实数据检查和未验收范围分别记录在 [扫描进度](docs/validation/module-scan-progress.md)；通过本地检查不代表所有在线服务、真实模型或完整界面均已验收。
+
+真实数据验收使用带 `EPSG:4326` 的 SRTM-derived DEM：在浏览器中生成坡度、坡向和五级分位重分类结果，保存并重载工程后再次运行坡度分析，再保存、重开并检查恢复的 4 个栅格图层及其来源、CRS、值单位和质量提示。该小范围样例验证工作流衔接，不代表外部地形精度或业务适用性已通过基准验证。
 
 ## 主要能力
 

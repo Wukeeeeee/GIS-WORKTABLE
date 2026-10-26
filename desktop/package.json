@@ -4,7 +4,7 @@
   "description": "GIS-WORKTABLE 本地客户端（Electron 外壳，内嵌启动 FastAPI 后端）",
   "main": "main.js",
   "author": "GIS-WORKTABLE Contributors",
-  "license": "AGPL-3.0",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "start": "electron .",

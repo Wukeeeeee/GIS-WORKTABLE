@@ -9,6 +9,20 @@ window.GIS = window.GIS || {};
   'use strict';
   
   const GIS = window.GIS;
+  function _rasterT(key, fallback) { return GIS.i18n ? GIS.i18n.t(key, fallback) : fallback; }
+  function _rasterMetadata(value, kind) {
+    return GIS.i18n && typeof GIS.i18n.rasterMetadata === 'function'
+      ? GIS.i18n.rasterMetadata(value, kind) : value;
+  }
+  function _layerT(key, fallback) { return GIS.i18n ? GIS.i18n.t(key, fallback) : fallback; }
+  function _coordinateUnitLabel(unit) {
+    var normalized = String(unit || '').toLowerCase();
+    if (normalized === 'degree') return _layerT('layer.unit-degree', '度 (°)');
+    if (normalized === 'metre' || normalized === 'meter') return _layerT('layer.unit-metre', '米 (m)');
+    if (normalized === 'foot' || normalized === 'international foot') return _layerT('layer.unit-foot', '英尺 (ft)');
+    if (normalized === 'us survey foot') return _layerT('layer.unit-us-survey-foot', '美制测量英尺 (US survey ft)');
+    return unit || _layerT('raster.unknown-units', '未知单位');
+  }
 
   let tbody = null;
   let layersTable = null;
@@ -18,6 +32,7 @@ window.GIS = window.GIS || {};
   let groups = Object.create(null); // { groupId: {id, name, collapsed} }
   let _groupIdCounter = 0;
   let _handleSwipeAction = null;
+  let _inspectedRasterLayerId = null;
 
   function _registryResultOk(result) {
     if (Array.isArray(result)) return result.every(_registryResultOk);
@@ -85,7 +100,7 @@ window.GIS = window.GIS || {};
     if (data) layerData = data;
     if (!tbody) return;
     const count = document.getElementById('workspaceLayerCount');
-    if (count) count.textContent = layerData.length + ' 个图层';
+    if (count) count.textContent = GIS.i18n ? GIS.i18n.layerCount(layerData.length) : layerData.length + ' 个图层';
 
     const groupKeys = Object.keys(groups);
     if (layerData.length === 0 && groupKeys.length === 0) {
@@ -173,51 +188,55 @@ window.GIS = window.GIS || {};
     const features = layer.geojson && (layer.geojson.type === 'FeatureCollection' ? (layer.geojson.features || []).length : layer.geojson.type === 'Feature' ? 1 : null);
     
     // 细分友好展示文案：针对集合特性精细化
-    var typeText = '要素';
+    var english = !!(GIS.i18n && GIS.i18n.isEnglish());
+    var typeText = english ? 'Feature' : '要素';
     if (rawType === 'Point') {
-      typeText = (features && features > 1) ? '点集合 (Point)' : '点 (Point)';
+      typeText = english ? ((features && features > 1) ? 'Point set (Point)' : 'Point') : ((features && features > 1) ? '点集合 (Point)' : '点 (Point)');
     } else if (rawType === 'MultiPoint') {
-      typeText = '点集合 (MultiPoint)';
+      typeText = english ? 'MultiPoint' : '点集合 (MultiPoint)';
     } else if (rawType === 'LineString') {
-      typeText = (features && features > 1) ? '线集合 (Line)' : '线 (LineString)';
+      typeText = english ? ((features && features > 1) ? 'Line set (Line)' : 'Line') : ((features && features > 1) ? '线集合 (Line)' : '线 (LineString)');
     } else if (rawType === 'MultiLineString') {
-      typeText = '线集合 (MultiLine)';
+      typeText = english ? 'MultiLineString' : '线集合 (MultiLine)';
     } else if (rawType === 'Polygon') {
-      typeText = (features && features > 1) ? '面集合 (Polygon)' : '面 (Polygon)';
+      typeText = english ? ((features && features > 1) ? 'Polygon set (Polygon)' : 'Polygon') : ((features && features > 1) ? '面集合 (Polygon)' : '面 (Polygon)');
     } else if (rawType === 'MultiPolygon') {
-      typeText = '多面 (MultiPolygon)';
+      typeText = english ? 'MultiPolygon' : '多面 (MultiPolygon)';
     } else if (rawType === 'GeometryCollection') {
-      typeText = '几何集合 (点/线/面)';
+      typeText = english ? 'Geometry collection' : '几何集合 (点/线/面)';
     } else {
       const geometryNames = {Point:'点', MultiPoint:'点集合', LineString:'线', MultiLineString:'线集合', Polygon:'面', MultiPolygon:'多面', GeometryCollection:'几何集合'};
-      typeText = String(rawType).split(',').map(t => geometryNames[t.trim()] || t.trim()).join(' / ');
+      const geometryNamesEn = {Point:'Point', MultiPoint:'MultiPoint', LineString:'Line', MultiLineString:'MultiLineString', Polygon:'Polygon', MultiPolygon:'MultiPolygon', GeometryCollection:'Geometry collection'};
+      typeText = String(rawType).split(',').map(t => (english ? geometryNamesEn : geometryNames)[t.trim()] || t.trim()).join(' / ');
     }
 
     const op = Math.round((layer.opacity !== undefined ? layer.opacity : 1) * 100);
+    const sourceName = layer.filename || (english ? 'Untitled' : '未命名');
+    const displayName = GIS.i18n && GIS.i18n.layerLabel ? GIS.i18n.layerLabel(sourceName) : sourceName;
     var rowClass = layer.visible === false ? 'layer-hidden' : '';
     if (layer.groupId) rowClass += (rowClass ? ' ' : '') + 'group-layer-row' + (groupCollapsed ? ' is-collapsed' : '');
     return '<tr class="' + rowClass + '"' + (groupCollapsed ? ' aria-hidden="true" inert' : '') + ' draggable="true" data-index="' + index + '" data-id="' + escapeHtml(layer.layer_id || '') + '"' +
       (layer.groupId ? ' data-group="' + escapeHtml(layer.groupId) + '"' : '') + hiddenStyle + '>' +
       "<td class=\"col-drag\"><span class=\"drag-handle\" draggable=\"true\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-102a87898985.png')\"></span></span></td>" +
-      '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + (layer.layer_id || '') + '" aria-pressed="' + String(layer.visible !== false) + '" aria-label="' + (layer.visible !== false ? '隐藏图层' : '显示图层') + '" title="' + (layer.visible !== false ? '隐藏图层' : '显示图层') + '">' +
+      '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + (layer.layer_id || '') + '" aria-pressed="' + String(layer.visible !== false) + '" aria-label="' + (english ? (layer.visible !== false ? 'Hide layer' : 'Show layer') : (layer.visible !== false ? '隐藏图层' : '显示图层')) + '" title="' + (english ? (layer.visible !== false ? 'Hide layer' : 'Show layer') : (layer.visible !== false ? '隐藏图层' : '显示图层')) + '">' +
       '<span class="ui-visibility-check' + (layer.visible !== false ? ' checked' : '') + '" aria-hidden="true"></span></button></td>' +
       '<td class="col-name">' +
         '<div class="layer-title-line">' +
-          '<span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + ';opacity:' + (layer.opacity !== undefined ? layer.opacity : 1) + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '" title="修改颜色 · 不透明度 ' + op + '%"></span>' +
-          '<span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="' + escapeHtml(layer.filename || '未命名') + ' · 双击重命名">' + escapeHtml(layer.filename || '未命名') + '</span>' +
+          '<span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + ';opacity:' + (layer.opacity !== undefined ? layer.opacity : 1) + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '" title="' + (english ? 'Change color · Opacity ' : '修改颜色 · 不透明度 ') + op + '%"></span>' +
+          '<span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="' + escapeHtml(displayName) + (english ? ' · Double-click to rename' : ' · 双击重命名') + '">' + escapeHtml(displayName) + '</span>' +
         '</div>' +
         '<div class="layer-meta-line">' +
-          '<span class="layer-type">' + escapeHtml(typeText) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">· ' + features + ' 个要素</span>' : '') +
+          '<span class="layer-type">' + escapeHtml(typeText) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">' + (GIS.i18n ? GIS.i18n.featureCount(features) : '· ' + features + ' 个要素') + '</span>' : '') +
         '</div>' +
-        '<div class="layer-op-row" title="透明度：拖动调整">' +
-          '<span class="layer-op-label">不透明度</span>' +
+        '<div class="layer-op-row" title="' + (english ? 'Adjust opacity with the slider' : '透明度：拖动调整') + '">' +
+          '<span class="layer-op-label">' + (english ? 'Opacity' : '不透明度') + '</span>' +
           '<input type="range" class="layer-row-opacity" min="0" max="100" value="' + op + '" data-id="' + (layer.layer_id || '') + '">' +
           '<span class="layer-op-val" id="opval_' + (layer.layer_id || '') + '">' + op + '%</span>' +
         '</div>' +
       '</td>' +
       '<td class="col-actions"><div class="layer-actions">' +
-      '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + '" title="检查图层"><span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url(\'/assets/ui-icons/icon-658e8e14699f.png\')"></span></button>' +
-      '<button class="layer-action-btn layer-more-btn" data-action="more" data-id="' + (layer.layer_id || '') + '" title="更多图层操作" aria-label="更多图层操作" aria-haspopup="menu">⋯</button>' +
+      '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + '" title="' + (english ? 'Inspect layer' : '检查图层') + '"><span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url(\'/assets/ui-icons/icon-658e8e14699f.png\')"></span></button>' +
+      '<button class="layer-action-btn layer-more-btn" data-action="more" data-id="' + (layer.layer_id || '') + '" title="' + (english ? 'More layer actions' : '更多图层操作') + '" aria-label="' + (english ? 'More layer actions' : '更多图层操作') + '" aria-haspopup="menu">⋯</button>' +
       '</div></td></tr>';
   }
 
@@ -399,6 +418,7 @@ window.GIS = window.GIS || {};
         opacity: layer.opacity,
         color: layer.color || nextColor(),
         source: layer.source || 'upload',
+        provenance: layer.provenance || null,
         visible: layer.visible !== false,
         _panelSync: true,
         _skip2DRender: true,
@@ -1334,7 +1354,12 @@ window.GIS = window.GIS || {};
   }
 
   function escapeHtml(str) {
-    return window.GIS.utils ? window.GIS.utils.escapeHtml(str) : ('' + (str || ''));
+    if (window.GIS.utils && typeof window.GIS.utils.escapeHtml === 'function') {
+      return window.GIS.utils.escapeHtml(str);
+    }
+    return String(str == null ? '' : str).replace(/[&<>"']/g, function(char) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char];
+    });
   }
 
   // ---- 几何坐标辅助函数 ----
@@ -1408,15 +1433,96 @@ window.GIS = window.GIS || {};
   }
 
   /** 打开图层检查器面板 */
+  function showRasterLayerInspector(layer) {
+    var raster = layer.raster || {};
+    _inspectedRasterLayerId = layer.layer_id;
+    var panel = document.getElementById('layerInspector');
+    var body = document.getElementById('inspectorBody');
+    var title = document.getElementById('inspectorTitle');
+    if (!panel || !body) return;
+    var row = function(label, value) {
+      if (value === null || value === undefined || value === '') value = _rasterT('raster.not-provided', '未提供');
+      return '<div class="info-row"><span class="info-label">' + escapeHtml(label) + '</span><span class="info-val">' + escapeHtml(String(value)) + '</span></div>';
+    };
+    var reference = raster.source_reference;
+    var referenceMarkup = /^https?:\/\//i.test(String(reference || ''))
+      ? '<a class="info-val" href="' + escapeHtml(reference) + '" target="_blank" rel="noopener noreferrer">' + _rasterT('raster.open-source', '打开来源说明') + '</a>'
+      : '';
+    var warnings = Array.isArray(raster.quality_warnings) ? raster.quality_warnings.slice() : [];
+    if (!raster.value_units) warnings.push('像元数值单位未标注；高程或指数结果需结合源数据元数据解释');
+    var warningTranslations = {
+      '像元数值单位未标注；高程或指数结果需结合源数据元数据解释': ['raster.value-unit-missing', '像元数值单位未标注；高程或指数结果需结合源数据元数据解释'],
+      '栅格值单位未在文件元数据中标注；解释高程或计算坡度前请核实源数据单位': ['raster.warning-source-unit-missing', '栅格值单位未在文件元数据中标注；解释高程或计算坡度前请核实源数据单位'],
+      '地图预览已降采样；后续栅格分析仍使用保留的原始 GeoTIFF': ['raster.warning-preview-downsampled', '地图预览已降采样；后续栅格分析仍使用保留的原始 GeoTIFF'],
+      '源栅格未标注数值单位；地形计算按高程值为米解释，请核实原始数据': ['raster.warning-dem-unit-missing', '源栅格未标注数值单位；地形计算按高程值为米解释，请核实原始数据'],
+      '源栅格高程单位无法识别；地形计算按数值单位为米解释，请核实原始数据': ['raster.warning-dem-unit-unknown', '源栅格高程单位无法识别；地形计算按数值单位为米解释，请核实原始数据'],
+      '经纬度栅格按中心处椭球像元距离换算水平间距；地形结果适用于当前小范围，大范围请使用合适的投影 CRS': ['raster.warning-geographic-dem', '经纬度栅格按中心处椭球像元距离换算水平间距；地形结果适用于当前小范围，大范围请使用合适的投影 CRS'],
+      '栅格计算器不会自动推导表达式的物理单位': ['raster.warning-unit-not-derived', '栅格计算器不会自动推导表达式的物理单位'],
+      '结果栅格未包含 CRS': ['raster.warning-crs-missing', '结果栅格未包含 CRS'],
+      '有效像元比例低于 90%，请检查 NoData 或输入覆盖范围': ['raster.warning-low-valid-pixels', '有效像元比例低于 90%，请检查 NoData 或输入覆盖范围'],
+    };
+    var displayWarning = function(message) {
+      var translation = warningTranslations[message];
+      return translation ? _rasterT(translation[0], translation[1]) : message;
+    };
+    var bounds = Array.isArray(raster.bounds) && raster.bounds.length === 4
+      ? raster.bounds.map(function(value) { return Number(value).toFixed(5); }).join(', ')
+      : '未提供';
+    var pixelSize = Array.isArray(raster.pixel_size) && raster.pixel_size.length === 2
+      ? raster.pixel_size.map(function(value) { return Number(value).toPrecision(5); }).join(' × ') + ' ' + (raster.pixel_units || _rasterT('raster.unknown-units', '未知单位'))
+      : _rasterT('raster.not-provided', '未提供');
+    var dimensions = raster.source_width && raster.source_height
+      ? raster.source_width + ' × ' + raster.source_height + ' ' + _rasterT('raster.pixels', '像元')
+      : _rasterT('raster.not-provided', '未提供');
+    var warningMarkup = warnings.length
+      ? '<ul class="raster-quality-warnings">' + warnings.map(function(message) { return '<li>' + escapeHtml(displayWarning(message)) + '</li>'; }).join('') + '</ul>'
+      : '<div class="info-row"><span class="info-val">' + _rasterT('raster.no-warnings', '未发现自动检查警告；这不代表数据精度或分析方法已独立验证。') + '</span></div>';
+
+    if (title) title.textContent = _rasterT('raster.inspector-title', '栅格检查');
+    body.innerHTML = '<div class="inspector-tab-content" style="display:block;"><div class="info-panel">' +
+      '<div class="info-group"><div class="info-group-title">' + _rasterT('raster.group-source', '来源与处理') + '</div>' +
+        row(_rasterT('raster.field-layer', '图层'), layer.filename || raster.source_name) +
+        row(_rasterT('raster.field-source', '数据来源'), raster.source_label || (layer.source === 'ai' ? _rasterT('raster.default-ai-source', 'GIS WorkTable 分析结果') : _rasterT('raster.default-upload-source', '本地上传'))) +
+        row(_rasterT('raster.field-source-file', '源文件'), raster.source_filename) +
+        (raster.source_layer ? row(_rasterT('raster.field-source-layer', '输入图层'), raster.source_layer) : '') +
+        (raster.processing ? row(_rasterT('raster.field-processing', '处理操作'), _rasterMetadata(raster.processing, 'processing')) : '') +
+        (referenceMarkup ? '<div class="info-row"><span class="info-label">' + _rasterT('raster.field-source-link', '来源链接') + '</span>' + referenceMarkup + '</div>' : '') +
+      '</div>' +
+      '<div class="info-group"><div class="info-group-title">' + _rasterT('raster.group-grid', '坐标与栅格') + '</div>' +
+        row(_rasterT('raster.field-crs', '源数据 CRS'), raster.crs || layer.crs) +
+        row(_rasterT('raster.field-bounds', '范围（WGS-84）'), bounds) +
+        row(_rasterT('raster.field-resolution', '分辨率'), pixelSize) +
+        row(_rasterT('raster.field-size', '栅格大小'), dimensions) +
+        (raster.width && raster.height ? row(_rasterT('raster.field-preview-size', '地图预览尺寸'), raster.width + ' × ' + raster.height + ' ' + _rasterT('raster.pixels', '像元')) : '') +
+        row(_rasterT('raster.field-bands', '波段数'), raster.bands) +
+        row(_rasterT('raster.field-value-units', '像元值单位'), _rasterMetadata(raster.value_units, 'value_units')) +
+        row(_rasterT('raster.field-vertical-datum', '垂直基准'), raster.vertical_datum || _rasterT('raster.not-provided', '未提供')) +
+        (Number.isFinite(raster.valid_pixel_ratio) ? row(_rasterT('raster.field-valid-pixels', '有效像元'), (raster.valid_pixel_ratio * 100).toFixed(2) + '%') : '') +
+      '</div>' +
+      '<div class="info-group"><div class="info-group-title">' + _rasterT('raster.group-quality', '质量提示') + '</div>' + warningMarkup + '</div>' +
+      '</div></div>';
+    if (window.GIS.workspace && typeof window.GIS.workspace.preparePanel === 'function') {
+      window.GIS.workspace.preparePanel('layerInspector', 'inspectorHeader', 'inspectorClose', _rasterT('raster.inspector-title', '栅格检查'));
+      window.GIS.workspace.expandPanel('layerInspector');
+      if (!panel.style.left || panel.style.left === 'auto') window.GIS.workspace.centerPanel('layerInspector');
+    }
+    panel.style.display = 'flex';
+  }
+
   async function showLayerInspector(layerId, initialTab) {
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (!layer) return;
+    if (!(layer.geometry_type === 'Raster' && layer.raster)) _inspectedRasterLayerId = null;
 
     var geojson = layer.geojson;
     if (!geojson && GIS.map && GIS.map.getGeoJSON) {
       geojson = GIS.map.getGeoJSON(layer._rawName || layer.layer_id);
     }
     if (!geojson) {
+      if (layer.geometry_type === 'Raster' && layer.raster) {
+        showRasterLayerInspector(layer);
+        return;
+      }
       if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
         window.GIS.chat.addMessage('图层「' + (layer.filename || '未命名') + '」无可用数据', 'system');
       }
@@ -1454,6 +1560,7 @@ window.GIS = window.GIS || {};
     // 组装检查结果
     var crsStr = remote.crs || '未知（仅前端检测）';
     var crsKnown = remote.crs_known !== false;
+    var coordinateUnit = _coordinateUnitLabel(remote.coordinate_units);
     var crsBadge = crsKnown
       ? '<span style="color:#2e7d32;font-weight:600;display:inline-flex;align-items:center;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg></span>'
       : '<span style="color:#d32f2f;font-weight:600;">?</span>';
@@ -1606,7 +1713,73 @@ window.GIS = window.GIS || {};
           var curMinZ = (layer.minZoom !== undefined && layer.minZoom !== null) ? layer.minZoom : (scaleRange.minZoom || '');
           var curMaxZ = (layer.maxZoom !== undefined && layer.maxZoom !== null) ? layer.maxZoom : (scaleRange.maxZoom || '');
 
-          var tabInfo =
+    var provenance = layer.provenance && typeof layer.provenance === 'object' ? layer.provenance : null;
+    var provenanceHtml = '';
+    if (provenance) {
+      var providerName = provenance.provider === 'local_upload'
+        ? _layerT('layer.provenance.local-file', '本地文件')
+        : provenance.provider === 'gis_worktable'
+          ? _layerT('layer.provenance.worktable', 'GIS WorkTable') : provenance.provider_name;
+      var kindLabel = provenance.kind === 'vector_upload'
+        ? _layerT('layer.provenance.vector-upload', '矢量文件上传')
+        : provenance.kind === 'analysis_result'
+          ? _layerT('layer.provenance.analysis-result', '空间分析结果')
+        : (provenance.kind_label || provenance.kind);
+      var sourceUrl = typeof provenance.source_url === 'string' && /^https:\/\/[^/@]+(?:\/|$)/i.test(provenance.source_url)
+        ? '<a class="info-val" href="' + escapeHtml(provenance.source_url) + '" target="_blank" rel="noopener noreferrer">' + _layerT('layer.provenance.open-source', '打开来源说明') + '</a>'
+        : '';
+      var processingHtml = '';
+      var processing = provenance.processing;
+      if (processing && (processing.tool === 'spatial_buffer' || processing.tool === 'spatial_clip'
+          || processing.tool === 'spatial_union' || processing.tool === 'spatial_intersect'
+          || processing.tool === 'spatial_difference')
+          && typeof processing.source_layer === 'string' && processing.source_layer) {
+        var operationLabel = processing.tool === 'spatial_buffer'
+          ? _layerT('layer.processing.spatial-buffer', '缓冲区分析')
+          : processing.tool === 'spatial_clip'
+            ? _layerT('layer.processing.spatial-clip', '裁剪分析')
+            : processing.tool === 'spatial_union'
+              ? _layerT('layer.processing.spatial-union', '空间合并')
+              : processing.tool === 'spatial_intersect'
+                ? _layerT('layer.processing.spatial-intersect', '空间相交')
+                : _layerT('layer.processing.spatial-difference', '空间差异');
+        var processingRows = '<div class="info-row"><span class="info-label">' + _layerT('layer.processing.source-layer', '输入图层') + '</span><span class="info-val">' + escapeHtml(processing.source_layer) + '</span></div>';
+        var processingReady = false;
+        if (processing.tool === 'spatial_buffer' && processing.parameters) {
+          var distance = processing.parameters.distance;
+          var unit = processing.parameters.unit;
+          var dissolve = processing.parameters.dissolve;
+          if (typeof distance === 'number' && Number.isFinite(distance) && distance > 0
+              && (unit === 'm' || unit === 'km') && typeof dissolve === 'boolean') {
+            processingRows += '<div class="info-row"><span class="info-label">' + _layerT('layer.processing.buffer-distance', '缓冲距离') + '</span><span class="info-val">' + escapeHtml(String(distance)) + ' ' + unit + '</span></div>' +
+              '<div class="info-row"><span class="info-label">' + _layerT('layer.processing.dissolve', '融合重叠区') + '</span><span class="info-val">' + _layerT(dissolve ? 'common.yes' : 'common.no', dissolve ? '是' : '否') + '</span></div>';
+            processingReady = true;
+          }
+        } else if (processing.tool === 'spatial_clip'
+            && typeof processing.clip_layer === 'string' && processing.clip_layer) {
+          processingRows += '<div class="info-row"><span class="info-label">' + _layerT('layer.processing.clip-layer', '裁剪边界图层') + '</span><span class="info-val">' + escapeHtml(processing.clip_layer) + '</span></div>';
+          processingReady = true;
+        } else if ((processing.tool === 'spatial_union' || processing.tool === 'spatial_intersect'
+            || processing.tool === 'spatial_difference')
+            && typeof processing.other_layer === 'string' && processing.other_layer) {
+          processingRows += '<div class="info-row"><span class="info-label">' + _layerT('layer.processing.other-layer', '另一个输入图层') + '</span><span class="info-val">' + escapeHtml(processing.other_layer) + '</span></div>';
+          processingReady = true;
+        }
+        if (processingReady) {
+          processingHtml = '<div class="info-group"><div class="info-group-title">' + _layerT('layer.processing.title', '处理记录') + '</div>' +
+            '<div class="info-row"><span class="info-label">' + _layerT('layer.processing.operation', '处理工具') + '</span><span class="info-val">' + operationLabel + '</span></div>' +
+            processingRows + '</div>';
+        }
+      }
+      provenanceHtml = '<div class="info-group"><div class="info-group-title">' + _layerT('layer.provenance.title', '获取来源') + '</div>' +
+        (providerName ? '<div class="info-row"><span class="info-label">' + _layerT('layer.provenance.provider', '数据提供方') + '</span><span class="info-val">' + escapeHtml(providerName) + '</span></div>' : '') +
+        (kindLabel ? '<div class="info-row"><span class="info-label">' + _layerT('layer.provenance.kind', '数据类型') + '</span><span class="info-val">' + escapeHtml(kindLabel) + '</span></div>' : '') +
+        (provenance.file_format ? '<div class="info-row"><span class="info-label">' + _layerT('layer.provenance.format', '来源格式') + '</span><span class="info-val">' + escapeHtml(provenance.file_format) + '</span></div>' : '') +
+        (provenance.crs ? '<div class="info-row"><span class="info-label">' + _layerT('layer.provenance.crs', '源数据 CRS') + '</span><span class="info-val">' + escapeHtml(provenance.crs) + (provenance.crs_known === false ? _layerT('layer.provenance.crs-unknown', '（未知）') : '') + '</span></div>' : '') +
+        (sourceUrl ? '<div class="info-row"><span class="info-label">' + _layerT('layer.provenance.homepage', '来源主页') + '</span>' + sourceUrl + '</div>' : '') +
+        '</div>' + processingHtml;
+    }
+    var tabInfo =
       '<div class="inspector-tab-content" id="tabInfo" style="display:' + (activeTabId === 'info' ? 'block' : 'none') + ';">' +
         '<div class="info-panel">' +
           '<div class="info-group">' +
@@ -1616,9 +1789,11 @@ window.GIS = window.GIS || {};
             '<div class="info-row"><span class="info-label">几何类型</span><span class="info-val">' + escapeHtml(remote.geometry_type || local.geometryType) + '</span></div>' +
             '<div class="info-row"><span class="info-label">要素数</span><span class="info-val">' + (remote.feature_count ?? local.featureCount) + '</span></div>' +
           '</div>' +
+          provenanceHtml +
           '<div class="info-group">' +
             '<div class="info-group-title">坐标系</div>' +
             '<div class="info-row"><span class="info-label">CRS</span><span class="info-val">' + crsBadge + ' ' + escapeHtml(crsStr) + '</span></div>' +
+            '<div class="info-row"><span class="info-label">' + _layerT('layer.coordinate-units', '坐标单位') + '</span><span class="info-val">' + escapeHtml(coordinateUnit) + '</span></div>' +
           '</div>' +
           '<div class="info-group">' +
             '<div class="info-group-title">显示与可见缩放范围 (ArcMap 风格)</div>' +
@@ -2567,7 +2742,10 @@ window.GIS = window.GIS || {};
   /** 将样式映射应用到地图图层 */
   function _applyStyleToMap(layer, gj, styleMap) {
     var name = layer._rawName || layer.layer_id;
-    if (!GIS.map || !GIS.map.applySymbology) return false;
+    if (!GIS.map || !GIS.map.applySymbology) {
+      if (window.GIS.chat && window.GIS.chat.addMessage) window.GIS.chat.addMessage('地图渲染器不可用，未应用图层符号化', 'system');
+      return false;
+    }
     var config = _symbologyConfig[layer.layer_id] || (_symbologyConfig[layer.layer_id] = {});
     var features = gj && gj.type === 'FeatureCollection' ? (gj.features || [])
       : gj && gj.type === 'Feature' ? [gj] : [];
@@ -2586,11 +2764,14 @@ window.GIS = window.GIS || {};
       var key = stableKey && fidCounts[stableKey] === 1 ? stableKey : 'index:' + index;
       if (styleMap && styleMap[index]) stylesByFid[key] = Object.assign({}, styleMap[index]);
     });
+    if (GIS.map.applySymbology(name, gj, styleMap) !== true) {
+      if (window.GIS.chat && window.GIS.chat.addMessage) window.GIS.chat.addMessage('地图未能渲染图层符号化结果', 'system');
+      return false;
+    }
     config.featureStyles = stylesByFid;
     config.featureCount = features.length;
     config.featureStyleCount = Object.keys(stylesByFid).length;
     config.enabled = true;
-    GIS.map.applySymbology(name, gj, styleMap);
     return true;
   }
 
@@ -3482,11 +3663,11 @@ window.GIS = window.GIS || {};
 
   /** 显示地图浮动图例 */
   function _renderFloatingLegend(layerName, data, layerId) {
-    _lastLegendData = { layerName: layerName, data: data, layerId: layerId || null };
     var panel = document.getElementById('mapFloatingLegend');
     var pill = document.getElementById('mapLegendTogglePill');
     var pillText = document.getElementById('mapLegendToggleText');
-    if (!panel) return;
+    if (!panel) return false;
+    _lastLegendData = { layerName: layerName, data: data, layerId: layerId || null };
     var titleEl = document.getElementById('mapLegendTitle');
     var fieldEl = document.getElementById('mapLegendField');
     var itemsEl = document.getElementById('mapLegendItems');
@@ -3536,13 +3717,14 @@ window.GIS = window.GIS || {};
         }
       });
     }
+    return true;
   }
 
   /** 显示图例 */
   function _showLegend(layerId, silent) {
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
-    if (!layer && layerData.length > 0) layer = layerData[0];
-    if (!layer) return;
+    if (!layer && !layerId && layerData.length > 0) layer = layerData[0];
+    if (!layer) return false;
 
     var config = _symbologyConfig[layer.layer_id];
     if (config && config.enabled && !config.legendData &&
@@ -3578,17 +3760,18 @@ window.GIS = window.GIS || {};
       if (!silent && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
         window.GIS.chat.addMessage('该图层未找到可分级的数值指标，请先为图层应用分级设色', 'system');
       }
-      return;
+      return false;
     }
     var data = config.legendData;
     var layerName = layer ? (layer._rawName || layer.filename || layer.layer_id) : layerId;
 
     // 呈现在地图右下角浮动图例控件中
-    _renderFloatingLegend(layerName, data, layer ? layer.layer_id : null);
+    if (!_renderFloatingLegend(layerName, data, layer ? layer.layer_id : null)) return false;
 
     if (!silent && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       window.GIS.chat.addMessage('已在地图右下角展示「' + escapeHtml(layerName) + '」图例', 'system');
     }
+    return true;
   }
 
   function _findLayerByNameOrFuzzy(name) {
@@ -3604,13 +3787,16 @@ window.GIS = window.GIS || {};
   /** 按照AI layer_op 'symbology' 应用分级色彩 */
   function _applyGraduatedFromAI(name, field, classes, scheme, method, breaks, fillOpacity) {
     var layer = _findLayerByNameOrFuzzy(name);
-    if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
+    if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return false; }
     var gj = getLayerGeoJSON(layer.layer_id);
-    if (!gj) { if (window.GIS.chat) window.GIS.chat.addMessage('图层「' + name + '」无数据', 'system'); return; }
+    if (!gj) { if (window.GIS.chat) window.GIS.chat.addMessage('图层「' + name + '」无数据', 'system'); return false; }
     var features = [];
     if (gj.type === 'FeatureCollection') features = gj.features || [];
     else if (gj.type === 'Feature') features = [gj];
-    if (!features.length) return;
+    if (!features.length) {
+      if (window.GIS.chat && window.GIS.chat.addMessage) window.GIS.chat.addMessage('图层没有可用于符号化的要素', 'system');
+      return false;
+    }
     var colors = _getColorScheme(scheme || 'blues', classes || 5);
     var previousConfig = _symbologyConfig[layer.layer_id];
     _symbologyConfig[layer.layer_id] = Object.assign({}, previousConfig || {}, {
@@ -3630,13 +3816,16 @@ window.GIS = window.GIS || {};
   /** 按照AI layer_op 'symbology' 应用唯一值渲染 */
   function _applyUniqueFromAI(name, field, scheme) {
     var layer = _findLayerByNameOrFuzzy(name);
-    if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
+    if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return false; }
     var gj = getLayerGeoJSON(layer.layer_id);
-    if (!gj) { if (window.GIS.chat) window.GIS.chat.addMessage('图层「' + name + '」无数据', 'system'); return; }
+    if (!gj) { if (window.GIS.chat) window.GIS.chat.addMessage('图层「' + name + '」无数据', 'system'); return false; }
     var features = [];
     if (gj.type === 'FeatureCollection') features = gj.features || [];
     else if (gj.type === 'Feature') features = [gj];
-    if (!features.length) return;
+    if (!features.length) {
+      if (window.GIS.chat && window.GIS.chat.addMessage) window.GIS.chat.addMessage('图层没有可用于符号化的要素', 'system');
+      return false;
+    }
     if (!features.some(function(feature) {
       return feature && feature.properties && Object.prototype.hasOwnProperty.call(feature.properties, field);
     })) {
@@ -3707,8 +3896,12 @@ window.GIS = window.GIS || {};
     /** AI 自然语言调用：对图层添加属性标注 */
     addLabels: function(name, field) {
       var layer = _findLayerByNameOrFuzzy(name);
-      if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return; }
-      if (GIS.map && GIS.map.setLabels) GIS.map.setLabels(layer._rawName || layer.layer_id, field);
+      if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return false; }
+      var applied = GIS.map && GIS.map.setLabels && GIS.map.setLabels(layer._rawName || layer.layer_id, field);
+      if (!applied && window.GIS.chat) {
+        window.GIS.chat.addMessage('未能为图层「' + name + '」显示标注，请确认字段存在且有非空值', 'system');
+      }
+      return !!applied;
     },
     /** 清除图层标注 */
     clearLabels: function(name) {
@@ -3719,18 +3912,21 @@ window.GIS = window.GIS || {};
     /** AI 自然语言调用：显示图例 */
     addLegend: function(name) {
       var layer = null;
-      if (name) {
+      var hasExplicitName = name != null && String(name).trim() !== '';
+      if (hasExplicitName) {
         layer = _findLayerByNameOrFuzzy(name);
       } else {
         layer = layerData.find(function(l) { return _symbologyConfig[l.layer_id] && _symbologyConfig[l.layer_id].legendData; }) || layerData[0];
       }
       if (!layer) {
-        if (_lastLegendData) {
-          _renderFloatingLegend(_lastLegendData.layerName, _lastLegendData.data, _lastLegendData.layerId);
+        if (hasExplicitName) {
+          if (window.GIS.chat && window.GIS.chat.addMessage) {
+            window.GIS.chat.addMessage('未找到图层「' + escapeHtml(name) + '」，无法显示图例', 'system');
+          }
         }
-        return;
+        return false;
       }
-      _showLegend(layer.layer_id, false);
+      return _showLegend(layer.layer_id, false);
     },
     /** AI 自然语言调用：显示指北针 */
     addNorthArrow: function() {
@@ -3790,35 +3986,48 @@ window.GIS = window.GIS || {};
     var groupKeys = Object.keys(groups);
     if (layer.groupId && groups[layer.groupId]) {
       groupItemHtml =
-        '<div class="context-menu-item" data-action="remove-from-group" title="移出当前分组">移出分组 (' + escapeHtml(groups[layer.groupId].name) + ')</div>' +
-        '<div class="context-menu-item" data-action="move-to-group" title="移动到其他分组">移动到分组…</div>';
+        '<div class="context-menu-item" data-action="remove-from-group" title="' + _layerT('layer.context.title.remove-from-group', '移出当前分组') + '">' +
+          _layerT('layer.context.remove-from-group', '移出分组') + ' (' + escapeHtml(groups[layer.groupId].name) + ')</div>' +
+        '<div class="context-menu-item" data-action="move-to-group" title="' + _layerT('layer.context.title.move-to-group', '移动到其他分组') + '">' +
+          _layerT('layer.context.move-to-group', '移动到分组…') + '</div>';
     } else {
-      groupItemHtml = '<div class="context-menu-item" data-action="move-to-group" title="移动到分组">移动到分组…</div>';
+      groupItemHtml = '<div class="context-menu-item" data-action="move-to-group" title="' +
+        _layerT('layer.context.title.move-to-group', '移动到其他分组') + '">' +
+        _layerT('layer.context.move-to-group', '移动到分组…') + '</div>';
     }
 
     var legendItemHtml =
-      '<div class="context-menu-item" data-action="legend" title="在地图右下角显示此图层的图例">' +
+      '<div class="context-menu-item" data-action="legend" title="' +
+      _layerT('layer.context.title.legend', '在地图右下角显示此图层的图例') + '">' +
       '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;" aria-hidden="true"><rect x="3" y="3" width="7" height="9"></rect><rect x="14" y="3" width="7" height="5"></rect><rect x="14" y="12" width="7" height="9"></rect><rect x="3" y="16" width="7" height="5"></rect></svg>' +
-      '显示图例</div>';
+      _layerT('layer.context.legend', '显示图例') + '</div>';
 
     var menu = document.getElementById('layerContextMenu');
     menu.innerHTML =
       legendItemHtml +
-      '<div class="context-menu-item" data-action="inspect" title="查看要素信息和属性">检查</div>' +
-      '<div class="context-menu-item" data-action="add-feature" title="向此图层连续添加要素（点/线）">＋ 添加要素</div>' +
-      '<div class="context-menu-item" data-action="toggle">' + (layer.visible !== false ? '隐藏' : '显示') + '</div>' +
+      '<div class="context-menu-item" data-action="inspect" title="' + _layerT('layer.context.title.inspect', '查看要素信息和属性') + '">' +
+        _layerT('layer.context.inspect', '检查') + '</div>' +
+      '<div class="context-menu-item" data-action="add-feature" title="' + _layerT('layer.context.title.add-feature', '向此图层连续添加要素（点/线）') + '">' +
+        _layerT('layer.context.add-feature', '＋ 添加要素') + '</div>' +
+      '<div class="context-menu-item" data-action="toggle">' +
+        _layerT(layer.visible !== false ? 'layer.context.hide' : 'layer.context.show', layer.visible !== false ? '隐藏' : '显示') + '</div>' +
       '<div class="context-menu-divider"></div>' +
       groupItemHtml +
       '<div class="context-menu-divider"></div>' +
-      '<div class="context-menu-item" data-action="color" title="更改图层颜色">更改颜色</div>' +
-      '<div class="context-menu-item" data-action="fit" title="缩放至图层范围">缩放至</div>' +
-      '<div class="context-menu-item" data-action="analyze">发送给 AI 分析</div>' +
-      '<div class="context-menu-item" data-action="swipe">卷帘对比</div>' +
+      '<div class="context-menu-item" data-action="color" title="' + _layerT('layer.context.title.color', '更改图层颜色') + '">' +
+        _layerT('layer.context.color', '更改颜色') + '</div>' +
+      '<div class="context-menu-item" data-action="fit" title="' + _layerT('layer.context.title.fit', '缩放至图层范围') + '">' +
+        _layerT('layer.context.fit', '缩放至') + '</div>' +
+      '<div class="context-menu-item" data-action="analyze">' + _layerT('layer.context.analyze', '发送给 AI 分析') + '</div>' +
+      '<div class="context-menu-item" data-action="swipe">' + _layerT('layer.context.swipe', '卷帘对比') + '</div>' +
       '<div class="context-menu-divider"></div>' +
-      '<div class="context-menu-item" data-action="rename" title="重命名图层">重命名</div>' +
-      '<div class="context-menu-item" data-action="download" title="下载图层">下载</div>' +
+      '<div class="context-menu-item" data-action="rename" title="' + _layerT('layer.context.title.rename', '重命名图层') + '">' +
+        _layerT('layer.context.rename', '重命名') + '</div>' +
+      '<div class="context-menu-item" data-action="download" title="' + _layerT('layer.context.title.download', '下载图层') + '">' +
+        _layerT('layer.context.download', '下载') + '</div>' +
       '<div class="context-menu-divider"></div>' +
-      '<div class="context-menu-item context-menu-item-danger" data-action="delete" title="删除图层">删除</div>';
+      '<div class="context-menu-item context-menu-item-danger" data-action="delete" title="' + _layerT('layer.context.title.delete', '删除图层') + '">' +
+        _layerT('layer.context.delete', '删除') + '</div>';
 
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
@@ -4107,4 +4316,11 @@ window.GIS = window.GIS || {};
       }
     });
   }
+
+  document.addEventListener('gis:languagechange', function() {
+    renderList();
+    var panel = document.getElementById('layerInspector');
+    var inspected = layerData.find(function(layer) { return layer.layer_id === _inspectedRasterLayerId; });
+    if (panel && panel.style.display === 'flex' && inspected) showRasterLayerInspector(inspected);
+  });
 })();

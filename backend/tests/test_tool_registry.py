@@ -156,7 +156,7 @@ def _layer_channel_violations(path):
                               and v.func.attr == "pop"
                               and isinstance(v.func.value, ast.Name)
                               and v.func.value.id == "_registered_layers")
-                    if self._cur() != "_register_layer" and not is_pop:
+                    if self._cur() not in {"_register_layer", "_register_raster_layer"} and not is_pop:
                         self.bad.append((node.lineno,
                                          f"_registered_layers[x] = ... 整表赋值出现在 {self._cur()}"
                                          "（应改用 _register_layer）"))

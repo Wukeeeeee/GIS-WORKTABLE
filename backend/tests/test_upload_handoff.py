@@ -79,6 +79,11 @@ def test_declared_projected_geojson_is_reprojected_before_registration(client):
     result = response.json()
     assert result['geojson']['features'][0]['geometry']['coordinates'][0] == pytest.approx(10)
     assert result['registration_token']
+    assert result['provenance']['crs'] == 'EPSG:3857'
+    assert result['provenance']['crs_known'] is True
+    assert result['provenance']['provider'] == 'local_upload'
+    assert not any(key in result['provenance'] for key in ('path', 'source_url', 'file_path'))
+    assert tools._registered_layers['projected.geojson']['provenance'] == result['provenance']
 
 
 def test_undeclared_projected_coordinates_are_not_silently_treated_as_degrees(client, tmp_path):

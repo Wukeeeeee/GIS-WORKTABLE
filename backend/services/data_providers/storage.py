@@ -285,16 +285,54 @@ def write_vector(geojson: dict, *, out_format: str, name: str, dirpath: str,
             }
             if not staged_names:
                 raise DownloadError("Shapefile 写入未生成任何文件。")
-            for filename in sorted(staged_names):
-                os.replace(os.path.join(staging_dir, filename), os.path.join(dirpath, filename))
-            for filename in os.listdir(dirpath):
-                suffix = os.path.splitext(filename)[1].lower()
-                if (filename.startswith(base + ".") and filename not in staged_names
-                        and suffix in {".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".fix", ".sbn", ".sbx"}):
+            component_extensions = {
+                ".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".fix", ".sbn", ".sbx",
+            }
+            previous_names = {
+                filename for filename in os.listdir(dirpath)
+                if filename.startswith(base + ".")
+                and os.path.splitext(filename)[1].lower() in component_extensions
+                and os.path.isfile(os.path.join(dirpath, filename))
+            }
+            backup_dir = tempfile.mkdtemp(prefix=".vector-backup-", dir=dirpath)
+            preserve_backup = False
+            try:
+                for filename in previous_names:
+                    shutil.copy2(os.path.join(dirpath, filename), os.path.join(backup_dir, filename))
+                installed_names = []
+                try:
+                    for filename in sorted(staged_names):
+                        os.replace(os.path.join(staging_dir, filename), os.path.join(dirpath, filename))
+                        installed_names.append(filename)
+                except Exception as exc:
+                    rollback_errors = []
+                    for filename in previous_names:
+                        try:
+                            shutil.copy2(os.path.join(backup_dir, filename), os.path.join(dirpath, filename))
+                        except OSError as rollback_exc:
+                            rollback_errors.append(rollback_exc)
+                    for filename in set(installed_names) - previous_names:
+                        try:
+                            os.remove(os.path.join(dirpath, filename))
+                        except FileNotFoundError:
+                            pass
+                        except OSError as rollback_exc:
+                            rollback_errors.append(rollback_exc)
+                    if rollback_errors:
+                        preserve_backup = True
+                        raise DownloadError(
+                            "Shapefile 更新失败，旧数据未能完全恢复；恢复副本已保留在输出目录。"
+                        ) from exc
+                    raise DownloadError("Shapefile 更新失败，已恢复原有数据。") from exc
+
+                for filename in previous_names - staged_names:
                     try:
                         os.remove(os.path.join(dirpath, filename))
                     except OSError:
                         pass
+            finally:
+                if not preserve_backup:
+                    shutil.rmtree(backup_dir, ignore_errors=True)
         else:
             os.replace(staging_path, path)
         return path

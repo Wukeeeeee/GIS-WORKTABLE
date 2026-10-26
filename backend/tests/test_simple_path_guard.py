@@ -50,11 +50,10 @@ def test_natural_action_requests_keep_tools_without_keyword_or_layer_name_matche
         "connect the closest pair",
         "甲组与乙组找最接近的组合",
     ):
-        for registered in (set(), {"hospitals_test", "mcdonalds_test"}):
-            assert graph._should_use_agent(
-                [SystemMessage(content="system"), HumanMessage(content=message)],
-                "natural-action-routing", registered,
-            ) is True
+        assert graph._should_use_agent(
+            [SystemMessage(content="system"), HumanMessage(content=message)],
+            "natural-action-routing",
+        ) is True
 
     assert graph._should_use_agent([HumanMessage(content="把点连起来")], "single-message") is True
 

@@ -26,7 +26,7 @@ window.GIS = window.GIS || {};
 
   // ===== 数据结构：TaskRecord =====
   // id, goal, provider, model, timestamp, completedAt,
-  // status: pending|planning|executing|success|failed|cancelled,
+  // status: pending|planning|executing|success|partial|failed|cancelled,
   // inputLayers: [{layerId, name, geometryType, featureCount}],
   // plan, code, resultSummary,
   // resultLayers: [{name, geojson, layerId}],
@@ -71,10 +71,21 @@ window.GIS = window.GIS || {};
       var raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         taskRecords = JSON.parse(raw);
+        var recoveredInterruptedTask = false;
         taskRecords.forEach(function(t) {
           var nid = parseInt(t.id, 10);
           if (nid >= _nextId) _nextId = nid + 1;
+          // A page reload ends the browser's SSE consumer. The server may have
+          // completed some GIS operations, so don't leave a stale spinner or
+          // claim the work failed; ask the user to inspect the map before rerun.
+          if (t.status === 'pending' || t.status === 'planning' || t.status === 'executing') {
+            t.status = 'interrupted';
+            t.error = t.error || '页面重新加载时任务仍在执行；结果可能已部分产生，请先检查地图后再重试。';
+            t.completedAt = t.completedAt || Date.now();
+            recoveredInterruptedTask = true;
+          }
         });
+        if (recoveredInterruptedTask) saveToStorage();
       }
     } catch(e) {
       console.warn('[GIS Task] 加载失败:', e);
@@ -200,7 +211,8 @@ window.GIS = window.GIS || {};
   function renderTaskCard(t) {
     var statusLabel = {
       pending: '等待', planning: '规划中', executing: '执行中',
-      success: '成功', failed: '失败', cancelled: '已取消',
+      success: '成功', partial: '部分完成', failed: '失败', cancelled: '已取消',
+      interrupted: '执行中断，结果待核对',
     }[t.status] || t.status;
 
     var resultLayerHtml = '';
@@ -229,7 +241,7 @@ window.GIS = window.GIS || {};
       ? '<div class="task-error">' + escapeHtml(t.error) + '</div>'
       : '';
 
-    var canRerun = t.status === 'success' || t.status === 'failed' || t.status === 'cancelled';
+    var canRerun = t.status === 'success' || t.status === 'partial' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'interrupted';
     var isRunning = t.status === 'planning' || t.status === 'executing';
 
     return '<div class="task-card task-status-' + t.status + '" data-task-id="' + t.id + '">' +

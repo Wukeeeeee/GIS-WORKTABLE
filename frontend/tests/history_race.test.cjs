@@ -71,12 +71,12 @@ test('late history refresh cannot repopulate the list after clearing it', async 
   assert.equal(h.requests[1].options.method, 'DELETE');
   h.requests[1].resolve({ ok: true });
   await flushPromises();
-  assert.match(h.elements.historyBody.innerHTML, /暂无记录/);
+  assert.match(h.elements.historyBody.children[0].textContent, /暂无记录/);
 
   h.requests[0].resolve(historyResponse([{ index: 7, tool: 'old result', ok: true, args: {}, time: '' }]));
   await flushPromises();
-  assert.equal(h.elements.historyBody.children.length, 0);
-  assert.match(h.elements.historyBody.innerHTML, /暂无记录/);
+  assert.equal(h.elements.historyBody.children.length, 1);
+  assert.match(h.elements.historyBody.children[0].textContent, /暂无记录/);
 });
 
 test('failed history deletion preserves visible records and reports the failure', async () => {
@@ -92,4 +92,21 @@ test('failed history deletion preserves visible records and reports the failure'
 
   assert.equal(h.elements.historyBody.children.length, 1);
   assert.match(h.messages[0], /清空处理历史失败/);
+});
+
+test('history storage warnings are visible without hiding available records', async () => {
+  const h = createHarness();
+  h.elements.toggleHistoryPanel.listeners.click[0]();
+  h.requests[0].resolve({
+    ok: true,
+    json: () => Promise.resolve({
+      warning: '处理历史文件无法读取；为保留原文件，已暂停写入。',
+      history: [{ index: 9, tool: 'buffer', ok: true, args: {}, time: '' }],
+    }),
+  });
+  await flushPromises();
+
+  assert.equal(h.elements.historyBody.children[0].className, 'toolhist-warning');
+  assert.match(h.elements.historyBody.children[0].textContent, /已暂停写入/);
+  assert.equal(h.elements.historyBody.children.length, 2);
 });

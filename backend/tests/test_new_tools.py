@@ -165,6 +165,60 @@ def test_geometry_convert_lines():
     assert feats[0]["geometry"]["type"] == "LineString"
 
 
+def test_geometry_convert_lines_rejects_non_polygon_input_without_registering_result():
+    reg = _registry()
+    _reg("line_layer", {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "LineString", "coordinates": [[0, 0], [1, 1]]}, "properties": {}}
+    ]})
+
+    result = reg["geometry_convert"].invoke({"layer_name": "line_layer", "target_type": "lines"})
+
+    assert "仅支持 Polygon/MultiPolygon" in result
+    assert "line_layer_lines" not in T._registered_layers
+    assert T._pending_layers == []
+
+
+def test_geometry_convert_lines_rejects_empty_geometry_without_registering_result():
+    reg = _registry()
+    _reg("empty_polygon", {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": None, "properties": {}}
+    ]})
+
+    result = reg["geometry_convert"].invoke({"layer_name": "empty_polygon", "target_type": "lines"})
+
+    assert "空几何" in result
+    assert "empty_polygon_lines" not in T._registered_layers
+    assert T._pending_layers == []
+
+
+def test_geometry_convert_polygons_reports_that_source_line_attributes_are_not_inherited():
+    reg = _registry()
+    _reg("attributed_ring", {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"zone": "A"},
+         "geometry": {"type": "LineString", "coordinates": [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]}}
+    ]})
+
+    result = reg["geometry_convert"].invoke({"layer_name": "attributed_ring", "target_type": "polygons"})
+
+    assert "源线属性未继承" in result
+    output = T._pending_layers[-1]["geojson"]["features"][0]
+    assert "zone" not in output["properties"]
+
+
+def test_repeated_geometry_conversion_keeps_backend_result_names_in_sync():
+    reg = _registry()
+    _reg("repeat_polygon", _poly_fc(10.0, 10.0, 11.0, 11.0))
+
+    first = reg["geometry_convert"].invoke({"layer_name": "repeat_polygon", "target_type": "lines"})
+    second = reg["geometry_convert"].invoke({"layer_name": "repeat_polygon", "target_type": "lines"})
+
+    assert "repeat_polygon_lines" in first
+    assert "repeat_polygon_lines_1" in second
+    assert "repeat_polygon_lines" in T._registered_layers
+    assert "repeat_polygon_lines_1" in T._registered_layers
+    assert len(T._pending_layers) == 2
+
+
 def test_geometry_convert_bounding_box():
     reg = _registry()
     _reg("散点", {"type": "FeatureCollection", "features": [
@@ -176,6 +230,40 @@ def test_geometry_convert_bounding_box():
     ring = T._registered_layers["散点_bounding_box"]["geojson"]["features"][0]["geometry"]["coordinates"][0]
     xs = [c[0] for c in ring]
     assert abs(min(xs) - 116.0) < 1e-6 and abs(max(xs) - 117.0) < 1e-6
+
+
+@pytest.mark.parametrize("coordinates,expected_type", [
+    ([[5.0, 6.0]], "Point"),
+    ([[5.0, 1.0], [5.0, 4.0]], "LineString"),
+    ([[1.0, 5.0], [4.0, 5.0]], "LineString"),
+])
+def test_geometry_convert_bounding_box_uses_valid_geometry_for_degenerate_extents(coordinates, expected_type):
+    reg = _registry()
+    _reg("degenerate_extent_" + expected_type, {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": point}, "properties": {}}
+        for point in coordinates
+    ]})
+
+    result = reg["geometry_convert"].invoke({
+        "layer_name": "degenerate_extent_" + expected_type, "target_type": "bounding_box",
+    })
+
+    assert "转换完成" in result
+    output_geometry = T._pending_layers[-1]["geojson"]["features"][0]["geometry"]
+    assert output_geometry["type"] == expected_type
+
+
+def test_geometry_convert_bounding_box_rejects_layers_without_valid_geometries():
+    reg = _registry()
+    _reg("no_valid_extent", {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": None, "properties": {}}
+    ]})
+
+    result = reg["geometry_convert"].invoke({"layer_name": "no_valid_extent", "target_type": "bounding_box"})
+
+    assert "没有有效几何" in result
+    assert "no_valid_extent_bounding_box" not in T._registered_layers
+    assert T._pending_layers == []
 
 
 def test_geometry_convert_convex_hull():
@@ -252,4 +340,4 @@ def test_new_tool_outputs_pass_geo_qa():
     _registry()["geometry_convert"].invoke({"layer_name": "面层", "target_type": "lines"})
     st = get_pending_state()
     assert st["qa_warnings"] == []
-    assert any(l["name"] == "面层_lines" for l in st["layers"])
+    assert any(l["name"].startswith("面层_lines") for l in st["layers"])

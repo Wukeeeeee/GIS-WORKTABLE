@@ -59,6 +59,67 @@ _GIT_COMMIT, _GIT_DIRTY = _read_git_version()
 
 app = FastAPI()
 
+
+class _ProjectImportBodyLimitExceeded(Exception):
+    pass
+
+
+class ProjectImportBodyLimitMiddleware:
+    """Bound multipart bytes before Starlette spools a project upload."""
+
+    def __init__(self, app, max_body_bytes: int):
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope, receive, send):
+        if (scope.get("type") != "http" or scope.get("method") != "POST"
+                or scope.get("path") != "/api/projects/import"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        content_length = headers.get(b"content-length")
+        if content_length:
+            try:
+                declared_size = int(content_length)
+            except (TypeError, ValueError):
+                declared_size = 0
+            if declared_size > self.max_body_bytes:
+                await self._send_too_large(scope, receive, send)
+                return
+
+        received = 0
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body_bytes:
+                    raise _ProjectImportBodyLimitExceeded()
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except _ProjectImportBodyLimitExceeded:
+            await self._send_too_large(scope, receive, send)
+
+    async def _send_too_large(self, scope, receive, send):
+        response = Response(
+            content=json.dumps({
+                "detail": "工程导入请求体超出允许大小（工程包上限为 1 GiB）",
+            }, ensure_ascii=False),
+            status_code=413,
+            media_type="application/json",
+        )
+        await response(scope, receive, send)
+
+
+app.add_middleware(
+    ProjectImportBodyLimitMiddleware,
+    max_body_bytes=project_service._MAX_PROJECT_ARCHIVE_COMPRESSED_BYTES + 1024 * 1024,
+)
+
 # URL vector acquisition jobs are local process tasks: progress is polled by the UI,
 # while ArcGIS requests run off the ASGI event loop.
 _url_fetch_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="url-vector-fetch")
@@ -211,6 +272,8 @@ async def chat(request: ChatRequest):
 
     # 组装前端响应（保持与原格式兼容）
     output = {"response": response_text}
+    if result.get("execution_status"):
+        output["execution_status"] = result["execution_status"]
     # 任务 ID（跨轮保持）
     if result.get("task_id"):
         output["task_id"] = result["task_id"]
@@ -291,6 +354,7 @@ def _synthetic_done_stream(result: dict):
         "qa_warnings": result.get("qa_warnings", []),
         "task_id": result.get("task_id"),
         "run_id": result.get("run_id"),
+        "execution_status": result.get("execution_status"),
     }
     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -759,6 +823,9 @@ class _MissingGeoTiffCrsError(Exception):
     pass
 
 
+_MAX_RASTER_PREVIEW_PIXELS = 4_000_000
+
+
 def _is_safe_zip_member(name: str) -> bool:
     import ntpath
     from pathlib import PurePosixPath
@@ -770,7 +837,29 @@ def _is_safe_zip_member(name: str) -> bool:
     return bool(normalized) and not drive and not path.is_absolute() and ".." not in path.parts
 
 
-def _register_uploaded_vector(name, geojson):
+def _uploaded_vector_provenance(filename, source_crs, file_format=None):
+    import os
+    from backend.services.tools import _normalize_layer_provenance
+
+    ext = os.path.splitext(str(filename or ""))[1].lower()
+    format_label = file_format or {
+        ".geojson": "GeoJSON", ".json": "GeoJSON", ".zip": "Shapefile ZIP",
+        ".gpkg": "GeoPackage", ".kml": "KML", ".kmz": "KMZ",
+        ".gpx": "GPX", ".dxf": "DXF", ".pmtiles": "PMTiles",
+        ".parquet": "GeoParquet", ".geoparquet": "GeoParquet", ".fgb": "FlatGeobuf",
+    }.get(ext, ext.lstrip(".").upper() or "Vector")
+    crs = str(source_crs).strip() if source_crs else "未知"
+    crs_known = bool(source_crs) and crs.lower() not in {"未知", "unknown", "none"}
+    return _normalize_layer_provenance({
+        "provider": "local_upload",
+        "kind": "vector_upload",
+        "file_format": format_label,
+        "crs": crs,
+        "crs_known": crs_known,
+    })
+
+
+def _register_uploaded_vector(name, geojson, provenance=None):
     import math
     from backend.services.tools import _compute_bbox
 
@@ -778,7 +867,7 @@ def _register_uploaded_vector(name, geojson):
     if (not all(isinstance(value, (int, float)) and math.isfinite(value) for value in bounds)
             or not (-180 <= bounds[0] <= bounds[2] <= 180 and -90 <= bounds[1] <= bounds[3] <= 90)):
         raise ValueError("坐标超出 WGS-84 范围；请提供正确 CRS 或转换为 EPSG:4326 后上传")
-    return _register_layer(name, geojson)
+    return _register_layer(name, geojson, provenance=provenance)
 
 
 @app.post('/api/upload')
@@ -897,6 +986,7 @@ async def upload(file: UploadFile = File(...)):
         except orjson.JSONDecodeError:
             _discard_saved_upload()
             return {"error": "GeoJSON 文件格式无效，请检查 JSON 语法后重新上传"}
+        source_crs = "EPSG:4326"  # RFC 7946 GeoJSON coordinates use WGS-84 when CRS is omitted.
         if isinstance(geojson_data, dict) and geojson_data.get('crs'):
             try:
                 def read_projected_geojson():
@@ -904,8 +994,8 @@ async def upload(file: UploadFile = File(...)):
                     data = gpd.read_file(saved_path)
                     if data.crs is None:
                         raise ValueError("无法识别声明的坐标参考系")
-                    return data.to_crs('EPSG:4326').__geo_interface__
-                geojson_data = await asyncio.to_thread(read_projected_geojson)
+                    return data.to_crs('EPSG:4326').__geo_interface__, data.crs.to_string()
+                geojson_data, source_crs = await asyncio.to_thread(read_projected_geojson)
             except Exception as exc:
                 _discard_saved_upload()
                 return {"error": "GeoJSON 坐标转换失败: %s" % str(exc)[:200]}
@@ -915,11 +1005,12 @@ async def upload(file: UploadFile = File(...)):
             geojson_data = {"type": "Feature", "properties": {}, "geometry": geojson_data}
         if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
             try:
-                token = await asyncio.to_thread(_register_uploaded_vector, filename, geojson_data)
+                provenance = _uploaded_vector_provenance(filename, source_crs)
+                token = await asyncio.to_thread(_register_uploaded_vector, filename, geojson_data, provenance)
             except (ValueError, TypeError, AttributeError) as exc:
                 _discard_saved_upload()
                 return {"error": "GeoJSON 格式无效: %s" % exc}
-            return {"geojson": geojson_data, "name": filename, "registration_token": token}
+            return {"geojson": geojson_data, "name": filename, "registration_token": token, "provenance": provenance}
         # 支持 GeometryCollection → 转 FeatureCollection
         if isinstance(geojson_data, dict) and geojson_data.get('type') == 'GeometryCollection':
             geoms = geojson_data.get('geometries', [])
@@ -929,11 +1020,12 @@ async def upload(file: UploadFile = File(...)):
             features = [{"type": "Feature", "geometry": g, "properties": {}} for g in geoms]
             fc = {"type": "FeatureCollection", "features": features}
             try:
-                token = await asyncio.to_thread(_register_uploaded_vector, filename, fc)
+                provenance = _uploaded_vector_provenance(filename, source_crs)
+                token = await asyncio.to_thread(_register_uploaded_vector, filename, fc, provenance)
             except (ValueError, TypeError, AttributeError) as exc:
                 _discard_saved_upload()
                 return {"error": "GeoJSON 格式无效: %s" % exc}
-            return {"geojson": fc, "name": filename, "registration_token": token}
+            return {"geojson": fc, "name": filename, "registration_token": token, "provenance": provenance}
         _discard_saved_upload()
         return {"error": "文件不是有效的 GeoJSON 格式"}
 
@@ -954,6 +1046,8 @@ async def upload(file: UploadFile = File(...)):
                 shp_files = [n for n in members if n.lower().endswith('.shp')]
                 if not shp_files:
                     return _reject_zip_upload("ZIP 包中没有找到 .shp 文件")
+                if len(shp_files) > 1:
+                    return _reject_zip_upload("ZIP 包包含多个 Shapefile 数据集，请拆分后分别上传")
                 with tempfile.TemporaryDirectory() as tmpdir:
                     await asyncio.to_thread(zf.extractall, tmpdir)
                     shp_path = os.path.join(tmpdir, shp_files[0])
@@ -963,12 +1057,14 @@ async def upload(file: UploadFile = File(...)):
                     gdf = await loop.run_in_executor(None, functools.partial(gpd.read_file, shp_path))
                     if gdf.crs is None:
                         return _reject_zip_upload("矢量文件缺少坐标参考系，无法安全转换为 WGS-84；请补充 .prj 文件后重新上传")
+                    source_crs = gdf.crs.to_string()
                     geojson_data = await asyncio.to_thread(lambda: gdf.to_crs("EPSG:4326").__geo_interface__)
                     # The archive name was atomically reserved. An internal
                     # common name such as data.shp would collide across ZIPs.
                     name = os.path.splitext(filename)[0]
-                    token = await asyncio.to_thread(_register_uploaded_vector, name, geojson_data)
-                    return {"geojson": geojson_data, "name": name, "registration_token": token}
+                    provenance = _uploaded_vector_provenance(filename, source_crs)
+                    token = await asyncio.to_thread(_register_uploaded_vector, name, geojson_data, provenance)
+                    return {"geojson": geojson_data, "name": name, "registration_token": token, "provenance": provenance}
         except zipfile.BadZipFile:
             _discard_saved_upload()
             return {"error": "ZIP 文件损坏或格式无效，请重新压缩后上传"}
@@ -999,10 +1095,12 @@ async def upload(file: UploadFile = File(...)):
                 return {"error": "文件未包含有效的地理数据"}
             if gdf.crs is None:
                 return {"error": "矢量文件缺少坐标参考系，无法安全转换为 WGS-84"}
+            source_crs = gdf.crs.to_string()
             geojson_data = await asyncio.to_thread(lambda: gdf.to_crs("EPSG:4326").__geo_interface__)
             name = os.path.splitext(filename)[0]
-            token = await asyncio.to_thread(_register_uploaded_vector, name, geojson_data)
-            return {"geojson": geojson_data, "name": name, "registration_token": token}
+            provenance = _uploaded_vector_provenance(filename, source_crs)
+            token = await asyncio.to_thread(_register_uploaded_vector, name, geojson_data, provenance)
+            return {"geojson": geojson_data, "name": name, "registration_token": token, "provenance": provenance}
         except Exception as e:
             return {"error": f"无法读取 {ext} 文件: {str(e)[:200]}"}
         finally:
@@ -1015,7 +1113,7 @@ async def upload(file: UploadFile = File(...)):
         try:
             import rasterio
             from rasterio.enums import Resampling
-            from rasterio.transform import array_bounds
+            from rasterio.transform import Affine, array_bounds
             from rasterio.warp import calculate_default_transform, reproject, transform_bounds
             import numpy as np
             from PIL import Image
@@ -1027,17 +1125,49 @@ async def upload(file: UploadFile = File(...)):
                         "GeoTIFF 缺少坐标参考系，无法安全定位到地图；请先定义 CRS 后重新上传"
                     )
                 source_crs = src.crs
+                source_width, source_height = src.width, src.height
+                source_bands = src.count
+                source_nodata = src.nodata
+                source_transform = src.transform
+                source_is_geographic = source_crs.is_geographic
+                source_tags = {key.upper(): value for key, value in src.tags().items()}
+                source_value_units = (
+                    (src.units[0] if src.units and src.units[0] else None)
+                    or source_tags.get("VALUE_UNITS")
+                    or source_tags.get("UNITTYPE")
+                )
+                source_label = (
+                    source_tags.get("SOURCE_LABEL") or source_tags.get("SOURCE")
+                    or "本地上传（文件未包含来源标签）"
+                )
+                source_quality_note = source_tags.get("QUALITY_NOTE")
+                preview_scale = max(1.0, (src.width * src.height / _MAX_RASTER_PREVIEW_PIXELS) ** 0.5)
+                preview_width = max(1, int(src.width / preview_scale))
+                preview_height = max(1, int(src.height / preview_scale))
+                preview_downsampled = preview_width < src.width or preview_height < src.height
+                preview_transform = src.transform * Affine.scale(
+                    src.width / preview_width, src.height / preview_height,
+                )
                 if src.count >= 3:
-                    red = src.read(1).astype(np.float64)
-                    green = src.read(2).astype(np.float64)
-                    blue = src.read(3).astype(np.float64)
+                    source_rgb = src.read(
+                        (1, 2, 3), out_shape=(3, preview_height, preview_width),
+                        resampling=Resampling.bilinear, masked=True,
+                    )
+                    red, green, blue = [
+                        np.ma.filled(source_rgb[index].astype(np.float32), np.nan)
+                        for index in range(3)
+                    ]
+                    valid = ~np.ma.getmaskarray(source_rgb).any(axis=0)
                 else:
-                    band = src.read(1).astype(np.float64)
+                    source_band = src.read(
+                        1, out_shape=(preview_height, preview_width),
+                        resampling=Resampling.bilinear, masked=True,
+                    )
+                    band = np.ma.filled(source_band.astype(np.float32), np.nan)
                     red = green = blue = band
+                    valid = ~np.ma.getmaskarray(source_band)
 
-                valid = np.isfinite(red) & np.isfinite(green) & np.isfinite(blue)
-                if nodata is not None and not np.isnan(nodata):
-                    valid &= ~((red == nodata) & (green == nodata) & (blue == nodata))
+                valid &= np.isfinite(red) & np.isfinite(green) & np.isfinite(blue)
 
                 def norm(b):
                     values = b[valid]
@@ -1053,14 +1183,29 @@ async def upload(file: UploadFile = File(...)):
 
                 dst_crs = "EPSG:3857"
                 dst_transform, dst_width, dst_height = calculate_default_transform(
-                    source_crs, dst_crs, src.width, src.height, *src.bounds
+                    source_crs, dst_crs, preview_width, preview_height, *src.bounds
                 )
+                output_downsampled = False
+                for _ in range(3):
+                    if dst_width * dst_height <= _MAX_RASTER_PREVIEW_PIXELS:
+                        break
+                    output_downsampled = True
+                    target_scale = (dst_width * dst_height / _MAX_RASTER_PREVIEW_PIXELS) ** 0.5
+                    target_width = max(1, int(dst_width / target_scale))
+                    target_height = max(1, int(dst_height / target_scale))
+                    dst_transform, dst_width, dst_height = calculate_default_transform(
+                        source_crs, dst_crs, preview_width, preview_height, *src.bounds,
+                        dst_width=target_width, dst_height=target_height,
+                    )
+                if dst_width * dst_height > _MAX_RASTER_PREVIEW_PIXELS:
+                    raise ValueError("无法将栅格地图预览缩小到安全像元数")
+                preview_downsampled = preview_downsampled or output_downsampled
                 rgb = np.zeros((dst_height, dst_width, 3), dtype=np.uint8)
                 for index, band in enumerate((red, green, blue)):
                     destination = np.zeros((dst_height, dst_width), dtype=np.float32)
                     reproject(
                         source=norm(band), destination=destination,
-                        src_transform=src.transform, src_crs=source_crs,
+                        src_transform=preview_transform, src_crs=source_crs,
                         dst_transform=dst_transform, dst_crs=dst_crs,
                         src_nodata=-9999, dst_nodata=0, resampling=Resampling.bilinear,
                     )
@@ -1070,7 +1215,7 @@ async def upload(file: UploadFile = File(...)):
                 destination_valid = np.zeros((dst_height, dst_width), dtype=np.uint8)
                 reproject(
                     source=source_valid, destination=destination_valid,
-                    src_transform=src.transform, src_crs=source_crs,
+                    src_transform=preview_transform, src_crs=source_crs,
                     dst_transform=dst_transform, dst_crs=dst_crs,
                     src_nodata=0, dst_nodata=0, resampling=Resampling.nearest,
                 )
@@ -1090,6 +1235,21 @@ async def upload(file: UploadFile = File(...)):
                 "source_filename": filename, "source_name": name,
                 "source_url": f"/output/uploads/{quote(filename, safe='')}",
                 "bounds": list(bounds_wgs84), "width": w, "height": h,
+                "crs": source_crs.to_string(),
+                "source_width": source_width, "source_height": source_height,
+                "preview_downsampled": preview_downsampled,
+                "bands": source_bands, "nodata": source_nodata if source_nodata is None or np.isfinite(source_nodata) else None,
+                "pixel_size": [abs(source_transform.a), abs(source_transform.e)],
+                "pixel_units": source_crs.linear_units if source_crs.is_projected else ("degree" if source_is_geographic else "unknown"),
+                "value_units": source_value_units,
+                "vertical_datum": source_tags.get("VERTICAL_DATUM"),
+                "source_label": source_label,
+                "source_reference": source_tags.get("SOURCE_URL") or source_tags.get("CITATION"),
+                "quality_warnings": (
+                    (["栅格值单位未在文件元数据中标注；解释高程或计算坡度前请核实源数据单位"] if not source_value_units else [])
+                    + (["地图预览已降采样；后续栅格分析仍使用保留的原始 GeoTIFF"] if preview_downsampled else [])
+                    + ([source_quality_note] if source_quality_note else [])
+                ),
             }
             token = await asyncio.to_thread(_register_raster_layer, name, raster_info, saved_path)
             return {
@@ -1148,8 +1308,10 @@ async def upload(file: UploadFile = File(...)):
             if ext == '.pmtiles':
                 try:
                     geojson, info = await asyncio.to_thread(cn.pmtiles_vector_to_geojson, saved_path)
-                    token = await asyncio.to_thread(_register_uploaded_vector, name, geojson)
-                    return {"geojson": geojson, "name": name, "registration_token": token, "pmtiles_info": info}
+                    source_crs = info.get("crs") if isinstance(info, dict) else None
+                    provenance = _uploaded_vector_provenance(filename, source_crs)
+                    token = await asyncio.to_thread(_register_uploaded_vector, name, geojson, provenance)
+                    return {"geojson": geojson, "name": name, "registration_token": token, "pmtiles_info": info, "provenance": provenance}
                 except cn.CloudNativeError:
                     # 栅格 PMTiles：中心瓦片作为影像叠加
                     tile_bytes, bounds, fmt, info = await asyncio.to_thread(cn.pmtiles_raster_tile_bounds, saved_path)
@@ -1183,8 +1345,10 @@ async def upload(file: UploadFile = File(...)):
                     }
             fmt = "GeoParquet" if ext in ('.parquet', '.geoparquet') else "FlatGeobuf"
             geojson, meta = await asyncio.to_thread(cn.cloud_vector_to_geojson, saved_path, fmt)
-            token = await asyncio.to_thread(_register_uploaded_vector, name, geojson)
-            return {"geojson": geojson, "name": name, "registration_token": token, "meta": meta}
+            source_crs = meta.get("crs") if isinstance(meta, dict) else None
+            provenance = _uploaded_vector_provenance(filename, source_crs, fmt)
+            token = await asyncio.to_thread(_register_uploaded_vector, name, geojson, provenance)
+            return {"geojson": geojson, "name": name, "registration_token": token, "meta": meta, "provenance": provenance}
         except cn.CloudNativeError as e:
             _discard_saved_upload()
             return {"error": str(e)}
@@ -1310,9 +1474,11 @@ async def export_project(project_id: str):
 
 @app.post("/api/projects/import")
 async def import_project(file: UploadFile = File(...)):
-    content = await file.read()
+    # UploadFile is already spooled to memory/disk by Starlette; pass its stream
+    # through instead of materializing a second full copy of a potentially large project.
+    await file.seek(0)
     try:
-        result = await asyncio.to_thread(project_service.import_project, content)
+        result = await asyncio.to_thread(project_service.import_project, file.file)
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1680,9 +1846,9 @@ async def api_geosource_proxy(url: str = Query(..., description="远程目标 UR
                 raw_type = resp.headers.get("Content-Type", "application/json")
                 return content, raw_type.split(";")[0]
         except urllib.error.HTTPError as e:
-            raise HTTPException(status_code=e.code, detail=f"远程服务错误: {e.reason}")
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"代理请求失败: {str(e)}")
+            raise HTTPException(status_code=e.code, detail=f"远程 GIS 服务返回 HTTP {e.code}")
+        except Exception:
+            raise HTTPException(status_code=502, detail="代理请求失败，请检查目标服务连接；请求细节已隐藏。")
 
     content, media_type = await loop.run_in_executor(None, _fetch)
     return Response(content=content, media_type=media_type)
@@ -1788,13 +1954,16 @@ async def api_reverse_geocode(lng: float = Query(...), lat: float = Query(...)):
 async def api_history(limit: int = 50):
     """工具执行历史（倒序），供右侧历史面板展示"""
     from backend.services.history_service import list_entries
-    return {"history": list_entries(limit)}
+    from backend.services.history_service import get_storage_warning
+    return {"history": list_entries(limit), "warning": get_storage_warning()}
 
 
 @app.delete("/api/history")
 async def api_history_clear():
     from backend.services.history_service import clear
-    clear()
+    if not clear():
+        from backend.services.history_service import get_storage_warning
+        raise HTTPException(status_code=500, detail=get_storage_warning() or "历史未能写入磁盘")
     return {"status": "ok", "message": "历史已清空"}
 
 

@@ -85,3 +85,25 @@ def test_invalid_shapefile_zip_returns_error_and_removes_upload(tmp_path, monkey
     assert response.status_code == 200
     assert "ZIP 文件损坏" in response.json()["error"]
     assert not (tmp_path / "uploads" / "broken.zip").exists()
+
+
+def test_shapefile_zip_with_multiple_datasets_is_rejected_without_import(tmp_path, monkeypatch):
+    upload_dir = tmp_path / "uploads"
+    monkeypatch.setattr(main, "_TEMP_OUTPUT_DIR", str(tmp_path))
+    registered = []
+    monkeypatch.setattr(main, "_register_layer", lambda *args, **kwargs: registered.append((args, kwargs)))
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("first/first.shp", b"first")
+        zf.writestr("second/second.shp", b"second")
+
+    with TestClient(main.app) as client:
+        response = client.post(
+            "/api/upload",
+            files={"file": ("multiple-datasets.zip", archive.getvalue(), "application/zip")},
+        )
+
+    assert response.status_code == 200
+    assert "多个 Shapefile" in response.json()["error"]
+    assert registered == []
+    assert not (upload_dir / "multiple-datasets.zip").exists()

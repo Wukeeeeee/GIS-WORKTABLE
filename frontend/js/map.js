@@ -430,7 +430,7 @@ var _undoSkip = false;
     if (type === 'bing') {
       // Bing 中国区卫星影像（国内访问快）
       var layer = new L.TileLayer('', {
-        attribution: '&copy; Microsoft, 必应地图',
+        attribution: GIS.i18n && GIS.i18n.isEnglish() ? '&copy; Microsoft, Bing Maps' : '&copy; Microsoft, 必应地图',
         maxZoom: 19,
         crossOrigin: true,
       });
@@ -448,6 +448,16 @@ var _undoSkip = false;
       crossOrigin: true,
     });
   }
+
+  document.addEventListener('gis:languagechange', function() {
+    if (_currentBaseMap !== 'bing' || !baseLayer || !mapInstance || !mapInstance.attributionControl) return;
+    var previous = baseLayer.options.attribution;
+    var next = GIS.i18n && GIS.i18n.isEnglish() ? '&copy; Microsoft, Bing Maps' : '&copy; Microsoft, 必应地图';
+    if (previous === next) return;
+    mapInstance.attributionControl.removeAttribution(previous);
+    baseLayer.options.attribution = next;
+    mapInstance.attributionControl.addAttribution(next);
+  });
 
   /** 切换底图 */
   function switchBaseMap(type) {
@@ -855,16 +865,20 @@ var _undoSkip = false;
       });
       if (layer) layers[name] = layer; // 缓存到 layers 方便下次查找
     }
-    if (!layer) return;
+    if (!layer) return false;
+    var updated = false;
     if (typeof layer.eachLayer === 'function') {
       _eachStyledPath(layer, function(sub, isPoint) {
+        updated = true;
         sub.setStyle(isPoint
           ? { fillColor: color } : { color: color, fillColor: color });
       });
     } else if (typeof layer.setStyle === 'function') {
       layer.setStyle({ color: color, fillColor: color });
-    }
+      updated = true;
+    } else return false;
     if (geoStore[name]) geoStore[name].style = Object.assign({}, geoStore[name].style, { color: color, fillColor: color });
+    return updated;
   }
 
   /** 图层透明度（0-1）：以首次调用时的样式为基准做缩放，反复拖动不累积 */
@@ -915,7 +929,7 @@ var _undoSkip = false;
       });
       if (layer) layers[name] = layer;
     }
-    if (!layer) return;
+    if (!layer) return false;
     var opts = {};
     if (style.color) { opts.color = style.color; opts.fillColor = style.color; }
     if (style.opacity !== undefined) { opts.opacity = style.opacity; opts.fillOpacity = style.opacity; }
@@ -927,7 +941,9 @@ var _undoSkip = false;
       opts.fillPattern = style.fillPattern;
     }
     if (typeof layer.eachLayer === 'function') {
+      var updated = false;
       _eachStyledPath(layer, function(sub, isPoint) {
+        updated = true;
         var subStyle = Object.assign({}, opts);
         if (isPoint) {
           if (style.color) subStyle.color = sub.options.color;
@@ -938,10 +954,12 @@ var _undoSkip = false;
         // 后续透明度滑块以最新样式为基准。
         delete sub._baseOpacity;
       });
+      if (!updated) return false;
     } else if (typeof layer.setStyle === 'function') {
       layer.setStyle(opts);
-    }
+    } else return false;
     if (geoStore[name]) geoStore[name].style = { ...(geoStore[name].style || {}), ...style, ...opts };
+    return true;
   }
 
   function _createCanvasRenderer() {
@@ -1057,20 +1075,27 @@ var _undoSkip = false;
   function formatWgs84Coordinates(lng, lat) {
     lng = Number(lng);
     lat = Number(lat);
-    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return 'WGS-84 · 无法读取坐标';
+    var english = !!(GIS.i18n && GIS.i18n.isEnglish());
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return english ? 'WGS-84 · Coordinates unavailable' : 'WGS-84 · 无法读取坐标';
     // Leaflet may report longitudes outside [-180, 180] when the world wraps.
     // Normalize those equivalent positions before displaying geographic coordinates.
     lng = ((lng + 180) % 360 + 360) % 360 - 180;
     // The basemap uses Web Mercator, whose rendered world ends at ±85.0511°.
     // At a global zoom, the cursor can sit beyond that projected world edge;
     // this does not mean that the loaded geographic data is invalid.
-    if (Math.abs(lat) > 85.0511287798) return 'WGS-84 · 鼠标位置超出 Web Mercator 显示范围';
-    return 'WGS-84 · 经度 ' + lng.toFixed(5) + ' · 纬度 ' + lat.toFixed(5);
+    if (Math.abs(lat) > 85.0511287798) return english ? 'WGS-84 · Pointer is outside the Web Mercator display range' : 'WGS-84 · 鼠标位置超出 Web Mercator 显示范围';
+    return english ? 'WGS-84 · Longitude ' + lng.toFixed(5) + ' · Latitude ' + lat.toFixed(5) : 'WGS-84 · 经度 ' + lng.toFixed(5) + ' · 纬度 ' + lat.toFixed(5);
   }
 
+  var _lastCoords = null;
   function onMouseMove(e) {
-    if (_coordsEl) _coordsEl.textContent = formatWgs84Coordinates(e.latlng.lng, e.latlng.lat);
+    _lastCoords = [e.latlng.lng, e.latlng.lat];
+    if (_coordsEl) _coordsEl.textContent = formatWgs84Coordinates(_lastCoords[0], _lastCoords[1]);
   }
+
+  document.addEventListener('gis:languagechange', function() {
+    if (_coordsEl) _coordsEl.textContent = _lastCoords ? formatWgs84Coordinates(_lastCoords[0], _lastCoords[1]) : formatWgs84Coordinates(NaN, NaN);
+  });
 
   function onZoomEnd() {
     if (_zoomLabelEl) _zoomLabelEl.textContent = 'Z' + mapInstance.getZoom();
@@ -1734,7 +1759,7 @@ var _undoSkip = false;
 
   /** 应用符号化样式（按要素索引的样式映射） */
   function applySymbology(name, geojson, styleMap) {
-    if (!mapInstance || !layers[name]) return;
+    if (!mapInstance || !layers[name]) return false;
     var userVisible = layers[name]._userVisible !== false;
 
     // 重新加载 GeoJSON 并应用每要素样式
@@ -1816,16 +1841,18 @@ var _undoSkip = false;
     try { mapInstance.fitBounds(layer.getBounds(), { padding: [30, 30], maxZoom: 16 }); } catch(e) {}
     // 重应用标注
     _applyLabelsForLayer(name);
+    return true;
   }
 
   /** 给指定图层绑定永久标注（Leaflet tooltip） */
   function _applyLabelsForLayer(name) {
-    if (!_labelConfigs[name]) return;
+    if (!_labelConfigs[name]) return 0;
     var cfg = _labelConfigs[name];
-    if (!layers[name]) return;
+    if (!layers[name]) return 0;
     var gj = geoStore[name] && geoStore[name].geojson;
-    if (!gj) return;
+    if (!gj) return 0;
     var features = gj.type === 'FeatureCollection' ? gj.features : [gj];
+    var applied = 0;
     Object.keys(_featureMap).forEach(function(key) {
       if (!key.startsWith(name + ':')) return;
       var leaf = _featureMap[key];
@@ -1833,8 +1860,13 @@ var _undoSkip = false;
       var idx = parseInt(key.split(':')[1], 10);
       if (isNaN(idx) || idx >= features.length) return;
       var props = features[idx].properties || {};
-      var txt = String(props[cfg.field] || '');
-      if (!txt) return;
+      var value = props[cfg.field];
+      var txt = value === null || value === undefined ? '' : String(value);
+      if (!txt) {
+        if (leaf.unbindTooltip) leaf.unbindTooltip();
+        return;
+      }
+      if (typeof leaf.bindTooltip !== 'function') return;
       var isPt = leaf && (typeof leaf.getRadius === 'function' || leaf instanceof L.CircleMarker);
       leaf.bindTooltip(txt, {
         permanent: true,
@@ -1842,13 +1874,30 @@ var _undoSkip = false;
         offset: isPt ? [0, -8] : [0, 0],
         className: 'layer-label',
       });
+      applied++;
     });
+    return applied;
   }
 
   /** 对图层添加/更新标注 */
   function setLabels(name, field, fontSize, color) {
+    if (!name || !field || !layers[name]) return false;
+    var gj = geoStore[name] && geoStore[name].geojson;
+    if (!gj) return false;
+    var features = gj.type === 'FeatureCollection' ? (gj.features || []) : [gj];
+    var hasValue = features.some(function(feature) {
+      var props = feature && feature.properties || {};
+      var value = props[field];
+      return value !== null && value !== undefined && String(value) !== '';
+    });
+    if (!hasValue) return false;
+
+    var previous = _labelConfigs[name];
     _labelConfigs[name] = { field: field, fontSize: fontSize || 12, color: color || '#333333' };
-    _applyLabelsForLayer(name);
+    if (_applyLabelsForLayer(name) > 0) return true;
+    if (previous) _labelConfigs[name] = previous;
+    else delete _labelConfigs[name];
+    return false;
   }
 
   /** 清除图层标注 */
@@ -1889,6 +1938,17 @@ var _undoSkip = false;
   /** 栅格图层（GeoTIFF 转换后的 PNG） */
   function addImageOverlay(url, bounds, name, layerId) {
     if (!mapInstance) return;
+    // Prefer the stable layer id when a project restore or rerun uses a new display name.
+    var previous = _rasterLayers[name] || (layerId && _rasterLayers[layerId]);
+    if (previous) {
+      mapInstance.removeLayer(previous);
+      Object.keys(_rasterLayers).forEach(function(key) {
+        if (_rasterLayers[key] === previous) delete _rasterLayers[key];
+      });
+      Object.keys(layers).forEach(function(key) {
+        if (layers[key] === previous) delete layers[key];
+      });
+    }
     var southWest = L.latLng(bounds[1], bounds[0]);
     var northEast = L.latLng(bounds[3], bounds[2]);
     var imageBounds = L.latLngBounds(southWest, northEast);

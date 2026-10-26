@@ -9,6 +9,7 @@ window.GIS = window.GIS || {};
   'use strict';
 
   const GIS = window.GIS;
+  function tr(key, fallback) { return GIS.i18n ? GIS.i18n.t(key, fallback) : fallback; }
   const ALLOWED_EXTENSIONS = ['.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip', '.shp', '.csv', '.tif', '.tiff', '.pmtiles', '.parquet', '.geoparquet', '.fgb'];
 
   let fileInput = null;
@@ -180,12 +181,14 @@ window.GIS = window.GIS || {};
         overlay.querySelector('.preview-btn-cancel')?.addEventListener('click', function() { close(false); });
         overlay.addEventListener('click', function(e) { if (e.target === overlay) close(false); });
       }
+      var cancelLabel = tr('common.cancel', '取消');
+      var confirmLabel = tr('upload.confirm', '确认上传');
       if (ext !== '.csv' && file.size > 2 * 1024 * 1024) {
-        render('<div class="preview-dialog"><div class="preview-dialog-title">数据预览</div>' +
+        render('<div class="preview-dialog"><div class="preview-dialog-title">' + tr('upload.preview', '数据预览') + '</div>' +
           '<div class="preview-dialog-file">' + escapeHtml(file.name) + '</div>' +
-          '<p>文件较大，上传后由后台检查完整数据，当前不展开要素预览。</p>' +
-          '<div class="preview-dialog-actions"><button class="preview-btn preview-btn-cancel">取消</button>' +
-          '<button class="preview-btn preview-btn-confirm">确认上传</button></div></div>');
+          '<p>' + tr('upload.large-file-note', '文件较大，上传后由后台检查完整数据，当前不展开要素预览。') + '</p>' +
+          '<div class="preview-dialog-actions"><button class="preview-btn preview-btn-cancel">' + cancelLabel + '</button>' +
+          '<button class="preview-btn preview-btn-confirm">' + confirmLabel + '</button></div></div>');
         return;
       }
       var reader = new FileReader();
@@ -197,18 +200,18 @@ window.GIS = window.GIS || {};
           var cols = (csvRows[0] || ['无列名']).slice(0, 50).map(function(c) { return c.trim(); });
           var previewRows = csvRows.slice(1, 4);
           html = '<div class="preview-dialog">' +
-            '<div class="preview-dialog-title">数据预览</div>' +
+            '<div class="preview-dialog-title">' + tr('upload.preview', '数据预览') + '</div>' +
             '<div class="preview-dialog-file">' + escapeHtml(file.name) + ' (' + (file.size / 1024).toFixed(1) + ' KB)</div>' +
-            '<div class="preview-dialog-section"><div class="preview-dialog-label">预览列名（最多 50 列）</div>' +
+            '<div class="preview-dialog-section"><div class="preview-dialog-label">' + tr('upload.preview-columns', '预览列名（最多 50 列）') + '</div>' +
             '<div class="preview-chips">' + cols.map(function(c) { return '<span class="preview-chip">' + escapeHtml(c) + '</span>'; }).join('') + '</div></div>' +
-            '<div class="preview-dialog-section"><div class="preview-dialog-label">前 ' + Math.min(previewRows.length, 3) + ' 行预览</div>' +
+            '<div class="preview-dialog-section"><div class="preview-dialog-label">' + (GIS.i18n && GIS.i18n.isEnglish() ? tr('upload.preview-rows', '前 ') + Math.min(previewRows.length, 3) + tr('upload.rows', ' 行') : '前 ' + Math.min(previewRows.length, 3) + ' 行预览') + '</div>' +
             '<table class="preview-table"><thead><tr>' + cols.map(function(c) { return '<th>' + escapeHtml(c) + '</th>'; }).join('') + '</tr></thead>' +
             '<tbody>' + previewRows.map(function(row) {
               return '<tr>' + row.slice(0, 50).map(function(c) { return '<td>' + escapeHtml(c.trim().slice(0, 200)) + '</td>'; }).join('') + '</tr>';
             }).join('') + '</tbody></table></div>' +
             '<div class="preview-dialog-actions">' +
-            '<button class="preview-btn preview-btn-cancel">取消</button>' +
-            '<button class="preview-btn preview-btn-confirm">确认上传</button></div></div>';
+            '<button class="preview-btn preview-btn-cancel">' + cancelLabel + '</button>' +
+            '<button class="preview-btn preview-btn-confirm">' + confirmLabel + '</button></div></div>';
         } else {
           // GeoJSON
           try {
@@ -228,25 +231,25 @@ window.GIS = window.GIS || {};
             var typeStr = Object.keys(types).join(', ') || '未知';
             var fieldKeys = Object.keys(fields);
             html = '<div class="preview-dialog">' +
-              '<div class="preview-dialog-title">数据预览</div>' +
+              '<div class="preview-dialog-title">' + tr('upload.preview', '数据预览') + '</div>' +
               '<div class="preview-dialog-file">' + escapeHtml(file.name) + ' (' + (file.size / 1024).toFixed(1) + ' KB)</div>' +
-              '<div class="preview-dialog-section"><div class="preview-dialog-label">要素信息</div>' +
-              '<div class="preview-info"><span>要素数: <strong>' + featCount + '</strong></span><span>几何类型: <strong>' + escapeHtml(typeStr) + '</strong></span></div></div>' +
-              (fieldKeys.length ? '<div class="preview-dialog-section"><div class="preview-dialog-label">字段 (' + fieldKeys.length + ')</div>' +
+              '<div class="preview-dialog-section"><div class="preview-dialog-label">' + tr('upload.feature-info', '要素信息') + '</div>' +
+              '<div class="preview-info"><span>' + tr('upload.feature-count', '要素数: ') + '<strong>' + featCount + '</strong></span><span>' + tr('upload.geometry-type', '几何类型: ') + '<strong>' + escapeHtml(typeStr) + '</strong></span></div></div>' +
+              (fieldKeys.length ? '<div class="preview-dialog-section"><div class="preview-dialog-label">' + tr('upload.fields', '字段 (') + fieldKeys.length + ')</div>' +
               '<div class="preview-chips">' + fieldKeys.map(function(k) { return '<span class="preview-chip">' + escapeHtml(k) + '</span>'; }).join('') + '</div></div>' : '') +
               '<div class="preview-dialog-actions">' +
-              '<button class="preview-btn preview-btn-cancel">取消</button>' +
-              '<button class="preview-btn preview-btn-confirm">确认上传</button></div></div>';
+              '<button class="preview-btn preview-btn-cancel">' + cancelLabel + '</button>' +
+              '<button class="preview-btn preview-btn-confirm">' + confirmLabel + '</button></div></div>';
           } catch (e) {
-            html = '<div class="preview-dialog"><div class="preview-dialog-title">无法解析</div>' +
-              '<p style="color:var(--ui-gray-500);font-size:13px;">GeoJSON 解析失败</p>' +
-              '<div class="preview-dialog-actions"><button class="preview-btn preview-btn-cancel">取消</button></div></div>';
+            html = '<div class="preview-dialog"><div class="preview-dialog-title">' + tr('upload.parse-error-title', '无法解析') + '</div>' +
+              '<p style="color:var(--ui-gray-500);font-size:13px;">' + tr('upload.geojson-parse-failed', 'GeoJSON 解析失败') + '</p>' +
+              '<div class="preview-dialog-actions"><button class="preview-btn preview-btn-cancel">' + cancelLabel + '</button></div></div>';
           }
         }
         render(html);
       };
       reader.onerror = function() {
-        showUploadToast('error', '无法读取文件预览，文件未上传：' + file.name);
+        showUploadToast('error', tr('upload.read-preview-failed', '无法读取文件预览，文件未上传：') + file.name);
         resolve(false);
       };
       reader.onabort = reader.onerror;
@@ -262,6 +265,10 @@ window.GIS = window.GIS || {};
     _uploadAbortControllers.set(uploadId, controller);
     showUploadToast('importing', file.name, uploadId);
     var signal = controller.signal;
+    var uploadResult = null;
+    var localMapName = null;
+    var localLayerId = null;
+    var handoffCommitted = false;
 
     try {
       const result = await GIS.api.upload(file, signal);
@@ -272,6 +279,7 @@ window.GIS = window.GIS || {};
         }
         return;
       }
+      uploadResult = result;
       if (!result || typeof result !== 'object') throw new Error('服务器未返回有效的上传结果');
 
       // 后端返回了错误信息
@@ -324,6 +332,8 @@ window.GIS = window.GIS || {};
             || !info.bounds.every(Number.isFinite)) throw new Error('栅格预览缺少有效的地址或范围');
         const layerId = 'raster_' + Date.now() + '_' + uploadId.slice(7);
         const name = result.name || file.name.replace(/\.(tif|tiff)$/i, '');
+        localMapName = layerId;
+        localLayerId = layerId;
 
         GIS.map.addImageOverlay(info.url, info.bounds, name, layerId);
         const rasterLayer = {
@@ -331,16 +341,15 @@ window.GIS = window.GIS || {};
           _rawName: layerId,
           filename: name,
           geometry_type: 'Raster',
-          crs: 'WGS-84',
+          crs: info.crs || '未知（上传数据未提供 CRS）',
           source: 'upload',
           raster: info,
           _registeredName: result.name || name,
         };
-        if (typeof result.registration_token === 'string') {
-          rasterLayer._registrationTokens = Object.create(null);
-          rasterLayer._registrationTokens[rasterLayer._registeredName] = result.registration_token;
-        }
-        GIS.layers.addLayer(rasterLayer, true);
+        var addedRaster = GIS.layers.addLayer(rasterLayer, true);
+        if (!addedRaster) throw new Error('图层面板未接收栅格上传结果');
+        _rememberUploadRegistration(layerId, addedRaster._registeredName, result.registration_token, addedRaster);
+        handoffCommitted = true;
 
         showUploadToast('success', name, uploadId);
         return;
@@ -348,6 +357,8 @@ window.GIS = window.GIS || {};
 
       // ===== GeoJSON / SHP / GPKG / KML 等矢量文件上传 =====
       if (!result.geojson || typeof result.name !== 'string' || !result.name) throw new Error('上传结果缺少有效的矢量数据或图层名');
+      localMapName = result.name;
+      localLayerId = 'vector_' + Date.now() + '_' + uploadId.slice(7);
       GIS.map.loadGeoJSON(result.geojson, result.name);
 
       const geojson = result.geojson;
@@ -355,19 +366,21 @@ window.GIS = window.GIS || {};
         ? (geojson.features.find(function(feature) { return feature && feature.geometry; })?.geometry?.type || '未知')
         : (geojson.geometry?.type || '未知');
       const layer = {
-        layer_id: 'vector_' + Date.now() + '_' + uploadId.slice(7),
+        layer_id: localLayerId,
         filename: result.name,
         geometry_type: type,
         crs: 'WGS-84',
         geojson: geojson,
         source: 'upload',
+        provenance: result.provenance || null,
         _registeredName: result.name,
       };
-      if (typeof result.registration_token === 'string') {
-        layer._registrationTokens = Object.create(null);
-        layer._registrationTokens[result.name] = result.registration_token;
-      }
-      GIS.layers.addLayer(layer, true);
+      // Attach the registration token only after the panel accepts the layer,
+      // so a failed local handoff can roll back without scheduling a second unregister.
+      var addedVector = GIS.layers.addLayer(layer, true);
+      if (!addedVector) throw new Error('图层面板未接收矢量上传结果');
+      _rememberUploadRegistration(localLayerId, result.name, result.registration_token, addedVector);
+      handoffCommitted = true;
 
       // 通知 AI 文件路径（隐藏消息，不显示在聊天框，但 AI 能读到）
       if (GIS.chat && GIS.chat.addMessage) {
@@ -376,11 +389,59 @@ window.GIS = window.GIS || {};
 
       showUploadToast('success', result.name, uploadId);
     } catch (err) {
-      if (err.name === 'AbortError') return; // 用户取消，不显示错误
-      showUploadToast('error', file.name + ': ' + err.message, uploadId);
+      if (err.name === 'AbortError' && !uploadResult) return; // 请求尚未返回时的用户取消
+      if (uploadResult && !handoffCommitted) {
+        var stateLayer = localLayerId && GIS.state && GIS.state.getLayer
+          ? GIS.state.getLayer(localLayerId)
+          : null;
+        var stateCleaned = false;
+        if (stateLayer && GIS.state.removeLayer) {
+          try { GIS.state.removeLayer(localLayerId, true); stateCleaned = true; } catch (_) {}
+        }
+        var partialLayer = localLayerId && GIS.layers && GIS.layers.getLayers
+          ? GIS.layers.getLayers().find(function(layer) { return layer.layer_id === localLayerId; })
+          : null;
+        if (!stateCleaned && partialLayer && GIS.layers.removeLayer) {
+          try { GIS.layers.removeLayer(localLayerId, undefined, true); } catch (_) {}
+        }
+        if (!stateCleaned && localMapName && GIS.map && GIS.map.removeLayer) {
+          try { GIS.map.removeLayer(localMapName); } catch (_) {}
+        }
+        if (uploadResult.registration_token && uploadResult.name && GIS.api.unregisterLayer) {
+          try { await GIS.api.unregisterLayer(uploadResult.name, uploadResult.registration_token); }
+          catch (cleanupError) {
+            if (GIS.toast && GIS.toast.warn) GIS.toast.warn('上传结果未能加入工作区，后台临时图层清理失败，请稍后检查');
+          }
+        }
+      }
+      var errorMessage = err.code === 'UPLOAD_NETWORK_ERROR'
+        ? tr('upload.connection-unknown', '上传连接中断，服务器可能已收到文件。请先检查图层列表，再决定是否重试，避免重复导入。')
+        : (err.message || '上传失败');
+      showUploadToast('error', file.name + ': ' + errorMessage, uploadId);
     } finally {
       _uploadAbortControllers.delete(uploadId);
     }
+  }
+
+  // The vector upload path may return the shared GIS state record while deletion
+  // later reads registration ownership from the separate layer-panel record.
+  // Keep the server name and version token on both records so cleanup is safe.
+  function _rememberUploadRegistration(layerId, registeredName, token, returnedLayer) {
+    if (!registeredName || typeof token !== 'string' || !token) return;
+    var records = [returnedLayer];
+    if (GIS.layers && GIS.layers.getLayers) {
+      var panelLayer = GIS.layers.getLayers().find(function(layer) { return layer.layer_id === layerId; });
+      if (panelLayer) records.push(panelLayer);
+    }
+    if (GIS.state && GIS.state.getLayer) {
+      var stateLayer = GIS.state.getLayer(layerId);
+      if (stateLayer) records.push(stateLayer);
+    }
+    records.filter(Boolean).forEach(function(layer) {
+      layer._registeredName = registeredName;
+      if (!layer._registrationTokens) layer._registrationTokens = Object.create(null);
+      layer._registrationTokens[registeredName] = token;
+    });
   }
 
   // ---- 上传状态气泡（显示在 AI 对话区，无头像，像 AI 消息样式） ----
@@ -403,8 +464,8 @@ window.GIS = window.GIS || {};
       bubble.className = 'system-pill';
       bubble.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:3px 12px;line-height:1.4;';
       bubble.innerHTML =
-        "<span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span style=\"font-weight:500;\">导入中: " + escapeHtml(msg || '文件') + '</span>' +
-        '<button class="upload-cancel-btn" style="margin-left:6px;font-size:10px;padding:1px 6px;border:1px solid var(--outline-variant);border-radius:3px;background:none;cursor:pointer;color:var(--on-surface-variant);white-space:nowrap;">取消</button>';
+        "<span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span style=\"font-weight:500;\">" + tr('upload.importing', '导入中: ') + escapeHtml(msg || (GIS.i18n && GIS.i18n.isEnglish() ? 'file' : '文件')) + '</span>' +
+        '<button class="upload-cancel-btn" style="margin-left:6px;font-size:10px;padding:1px 6px;border:1px solid var(--outline-variant);border-radius:3px;background:none;cursor:pointer;color:var(--on-surface-variant);white-space:nowrap;">' + tr('upload.cancel', '取消') + '</button>';
       row.appendChild(bubble);
       container.appendChild(row);
       requestAnimationFrame(function() { row.style.opacity = '1'; });
@@ -422,7 +483,7 @@ window.GIS = window.GIS || {};
           if (!ctrl) return;
           ctrl.abort();
           bubble.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">' +
-            escapeHtml(msg || '文件') + ' 导入已取消</span>';
+            escapeHtml(msg || (GIS.i18n && GIS.i18n.isEnglish() ? 'File' : '文件')) + ' ' + tr('upload.cancelled', '导入已取消') + '</span>';
           _scheduleUploadRowRemoval(uploadId, 3000);
         });
       }
@@ -447,17 +508,17 @@ window.GIS = window.GIS || {};
 
       if (status === 'success') {
         if (window.GIS.toast && typeof window.GIS.toast.success === 'function') {
-          window.GIS.toast.success('上传成功' + (msg ? ': ' + msg : ''));
+          window.GIS.toast.success(tr('upload.success', '上传成功') + (msg ? ': ' + msg : ''));
         }
         contentDiv.innerHTML =
-          "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-ae6516c4f98b.png')\"></span><span style=\"color:#2e7d32;font-weight:500;\">上传成功" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>';
+          "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-ae6516c4f98b.png')\"></span><span style=\"color:#2e7d32;font-weight:500;\">" + tr('upload.success', '上传成功') + (msg ? ': ' + escapeHtml(msg) : '') + '</span>';
         _scheduleUploadRowRemoval(uploadId, 3000);
       } else if (status === 'error') {
         if (window.GIS.toast && typeof window.GIS.toast.error === 'function') {
-          window.GIS.toast.error('上传失败' + (msg ? ': ' + msg : ''));
+          window.GIS.toast.error(tr('upload.failed', '上传失败') + (msg ? ': ' + msg : ''));
         }
         contentDiv.innerHTML =
-          "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-22ff8b401bb5.png')\"></span><span style=\"color:#d32f2f;font-weight:500;\">上传失败" + (msg ? ': ' + escapeHtml(msg) : '') + '</span>';
+          "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-22ff8b401bb5.png')\"></span><span style=\"color:#d32f2f;font-weight:500;\">" + tr('upload.failed', '上传失败') + (msg ? ': ' + escapeHtml(msg) : '') + '</span>';
         _scheduleUploadRowRemoval(uploadId, 5000);
       }
     }

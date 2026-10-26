@@ -259,6 +259,13 @@ class TestToolChain:
         pending = get_pending_state()
         names = [l["name"] for l in pending["layers"]]
         assert "长沙_roads" in names
+        layer = next(l for l in pending["layers"] if l["name"] == "长沙_roads")
+        assert layer["provenance"]["provider"] == "osm"
+        assert layer["provenance"]["provider_name"]
+        assert layer["provenance"]["crs"] == "EPSG:4326"
+        assert "file_path" not in layer["provenance"]
+        assert "query" not in layer["provenance"]
+        assert _registered_layers["长沙_roads"]["provenance"] == layer["provenance"]
 
 
 

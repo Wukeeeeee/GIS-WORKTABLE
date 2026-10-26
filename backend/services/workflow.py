@@ -331,17 +331,19 @@ class WorkflowExecutor:
     """Workflow 执行引擎，调用现有 Tool Registry"""
 
     def __init__(self, tool_registry: Dict, register_layer_fn=None,
-                 event_callback=None, failure_detector=None):
+                 event_callback=None, failure_detector=None, layer_snapshot_fn=None):
         """
         tool_registry: {tool_name: tool_function}
         register_layer_fn: 注册图层的回调函数(name, geojson) -> None
         event_callback: 事件回调函数(event_dict) -> None，用于 SSE 推送
         failure_detector: 可选工具级失败判定器，签名为 (tool_name, result) -> bool
+        layer_snapshot_fn: 返回 {layer_name: registration_token}，用于暴露工具副作用产生的图层
         """
         self.tool_registry = tool_registry
         self.register_layer_fn = register_layer_fn
         self.event_callback = event_callback
         self.failure_detector = failure_detector
+        self.layer_snapshot_fn = layer_snapshot_fn
 
     def _emit(self, event: Dict):
         if self.event_callback:
@@ -361,6 +363,27 @@ class WorkflowExecutor:
         if errors:
             wf["status"] = "failed"
             wf["error"] = "; ".join(errors)
+            for node in wf.get("nodes", []):
+                if not isinstance(node, dict):
+                    continue
+                node_id = node.get("id")
+                node_errors = [error for error in errors if node_id and f"节点 {node_id} " in error]
+                if node_errors:
+                    node["status"] = "failed"
+                    node["error"] = "; ".join(node_errors)[:500]
+                    self._emit({
+                        "type": "workflow_node_failed", "node_id": node_id,
+                        "name": node.get("name", ""), "tool": node.get("tool", ""),
+                        "error": node["error"],
+                    })
+                else:
+                    node["status"] = "skipped"
+                    node["error"] = "工作流结构校验未通过，节点未执行"
+                    self._emit({
+                        "type": "workflow_node_skipped", "node_id": node_id,
+                        "name": node.get("name", ""), "tool": node.get("tool", ""),
+                        "error": node["error"],
+                    })
             self._emit({
                 "type": "workflow_failed",
                 "workflow_id": wf.get("id"),
@@ -389,7 +412,10 @@ class WorkflowExecutor:
             if upstream_failed:
                 node["status"] = "skipped"
                 node["error"] = "上游节点失败，跳过执行"
-                self._emit({"type": "workflow_node_skipped", "node_id": nid, "name": node["name"]})
+                self._emit({
+                    "type": "workflow_node_skipped", "node_id": nid,
+                    "name": node["name"], "tool": node["tool"], "error": node["error"],
+                })
                 continue
 
             # 收集上游输出
@@ -410,6 +436,7 @@ class WorkflowExecutor:
             })
 
             try:
+                layers_before = self.layer_snapshot_fn() if self.layer_snapshot_fn else {}
                 result = self._execute_node(node, upstream_outputs)
                 failure = _tool_failure_message(result)
                 if failure is None and self.failure_detector:
@@ -420,10 +447,21 @@ class WorkflowExecutor:
                         pass
                 if failure:
                     raise RuntimeError(failure)
-                node["outputs"] = {
+                outputs = {
                     **node.get("outputs", {}),
                     **(result if isinstance(result, dict) else {"result": result}),
                 }
+                if self.layer_snapshot_fn:
+                    layers_after = self.layer_snapshot_fn()
+                    changed_layers = [
+                        name for name, token in layers_after.items()
+                        if layers_before.get(name) != token
+                    ]
+                    if len(changed_layers) == 1:
+                        outputs.setdefault("layer_name", changed_layers[0])
+                    elif changed_layers:
+                        outputs.setdefault("layer_names", changed_layers)
+                node["outputs"] = outputs
                 node["status"] = "success"
                 node["_finished_ts"] = time.time()
                 node["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")

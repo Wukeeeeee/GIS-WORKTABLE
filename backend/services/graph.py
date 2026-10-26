@@ -45,6 +45,7 @@ import uuid
 import time
 from functools import wraps
 
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 
@@ -242,10 +243,23 @@ class _DeferredLockLease:
         future.add_done_callback(lambda _: self.worker_finished())
 
 
-def _invoke_agent_with_budget(agent, payload, limit, timeout_s):
+class _ToolInvocationTracker(BaseCallbackHandler):
+    """Track whether an Agent attempt reached a tool before an exception."""
+
+    def __init__(self):
+        self.started = threading.Event()
+
+    def on_tool_start(self, serialized, input_str, **kwargs):
+        self.started.set()
+
+
+def _invoke_agent_with_budget(agent, payload, limit, timeout_s, callbacks=None):
     """在调用方剩余总时长预算内等待一次 agent.invoke。"""
     executor = _cf_mod.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(agent.invoke, payload, {"recursion_limit": limit})
+    config = {"recursion_limit": limit}
+    if callbacks:
+        config["callbacks"] = callbacks
+    future = executor.submit(agent.invoke, payload, config)
     try:
         return "ok", future.result(timeout=max(0.0, float(timeout_s)))
     except _cf_mod.TimeoutError as e:
@@ -773,6 +787,7 @@ def run_agent(
     _budget_deadline = _time_mod.monotonic() + _GRAPH_TOTAL_TIMEOUT_S
     _budget_hit = False
     for _attempt in range(2):
+        _tool_tracker = _ToolInvocationTracker()
         try:
             if _ai_svc.is_session_cancelled(session_id or "default"):
                 _record_run_finish(_run_id, "用户已取消", "cancelled")
@@ -785,6 +800,7 @@ def run_agent(
             _remaining_budget = _budget_deadline - _time_mod.monotonic()
             _status, _inv = _invoke_agent_with_budget(
                 agent, {"messages": _msgs}, _GRAPH_RECURSION_LIMIT, _remaining_budget,
+                callbacks=[_tool_tracker],
             )
             if _status == "timeout":
                 _budget_hit = True
@@ -820,10 +836,14 @@ def run_agent(
             if _budget_hit:
                 _record_run_finish(_run_id, "任务执行时长已达上限", "timeout")
                 return {
-                    "response": "任务执行时长已达上限（约 %d 秒），已自动停止以避免无效消耗。\n\n请基于本轮已生成的图层/数据继续操作，或把任务拆分成更小的步骤后重试。" % int(_GRAPH_TOTAL_TIMEOUT_S),
+                    "response": (
+                        "任务等待时限已到（约 %d 秒）。底层 Agent 调用无法被强制中止，后台调用仍可能继续并完成工具操作。"
+                        "工作区会保持忙碌，直到后台调用结束；本次超时响应没有收到它的最终结果。\n\n"
+                        "请勿立即重复提交。工作区解除忙碌后，先检查图层和输出文件，再决定是否重试。"
+                    ) % int(_GRAPH_TOTAL_TIMEOUT_S),
                     "reasoning": None, "layers": [], "images": [],
                     "heatmap": None, "clear_layers": False, "layer_ops": [],
-                    "pending_suggestions": None,
+                    "pending_suggestions": None, "execution_status": "timeout",
                 }
             if _attempt == 0 and _tool_not_callable(e):
                 print("[GIS] 工具调度 TypeError，使用无工具模型收尾，避免重放原任务", flush=True)
@@ -849,11 +869,27 @@ def run_agent(
                 "rate limit", "429", "temporarily", "server error",
                 "api connection", "network", "reset by peer",
             ])
-            if _attempt == 0 and _is_temp:
+            _tool_may_have_run = _tool_tracker.started.is_set()
+            if _attempt == 0 and _is_temp and not _tool_may_have_run:
                 _run_retry_count = 1
                 print("[GIS] 网络临时异常，自动重试一次: " + str(e)[:100], flush=True)
                 import time as _time; _time.sleep(1)
                 continue
+            if _tool_may_have_run:
+                friendly = (
+                    "GIS 工具已开始执行，但 AI 服务随后连接中断。为避免重复操作，系统未自动重跑；"
+                    "请检查已生成图层或文件后再决定是否重试。"
+                )
+                _record_run_finish(_run_id, friendly, "error")
+                partial = get_pending_state()
+                return {
+                    "response": friendly, "reasoning": None,
+                    "layers": partial["layers"], "images": partial["images"],
+                    "heatmap": partial["heatmap"], "clear_layers": partial["clear_layers"],
+                    "layer_ops": partial["layer_ops"],
+                    "pending_suggestions": (partial["aoi_suggestions"] or {}).get("suggestions"),
+                    "qa_warnings": partial["qa_warnings"],
+                }
             error_msg = str(e)
             if "recursion_limit" in error_msg or "RecursionError" in error_msg:
                 friendly = "AI 在处理复杂任务时超限。已优化限制，请重试。如仍有问题，请简化请求描述。"
@@ -1157,6 +1193,88 @@ def _stream_tool_warning(content: object) -> bool:
         return bool(warning)
 
 
+def _workflow_progress_tool_events(payload: object, active_nodes: dict) -> list[dict]:
+    """Translate Workflow custom stream events into the existing execution-card protocol."""
+    if not isinstance(payload, dict) or payload.get("type") != "workflow_progress":
+        return []
+    detail = payload.get("event")
+    if not isinstance(detail, dict):
+        return []
+    event_type = detail.get("type")
+    if event_type not in {
+        "workflow_node_started", "workflow_node_completed",
+        "workflow_node_failed", "workflow_node_skipped",
+    }:
+        return []
+
+    invocation_id = str(payload.get("invocation_id") or "workflow")[:80]
+    node_id = str(detail.get("node_id") or "node")[:80]
+    key = (invocation_id, node_id)
+    node_name = str(detail.get("name") or node_id)[:120]
+    tool_name = str(detail.get("tool") or "workflow_node")[:100]
+    workflow_name = str(payload.get("workflow_name") or "工作流")[:120]
+    step_label = f"{workflow_name} · {node_name}"[:180]
+    result = []
+    call = active_nodes.get(key)
+
+    if event_type == "workflow_node_started":
+        if call:
+            return []
+        call = {
+            "tool_call_id": "workflow-node-" + uuid.uuid4().hex[:16],
+            "step_id": "workflow-step-" + uuid.uuid4().hex[:16],
+            "step_label": step_label,
+            "name": tool_name,
+        }
+        active_nodes[key] = call
+        return [{
+            "type": "tool_start", **call,
+            "input": json.dumps({"workflow_node": node_name, "tool": tool_name}, ensure_ascii=False),
+        }]
+
+    if call is None:
+        # Validation failures and skipped nodes may have no started event.
+        call = {
+            "tool_call_id": "workflow-node-" + uuid.uuid4().hex[:16],
+            "step_id": "workflow-step-" + uuid.uuid4().hex[:16],
+            "step_label": step_label,
+            "name": tool_name,
+        }
+        active_nodes[key] = call
+        result.append({
+            "type": "tool_start", **call,
+            "input": json.dumps({"workflow_node": node_name, "tool": tool_name}, ensure_ascii=False),
+        })
+    else:
+        tool_name = call["name"]
+
+    active_nodes.pop(key, None)
+    error = str(detail.get("error") or "")[:500]
+    if event_type == "workflow_node_failed":
+        result.append({
+            "type": "tool_end", **call, "output": error or "工作流节点执行失败",
+            "status": "error", "is_error": True,
+            "error_message": error or "工作流节点执行失败",
+        })
+    elif event_type == "workflow_node_skipped":
+        if "上游" in error:
+            skip_output = "未执行：依赖的上游节点未完成"
+        elif "校验" in error or "未通过" in error:
+            skip_output = "未执行：工作流结构校验条件未满足"
+        else:
+            skip_output = error or "工作流节点未执行"
+        result.append({
+            "type": "tool_end", **call, "output": skip_output,
+            "status": "partial", "has_warning": True,
+        })
+    else:
+        result.append({
+            "type": "tool_end", **call, "output": "工作流节点已完成",
+            "status": "success", "is_error": False,
+        })
+    return result
+
+
 def _run_agent_stream_impl(
     messages: list,
     cfg: LLMConfig,
@@ -1275,15 +1393,21 @@ def _run_agent_stream_impl(
     _ai_waiting_choice = False  # 初始化，防止 stream 提前异常/空流时 L1021 引用未定义变量
     try:
         msgs = []  # 初始化，防止空流时后续结果整理引用未定义变量
-        for step in _stream_with_deadline(
+        _workflow_node_calls = {}
+        for _stream_item in _stream_with_deadline(
             agent.stream(
                 {"messages": messages},
                 {"recursion_limit": 120},
-                stream_mode="values",
+                stream_mode=["values", "custom"],
             ),
             _stream_budget_deadline,
             lease=getattr(_AGENT_LOCK_LEASE, "current", None),
         ):
+            _stream_channel = None
+            step = _stream_item
+            if (isinstance(_stream_item, tuple) and len(_stream_item) == 2
+                    and isinstance(_stream_item[0], str)):
+                _stream_channel, step = _stream_item
             # 每次循环检查是否被取消
             if _ai_svc.is_session_cancelled(session_id or "default"):
                 _record_run_finish(_run_id, "用户已取消", "cancelled")
@@ -1291,6 +1415,13 @@ def _run_agent_stream_impl(
                     run_context["finished"] = True
                 yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
                 return
+
+            if _stream_channel == "custom":
+                for _progress_event in _workflow_progress_tool_events(step, _workflow_node_calls):
+                    yield "data: " + json.dumps(_progress_event, ensure_ascii=False) + "\n\n"
+                continue
+            if _stream_channel not in (None, "values"):
+                continue
 
             # --- 上下文膨胀兜底 3：累计输入 token 预算（早于 420s 触发）---
             # 只按字符粗估（1 token ~ 2-3 字符，取保守 3），避免额外依赖
@@ -1490,7 +1621,11 @@ def _run_agent_stream_impl(
                 "api connection", "network", "reset by peer", "internal server",
                 "overloaded", "bad gateway", "service unavailable",
             ])
-            if _is_temp_stream and not _ai_svc.is_session_cancelled(session_id or "default"):
+            # 从原始输入整轮重试会重放此前已经运行过的 GIS 工具，可能重复导出、
+            # 写入图层或访问外部服务。只有尚未产生任何工具调用/结果时才安全重试。
+            _attempt_has_tool_activity = _count_tool_calls(msgs) > 0 or _has_tool_messages(msgs)
+            if (_is_temp_stream and not _attempt_has_tool_activity
+                    and not _ai_svc.is_session_cancelled(session_id or "default")):
                 _retry_ok = False
                 try:
                     print("[GIS] 流式遇到临时性服务端异常，整轮重试一次: " + _err_str[:100], flush=True)
@@ -1707,6 +1842,11 @@ def _run_agent_stream_impl(
                 _run_finish_status = "timeout"
                 final_text = (final_text or "") + "\n\n【注意】自动补执行达到时限，结果可能不完整。"
     # === 正文净化：本轮已执行的 Python 源码折叠为一行，避免几百行代码盖住交付物 ===
+    if _run_finish_status == "timeout":
+        final_text = (final_text or "") + (
+            "\n\n【超时说明】等待时限已到，底层调用无法被强制中止，后台操作仍可能继续。"
+            "工作区会保持忙碌直到调用结束；请勿立即重复提交，解除忙碌后先检查已产生的结果。"
+        )
     final_text = _strip_executed_code_blocks(final_text, msgs, original_message or "")
 
     # === 结果真实性自检（确定性：核对磁盘与内存状态，无额外 LLM 调用）===
@@ -1757,6 +1897,7 @@ def _run_agent_stream_impl(
         "qa_warnings": pending.get("qa_warnings", []),
         "task_id": _task_id,
         "run_id": _run_id,
+        "execution_status": _run_finish_status,
         "mode": "full",
         "token_usage": _token_usage,
     }

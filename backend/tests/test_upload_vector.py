@@ -24,9 +24,14 @@ def test_projected_gpkg_upload_reprojects_features_to_wgs84(tmp_path, monkeypatc
         )
 
     assert response.status_code == 200
-    coordinates = response.json()["geojson"]["features"][0]["geometry"]["coordinates"]
+    result = response.json()
+    coordinates = result["geojson"]["features"][0]["geometry"]["coordinates"]
     assert coordinates[0] == pytest.approx(8.98315, abs=1e-4)
     assert coordinates[1] == pytest.approx(47.35370, abs=1e-4)
+    assert result["provenance"]["provider"] == "local_upload"
+    assert result["provenance"]["file_format"] == "GeoPackage"
+    assert result["provenance"]["crs"] == "EPSG:3857"
+    assert result["provenance"]["crs_known"] is True
 
 
 def test_projected_shapefile_zip_upload_reprojects_features_to_wgs84(tmp_path, monkeypatch):
@@ -51,9 +56,12 @@ def test_projected_shapefile_zip_upload_reprojects_features_to_wgs84(tmp_path, m
         )
 
     assert response.status_code == 200
-    coordinates = response.json()["geojson"]["features"][0]["geometry"]["coordinates"]
+    result = response.json()
+    coordinates = result["geojson"]["features"][0]["geometry"]["coordinates"]
     assert coordinates[0] == pytest.approx(8.98315, abs=1e-4)
     assert coordinates[1] == pytest.approx(47.35370, abs=1e-4)
+    assert result["provenance"]["file_format"] == "Shapefile ZIP"
+    assert result["provenance"]["crs"] == "EPSG:3857"
 
 
 def test_vector_upload_without_crs_returns_actionable_error(tmp_path, monkeypatch):

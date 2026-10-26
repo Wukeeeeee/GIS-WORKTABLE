@@ -772,7 +772,10 @@ window.GIS = window.GIS || {};
       _showLoader(false);
       if (solveButton) solveButton.disabled = false;
       if (data.error) {
-        _setStatus('求解失败: ' + data.error);
+        var errorDetails = _mode === 'closest_facility'
+          ? _facilityDiagnosticMessages(data) : [];
+        _setStatus('求解失败: ' + data.error +
+          (errorDetails.length ? '；' + errorDetails.join('；') : ''));
         return;
       }
       _displayResult(data);
@@ -894,12 +897,34 @@ window.GIS = window.GIS || {};
         });
         if (allBounds) map.fitBounds(allBounds.pad(0.1));
       }
-      resultBody.innerHTML = (data.summary || []).map(function(s) {
-        return '<div class="network-stat">#' + s.rank + ' 设施' + s.facility_idx + ': <strong>' + s.distance_km + '</strong> km</div>';
+      var summaryHtml = (data.summary || []).map(function(s) {
+        var facilityNumber = Number.isInteger(s.facility_idx) && s.facility_idx >= 0
+          ? s.facility_idx + 1 : s.facility_idx;
+        return '<div class="network-stat">#' + s.rank + ' 设施' + facilityNumber + ': <strong>' + s.distance_km + '</strong> km</div>';
       }).join('');
+      var diagnostics = _facilityDiagnosticMessages(data);
+      if (diagnostics.length) {
+        summaryHtml += '<div class="network-stat" role="status">部分结果：' + diagnostics.join('；') + '</div>';
+      }
+      resultBody.innerHTML = summaryHtml;
       _autoAddResultLayer(data);
-      _setStatus('最近设施分析完成');
+      _setStatus(diagnostics.length ? '最近设施分析完成（部分设施未纳入结果）' : '最近设施分析完成');
     }
+  }
+
+
+  function _facilityDiagnosticMessages(data) {
+    function describe(indices, reason) {
+      if (!Array.isArray(indices)) return '';
+      var valid = indices.filter(function(index) {
+        return Number.isInteger(index) && index >= 0;
+      }).map(function(index) { return index + 1; });
+      return valid.length ? reason + '设施序号（从 1 开始）：' + valid.join('、') : '';
+    }
+    return [
+      describe(data.unsnapped_facility_indices, '超出 500 m 吸附范围的'),
+      describe(data.unreachable_facility_indices, '与事件点路网不可达的'),
+    ].filter(Boolean);
   }
 
 

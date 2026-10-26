@@ -119,7 +119,7 @@ def test_statistics_prefix_stripping_is_preserved():
     no-symbol case.
     """
     text = _read("workspace.js")
-    m = re.search(r"const message = rawMessage\.replace\((/[^\n]+?/u), ''\)", text)
+    m = re.search(r"(?:const|let) message = rawMessage\.replace\((/[^\n]+?/u), ''\)", text)
     assert m, "statistics-stripping replace(...) not found in workspace.js"
     pattern = m.group(1)
     assert pattern.startswith("/^"), "statistics stripping regex must be leading-anchored: %s" % pattern

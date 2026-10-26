@@ -187,11 +187,9 @@ def test_required_primary_args_per_tool(js_text):
 
 
 def test_exports_analysis_tools(js_text):
-    # 必须是未注释的真实导出语句
-    m = re.search(r"^\s*GIS\.analysisTools\s*=\s*\{", js_text, re.M)
-    assert m, "缺少 GIS.analysisTools 导出"
-    for api in ("init", "activate", "deactivate", "toggle", "openWith"):
-        assert api in js_text, "缺少接口 %s" % api
+    # The panel intentionally exposes one public command; setup and visibility are internal.
+    assert re.search(r"^\s*GIS\.analysisTools\s*=\s*\{\s*toggle:\s*toggle\s*\};", js_text, re.M), \
+        "GIS.analysisTools 应公开被菜单调用的 toggle 入口"
 
 
 def test_prepare_panel_with_required_ids(js_text):

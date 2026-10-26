@@ -107,6 +107,51 @@ def test_join_field_left_no_row_multiplication_and_match_counts():
     assert math.isnan(scores[2]), f"未匹配键的行应为 NaN，实际 {scores}"
 
 
+def test_join_field_does_not_match_null_keys_or_multiply_rows():
+    target = _fc([
+        _pt({"key": None, "name": "a"}, 113.0, 23.0),
+        _pt({"key": None, "name": "b"}, 113.1, 23.1),
+    ])
+    join = _fc([
+        _pt({"jid": None, "score": 10}, 0.0, 0.0),
+        _pt({"jid": None, "score": 20}, 1.0, 1.0),
+        _pt({"jid": None, "score": 30}, 2.0, 2.0),
+    ])
+    _register_layer("null_key_target", target)
+    _register_layer("null_key_join", join)
+
+    result = join_field.invoke({
+        "target_layer": "null_key_target", "join_layer": "null_key_join",
+        "target_field": "key", "join_field": "jid", "fields": "score", "how": "left",
+    })
+
+    assert "匹配 0" in result and "未匹配 2" in result, result
+    out, _ = T._layer_to_gdf("null_key_target_连接null_key_join")
+    assert out is not None
+    assert len(out) == len(target["features"]), "空键不得因 Pandas 空值相互匹配而让目标行倍增"
+    assert out["score"].isna().all(), "空连接键应保留为未匹配"
+
+
+def test_join_field_supports_one_to_many_duplicate_join_keys():
+    _register_layer("one_to_many_target", _fc([
+        _pt({"key": 1}, 113.0, 23.0),
+    ]))
+    _register_layer("one_to_many_join", _fc([
+        _pt({"jid": 1, "score": 10}, 0.0, 0.0),
+        _pt({"jid": 1, "score": 20}, 1.0, 1.0),
+    ]))
+
+    result = join_field.invoke({
+        "target_layer": "one_to_many_target", "join_layer": "one_to_many_join",
+        "target_field": "key", "join_field": "jid", "fields": "score", "how": "left",
+    })
+
+    assert "validate=one_to_many" in result
+    out, _ = T._layer_to_gdf("one_to_many_target_连接one_to_many_join")
+    assert out is not None and len(out) == 2
+    assert set(out["score"].tolist()) == {10.0, 20.0}
+
+
 def test_join_field_inner_drops_unmatched():
     target = _fc([
         _pt({"key": 1, "name": "a"}, 113.0, 23.0),

@@ -19,129 +19,133 @@ window.GIS = window.GIS || {};
       + "<div class=\"spatial-loader\" id=\"ssLoader\" style=\"display:none\">"
       + "<div class=\"spatial-spinner\">"
       + "</div>"
-      + "<span>计算中..."
+      + "<span data-i18n=\"spatial-stats.loading\">计算中..."
       + "</span>"
       + "</div>"
       + "<div class=\"spatial-toolbar\" id=\"spatialStatsToolbar\">"
       + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-b5c56f814b9e.png')\">"
       + "</span>"
-      + "<span class=\"spatial-toolbar-title\">空间统计"
+      + "<span class=\"spatial-toolbar-title\" data-i18n=\"spatial-stats.title\">空间统计"
       + "</span>"
-      + "<button class=\"spatial-toolbar-close\" id=\"spatialStatsClose\">"
+      + "<button class=\"spatial-toolbar-close\" id=\"spatialStatsClose\" data-i18n-title=\"spatial-stats.close\">"
       + "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-28a441e0afbc.png')\">"
       + "</span>"
       + "</button>"
       + "</div>"
       + "<div class=\"spatial-tabs\" id=\"spatialStatsTabs\">"
-      + "<button class=\"spatial-tab active\" data-tab=\"moran\">自相关"
+      + "<button class=\"spatial-tab active\" data-tab=\"moran\" data-i18n=\"spatial-stats.tab-moran\">自相关"
       + "</button>"
-      + "<button class=\"spatial-tab\" data-tab=\"hotspot\">热点"
+      + "<button class=\"spatial-tab\" data-tab=\"hotspot\" data-i18n=\"spatial-stats.tab-hotspot\">热点"
       + "</button>"
-      + "<button class=\"spatial-tab\" data-tab=\"kde\">密度"
+      + "<button class=\"spatial-tab\" data-tab=\"kde\" data-i18n=\"spatial-stats.tab-kde\">密度"
       + "</button>"
       + "</div>"
       + "<div class=\"spatial-body\" id=\"spatialStatsBody\">"
       + "<div class=\"spatial-tab-content active\" id=\"stabMoran\">"
       + "<div class=\"spatial-field\">"
-      + "<label>图层"
+      + "<label data-i18n=\"spatial-stats.layer\">图层"
       + "</label>"
       + "<select id=\"ssMoranLayer\">"
-      + "<option value=\"\">-- 请选择图层 --"
+      + "<option value=\"\" data-i18n=\"spatial-stats.choose-layer\">-- 请选择图层 --"
       + "</option>"
       + "</select>"
       + "</div>"
       + "<div class=\"spatial-field\">"
-      + "<label>分析字段（数值）"
+      + "<label data-i18n=\"spatial-stats.field\">分析字段（数值）"
       + "</label>"
       + "<select id=\"ssMoranField\">"
-      + "<option value=\"\">-- 自动选择第一个数值字段 --"
+      + "<option value=\"\" data-i18n=\"spatial-stats.choose-field\">-- 自动选择第一个数值字段 --"
       + "</option>"
       + "</select>"
       + "</div>"
       + "<div class=\"spatial-field\">"
-      + "<label>空间权重"
+      + "<label data-i18n=\"spatial-stats.weights\">空间权重"
       + "</label>"
       + "<select id=\"ssMoranWeight\">"
-      + "<option value=\"distance\">距离权重"
+      + "<option value=\"distance\" data-i18n=\"spatial-stats.distance-weights\">距离权重"
       + "</option>"
-      + "<option value=\"knn\">K近邻权重"
+      + "<option value=\"knn\" data-i18n=\"spatial-stats.knn-weights\">K近邻权重"
       + "</option>"
       + "</select>"
       + "</div>"
       + "<div class=\"spatial-field\" id=\"ssMoranDistField\">"
-      + "<label>距离阈值（米）"
+      + "<label data-i18n=\"spatial-stats.distance-threshold\">距离阈值（米）"
       + "</label>"
       + "<input type=\"number\" id=\"ssMoranDist\" class=\"spatial-input\" value=\"1000\" min=\"1\" step=\"100\">"
       + "</div>"
       + "<div class=\"spatial-field\" id=\"ssMoranKnnField\" style=\"display:none;\">"
-      + "<label>K近邻数"
+      + "<label data-i18n=\"spatial-stats.knn-count\">K近邻数"
       + "</label>"
       + "<input type=\"number\" id=\"ssMoranK\" class=\"spatial-input\" value=\"5\" min=\"1\" max=\"50\">"
       + "</div>"
       + "<div class=\"spatial-field\">"
       + "<label class=\"spatial-checkbox-label\">"
-      + "<input type=\"checkbox\" id=\"ssMoranLocal\" checked> 同时计算局部 LISA（HH/HL/LH/LL 聚类图）"
+      + "<input type=\"checkbox\" id=\"ssMoranLocal\" checked> <span data-i18n=\"spatial-stats.local-lisa\">同时计算局部 LISA（HH/HL/LH/LL 聚类图）</span>"
       + "</label>"
       + "</div>"
-      + "<button class=\"spatial-run-btn\" data-op=\"moran\">运行 Moran's I 分析"
+      + "<button class=\"spatial-run-btn\" data-op=\"moran\" data-i18n=\"spatial-stats.run-moran\">运行 Moran's I 分析"
       + "</button>"
       + "</div>"
       + "<div class=\"spatial-tab-content\" id=\"stabHotspot\">"
       + "<div class=\"spatial-field\">"
-      + "<label>图层"
+      + "<label data-i18n=\"spatial-stats.layer\">图层"
       + "</label>"
       + "<select id=\"ssHotspotLayer\">"
-      + "<option value=\"\">-- 请选择图层 --"
+      + "<option value=\"\" data-i18n=\"spatial-stats.choose-layer\">-- 请选择图层 --"
       + "</option>"
       + "</select>"
       + "</div>"
       + "<div class=\"spatial-field\">"
-      + "<label>分析字段（数值）"
+      + "<label data-i18n=\"spatial-stats.field\">分析字段（数值）"
       + "</label>"
       + "<select id=\"ssHotspotField\">"
-      + "<option value=\"\">-- 自动选择第一个数值字段 --"
+      + "<option value=\"\" data-i18n=\"spatial-stats.choose-field\">-- 自动选择第一个数值字段 --"
       + "</option>"
       + "</select>"
       + "</div>"
       + "<div class=\"spatial-field\">"
-      + "<label>距离阈值（米）"
+      + "<label data-i18n=\"spatial-stats.distance-threshold\">距离阈值（米）"
       + "</label>"
       + "<input type=\"number\" id=\"ssHotspotDist\" class=\"spatial-input\" value=\"1000\" min=\"1\" step=\"100\">"
       + "</div>"
-      + "<button class=\"spatial-run-btn\" data-op=\"hotspot\">运行热点分析（Gi*）"
+      + "<button class=\"spatial-run-btn\" data-op=\"hotspot\" data-i18n=\"spatial-stats.run-hotspot\">运行热点分析（Gi*）"
       + "</button>"
       + "</div>"
       + "<div class=\"spatial-tab-content\" id=\"stabKde\">"
       + "<div class=\"spatial-field\">"
-      + "<label>图层"
+      + "<label data-i18n=\"spatial-stats.layer\">图层"
       + "</label>"
       + "<select id=\"ssKdeLayer\">"
-      + "<option value=\"\">-- 请选择图层 --"
+      + "<option value=\"\" data-i18n=\"spatial-stats.choose-layer\">-- 请选择图层 --"
       + "</option>"
       + "</select>"
       + "</div>"
       + "<div class=\"spatial-field\">"
-      + "<label>带宽（米，自动换算为度；留空自动估算）"
+      + "<label data-i18n=\"spatial-stats.bandwidth\">带宽（米，自动换算为度；留空自动估算）"
       + "</label>"
-      + "<input type=\"number\" id=\"ssKdeBandwidth\" class=\"spatial-input\" placeholder=\"自动\" min=\"1\" step=\"100\">"
+      + "<input type=\"number\" id=\"ssKdeBandwidth\" class=\"spatial-input\" placeholder=\"自动\" data-i18n-placeholder=\"spatial-stats.automatic\" min=\"1\" step=\"100\">"
       + "</div>"
       + "<div class=\"spatial-field\">"
-      + "<label>网格分辨率"
+      + "<label data-i18n=\"spatial-stats.grid-resolution\">网格分辨率"
       + "</label>"
       + "<select id=\"ssKdeGrid\">"
-      + "<option value=\"80\">精细（80×80，较慢）"
+      + "<option value=\"80\" data-i18n=\"spatial-stats.grid-fine\">精细（80×80，较慢）"
       + "</option>"
-      + "<option value=\"50\" selected>标准（50×50）"
+      + "<option value=\"50\" selected data-i18n=\"spatial-stats.grid-standard\">标准（50×50）"
       + "</option>"
-      + "<option value=\"30\">粗略（30×30，快）"
+      + "<option value=\"30\" data-i18n=\"spatial-stats.grid-coarse\">粗略（30×30，快）"
       + "</option>"
       + "</select>"
       + "</div>"
-      + "<button class=\"spatial-run-btn\" data-op=\"kde\">运行核密度估计"
+      + "<button class=\"spatial-run-btn\" data-op=\"kde\" data-i18n=\"spatial-stats.run-kde\">运行核密度估计"
       + "</button>"
       + "</div>"
       + "</div>"
       + "</div>");
+
+  function tr(key, fallback) {
+    return GIS.i18n ? GIS.i18n.t(key, fallback) : fallback;
+  }
 
   function init() {
     if (_initialized) return;
@@ -164,6 +168,7 @@ window.GIS = window.GIS || {};
 
     document.getElementById('spatialStatsClose').addEventListener('click', deactivate);
     if (GIS.workspace) GIS.workspace.preparePanel('spatialStatsPanel', 'spatialStatsToolbar', 'spatialStatsClose', '空间统计');
+    if (GIS.i18n) GIS.i18n.translate(container);
 
     // 标签切换
     document.getElementById('spatialStatsTabs').addEventListener('click', function (e) {
@@ -317,7 +322,8 @@ window.GIS = window.GIS || {};
       var sel = document.getElementById(id);
       if (!sel) return;
       var cur = sel.value;
-      sel.innerHTML = '<option value="">-- 请选择图层 --</option>';
+      sel.innerHTML = '<option value="" data-i18n="spatial-stats.choose-layer">-- 请选择图层 --</option>';
+      if (GIS.i18n) GIS.i18n.translate(sel);
       layers.filter(function(l) { return l.geojson && !l.raster; }).forEach(function (l) {
         var opt = document.createElement('option');
         opt.value = l.filename || l.layer_id;
@@ -341,7 +347,8 @@ window.GIS = window.GIS || {};
     function update() {
       var name = layerSel.value;
       var currentField = fieldSel.value;
-      fieldSel.innerHTML = '<option value="">-- 自动选择第一个数值字段 --</option>';
+      fieldSel.innerHTML = '<option value="" data-i18n="spatial-stats.choose-field">-- 自动选择第一个数值字段 --</option>';
+      if (GIS.i18n) GIS.i18n.translate(fieldSel);
       if (!name || !GIS.layers || !GIS.layers.getLayerByName) return;
       var layer = GIS.layers.getLayerByName(name);
       if (!layer || !layer.geojson) return;
@@ -375,7 +382,7 @@ window.GIS = window.GIS || {};
     var syncP = (GIS.api && GIS.api.syncLayer && args.layer_name)
       ? GIS.api.syncLayer(args.layer_name) : Promise.resolve();
     var p = syncP.then(function() {
-      if (!(GIS.api && GIS.api.invokeTool)) throw new Error('GIS.api.invokeTool 不可用');
+      if (!(GIS.api && GIS.api.invokeTool)) throw new Error(tr('spatial-stats.error.execute', '执行失败: ') + 'GIS.api.invokeTool 不可用');
       return GIS.api.invokeTool(tool, args);
     });
     return p.then(function(result) {
@@ -389,35 +396,35 @@ window.GIS = window.GIS || {};
     }).catch(function(err) {
       if (loader) loader.style.display = 'none';
       if (GIS.workspace) GIS.workspace.toolFeedback('spatialStatsPanel', null, err);
-      else alert('执行失败: ' + err.message);
+      else alert(tr('spatial-stats.error.execute', '执行失败: ') + err.message);
     });
   }
 
   function _runOperation(op, runButton) {
     if (op === 'moran') {
       var layer = document.getElementById('ssMoranLayer').value;
-      if (!layer) { alert('请选择图层'); return; }
+      if (!layer) { alert(tr('spatial-stats.error.select-layer', '请选择图层')); return; }
       var field = document.getElementById('ssMoranField').value;
       var weight = document.getElementById('ssMoranWeight').value;
       var local = document.getElementById('ssMoranLocal').checked;
       var args = { layer_name: layer, field: field || '', weight_type: weight, local: local };
       if (weight === 'distance') {
         var dist = Number(document.getElementById('ssMoranDist').value);
-        if (!Number.isFinite(dist) || dist <= 0) { alert('距离阈值必须是大于 0 的有限数值'); return; }
+        if (!Number.isFinite(dist) || dist <= 0) { alert(tr('spatial-stats.error.distance-positive', '距离阈值必须是大于 0 的有限数值')); return; }
         args.threshold_m = dist;
       } else {
         var k = Number(document.getElementById('ssMoranK').value);
-        if (!Number.isInteger(k) || k < 1 || k > 50) { alert('K 近邻数必须是 1 到 50 之间的整数'); return; }
+        if (!Number.isInteger(k) || k < 1 || k > 50) { alert(tr('spatial-stats.error.knn-range', 'K 近邻数必须是 1 到 50 之间的整数')); return; }
         args.k = k;
       }
       return _invoke('spatial_moran', args, runButton);
     }
     if (op === 'hotspot') {
       var layer2 = document.getElementById('ssHotspotLayer').value;
-      if (!layer2) { alert('请选择图层'); return; }
+      if (!layer2) { alert(tr('spatial-stats.error.select-layer', '请选择图层')); return; }
       var field2 = document.getElementById('ssHotspotField').value;
       var dist2 = Number(document.getElementById('ssHotspotDist').value);
-      if (!Number.isFinite(dist2) || dist2 <= 0) { alert('距离阈值必须是大于 0 的有限数值'); return; }
+      if (!Number.isFinite(dist2) || dist2 <= 0) { alert(tr('spatial-stats.error.distance-positive', '距离阈值必须是大于 0 的有限数值')); return; }
       return _invoke('spatial_hotspot', {
         layer_name: layer2, field: field2 || '',
         threshold_m: dist2,
@@ -425,12 +432,12 @@ window.GIS = window.GIS || {};
     }
     if (op === 'kde') {
       var layer3 = document.getElementById('ssKdeLayer').value;
-      if (!layer3) { alert('请选择图层'); return; }
+      if (!layer3) { alert(tr('spatial-stats.error.select-layer', '请选择图层')); return; }
       var bwText = document.getElementById('ssKdeBandwidth').value.trim();
       var bw = bwText ? Number(bwText) : 0;
-      if (bwText && (!Number.isFinite(bw) || bw <= 0)) { alert('带宽必须是大于 0 的有限数值，或留空自动估算'); return; }
+      if (bwText && (!Number.isFinite(bw) || bw <= 0)) { alert(tr('spatial-stats.error.bandwidth-positive', '带宽必须是大于 0 的有限数值，或留空自动估算')); return; }
       var grid = Number(document.getElementById('ssKdeGrid').value);
-      if (!Number.isInteger(grid) || grid < 10 || grid > 200) { alert('网格分辨率必须是 10 到 200 之间的整数'); return; }
+      if (!Number.isInteger(grid) || grid < 10 || grid > 200) { alert(tr('spatial-stats.error.grid-range', '网格分辨率必须是 10 到 200 之间的整数')); return; }
       var args3 = { layer_name: layer3, grid_size: grid, bandwidth_m: bw, metric_units: true };
       return _invoke('spatial_kde', args3, runButton);
     }

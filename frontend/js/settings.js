@@ -438,7 +438,7 @@ window.GIS = window.GIS || {};
     if (!el) return;
     var c = cred || {};
     var has = (c.type === 'key' || GEO_KEY_SERVICES.indexOf(svc) >= 0) ? !!c.api_key : !!(c.username && c.password);
-    el.textContent = has ? '已配置' : '未配置';
+    el.textContent = has ? (GIS.i18n && GIS.i18n.isEnglish() ? 'Configured' : '已配置') : (GIS.i18n && GIS.i18n.isEnglish() ? 'Not configured' : '未配置');
     el.className = 'model-config-badge' + (has ? ' configured' : '');
   }
 
@@ -461,7 +461,7 @@ window.GIS = window.GIS || {};
         var hasCredential = isKey ? !!cred.api_key : !!(cred.username && cred.password);
         if (!isKey && (!!cred.username !== !!cred.password)) {
           if (msg) {
-            msg.textContent = '请同时填写用户名和密码，或清空两项后删除';
+            msg.textContent = GIS.i18n && GIS.i18n.isEnglish() ? 'Enter both username and password, or clear both to remove the credential.' : '请同时填写用户名和密码，或清空两项后删除';
             msg.className = 'modal-test-result modal-test-error';
           }
           return;
@@ -477,7 +477,9 @@ window.GIS = window.GIS || {};
         updateGeoCredStatus(svc, hasCredential ? cred : {});
         btn.disabled = true;
         if (msg) {
-          msg.textContent = hasCredential ? '正在保存…' : '正在删除…';
+          msg.textContent = hasCredential
+            ? (GIS.i18n && GIS.i18n.isEnglish() ? 'Saving…' : '正在保存…')
+            : (GIS.i18n && GIS.i18n.isEnglish() ? 'Removing…' : '正在删除…');
           msg.className = 'modal-test-result';
         }
 
@@ -496,12 +498,16 @@ window.GIS = window.GIS || {};
           });
         }).then(function() {
           if (msg) {
-            msg.textContent = hasCredential ? '已保存（后端加密存储）' : '已从本地与后端清除';
+            msg.textContent = hasCredential
+              ? (GIS.i18n && GIS.i18n.isEnglish() ? 'Saved (encrypted on the server)' : '已保存（后端加密存储）')
+              : (GIS.i18n && GIS.i18n.isEnglish() ? 'Removed from local and server storage' : '已从本地与后端清除');
             msg.className = 'modal-test-result modal-test-success';
           }
         }).catch(function() {
           if (msg) {
-            msg.textContent = hasCredential ? '本地已保存，后端加密保存失败' : '本地已清除，后端删除失败，请重试';
+            msg.textContent = hasCredential
+              ? (GIS.i18n && GIS.i18n.isEnglish() ? 'Saved locally, but server-side encrypted storage failed.' : '本地已保存，后端加密保存失败')
+              : (GIS.i18n && GIS.i18n.isEnglish() ? 'Removed locally, but server-side deletion failed. Please retry.' : '本地已清除，后端删除失败，请重试');
             msg.className = 'modal-test-result modal-test-error';
           }
         }).finally(function() {
@@ -565,9 +571,18 @@ window.GIS = window.GIS || {};
     var el = document.getElementById('amapKeyStatus');
     if (!el) return;
     var has = !!GIS.api.getAmapKey();
-    el.textContent = has ? '已配置' : '未配置';
+    el.textContent = has ? (GIS.i18n && GIS.i18n.isEnglish() ? 'Configured' : '已配置') : (GIS.i18n && GIS.i18n.isEnglish() ? 'Not configured' : '未配置');
     el.className = 'model-config-badge' + (has ? ' configured' : '');
   }
+
+  document.addEventListener('gis:languagechange', function() {
+    var credentials = GIS.api && GIS.api.getGeoCredentials ? GIS.api.getGeoCredentials() : {};
+    document.querySelectorAll('[data-cred-status]').forEach(function(el) {
+      var service = el.getAttribute('data-cred-status');
+      updateGeoCredStatus(service, credentials[service] || {});
+    });
+    updateAmapStatus();
+  });
 
   // ============================================================
   // 网络代理配置

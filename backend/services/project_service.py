@@ -54,6 +54,11 @@ _PROJECT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__fi
 _BLOB_DIR = os.path.join(_PROJECT_DIR, "blobs")
 _INDEX_PATH = os.path.join(_PROJECT_DIR, "index.json")
 _MAX_PROJECTS = 30
+# Imported project archives are user-selected ZIPs. Keep decompression bounded
+# while leaving room for several source rasters in a portable GIS project.
+_MAX_PROJECT_ARCHIVE_ENTRIES = 10000
+_MAX_PROJECT_ARCHIVE_COMPRESSED_BYTES = 1024 * 1024 * 1024
+_MAX_PROJECT_ARCHIVE_EXPANDED_BYTES = 1024 * 1024 * 1024
 
 # 内存引用计数（启动时从 index.json 重建）
 _blob_refcount = {}
@@ -180,7 +185,16 @@ def _store_project_raster(pid: str, raster: dict) -> dict:
     if not source:
         raise ValueError("栅格图层资源不存在，无法保存工程")
     filename = _store_raster_asset(pid, source, {".png", ".jpg", ".jpeg", ".webp"})
-    saved = {key: raster[key] for key in ("bounds", "width", "height") if key in raster}
+    # Keep the inspectable raster metadata alongside its managed preview/source
+    # assets. Dropping these fields on save made a restored result lose its CRS,
+    # units, processing label and quality warnings in the layer inspector.
+    metadata_fields = (
+        "bounds", "width", "height", "crs", "source_width", "source_height",
+        "preview_downsampled", "bands", "nodata", "pixel_size", "pixel_units",
+        "value_units", "vertical_datum", "source_layer", "source_label",
+        "source_reference", "processing", "valid_pixel_ratio", "quality_warnings",
+    )
+    saved = {key: raster[key] for key in metadata_fields if key in raster}
     saved.update({
         "filename": os.path.basename(str(raster.get("filename") or filename)),
         "asset": filename,
@@ -220,6 +234,13 @@ def _cleanup_project_raster_assets(pid: str, keep_assets: set[str]):
 def _extract_project_archive(zf: zipfile.ZipFile, target_dir: str):
     root = os.path.realpath(target_dir)
     members = zf.infolist()
+    if len(members) > _MAX_PROJECT_ARCHIVE_ENTRIES:
+        raise ValueError(f"导入的工程文件条目过多（最多 {_MAX_PROJECT_ARCHIVE_ENTRIES} 项）")
+    expanded_size = sum(member.file_size for member in members)
+    if expanded_size > _MAX_PROJECT_ARCHIVE_EXPANDED_BYTES:
+        limit_mb = _MAX_PROJECT_ARCHIVE_EXPANDED_BYTES // (1024 * 1024)
+        raise ValueError(f"导入的工程解压后超过 {limit_mb} MB 限制")
+
     for member in members:
         name = member.filename
         normalized = name.replace("\\", "/")
@@ -454,6 +475,7 @@ def save_project(
                 "visible": layer.get("visible", True) if layer.get("visible") is not False else False,
                 "geometry_type": layer.get("geometry_type", "未知"),
                 "source": layer.get("source", "ai"),
+                "provenance": layer.get("provenance") if isinstance(layer.get("provenance"), dict) else None,
                 "order": idx,
                 "url": layer.get("url") or layer.get("service_url") or "",
                 "service_type": layer.get("service_type") or layer.get("protocol") or "",
@@ -691,13 +713,23 @@ def export_project(pid: str) -> bytes:
         # 包含图层 blob
         for layer in proj.get("layers", []):
             blob = layer.get("blob")
-            if blob:
+            if blob is not None:
                 try:
                     blob_path = _blob_path(blob)
-                except ValueError:
-                    continue
-                if os.path.exists(blob_path):
-                    zf.write(blob_path, f"blobs/{blob}.geojson.gz")
+                except ValueError as exc:
+                    raise ValueError("工程包含无效矢量图层数据，无法导出完整工程") from exc
+                if not os.path.isfile(blob_path):
+                    raise ValueError("工程矢量图层数据缺失，无法导出完整工程")
+                try:
+                    digest = hashlib.sha256()
+                    with gzip.open(blob_path, "rb") as source:
+                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                except Exception as exc:
+                    raise ValueError("工程矢量图层数据无效，无法导出完整工程") from exc
+                if digest.hexdigest()[:12] != blob:
+                    raise ValueError("工程矢量图层数据校验失败，无法导出完整工程")
+                zf.write(blob_path, f"blobs/{blob}.geojson.gz")
             raster = layer.get("raster")
             for asset in _raster_asset_names(raster) if isinstance(raster, dict) else []:
                 if asset in archived_raster_assets:
@@ -711,14 +743,26 @@ def export_project(pid: str) -> bytes:
     return buf.read()
 
 @_with_project_lock
-def import_project(zip_bytes: bytes) -> dict:
+def import_project(zip_bytes) -> dict:
     _ensure_dirs()
     pid = _generate_id()
     target_dir = _project_dir(pid)
     os.makedirs(target_dir, exist_ok=True)
 
     try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        if hasattr(zip_bytes, "read"):
+            zip_bytes.seek(0)
+            zip_bytes.seek(0, io.SEEK_END)
+            compressed_size = zip_bytes.tell()
+            zip_bytes.seek(0)
+            archive_source = zip_bytes
+        else:
+            compressed_size = len(zip_bytes)
+            archive_source = io.BytesIO(zip_bytes)
+        if compressed_size > _MAX_PROJECT_ARCHIVE_COMPRESSED_BYTES:
+            limit_mb = _MAX_PROJECT_ARCHIVE_COMPRESSED_BYTES // (1024 * 1024)
+            raise ValueError(f"导入的工程压缩包超过 {limit_mb} MB 限制")
+        with zipfile.ZipFile(archive_source) as zf:
             _extract_project_archive(zf, target_dir)
     except zipfile.BadZipFile as exc:
         shutil.rmtree(target_dir, ignore_errors=True)
@@ -749,6 +793,22 @@ def import_project(zip_bytes: bytes) -> dict:
         if blob is not None and (not isinstance(blob, str) or re.fullmatch(r"[0-9a-f]{12}", blob) is None):
             shutil.rmtree(target_dir, ignore_errors=True)
             raise ValueError("导入的工程文件包含无效 blob 标识")
+        if blob:
+            blob_path = os.path.join(target_dir, "blobs", blob + ".geojson.gz")
+            if not os.path.isfile(blob_path):
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise ValueError("导入的工程文件缺少矢量图层数据")
+            try:
+                digest = hashlib.sha256()
+                with gzip.open(blob_path, "rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except Exception as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise ValueError("导入的工程文件包含无效矢量图层数据") from exc
+            if digest.hexdigest()[:12] != blob:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise ValueError("导入的工程文件包含不匹配的矢量图层数据")
         raster = layer.get("raster")
         if raster is not None and not isinstance(raster, dict):
             shutil.rmtree(target_dir, ignore_errors=True)
@@ -853,6 +913,7 @@ def auto_save(
             "geometry_type": ", ".join(info.get("geometry_types", [])),
             "feature_count": info.get("feature_count", 0),
             "source": "ai",
+            **({"provenance": dict(info["provenance"])} if isinstance(info.get("provenance"), dict) else {}),
         })
 
     # 从 index 找这个 session 对应的工程（优先匹配显式 project_id，其次 session_id）

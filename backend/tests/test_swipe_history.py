@@ -94,16 +94,19 @@ def test_create_swipe_same_layer_rejected():
     _register_layer("A", _point_fc(116, 39, "a"))
     r = _registry()["create_swipe"].invoke({"left_layer": "A", "right_layer": "A"})
     assert "两个不同的图层" in r
+    entry = history_service.list_entries()[0]
+    assert entry["ok"] is False
+    assert "两个不同的图层" in entry["error"]
 
 
-def test_create_swipe_fuzzy_layer_match():
+def test_create_swipe_requires_exact_layer_names():
     reset_state()
     _register_layer("广州市_行政区划", _point_fc(113, 23, "gz"))
     _register_layer("佛山市_行政区划", _point_fc(113.1, 23.05, "fs"))
     r = _registry()["create_swipe"].invoke({"left_layer": "广州市", "right_layer": "佛山市"})
-    assert "已开启" in r
-    ops = get_pending_state()["layer_ops"]
-    assert ops[0]["left"] == "广州市_行政区划"
+    assert "未找到图层「广州市」" in r
+    assert "广州市_行政区划" in r
+    assert get_pending_state()["layer_ops"] == []
 
 
 def test_close_swipe_pushes_op():
@@ -136,7 +139,9 @@ def test_failed_execution_recorded_with_error():
     r = _registry()["create_swipe"].invoke({"left_layer": "无此层1", "right_layer": "无此层2"})
     assert "未找到" in r  # 工具本身不抛异常，返回错误信息
     e = history_service.list_entries()[0]
-    assert e["tool"] == "create_swipe" and e["ok"] is True  # 正常返回 = 成功
+    assert e["tool"] == "create_swipe" and e["ok"] is False
+    assert "未找到图层" in e["error"]
+    assert get_pending_state()["layer_ops"] == []
 
 
 def test_invalid_args_recorded_gracefully():
@@ -166,6 +171,41 @@ def test_history_persisted_to_disk(tmp_path):
     assert path.exists()
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["entries"] and data["entries"][0]["tool"] == "focus_map"
+
+
+def test_corrupt_history_is_not_overwritten_by_new_tool_record(tmp_path):
+    path = tmp_path / "tool_history.json"
+    original = b'{"entries":[{"index":1,"tool":"old"}], BROKEN'
+    path.write_bytes(original)
+    history_service.set_history_file(str(path))
+
+    history_service.record("focus_map", {"center": "116,39"}, True)
+
+    assert path.read_bytes() == original
+    assert history_service.get_storage_warning()
+    assert history_service.list_entries()[0]["tool"] == "focus_map"
+
+    # Explicit user-requested clear may replace the unreadable file, but only
+    # after the empty state has been durably written.
+    assert history_service.clear() is True
+    assert json.loads(path.read_text(encoding="utf-8"))["entries"] == []
+    assert history_service.get_storage_warning() is None
+
+
+def test_failed_history_clear_preserves_memory_and_disk(tmp_path, monkeypatch):
+    path = tmp_path / "tool_history.json"
+    history_service.set_history_file(str(path))
+    index = history_service.record("focus_map", {"center": "116,39"}, True)
+    original = path.read_bytes()
+
+    def fail_replace(_src, _dst):
+        raise OSError("test write failure")
+
+    monkeypatch.setattr(history_service.os, "replace", fail_replace)
+    assert history_service.clear() is False
+    assert path.read_bytes() == original
+    assert history_service.list_entries()[0]["index"] == index
+    assert history_service.get_storage_warning()
 
 
 def test_rerun_history_reexecutes_with_original_args():

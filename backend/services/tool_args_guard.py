@@ -21,12 +21,13 @@ import math
 
 PARAM_ROLES = {
     "spatial_buffer":       {"layer_name": "layer", "distance": "positive_num", "unit": "unit_km_m"},
-    "spatial_multi_ring_buffer": {"layer_name": "layer"},
+    "spatial_multi_ring_buffer": {"layer_name": "layer", "unit": "unit_km_m"},
     "spatial_intersect":    {"layer_a": "layer", "layer_b": "layer"},
     "spatial_union":        {"layer_a": "layer", "layer_b": "layer"},
     "spatial_difference":   {"layer_a": "layer", "layer_b": "layer"},
     "spatial_clip":         {"layer_name": "layer", "clip_layer": "layer"},
     "spatial_centroid":     {"layer_name": "layer"},
+    "spatial_cluster":      {"layer_name": "layer", "distance_unit": "enum:degrees|m|km"},
     "surface_volumes":      {"before_layer": "raster_layer", "after_layer": "raster_layer"},
     "raster_focal_stats":   {"layer_name": "raster_layer", "size": "odd_int"},
     "raster_reclassify":    {"layer_name": "raster_layer", "classes": "nonneg_num"},

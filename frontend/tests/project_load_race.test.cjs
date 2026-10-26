@@ -129,6 +129,31 @@ test('restoring legacy same-name layers without IDs delegates unique ID creation
   assert.deepEqual(hiddenMapNames, [mapNames[1]], 'only the saved hidden layer should be hidden');
 });
 
+test('a vector layer that fails to render is not registered as restored and is reported', async () => {
+  const addedLayers = [];
+  const messages = [];
+  const payload = {
+    id: 'broken-render-project', name: '渲染失败工程', messages: [], mapState: {},
+    layers: [{ name: '无法渲染的图层', geojson: { type: 'FeatureCollection', features: [] } }],
+  };
+  const window = { GIS: {
+    api: { loadProject() { return Promise.resolve(payload); } },
+    chat: { clear() {}, addMessage(message, type) { messages.push({ message, type }); } },
+    map: { clearAll() {}, loadGeoJSON() { throw new Error('render failed'); } },
+    layers: { clearAll() {}, addLayer(layer) { addedLayers.push(layer); }, syncLayerOrder() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  assert.equal(await window.GIS.project.loadProject('broken-render-project'), true);
+  assert.equal(addedLayers.length, 0, 'a failed map layer must not appear in the layer registry');
+  assert.ok(messages.some(item => item.message.includes('无法渲染的图层未能显示')));
+  assert.ok(messages.some(item => item.message.includes('已恢复工程')));
+});
+
 test('autosave sends stable layer IDs alongside names and display state', async () => {
   let capturedAssignments;
   const window = { GIS: {
@@ -186,12 +211,13 @@ test('autosave waits for the latest layer registration and skips saving stale da
   assert.equal(saveCalls, 1, 'failed registration must not persist the older backend copy');
 });
 
-test('project restore forwards saved layer style to the layer registry', async () => {
+test('project restore forwards saved layer style and provenance to the layer registry', async () => {
   const addedLayers = [];
   const opacities = [];
   const payload = {
     id: 'styled-project', name: '样式工程', messages: [], mapState: {},
     layers: [{ layer_id: 'styled-layer', name: '行政区', color: '#336699',
+      provenance: { provider_name: 'OpenStreetMap', crs: 'EPSG:4326' },
       style: { color: '#336699', fillOpacity: 0.24, opacity: 0.6, weight: 3 },
       geojson: { type: 'FeatureCollection', features: [] } }],
   };
@@ -209,6 +235,7 @@ test('project restore forwards saved layer style to the layer registry', async (
 
   assert.equal(await window.GIS.project.loadProject('styled-project'), true);
   assert.deepEqual({ ...addedLayers[0].style }, { color: '#336699', fillOpacity: 0.24, weight: 3 });
+  assert.deepEqual({ ...addedLayers[0].provenance }, { provider_name: 'OpenStreetMap', crs: 'EPSG:4326' });
   assert.equal(addedLayers[0].opacity, 0.6);
   assert.deepEqual(opacities, [['project_styled-project_layer_0', 0.6]]);
 });
@@ -240,7 +267,7 @@ test('project restore recreates saved raster overlays and their layer-panel visi
 
   assert.equal(await window.GIS.project.loadProject('raster-project'), true);
   const mapLayerName = 'project_raster-project_layer_0';
-  assert.deepEqual(overlays[0], [raster.url, raster.bounds, mapLayerName, mapLayerName]);
+  assert.deepEqual(overlays[0], [raster.url, raster.bounds, mapLayerName, '高程']);
   assert.deepEqual(hiddenMapNames, [[mapLayerName, false]]);
   assert.deepEqual(opacities[0], [mapLayerName, 0.4]);
   assert.equal(addedLayers[0].filename, '高程');
@@ -296,7 +323,7 @@ test('manual and automatic saves capture style changes from the real shared stat
         automatic = assignments; return Promise.resolve({ id: 'saved' });
       },
     },
-    map: { loadGeoJSON() {}, setLayerStyle() {}, setLayerOpacity(...args) { opacities.push(args); }, getLayer() { return null; }, applySymbology() {} },
+    map: { loadGeoJSON() {}, setLayerStyle() {}, setLayerOpacity(...args) { opacities.push(args); }, getLayer() { return null; }, applySymbology() { return true; } },
   } };
   const document = { readyState: 'loading', addEventListener() {}, getElementById() { return null; } };
   const context = vm.createContext({ window, document, console, Promise, Date, Math, Number, String, Object, Array, JSON, Set, Map });

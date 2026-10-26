@@ -30,15 +30,20 @@ function makeElement() {
   };
 }
 
-function loadUploadModule(readFailure, uploadResponse) {
+function loadUploadModule(readFailure, uploadResponse, config = {}) {
   const overlays = [];
   const uploadCalls = [];
   const rasterOverlays = [];
+  const rasterRemovals = [];
   const layerAdds = [];
+  const layerRemovals = [];
   const vectorLoads = [];
+  const vectorRemovals = [];
   const requests = [];
   const reads = [];
   const warnings = [];
+  const stateLayerIds = [];
+  let stateLayer = null;
   const elements = new Map();
   elements.set('chatMessages', makeElement());
   const document = {
@@ -78,8 +83,43 @@ function loadUploadModule(readFailure, uploadResponse) {
     api: { upload(file, signal) { uploadCalls.push(file.name); requests.push({ file, signal });
       return typeof uploadResponse === 'function' ? uploadResponse(file, signal)
         : Promise.resolve(uploadResponse || { error: 'test upload' }); } },
-    map: { addImageOverlay(...args) { rasterOverlays.push(args); }, loadGeoJSON(...args) { vectorLoads.push(args); } },
-    layers: { addLayer(...args) { layerAdds.push(args); } },
+    map: {
+      addImageOverlay(...args) { rasterOverlays.push(args); },
+      loadGeoJSON(...args) { vectorLoads.push(args); },
+      removeLayer(name) { rasterRemovals.push(name); vectorRemovals.push(name); },
+    },
+    layers: {
+      addLayer(...args) {
+        if (config.failAfterStateBridge) {
+          stateLayer = args[0];
+          stateLayerIds.push(stateLayer.layer_id);
+          throw new Error('layer panel unavailable after state insert');
+        }
+        layerAdds.push(args);
+        if (config.failLayerAdd) throw new Error('layer panel unavailable');
+        if (config.bridgeLayerAdd) {
+          stateLayer = args[0];
+          layerAdds[layerAdds.length - 1] = [{ ...args[0] }];
+          return stateLayer;
+        }
+        return args[0];
+      },
+      getLayers() { return layerAdds.map(args => args[0]); },
+      removeLayer(layerId) {
+        layerRemovals.push(layerId);
+        const index = layerAdds.findIndex(args => args[0].layer_id === layerId);
+        if (index >= 0) layerAdds.splice(index, 1);
+      },
+    },
+    state: {
+      getLayer(layerId) { return stateLayer && stateLayer.layer_id === layerId ? stateLayer : null; },
+      removeLayer(layerId) {
+        if (!stateLayer || stateLayer.layer_id !== layerId) return;
+        const mapName = stateLayer._rawName || stateLayer.filename || layerId;
+        stateLayer = null;
+        window.GIS.map.removeLayer(mapName);
+      },
+    },
     toast: { warn(message) { warnings.push(message); } },
   } };
   const context = { window, document, File, FileReader, console: { log() {}, warn() {} }, Promise, Map, Set, Array, Object, String, Number, Date, Math, RegExp,
@@ -88,7 +128,7 @@ function loadUploadModule(readFailure, uploadResponse) {
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   window.GIS.upload.init();
   const input = elements.get('fileInput');
-  return { window, upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, layerAdds, vectorLoads, requests, reads, warnings,
+  return { window, upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, rasterRemovals, layerAdds, layerRemovals, vectorLoads, vectorRemovals, requests, reads, warnings, stateLayerIds,
     selectFiles(files) { input.files = files; return input.fire('change', { target: input }); },
     dropFiles(files) { return document.body.fire('drop', { preventDefault() {}, dataTransfer: { files } }); },
     chatMessages: elements.get('chatMessages') };
@@ -138,6 +178,69 @@ test('uploaded raster layers use a stable map identity for independent visibilit
   assert.equal(layer._rawName, mapLayerId);
 });
 
+test('failed vector layer handoff removes the local map result and backend registration', async () => {
+  const h = loadUploadModule(false, {
+    name: 'points', geojson: { type: 'FeatureCollection', features: [] }, registration_token: 'vector-version',
+  }, { failLayerAdd: true });
+  const unregistered = [];
+  h.window.GIS.api.unregisterLayer = (...args) => { unregistered.push(args); return Promise.resolve({ success: true }); };
+
+  await h.selectFiles([{ name: 'points.gpkg', size: 10 }]);
+
+  assert.equal(h.vectorLoads.length, 1);
+  assert.deepEqual(h.vectorRemovals, ['points']);
+  assert.equal(h.layerRemovals.length, 1);
+  assert.deepEqual(unregistered, [['points', 'vector-version']]);
+  assert.match(h.chatMessages.children[0].children[0].innerHTML, /上传失败/);
+});
+
+test('failed raster layer handoff removes the preview overlay and backend registration', async () => {
+  const h = loadUploadModule(false, {
+    name: 'elevation', registration_token: 'raster-version', raster_info: {
+      url: '/output/uploads/elevation.png', bounds: [100, 30, 101, 31],
+    },
+  }, { failLayerAdd: true });
+  const unregistered = [];
+  h.window.GIS.api.unregisterLayer = (...args) => { unregistered.push(args); return Promise.resolve({ success: true }); };
+
+  await h.selectFiles([{ name: 'elevation.tif', size: 10 }]);
+
+  const mapLayerId = h.rasterOverlays[0][3];
+  assert.deepEqual(h.rasterRemovals, [mapLayerId]);
+  assert.deepEqual(h.layerRemovals, [mapLayerId]);
+  assert.deepEqual(unregistered, [['elevation', 'raster-version']]);
+  assert.match(h.chatMessages.children[0].children[0].innerHTML, /上传失败/);
+});
+
+test('failed vector panel bridge removes a state record created before the failure', async () => {
+  const h = loadUploadModule(false, {
+    name: 'points', geojson: { type: 'FeatureCollection', features: [] }, registration_token: 'vector-version',
+  }, { failAfterStateBridge: true });
+  const unregistered = [];
+  h.window.GIS.api.unregisterLayer = (...args) => { unregistered.push(args); return Promise.resolve({ success: true }); };
+
+  await h.selectFiles([{ name: 'points.gpkg', size: 10 }]);
+
+  assert.equal(h.window.GIS.state.getLayer(h.stateLayerIds[0]), null);
+  assert.deepEqual(h.vectorRemovals, ['points']);
+  assert.deepEqual(unregistered, [['points', 'vector-version']]);
+});
+
+test('vector upload registration ownership is retained across the shared-state panel bridge', async () => {
+  const h = loadUploadModule(false, {
+    name: 'points', geojson: { type: 'FeatureCollection', features: [] }, registration_token: 'vector-version',
+  }, { bridgeLayerAdd: true });
+
+  await h.selectFiles([{ name: 'points.gpkg', size: 10 }]);
+
+  const panelLayer = h.layerAdds[0][0];
+  const stateLayer = h.window.GIS.state.getLayer(panelLayer.layer_id);
+  assert.equal(panelLayer._registeredName, 'points');
+  assert.equal(panelLayer._registrationTokens.points, 'vector-version');
+  assert.equal(stateLayer._registeredName, 'points');
+  assert.equal(stateLayer._registrationTokens.points, 'vector-version');
+});
+
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function csv(name = 'points.csv', content = 'lon,lat\n10,20') {
   return { name, size: content.length, content, slice(start, end) { return { content: content.slice(start, end) }; } };
@@ -153,7 +256,8 @@ test('initializing twice does not duplicate the actual file-selection handler', 
 
 test('extensionless dropped GeoJSON is uploaded with its detected extension and intact content', async () => {
   const content = '{"type":"FeatureCollection","features":[]}';
-  const h = loadUploadModule(false, { name: 'points.geojson', geojson: JSON.parse(content), registration_token: 'version' });
+  const provenance = { provider: 'local_upload', kind: 'vector_upload', file_format: 'GeoJSON', crs: 'EPSG:4326', crs_known: true };
+  const h = loadUploadModule(false, { name: 'points.geojson', geojson: JSON.parse(content), registration_token: 'version', provenance });
   const pending = h.dropFiles([csv('points', content)]);
   await tick();
   await h.overlays[0].querySelector('.preview-btn-confirm').fire('click');
@@ -161,6 +265,7 @@ test('extensionless dropped GeoJSON is uploaded with its detected extension and 
   assert.equal(h.requests[0].file.name, 'points.geojson');
   assert.equal(h.requests[0].file.content, content);
   assert.equal(h.layerAdds[0][0]._registrationTokens['points.geojson'], 'version');
+  assert.deepEqual(h.layerAdds[0][0].provenance, provenance);
 });
 
 test('a large GeoJSON gets a bounded preview without reading the whole browser file', async () => {
@@ -237,4 +342,13 @@ test('format-specific file limits reject oversized input before preview or trans
   await h.selectFiles([{ name: 'huge.csv', size: 65 * 1024 * 1024 }]);
   assert.equal(h.reads.length, 0);
   assert.equal(h.uploadCalls.length, 0);
+});
+
+test('an interrupted upload warns that the server may have received the file before retry', async () => {
+  const h = loadUploadModule(false, () => Promise.reject(Object.assign(new Error('Failed to fetch'), { code: 'UPLOAD_NETWORK_ERROR' })));
+  await h.selectFiles([{ name: 'elevation.tif', size: 10 }]);
+  const message = h.chatMessages.children[0].children[0].innerHTML;
+  assert.match(message, /服务器可能已收到文件/);
+  assert.match(message, /检查图层列表/);
+  assert.doesNotMatch(message, /Failed to fetch/);
 });

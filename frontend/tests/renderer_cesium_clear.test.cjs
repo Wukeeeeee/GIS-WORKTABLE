@@ -4,9 +4,12 @@ const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-function loadRendererWithPendingLayer(layerId = 'pending-layer') {
+function loadRendererWithPendingLayer(layerId = 'pending-layer', bindStateForTest = false) {
   let finishLoad;
+  let failLoad;
   let loadCalls = 0;
+  const stateListeners = {};
+  const warnings = [];
   const dataSource = { entities: { values: [] } };
   const dataSources = {
     items: [],
@@ -42,7 +45,8 @@ function loadRendererWithPendingLayer(layerId = 'pending-layer') {
     createElement() { return { style: {}, classList: { add: noop, remove: noop }, setAttribute: noop, addEventListener: noop }; },
   };
   const state = {
-    on: noop,
+    on(event, callback) { (stateListeners[event] || (stateListeners[event] = [])).push(callback); },
+    emit(event, payload) { (stateListeners[event] || []).forEach(callback => callback(payload)); },
     getLayers() {
       return [{ layer_id: layerId, name: 'Pending', visible: true,
         geojson: { type: 'FeatureCollection', features: [] } }];
@@ -58,15 +62,24 @@ function loadRendererWithPendingLayer(layerId = 'pending-layer') {
     ScreenSpaceEventType: { LEFT_CLICK: 0, MOUSE_MOVE: 1 },
     Color: color,
     Rectangle: { fromDegrees(...bounds) { return bounds; } },
-    GeoJsonDataSource: { load() { loadCalls++; return new Promise(resolve => { finishLoad = () => resolve(dataSource); }); } },
+    GeoJsonDataSource: { load() { loadCalls++; return new Promise((resolve, reject) => {
+      finishLoad = () => resolve(dataSource);
+      failLoad = error => reject(error);
+    }); } },
     defined(value) { return !!value; },
   };
-  const window = { GIS: { state }, Cesium };
-  const context = { window, Cesium, document, console, setTimeout, Promise, Set, Map, Math, Number, Infinity };
+  const window = { GIS: { state, toast: { warn(message) { warnings.push(message); } } }, Cesium };
+  const context = { window, Cesium, document, console: { error: noop, warn: noop, log: noop },
+    setTimeout, Promise, Set, Map, Math, Number, Infinity };
   const sourcePath = path.resolve(__dirname, '../js/renderer_cesium.js');
-  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
+  let source = fs.readFileSync(sourcePath, 'utf8');
+  if (bindStateForTest) source = source.replace('  function boot() {', '  bindState();\n  function boot() {');
+  vm.runInNewContext(source, context, { filename: sourcePath });
   return { renderer: window.GIS.renderers, viewer, dataSources, finishLoad: () => finishLoad,
-    getLoadCalls: () => loadCalls, toggle3D: () => window.GIS.renderers.toggle3D() };
+    failLoad: () => failLoad, getLoadCalls: () => loadCalls,
+    warnings,
+    emitState: (event, payload) => state.emit(event, payload),
+    toggle3D: () => window.GIS.renderers.toggle3D() };
 }
 
 test('3D extent operations report readiness and validate their bounds', async () => {
@@ -89,6 +102,41 @@ test('3D renderer loads layers whose stable IDs collide with Object prototype pr
 
   assert.equal(harness.getLoadCalls(), 1);
   assert.equal(typeof harness.finishLoad(), 'function');
+});
+
+test('failed 3D layer loads do not fly the camera to an unavailable layer extent', async () => {
+  const harness = loadRendererWithPendingLayer('pending-layer', true);
+  await harness.toggle3D();
+  harness.finishLoad()();
+  await new Promise(resolve => setImmediate(resolve));
+
+  const flights = [];
+  harness.viewer.camera.flyTo = options => flights.push(options);
+  const failedLayer = { layer_id: 'failed-layer', name: 'Unavailable', visible: true,
+    geojson: { type: 'FeatureCollection', features: [] }, bbox: [1, 2, 3, 4] };
+  harness.emitState('layer-added', failedLayer);
+  harness.failLoad()(new Error('invalid GeoJSON'));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(harness.dataSources.items.length, 1);
+  assert.equal(flights.length, 0);
+  assert.equal(harness.warnings.length, 1);
+  assert.match(harness.warnings[0], /Unavailable.*3D/);
+});
+
+test('a layer load that fails after leaving 3D mode does not show a stale warning', async () => {
+  const harness = loadRendererWithPendingLayer('pending-layer', true);
+  await harness.toggle3D();
+  harness.finishLoad()();
+  await new Promise(resolve => setImmediate(resolve));
+
+  harness.emitState('layer-added', { layer_id: 'late-failure', name: 'Late failure', visible: true,
+    geojson: { type: 'FeatureCollection', features: [] } });
+  await harness.toggle3D();
+  harness.failLoad()(new Error('invalid GeoJSON'));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(harness.warnings.length, 0);
 });
 
 test('clear removes legacy Cesium data sources and prevents pending GeoJSON loads from returning', async () => {
@@ -229,7 +277,7 @@ test('layer-panel clear button waits for confirmation, then clears panel and map
   }
   const clearButton = new Button();
   const ids = { clearAllLayersBtn: clearButton };
-  const document = { getElementById(id) { return ids[id] || null; } };
+  const document = { addEventListener() {}, getElementById(id) { return ids[id] || null; } };
   const window = { GIS: {
     workspace: { confirmModal(title, message, callback) { confirmClear = callback; } },
     chat: { addMessage(message) { calls.messages.push(message); } },
@@ -262,7 +310,7 @@ test('layer-panel clear button reports cleanup errors instead of claiming succes
     addEventListener(type, handler) { this[type] = handler; }
   }
   const clearButton = new Button();
-  const document = { getElementById(id) { return id === 'clearAllLayersBtn' ? clearButton : null; } };
+  const document = { addEventListener() {}, getElementById(id) { return id === 'clearAllLayersBtn' ? clearButton : null; } };
   const window = { GIS: {
     workspace: { confirmModal(title, message, callback) { confirmClear = callback; } },
     chat: { addMessage(message) { messages.push(message); } },

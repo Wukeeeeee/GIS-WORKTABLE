@@ -90,6 +90,24 @@ def _setup(name, geojson):
     return name
 
 
+def test_point_coordinate_extraction_preserves_lonlat_without_centroid_warning():
+    import warnings
+    import geopandas as gpd
+    import numpy as np
+    from shapely.geometry import Point
+    from backend.services.tools import _spatial_feature_coordinates
+
+    gdf = gpd.GeoDataFrame(
+        geometry=[Point(113.0, 23.0), Point(113.1, 23.1)], crs="EPSG:4326"
+    )
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        coordinates = _spatial_feature_coordinates(gdf)
+
+    np.testing.assert_array_equal(coordinates, [[113.0, 23.0], [113.1, 23.1]])
+    assert not [item for item in captured if "geographic CRS" in str(item.message)]
+
+
 @pytest.mark.parametrize('tool', [spatial_moran, spatial_hotspot])
 def test_dense_statistics_stop_before_allocating_an_unsafe_distance_matrix(monkeypatch, tool):
     from backend.services import tools

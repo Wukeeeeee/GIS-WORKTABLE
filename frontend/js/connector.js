@@ -8,17 +8,17 @@
 
   // 连接器元数据：名称、类型、说明
   var CONNECTOR_META = {
-    amap:       { name: '高德地图',       type: 'key',     desc: 'POI搜索 / 天气 / 地理编码' },
-    copernicus: { name: 'Copernicus',     type: 'account', desc: '哥白尼开放数据（Sentinel 系列）' },
-    usgs:       { name: 'USGS',           type: 'account', desc: '美国地质调查局（Landsat / DEM）' },
-    gscloud:    { name: '地理空间数据云', type: 'account', desc: '国内遥感数据平台' },
-    nasa:       { name: 'NASA Earthdata', type: 'account', desc: 'NASA 地球科学数据' },
-    opentopo:   { name: 'OpenTopography', type: 'key',     desc: '全球 DEM 高程数据' },
-    asf:        { name: 'ASF',            type: 'account', desc: '阿拉斯加卫星设施（SAR 数据）' },
-    tianditu:   { name: '天地图',         type: 'key',     desc: '国家地理信息公共服务平台' },
-    resdc:      { name: '资源环境数据云', type: 'account', desc: '中科院资源环境科学数据中心' },
-    geoss:      { name: 'China GEOSS',    type: 'account', desc: '中国地球观测组织' },
-    pie:        { name: 'PIE-Engine',     type: 'account', desc: '航天宏图遥感云引擎' },
+    amap:       { name: '高德地图', nameEn: 'Amap (China)', type: 'key', desc: 'POI搜索 / 天气 / 地理编码', descEn: 'POI search, weather, and geocoding' },
+    copernicus: { name: 'Copernicus', nameEn: 'Copernicus Data Space', type: 'account', desc: '哥白尼开放数据（Sentinel 系列）', descEn: 'Copernicus open data (Sentinel missions)' },
+    usgs:       { name: 'USGS', nameEn: 'USGS EarthExplorer', type: 'account', desc: '美国地质调查局（Landsat / DEM）', descEn: 'Landsat imagery and elevation data' },
+    gscloud:    { name: '地理空间数据云', nameEn: 'GSCloud (China)', type: 'account', desc: '国内遥感数据平台', descEn: 'China regional remote-sensing data' },
+    nasa:       { name: 'NASA Earthdata', nameEn: 'NASA Earthdata', type: 'account', desc: 'NASA 地球科学数据', descEn: 'NASA Earth science data' },
+    opentopo:   { name: 'OpenTopography', nameEn: 'OpenTopography', type: 'key', desc: '全球 DEM 高程数据', descEn: 'Global DEM and elevation data' },
+    asf:        { name: 'ASF', nameEn: 'Alaska Satellite Facility (ASF)', type: 'account', desc: '阿拉斯加卫星设施（SAR 数据）', descEn: 'SAR data and services' },
+    tianditu:   { name: '天地图', nameEn: 'Tianditu (China)', type: 'key', desc: '国家地理信息公共服务平台', descEn: 'China national basemaps and geospatial services' },
+    resdc:      { name: '资源环境数据云', nameEn: 'CAS Resource and Environment Data Center', type: 'account', desc: '中科院资源环境科学数据中心', descEn: 'China regional resources and environment data' },
+    geoss:      { name: 'China GEOSS', nameEn: 'China GEOSS', type: 'account', desc: '中国地球观测组织', descEn: 'China earth-observation data services' },
+    pie:        { name: 'PIE-Engine', nameEn: 'PIE-Engine (Piesat)', type: 'account', desc: '航天宏图遥感云引擎', descEn: 'China regional remote-sensing cloud platform' },
   };
 
   // 显示顺序
@@ -79,6 +79,10 @@
         show();
       });
     }
+
+    document.addEventListener('gis:languagechange', function() {
+      if (_panel && _panel.style.display !== 'none') render();
+    });
 
     // 点击面板外部关闭
     document.addEventListener('click', function (e) {
@@ -152,6 +156,7 @@
     list.innerHTML = '';
 
     var configuredCount = 0;
+    var isEnglish = !!(window.GIS.i18n && window.GIS.i18n.isEnglish());
     ORDER.forEach(function (svc) {
       var meta = CONNECTOR_META[svc];
       if (!meta) return;
@@ -165,16 +170,18 @@
       info.className = 'connector-info';
       var name = document.createElement('span');
       name.className = 'connector-name';
-      name.textContent = meta.name;
+      name.textContent = isEnglish ? meta.nameEn : meta.name;
       var status = document.createElement('span');
       status.className = 'connector-status ' + (configured ? 'configured' : 'unconfigured');
-      status.textContent = configured ? '已配置' : '未配置';
+      status.textContent = configured ? (isEnglish ? 'Configured' : '已配置') : (isEnglish ? 'Not configured' : '未配置');
       info.appendChild(name);
       info.appendChild(status);
 
       var desc = document.createElement('div');
       desc.className = 'connector-desc';
-      desc.textContent = meta.desc + '（' + (meta.type === 'key' ? 'API Key' : '账号密码') + '）';
+      desc.textContent = isEnglish
+        ? meta.descEn + ' (' + (meta.type === 'key' ? 'API key' : 'account and password') + ')'
+        : meta.desc + '（' + (meta.type === 'key' ? 'API Key' : '账号密码') + '）';
 
       var actions = document.createElement('div');
       actions.className = 'connector-actions';
@@ -183,14 +190,14 @@
       if (svc === 'amap' && configured) {
         var testBtn = document.createElement('button');
         testBtn.className = 'connector-test';
-        testBtn.textContent = '测试';
+        testBtn.textContent = isEnglish ? 'Test' : '测试';
         testBtn.addEventListener('click', function () { testAmap(testBtn); });
         actions.appendChild(testBtn);
       }
 
       var setupBtn = document.createElement('button');
       setupBtn.className = 'connector-setup';
-      setupBtn.textContent = '设置';
+      setupBtn.textContent = isEnglish ? 'Settings' : '设置';
       setupBtn.addEventListener('click', function () {
         hide();
         openSettingsGeo();
@@ -206,18 +213,21 @@
     // 头部统计
     var countEl = document.getElementById('connectorCount');
     if (countEl) {
-      countEl.textContent = configuredCount + ' / ' + ORDER.length + ' 已配置';
+      countEl.textContent = isEnglish
+        ? configuredCount + ' / ' + ORDER.length + ' configured'
+        : configuredCount + ' / ' + ORDER.length + ' 已配置';
     }
   }
 
   // 测试高德 Key（调用天气接口）
   function testAmap(btn) {
+    var isEnglish = !!(window.GIS.i18n && window.GIS.i18n.isEnglish());
     var key = localStorage.getItem('gis_amap_api_key') || '';
     if (!key) {
-      alert('高德 Key 未配置');
+      alert(isEnglish ? 'Amap API key is not configured.' : '高德 Key 未配置');
       return;
     }
-    btn.textContent = '测试中...';
+    btn.textContent = isEnglish ? 'Testing…' : '测试中...';
     btn.disabled = true;
     var url = 'https://restapi.amap.com/v3/weather/weatherInfo?city=110101&key=' + encodeURIComponent(key);
     fetch(url)
@@ -225,21 +235,21 @@
       .then(function (data) {
         btn.disabled = false;
         if (data.status === '1') {
-          btn.textContent = '正常';
+          btn.textContent = isEnglish ? 'Connected' : '正常';
           btn.classList.add('test-ok');
         } else {
-          btn.textContent = '失败';
+          btn.textContent = isEnglish ? 'Failed' : '失败';
           btn.classList.add('test-fail');
         }
         setTimeout(function () {
-          btn.textContent = '测试';
+          btn.textContent = isEnglish ? 'Test' : '测试';
           btn.classList.remove('test-ok', 'test-fail');
         }, 2000);
       })
       .catch(function () {
         btn.disabled = false;
-        btn.textContent = '网络错误';
-        setTimeout(function () { btn.textContent = '测试'; }, 2000);
+        btn.textContent = isEnglish ? 'Network error' : '网络错误';
+        setTimeout(function () { btn.textContent = isEnglish ? 'Test' : '测试'; }, 2000);
       });
   }
 

@@ -74,6 +74,7 @@ from backend.services.dem_providers.aws_terrain import (
 @pytest.fixture(autouse=True)
 def _clean_state(tmp_path, monkeypatch):
     """每个测试独立 tmp_path + uploads 目录，避免污染项目真实 cache/。"""
+    previous_output_dir = T._temp_output_dir
     reset_state()
     _pending_layer_ops.clear()
     T._temp_output_dir = str(tmp_path / "output")
@@ -82,6 +83,7 @@ def _clean_state(tmp_path, monkeypatch):
     yield
     reset_state()
     _pending_layer_ops.clear()
+    T._temp_output_dir = previous_output_dir
 
 
 def _encode_terrarium(elev: np.ndarray) -> bytes:

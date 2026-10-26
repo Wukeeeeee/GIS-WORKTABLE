@@ -270,7 +270,8 @@ test('workspace recent-project cards escape untrusted project metadata', async (
   assert.ok(markup.includes('data-project-id="project&quot; onclick=&quot;alert(1)"'), markup);
   assert.ok(markup.includes('工程 &lt;img src=x onerror=alert(3)&gt;'), markup);
   assert.ok(markup.includes('&lt;img onerror=1&gt;'), markup);
-  assert.ok(markup.includes('&lt;svg onload=alert(4)&gt;'), markup);
+  assert.ok(markup.includes('图层数未知'), markup);
+  assert.doesNotMatch(markup, /NaN/);
   assert.equal(markup.includes('<img src=x'), false);
   assert.equal(markup.includes('<svg onload='), false);
 });
@@ -281,10 +282,12 @@ test('workspace tool feedback renders tool results and artifact names as text', 
     ok: true,
     response: '结果：<img src=x onerror=alert(1)>',
     layers: [{ name: '<svg onload=alert(2)>' }],
+    param_warnings: ['size: <img src=x onerror=alert(3)> 已自动调整'],
   });
 
   assert.ok(harness.taskOutput.innerHTML.includes('结果：&lt;img src=x onerror=alert(1)&gt;'), harness.taskOutput.innerHTML);
   assert.ok(harness.taskOutput.innerHTML.includes('&lt;svg onload=alert(2)&gt;'), harness.taskOutput.innerHTML);
+  assert.ok(harness.taskOutput.innerHTML.includes('参数提示：size: &lt;img src=x onerror=alert(3)&gt; 已自动调整'), harness.taskOutput.innerHTML);
   assert.equal(harness.taskOutput.innerHTML.includes('<img src=x'), false);
   assert.equal(harness.taskOutput.innerHTML.includes('<svg onload='), false);
 });

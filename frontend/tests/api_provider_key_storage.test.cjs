@@ -20,7 +20,7 @@ function createHarness(initialStorage = {}, backendSettings = { providers: [] },
   const window = { GIS: {}, location: { origin: 'http://localhost:8000', protocol: 'http:' } };
   const fetch = (url, options = {}) => {
     requests.push({ url, options });
-    if (!options.method) {
+    if (!options.method && !url.includes('/api/projects/')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(structuredClone(backendSettings)) });
     }
     if (mutation) return mutation(url, options);
@@ -29,7 +29,7 @@ function createHarness(initialStorage = {}, backendSettings = { providers: [] },
   const sourcePath = path.resolve(__dirname, '../js/api.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
     window, GIS: window.GIS, document, localStorage, fetch, Promise, Array, Object, String,
-    Number, Math, Date, JSON, Set, Map, Blob, URL, AbortController,
+    Number, Math, Date, JSON, Set, Map, Blob, FormData, URL, AbortController,
     setTimeout: timers.setTimeout, clearTimeout: timers.clearTimeout,
     requestAnimationFrame() {}, console: { warn() {}, log() {} },
   }, { filename: sourcePath });
@@ -64,6 +64,37 @@ test('provider API keys stay in localStorage and are omitted from backend sync',
   assert.equal(JSON.parse(syncRequest.options.body).providers[0].api_key, undefined);
 });
 
+test('project import and export errors retain backend validation details', async () => {
+  const h = createHarness({}, {}, () => Promise.resolve({
+    ok: false,
+    status: 400,
+    json: async () => ({ detail: '工程文件中缺少矢量数据文件' }),
+  }));
+  await assert.rejects(h.api.importProject(new Blob(['invalid project'])), /导入工程失败: 工程文件中缺少矢量数据文件/);
+  await assert.rejects(h.api.exportProject('missing'), /导出工程失败: 工程文件中缺少矢量数据文件/);
+});
+
+test('SHP export rejects a JSON error response instead of downloading it as a ZIP', async () => {
+  const h = createHarness({}, {}, () => Promise.resolve({
+    ok: true,
+    headers: { get: () => 'application/json' },
+    json: async () => ({ error: '混合几何类型无法导出' }),
+  }));
+  const messages = [];
+  h.gis.chat = { addMessage(message, type) { messages.push({ message, type }); } };
+  h.gis.utils.escapeHtml = value => String(value).replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[char]);
+
+  await h.api.exportShp({ type: 'FeatureCollection', features: [] }, 'mixed');
+
+  assert.equal(h.requests[0].url, 'http://localhost:8000/api/layer/export-shp');
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].type, 'system');
+  assert.match(messages[0].message, /混合几何类型无法导出/);
+  assert.doesNotMatch(messages[0].message, /<|>/);
+});
+
 test('registry API forwards the registration version and returns the next version', async () => {
   const h = createHarness({}, {}, () => Promise.resolve({ ok: true, json: async () => ({ success: true, registration_token: 'next' }) }));
   const registered = await h.api.registerLayer('demo', { type: 'FeatureCollection', features: [] });
@@ -96,6 +127,19 @@ test('tool synchronization uses the tracked layer queue and propagates a failure
   assert.equal(h.requests.length, 0);
 });
 
+test('manual tool invocation preserves structured warnings without changing the response text', async () => {
+  const warning = 'size: 窗口应为奇数（3/5/7），已自动调整为 5';
+  const h = createHarness({}, {}, () => Promise.resolve({ ok: true, json: async () => ({
+    ok: true, tool: 'raster_focal_stats', response: '分析完成', param_warnings: [warning],
+  }) }));
+  const result = await h.api.invokeTool('raster_focal_stats', { layer_name: 'dem', size: 4 });
+
+  assert.deepEqual(Array.from(result.param_warnings), [warning]);
+  assert.match(result.response, /分析完成/);
+  assert.doesNotMatch(result.response, /参数提示：/);
+  assert.equal(JSON.parse(h.requests[0].options.body).arguments.size, 4);
+});
+
 test('fallback synchronization keeps large data and stores the exact registered alias version', async () => {
   const h = createHarness({}, {}, () => Promise.resolve({ok: true, json: async () => ({success: true, registration_token: 'fresh'})}));
   const layer = {filename: 'display', geojson: {type: 'FeatureCollection', features: Array(20001).fill({type: 'Feature', geometry: null, properties: {}})}};
@@ -110,6 +154,18 @@ test('fallback synchronization rejects a network failure instead of allowing sta
   const h = createHarness({}, {}, () => Promise.reject(new Error('offline')));
   h.gis.layers = { getLayerByName() { return {geojson: {type: 'FeatureCollection', features: []}}; } };
   await assert.rejects(h.api.syncLayer('display'), /offline/);
+});
+
+test('upload marks a lost connection as an unknown receipt state and preserves cancellation', async () => {
+  const offline = createHarness({}, {}, () => Promise.reject(new TypeError('Failed to fetch')));
+  const uploadError = await offline.api.upload(new Blob(['test file']), new AbortController().signal)
+    .then(() => null, error => error);
+  assert.equal(uploadError.code, 'UPLOAD_NETWORK_ERROR');
+  assert.equal(offline.requests[0].url, 'http://localhost:8000/api/upload');
+  assert.equal(offline.requests[0].options.method, 'POST');
+
+  const cancelled = createHarness({}, {}, () => Promise.reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })));
+  await assert.rejects(cancelled.api.upload(new Blob(['test file'])), error => error.name === 'AbortError');
 });
 
 test('raster synchronization sends the managed source metadata and tracks its version', async () => {

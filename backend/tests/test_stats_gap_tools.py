@@ -272,6 +272,22 @@ class TestCentralTendency:
         assert abs(payload["median_center"][0] - payload["mean_center"][0]) < 1.0
         assert abs(payload["median_center"][1] - payload["mean_center"][1]) < 1.0
 
+    def test_median_center_minimizes_total_distance(self):
+        from scipy.optimize import minimize
+
+        _setup("asym", _fc([_pt(113.0, 23.0), _pt(113.01, 23.0), _pt(113.0, 23.01)]))
+        payload = _summary(T.central_tendency.invoke({"layer_name": "asym"}))
+        gdf, _ = _layer_to_gdf("asym")
+        points = np.array([[geom.x, geom.y] for geom in gdf.to_crs(payload["crs"]).geometry])
+        result = np.asarray(payload["median_center"], dtype=float)
+        axis_median = np.median(points, axis=0)
+        objective = lambda center: np.linalg.norm(points - center, axis=1).sum()
+        reference = minimize(objective, points.mean(axis=0), method="Nelder-Mead",
+                             options={"xatol": 1e-7, "fatol": 1e-7})
+
+        assert np.linalg.norm(result - axis_median) > 100.0
+        assert objective(result) <= reference.fun + 1e-3
+
 
 # ============================================================
 # spatial_regression
@@ -298,6 +314,14 @@ class TestSpatialRegression:
             {"layer_name": "lin", "dependent": "y", "independents": "x"})
         assert "标准误" in r and "AIC" in r and "调整 R" in r
 
+    def test_rank_deficient_design_does_not_report_inference(self):
+        features = [_pt(float(i), 0.0, x=float(i), x_copy=2.0 * i, y=3.0 * i + 1.0) for i in range(8)]
+        _setup("collinear", _fc(features))
+        result = T.spatial_regression.invoke(
+            {"layer_name": "collinear", "dependent": "y", "independents": "x,x_copy"})
+        assert "设计矩阵秩不足" in result, result
+        assert "STATS_SUMMARY" not in result, "共线模型不能发布误导性的系数/显著性摘要"
+
     def test_missing_dependent_field_fails_clearly(self):
         _setup("lin", _linear_layer())
         r = T.spatial_regression.invoke(
@@ -316,6 +340,7 @@ class TestSpatialRegression:
         r = T.spatial_regression.invoke(
             {"layer_name": "lin", "dependent": "y", "independents": "x", "model": "gwr"})
         assert "暂未支持" in r
+        assert "不会启用 GWR" in r
         assert "STATS_SUMMARY" not in r, "gwr 不应悄悄按 OLS 返回结果"
 
 
@@ -437,6 +462,26 @@ class TestOdCostMatrix:
         assert abs(matrix[1][1] - one_seg) < tol, matrix
         # o0(0,0) -> d1(0.01,0)：两段约 1112 m
         assert abs(matrix[0][1] - 2 * one_seg) < 2 * tol, matrix
+
+    def test_partial_snap_failures_preserve_original_matrix_indices(self):
+        _setup("net", _line_network())
+        _setup("orig", _fc([_pt(1.0, 1.0, name="outside"), _pt(0.005, 0.0, name="o1")]))
+        _setup("dest", _fc([_pt(0.01, 0.0, name="d1"), _pt(1.0, 1.0, name="outside")]))
+
+        payload = _summary(T.od_cost_matrix.invoke(
+            {"origins_layer": "orig", "destinations_layer": "dest", "network_source": "net"}))
+
+        with open(payload["json"], encoding="utf-8") as fh:
+            result = json.load(fh)
+        assert result["n_origins"] == 2 and result["n_destinations"] == 2
+        assert result["unsnapped_origin_indices"] == [0]
+        assert result["unsnapped_destination_indices"] == [1]
+        assert result["matrix"][0] == [None, None]
+        expected = _haversine((0.005, 0.0), (0.01, 0.0))
+        assert abs(result["matrix"][1][0] - expected) < 5
+        with open(payload["csv"], encoding="utf-8") as fh:
+            rows = list(__import__("csv").reader(fh))
+        assert [(row[0], row[1]) for row in rows[1:]] == [("0", "0"), ("0", "1"), ("1", "0"), ("1", "1")]
 
     def test_missing_network_fails_clearly(self):
         _setup("orig", _fc([_pt(0.0, 0.0)]))

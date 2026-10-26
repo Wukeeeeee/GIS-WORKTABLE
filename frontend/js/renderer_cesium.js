@@ -155,7 +155,7 @@ window.GIS = window.GIS || {};
       const ray = viewer.camera.getPickRay(movement.endPosition);
       const point = ray && viewer.scene.globe.pick(ray, viewer.scene);
       if (!point) {
-        coordsEl.textContent = 'WGS-84 · 经度 -- · 纬度 --';
+        coordsEl.textContent = GIS.map && GIS.map.formatWgs84Coordinates ? GIS.map.formatWgs84Coordinates(NaN, NaN) : 'WGS-84 · 经度 -- · 纬度 --';
         return;
       }
       const position = Cesium.Cartographic.fromCartesian(point);
@@ -265,6 +265,12 @@ window.GIS = window.GIS || {};
     }).catch(function(e) {
       if (!layerId || (_syncVersions[layerId] || 0) === syncVersion) {
         console.error('[GIS 3D] 图层加载失败:', rec.name, e);
+        if (mode === '3d' && GIS.toast && typeof GIS.toast.warn === 'function') {
+          const message = GIS.i18n
+            ? GIS.i18n.t('map.3d-layer-load-failed', '无法在 3D 地图中显示，请切回 2D 检查该图层。')
+            : '无法在 3D 地图中显示，请切回 2D 检查该图层。';
+          GIS.toast.warn((rec.name ? '「' + rec.name + '」：' : '') + message);
+        }
       }
     }).finally(function() {
       if (layerId && _syncing[layerId] === _loadPromise) delete _syncing[layerId];
@@ -449,6 +455,27 @@ window.GIS = window.GIS || {};
 
   let mode = '2d';   // '2d' | '3d'
 
+  function localizeMapControls() {
+    if (!GIS.i18n) return;
+    var controls = [
+      ['toggle3dBtn','map.globe','切换 2D / 3D Globe'], ['bmBtn','map.bookmarks','视图书签（保存/回到常用视角）'],
+      ['loadCountryLevelBtn','map.load-country','加载全国省级行政区'], ['m3dBmSat','map.imagery','Esri 影像底图'],
+      ['m3dBmStreet','map.streets','Esri 街道底图'], ['m3dBmDark','map.dark-basemap','Esri 深灰地图'], ['m3dReset','map.reset-view','复位到当前下钻层级范围']
+    ];
+    controls.forEach(function(item) {
+      var button = document.getElementById(item[0]);
+      if (!button) return;
+      button.title = GIS.i18n.t(item[1], item[2]);
+      if (button.hasAttribute('aria-label')) button.setAttribute('aria-label', button.title);
+    });
+    var labels = [['m3dBmSat','map.imagery-label','影像'],['m3dBmStreet','map.streets-label','街道'],['m3dBmDark','map.dark-label','深色'],['m3dReset','map.reset-label','复位']];
+    labels.forEach(function(item) {
+      var label = document.querySelector('#'+item[0]+' span');
+      if (label) label.textContent = GIS.i18n.t(item[1], item[2]);
+    });
+  }
+  document.addEventListener('gis:languagechange', localizeMapControls);
+
   function ensureUI() {
     // 3D 容器（与 #map 同级、同尺寸）
     if (!document.getElementById('map3d')) {
@@ -467,7 +494,7 @@ window.GIS = window.GIS || {};
       const btn = document.createElement('button');
       btn.id = 'toggle3dBtn';
       btn.className = 'map-zoom-btn m3d-keep';
-      btn.title = '切换 2D / 3D Globe';
+      btn.title = GIS.i18n ? GIS.i18n.t('map.globe','切换 2D / 3D Globe') : '切换 2D / 3D Globe';
       btn.setAttribute('aria-label', btn.title);
       btn.innerHTML = ICON_3D;
       btn.addEventListener('click', function() {
@@ -505,7 +532,7 @@ window.GIS = window.GIS || {};
         const bb = document.createElement('button');
         bb.id = 'bmBtn';
         bb.className = 'map-zoom-btn m3d-keep';
-        bb.title = '视图书签（保存/回到常用视角）';
+        bb.title = GIS.i18n ? GIS.i18n.t('map.bookmarks','视图书签（保存/回到常用视角）') : '视图书签（保存/回到常用视角）';
         bb.innerHTML = "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-e44f7be95633.png')\"></span>";
         bb.addEventListener('click', function(e) { e.stopPropagation(); toggleBmPanel(); });
         toolbar.insertBefore(bb, btn.nextSibling);
@@ -517,7 +544,7 @@ window.GIS = window.GIS || {};
       const countryBtn = document.createElement('button');
       countryBtn.id = 'loadCountryLevelBtn';
       countryBtn.className = 'map-zoom-btn m3d-keep';
-      countryBtn.title = '加载全国省级行政区';
+      countryBtn.title = GIS.i18n ? GIS.i18n.t('map.load-country','加载全国省级行政区') : '加载全国省级行政区';
       countryBtn.setAttribute('aria-label', countryBtn.title);
       countryBtn.style.display = 'none';
       countryBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
@@ -530,6 +557,7 @@ window.GIS = window.GIS || {};
       });
       toolbar.appendChild(countryBtn);
     }
+    localizeMapControls();
     // 面包屑
     if (!document.getElementById('drillBreadcrumb')) {
       const crumb = document.createElement('div');
@@ -917,7 +945,7 @@ window.GIS = window.GIS || {};
     // body 级 3D 标记：CSS 据此隐藏 2D 专属元素（如坐标显示）
     document.body.classList.toggle('gis-mode-3d', mode === '3d');
     const coordsEl = document.getElementById('mapCoords');
-    if (coordsEl) coordsEl.textContent = 'WGS-84 · 经度 -- · 纬度 --';
+    if (coordsEl) coordsEl.textContent = GIS.map && GIS.map.formatWgs84Coordinates ? GIS.map.formatWgs84Coordinates(NaN, NaN) : 'WGS-84 · 经度 -- · 纬度 --';
   }
 
   // ============================================================
@@ -929,7 +957,8 @@ window.GIS = window.GIS || {};
       if (mode !== '3d') return;
       // 新图层装载后自动飞到其范围（与 2D loadGeoJSON 自动 fitBounds 行为对齐）
       Promise.resolve(syncLayer(rec)).then(function() {
-        if (rec.visible !== false) flyToBbox(rec.bbox, 1.5);
+        // syncLayer absorbs GeoJSON load errors; only move the camera if a data source was added.
+        if (dsMap[rec.layer_id] && rec.visible !== false) flyToBbox(rec.bbox, 1.5);
       }).catch(function() {});
     });
     GIS.state.on('layer-removed', function(p) { desyncLayer(p.layerId); });

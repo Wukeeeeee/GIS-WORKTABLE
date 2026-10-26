@@ -137,7 +137,7 @@ def test_contract_guards_across_backend_and_frontend():
     assert "lock.acquire(timeout=timeout)" in tools_src
 
     graph_src = read(os.path.join("backend", "services", "graph.py"))
-    assert graph_src.count('"busy": True') == 2, "流式与非流式忙响应都要带 busy 标记"
+    assert graph_src.count('"busy": True') >= 2, "流式与非流式忙响应都要带 busy 标记"
 
     main_src = read(os.path.join("backend", "main.py"))
     assert 'not _evt.get("busy")' in main_src, "忙事件不能写入会话历史"

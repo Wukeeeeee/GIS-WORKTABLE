@@ -218,6 +218,20 @@ class TestClosestFacilities:
         assert result["summary"][0]["facility_idx"] == 0
         assert 400 < result["summary"][0]["distance_m"] < 600
 
+    def test_reports_facilities_outside_snap_range_and_without_a_route(self):
+        roads = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "LineString", "coordinates": [[0, 0], [0.01, 0]]}},
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "LineString", "coordinates": [[1, 1], [1.01, 1]]}},
+        ]}
+
+        result = closest_facilities(roads, (0, 0), [(0.01, 0), (1, 1), (5, 5)], n=3)
+
+        assert result["summary"][0]["facility_idx"] == 0
+        assert result["unreachable_facility_indices"] == [1]
+        assert result["unsnapped_facility_indices"] == [2]
+
 
 
 

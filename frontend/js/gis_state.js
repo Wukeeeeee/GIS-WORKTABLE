@@ -137,6 +137,7 @@ window.GIS = window.GIS || {};
         (GIS.layers && GIS.layers.nextColor ? GIS.layers.nextColor() : '#e74c3c') }, record.style || {}),
       opacity: Number.isFinite(Number(record.opacity)) ? Math.max(0, Math.min(1, Number(record.opacity))) : 1,
       source: record.source || 'ai',
+      provenance: record.provenance && typeof record.provenance === 'object' ? record.provenance : null,
       crs: 'EPSG:4326',
       visible: record.visible !== false,
       groupId: record.groupId || null,
@@ -175,6 +176,7 @@ window.GIS = window.GIS || {};
         opacity: rec.opacity,
         visible: rec.visible,
         source: rec.source,
+        provenance: rec.provenance,
         groupId: rec.groupId,
         _rawName: rawName,
         _panelSync: true,   // 防递归：面板 addLayer 见此标记走正常入库，不再桥接回 state

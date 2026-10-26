@@ -251,7 +251,7 @@ class TestSpatialHotspotE2E:
         _random_point_layer(name, count=30)
 
         func = getattr(spatial_hotspot, 'func', spatial_hotspot)
-        result = func(layer_name=name, field="value", threshold=0.05, k=5)
+        result = func(layer_name=name, field="value", threshold=0.05)
 
         assert result is not None
         # 热点分析可能因为数据分布返回无显著结果，但不应崩溃

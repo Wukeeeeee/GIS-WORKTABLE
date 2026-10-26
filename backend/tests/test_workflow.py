@@ -225,6 +225,16 @@ def test_executor_tool_not_found():
     assert "不存在" in result["nodes"][0]["error"]
 
 
+def test_executor_global_validation_failure_marks_nodes_skipped():
+    wf = {"name": "", "nodes": [new_node("n1", "步骤", "tool_a")]}
+
+    result = WorkflowExecutor(_make_mock_tools()).execute(wf)
+
+    assert result["status"] == "failed"
+    assert result["nodes"][0]["status"] == "skipped"
+    assert "未执行" in result["nodes"][0]["error"]
+
+
 def test_executor_auto_register_layer():
     """输出含 GeoJSON 应该自动注册图层"""
     tools = _make_mock_tools()
@@ -301,6 +311,108 @@ def test_execute_workflow_uses_structured_tool_in_registry(monkeypatch):
 
     assert calls == ["called"]
     assert "状态: success" in result
+
+
+def test_execute_workflow_publishes_node_events_to_langgraph_custom_stream(monkeypatch):
+    import json
+    from typing_extensions import TypedDict
+    from langgraph.graph import END, START, StateGraph
+    import backend.services.tools as gis_tools
+    import backend.services.workflow as workflow_module
+    from backend.services.tools import execute_workflow
+
+    class State(TypedDict):
+        result: str
+
+    class FakeExecutor:
+        def __init__(self, tool_registry, event_callback=None, **kwargs):
+            self.event_callback = event_callback
+
+        def execute(self, workflow):
+            node = workflow["nodes"][0]
+            self.event_callback({
+                "type": "workflow_node_started", "node_id": node["id"],
+                "name": node["name"], "tool": node["tool"],
+            })
+            self.event_callback({
+                "type": "workflow_node_completed", "node_id": node["id"],
+                "name": node["name"], "status": "success",
+            })
+            return {"name": workflow["name"], "status": "success", "nodes": [
+                {"name": node["name"], "tool": node["tool"], "status": "success", "duration": 0.1},
+            ]}
+
+    monkeypatch.setattr(workflow_module, "WorkflowExecutor", FakeExecutor)
+    workflow = json.dumps({
+        "name": "流式测试工作流",
+        "nodes": [{"id": "n1", "name": "读取图层", "tool": "list_layers", "inputs": {}}],
+    }, ensure_ascii=False)
+    invalid_workflow = json.dumps({
+        "name": "无效流式工作流",
+        "nodes": [
+            {"id": "bad", "name": "未知工具", "tool": "missing_tool", "inputs": {}},
+            {"id": "downstream", "name": "后续步骤", "tool": "list_layers",
+             "inputs": {}, "depends_on": ["bad"]},
+        ],
+    }, ensure_ascii=False)
+    monkeypatch.setattr(gis_tools, "tools", [
+        gis_tools.list_layers,
+    ])
+
+    def invoke(state):
+        result = execute_workflow.invoke({"workflow_json": workflow})
+        invalid_result = execute_workflow.invoke({"workflow_json": invalid_workflow})
+        return {"result": result + invalid_result}
+
+    graph = StateGraph(State)
+    graph.add_node("invoke_workflow", invoke)
+    graph.add_edge(START, "invoke_workflow")
+    graph.add_edge("invoke_workflow", END)
+    custom_events = [
+        payload for mode, payload in graph.compile().stream(
+            {"result": ""}, stream_mode=["values", "custom"]
+        ) if mode == "custom"
+    ]
+
+    progress = [event for event in custom_events if event.get("type") == "workflow_progress"]
+    assert [event["event"]["type"] for event in progress] == [
+        "workflow_node_started", "workflow_node_completed",
+        "workflow_node_failed", "workflow_node_skipped",
+    ]
+    assert [event["workflow_name"] for event in progress] == [
+        "流式测试工作流", "流式测试工作流", "无效流式工作流", "无效流式工作流",
+    ]
+
+
+def test_execute_workflow_passes_registered_gis_layer_to_downstream_tool(monkeypatch):
+    """Spatial tools return text but register layers as side effects; expose that output to dependent nodes."""
+    import json
+    import backend.services.tools as gis_tools
+
+    monkeypatch.setattr(gis_tools, "_registered_layers", {})
+    monkeypatch.setattr(gis_tools, "_pending_layers", [])
+    source_name = "workflow_chain_source"
+    geojson = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"id": 1},
+         "geometry": {"type": "Point", "coordinates": [-73.98, 40.75]}},
+    ]}
+    gis_tools._register_layer(source_name, geojson)
+    monkeypatch.setattr(gis_tools, "tools", [gis_tools.spatial_buffer, gis_tools.spatial_centroid])
+    workflow = {
+        "name": "缓冲后提取质心",
+        "nodes": [
+            {"id": "buffer", "name": "缓冲站点", "tool": "spatial_buffer",
+             "inputs": {"layer_name": source_name, "distance": 100, "unit": "m"}},
+            {"id": "centroid", "name": "缓冲区质心", "tool": "spatial_centroid",
+             "inputs": {"layer_name": "${buffer.layer_name}"}, "depends_on": ["buffer"]},
+        ],
+    }
+
+    result = gis_tools.execute_workflow.func(json.dumps(workflow, ensure_ascii=False))
+
+    assert "状态: success" in result
+    assert "缓冲区质心 [spatial_centroid] - success" in result
+    assert "workflow_chain_source_缓冲区_质心" in gis_tools._registered_layers
 
 
 def test_execute_workflow_tool_invalid_json():

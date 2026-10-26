@@ -24,6 +24,8 @@ def local_gis_task(tmp_path, monkeypatch):
     (tmp_path / "output").mkdir()
     task_id = task_manager.create_task("长沙边界缓冲与导出", "four-turn-session")
     gis_tools.reset_state(task_id=task_id)
+    for run_id in ("run-four-turn-1", "run-four-turn-2", "run-four-turn-3"):
+        storage_service.record_run_start(run_id, "four-turn-session", "长沙边界缓冲与导出", task_id)
     gis_tools.set_current_run("run-four-turn-1")
     source = {
         "type": "FeatureCollection", "features": [{

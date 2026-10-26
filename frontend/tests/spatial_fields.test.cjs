@@ -28,6 +28,7 @@ test('spatial statistics fields include numeric values appearing after null firs
   elements.set('selectAttrFieldSel', new SelectElement());
   elements.set('statsFieldSel', new SelectElement('pop'));
   const document = {
+    addEventListener() {},
     getElementById(id) { return elements.get(id) || null; },
     createElement() { return {}; },
   };
@@ -61,4 +62,76 @@ test('spatial statistics fields include numeric values appearing after null firs
   assert.equal(statsOptions.includes('_fid'), false);
   assert.ok(elements.get('bufferLayer').options.some(option => option.value === 'constructor'));
   assert.ok(elements.get('bufferLayer').options.some(option => option.value === '__proto__'));
+});
+
+test('cluster panel rejects invalid parameters instead of silently substituting defaults', () => {
+  const sourcePath = path.resolve(__dirname, '../js/spatial.js');
+  const source = fs.readFileSync(sourcePath, 'utf8').replace(
+    'GIS.spatial = {', 'GIS.spatial = { _runOperationForTest: _runOperation,',
+  );
+  let invokeCount = 0;
+  const values = { geomLayer: 'Sites', geomOp: 'cluster', geomClusterMin: '3' };
+  const document = { addEventListener() {}, getElementById(id) { return { value: values[id] }; } };
+  const window = { GIS: { api: { invokeTool() { invokeCount += 1; } } } };
+  vm.runInNewContext(source, { window, document, Promise, Array, Object, String, Number, Math, Date, Set, Map });
+
+  for (const eps of ['0', '', 'NaN', 'Infinity', '-0.1']) {
+    values.geomClusterEps = eps;
+    assert.throws(() => window.GIS.spatial._runOperationForTest('geom', {}), /聚类半径必须为有限正数/);
+  }
+  for (const minSamples of ['0', '2.5', '']) {
+    values.geomClusterEps = '0.01';
+    values.geomClusterMin = minSamples;
+    assert.throws(() => window.GIS.spatial._runOperationForTest('geom', {}), /最小点数必须为正整数/);
+  }
+  assert.equal(invokeCount, 0);
+});
+
+test('cluster panel forwards the selected distance unit to the existing tool', async () => {
+  const sourcePath = path.resolve(__dirname, '../js/spatial.js');
+  const source = fs.readFileSync(sourcePath, 'utf8').replace(
+    'GIS.spatial = {', 'GIS.spatial = { _runOperationForTest: _runOperation,',
+  );
+  const values = {
+    geomLayer: 'Sites', geomOp: 'cluster', geomClusterEps: '500',
+    geomClusterMin: '2', geomClusterUnit: 'm',
+  };
+  let invoked;
+  const document = {
+    addEventListener() {},
+    getElementById(id) {
+      if (id === 'spatialResult' || id === 'spatialLoader') return { style: {} };
+      if (id === 'spatialResultBody') return { textContent: '' };
+      return { value: values[id] };
+    },
+    querySelectorAll() { return []; },
+  };
+  const window = { GIS: { api: { invokeTool(tool, args) { invoked = { tool, args }; return new Promise(() => {}); } } } };
+  vm.runInNewContext(source, { window, document, Promise, Array, Object, String, Number, Math, Date, Set, Map });
+
+  window.GIS.spatial._runOperationForTest('geom', {});
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(invoked.tool, 'spatial_cluster');
+  assert.equal(invoked.args.eps, 500);
+  assert.equal(invoked.args.distance_unit, 'm');
+  assert.equal(invoked.args.min_samples, 2);
+});
+
+test('sample panel rejects invalid or empty input instead of substituting a count or fraction', () => {
+  const sourcePath = path.resolve(__dirname, '../js/spatial.js');
+  const source = fs.readFileSync(sourcePath, 'utf8').replace(
+    'GIS.spatial = {', 'GIS.spatial = { _runOperationForTest: _runOperation,',
+  );
+  const values = { selectLayer: 'Sites', selectMode: 'sample', selectSampleN: '' };
+  let invokeCount = 0;
+  const document = { addEventListener() {}, getElementById(id) { return { value: values[id] }; } };
+  const window = { GIS: { api: { invokeTool() { invokeCount += 1; } } } };
+  vm.runInNewContext(source, { window, document, Promise, Array, Object, String, Number, Math, Date, Set, Map });
+
+  for (const raw of ['', '0', '0.0', 'abc', '1.5', '-0.2']) {
+    values.selectSampleN = raw;
+    assert.throws(() => window.GIS.spatial._runOperationForTest('select', {}));
+  }
+  assert.equal(invokeCount, 0);
 });

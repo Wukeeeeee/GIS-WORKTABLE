@@ -491,11 +491,19 @@ window.GIS.api = (() => {
     const formData = new FormData();
     formData.append('file', file);
 
-    const res = await fetch(`${BASE_URL}/api/upload`, {
-      method: 'POST',
-      body: formData,
-      signal: signal || null,
-    });
+    let res;
+    try {
+      res = await fetch(`${BASE_URL}/api/upload`, {
+        method: 'POST',
+        body: formData,
+        signal: signal || null,
+      });
+    } catch (error) {
+      if (error && error.name === 'AbortError') throw error;
+      const networkError = new Error(error && error.message || 'Upload connection failed');
+      networkError.code = 'UPLOAD_NETWORK_ERROR';
+      throw networkError;
+    }
     
     if (!res.ok) throw new Error(`Upload API error: ${res.status}`);
     const data = await res.json();
@@ -639,9 +647,17 @@ window.GIS.api = (() => {
     if (!res.ok) throw new Error(`重命名工程失败: ${res.status}`);
     return res.json();
   }
+  async function projectResponseError(res, action) {
+    let detail = `${action}失败: ${res.status}`;
+    try {
+      const body = await res.json();
+      if (typeof body.detail === 'string' && body.detail.trim()) detail = `${action}失败: ${body.detail}`;
+    } catch (_) {}
+    return detail;
+  }
   async function exportProject(id) {
     const res = await fetch(`${BASE_URL}/api/projects/${id}/export`);
-    if (!res.ok) throw new Error(`导出工程失败: ${res.status}`);
+    if (!res.ok) throw new Error(await projectResponseError(res, '导出工程'));
     return res.blob();
   }
   async function importProject(file) {
@@ -651,7 +667,7 @@ window.GIS.api = (() => {
       method: 'POST',
       body: fd,
     });
-    if (!res.ok) throw new Error(`导入工程失败: ${res.status}`);
+    if (!res.ok) throw new Error(await projectResponseError(res, '导入工程'));
     return res.json();
   }
   async function deleteAllProjects() {
@@ -716,7 +732,24 @@ window.GIS.api = (() => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ geojson, name: name || '图层' }),
       });
-      if (!res.ok) throw new Error(`SHP 导出失败: ${res.status}`);
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          detail = body.detail || body.error || detail;
+        } catch (_) {}
+        throw new Error(`SHP 导出失败: ${detail}`);
+      }
+      const contentType = res.headers && typeof res.headers.get === 'function'
+        ? (res.headers.get('content-type') || '').toLowerCase() : '';
+      if (contentType.indexOf('json') >= 0) {
+        let detail = '服务器未返回 ZIP 文件';
+        try {
+          const body = await res.json();
+          detail = body.error || body.detail || detail;
+        } catch (_) {}
+        throw new Error(`SHP 导出失败: ${detail}`);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -727,8 +760,18 @@ window.GIS.api = (() => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (e) {
-      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function')
-        window.GIS.chat.addMessage('SHP 导出失败: ' + (e.message || e), 'system');
+      if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+        var detail = String(e.message || e);
+        var message = detail.indexOf('SHP 导出失败:') === 0 ? detail : 'SHP 导出失败: ' + detail;
+        if (window.GIS.utils && typeof window.GIS.utils.escapeHtml === 'function') {
+          message = window.GIS.utils.escapeHtml(message);
+        } else {
+          message = String(message).replace(/[&<>"']/g, function(char) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char];
+          });
+        }
+        window.GIS.chat.addMessage(message, 'system');
+      }
     }
   }
 

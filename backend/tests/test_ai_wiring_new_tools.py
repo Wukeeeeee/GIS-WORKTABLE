@@ -52,6 +52,7 @@ NON_TOOL_IDENTIFIERS = {
     "layer_name", "place_name", "sub_district", "min_samples",  # 工具参数
     "feature_filter", "feature_type", "target_filter", "target_layer", "task_id",  # 新增工具参数/任务上下文
     "points_data",      # 示例变量
+    "current_amap_key", # 凭据变量，不是可调用 GIS 工具
 }
 
 TOOL_TOKEN_RE = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+")
@@ -138,10 +139,11 @@ def test_geometry_attributes_projection_guidance():
     assert any("投影" in ln for ln in lines),         "geometry_attributes 指引未说明经纬度下自动投影"
 
 
-def test_spatial_weights_matrix_prerequisite_guidance():
+def test_spatial_weights_matrix_guidance_does_not_claim_prerequisite():
     lines = _lines_with(SYSTEM_PROMPT, "spatial_weights_matrix")
     assert lines, "提示词未提到 spatial_weights_matrix"
-    assert any(("前置" in ln or "复用" in ln) for ln in lines),         "spatial_weights_matrix 指引未说明其是空间统计的前置产物/可复用"
+    assert any("不是" in ln and "前置" in ln and "各自构建" in ln for ln in lines), \
+        "spatial_weights_matrix 指引必须说明它不是 Moran/OLS 的前置输入"
 
 
 # ---------------------------------------------------------------

@@ -36,13 +36,13 @@
           <img class="ui-icon ui-logo" src="/assets/ui-icons/logo-a620969d3899.png" alt="GIS WORKTABLE" style="height:48px;width:auto;color:var(--ui-gray-900);">
           <!-- header 右侧按钮组 -->
           <div style="margin-left:auto;display:flex;align-items:center;gap:2px;">
-            <button id="historyBtn" class="workspace-icon-btn" title="历史会话">
+            <button id="historyBtn" class="workspace-icon-btn" title="历史会话" data-i18n-title="header.history">
               <span class="ui-icon" aria-hidden="true" style="width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-b671bf6acfa7.png')"></span>
             </button>
-            <button id="settingsBtn" class="workspace-icon-btn" title="设置">
+            <button id="settingsBtn" class="workspace-icon-btn" title="设置" data-i18n-title="header.settings">
               <span class="ui-icon" aria-hidden="true" style="width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-07bee9074e9f.png')"></span>
             </button>
-            <button id="clearMemoryBtn" class="workspace-icon-btn" title="新建会话">
+            <button id="clearMemoryBtn" class="workspace-icon-btn" title="新建会话" data-i18n-title="header.new-session">
               <span class="ui-icon" aria-hidden="true" style="width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-03a8fc7ef349.png')"></span>
             </button>
           </div>
@@ -125,6 +125,7 @@
               class="chat-input"
               id="chatInput"
               placeholder="输入指令或查询... 键入 / 打开命令面板"
+              data-i18n-placeholder="input.placeholder"
               rows="3"
             ></textarea>
           </div>
@@ -173,19 +174,19 @@
             </div>  <!-- close model-picker -->
             </div>  <!-- close model-bar-left -->
             <div class="model-bar-right">
-              <button class="icon-btn" id="geosourceTrigger" title="全球空间数据超市 (GeoSource) · 11,000+ 在线图层">
+              <button class="icon-btn" id="geosourceTrigger" title="全球空间数据超市 (GeoSource) · 11,000+ 在线图层" data-i18n-title="header.data-catalog">
                 <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-4205168da1f5.png')"></span>
               </button>
-              <button class="icon-btn" id="connectorBtn" title="连接器（数据源）">
+              <button class="icon-btn" id="connectorBtn" title="连接器（数据源）" data-i18n-title="header.connectors">
                 <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-491a80299561.png')"></span>
               </button>
-              <button class="icon-btn" id="uploadTrigger" title="上传文件">
+              <button class="icon-btn" id="uploadTrigger" title="上传文件" data-i18n-title="header.upload">
                 <span class="ui-icon ui-icon" aria-hidden="true" style="color:var(--ui-gray-400);--ui-icon-image:url('/assets/ui-icons/icon-b2a7871663cc.png')"></span>
               </button>
-              <button class="icon-btn" id="stopBtn" title="停止 (无运行中任务)" disabled>
+              <button class="icon-btn" id="stopBtn" title="停止 (无运行中任务)" data-i18n-title="header.stop" disabled>
                 <span class="ui-icon" aria-hidden="true" style=";width:20px;height:20px;--ui-icon-image:url('/assets/ui-icons/icon-a290deadae03.png')"></span>
               </button>
-              <button class="icon-btn" id="sendBtn" title="发送">
+              <button class="icon-btn" id="sendBtn" title="发送" data-i18n-title="header.send">
                 <span class="ui-icon ui-icon" aria-hidden="true" style="color:var(--ui-gray-900);--ui-icon-image:url('/assets/ui-icons/icon-f91a12a9cc81.png')"></span>
               </button>
             </div>
@@ -194,7 +195,7 @@
           <!-- 连接器浮层面板（定位相对 .chat-input-area） -->
           <div class="connector-panel" id="connectorPanel" style="display:none;">
             <div class="connector-panel-header">
-              <span class="connector-panel-title">连接器（数据源）</span>
+              <span class="connector-panel-title" data-i18n="connector.title">连接器（数据源）</span>
               <span class="connector-panel-count" id="connectorCount">0 / 11 已配置</span>
               <button class="connector-close" id="connectorClose" title="关闭">
                 <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-73fd2751026c.png')"></span>
@@ -204,51 +205,51 @@
             <div class="connector-online" id="connectorGeoSource" style="border-bottom:1px solid var(--ui-border);padding-bottom:10px;margin-bottom:10px;">
               <div class="connector-online-title" style="color:var(--ui-accent, #3b82f6);font-weight:600;">
                 <span class="ui-icon" aria-hidden="true" style="vertical-align:middle;margin-right:4px;;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-797270c0fa88.png')"></span>
-                GeoSource 全球空间数据源 (内嵌)
+                <span data-i18n="connector.catalog-title">GeoSource 全球空间数据源 (内嵌)</span>
               </div>
               <div style="font-size:11px;color:var(--ui-gray-500);margin-bottom:6px;">
-                内置 2,198+ 全球 GIS 服务，支持 WMS / XYZ / REST 检索与一键上图
+                <span data-i18n="connector.catalog-copy">内置 2,198+ 全球 GIS 服务，支持 WMS / XYZ / REST 检索与一键上图</span>
               </div>
-              <button class="connector-online-btn" id="connectorOpenGeoSourceBtn" style="width:100%;text-align:center;background:var(--ui-accent, #3b82f6);color:#fff;">检索并一键上图</button>
+              <button class="connector-online-btn" id="connectorOpenGeoSourceBtn" data-i18n="connector.catalog-open" style="width:100%;text-align:center;background:var(--ui-accent, #3b82f6);color:#fff;">检索并一键上图</button>
             </div>
             <div class="connector-online" id="connectorOnline">
               <div class="connector-online-title">
                 <span class="ui-icon" aria-hidden="true" style="vertical-align:middle;margin-right:4px;;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-9155ffdbf56d.png')"></span>
-                添加在线数据
+                <span data-i18n="connector.online-title">添加在线数据</span>
               </div>
               <div class="connector-online-row">
                 <select id="onlineType" class="connector-online-select">
-                  <option value="auto">自动识别（按扩展名）</option>
-                  <option value="cog">COG / 在线 GeoTIFF</option>
+                  <option value="auto" data-i18n="connector.type-auto">自动识别（按扩展名）</option>
+                  <option value="cog" data-i18n="connector.type-cog">COG / 在线 GeoTIFF</option>
                   <option value="pmtiles">PMTiles</option>
                   <option value="geoparquet">GeoParquet</option>
                   <option value="flatgeobuf">FlatGeobuf</option>
-                  <option value="arcgis-rest">ArcGIS REST 矢量图层</option>
+                  <option value="arcgis-rest" data-i18n="connector.type-arcgis">ArcGIS REST 矢量图层</option>
                 </select>
               </div>
               <div class="connector-online-row">
-                <input type="text" id="onlineUrl" class="connector-online-input" placeholder="粘贴数据 URL（http/https）或本地路径" />
-                <button class="connector-online-btn" id="onlineLoadBtn">加载</button>
+                <input type="text" id="onlineUrl" class="connector-online-input" placeholder="粘贴数据 URL（http/https）或本地路径" data-i18n-placeholder="connector.url-placeholder" />
+                <button class="connector-online-btn" id="onlineLoadBtn" data-i18n="connector.load">加载</button>
               </div>
               <div class="connector-online-row arcgis-fetch-only" style="display:none;">
-                <input type="text" id="arcgisLayerId" class="connector-online-input" placeholder="图层 ID（可留空自动选择）" />
-                <select id="arcgisFetchMode" class="connector-online-select"><option value="preview">限量预览（不核验完整性）</option><option value="full">完整获取（核对对象 ID）</option></select>
+                <input type="text" id="arcgisLayerId" class="connector-online-input" placeholder="图层 ID（可留空自动选择）" data-i18n-placeholder="connector.layer-id-placeholder" />
+                <select id="arcgisFetchMode" class="connector-online-select"><option value="preview" data-i18n="connector.arcgis-preview">限量预览（不核验完整性）</option><option value="full" data-i18n="connector.arcgis-full">完整获取（核对对象 ID）</option></select>
               </div>
               <div class="connector-online-row arcgis-fetch-only" style="display:none;">
-                <input type="text" id="arcgisWhere" class="connector-online-input" value="1=1" aria-label="属性过滤条件" placeholder="属性条件，例如 POPULATION > 1000" />
-                <input type="text" id="arcgisBbox" class="connector-online-input" aria-label="空间范围" placeholder="范围 minx,miny,maxx,maxy（WGS84）" />
+                <input type="text" id="arcgisWhere" class="connector-online-input" value="1=1" aria-label="属性过滤条件" data-i18n-aria-label="connector.attribute-filter" placeholder="属性条件，例如 POPULATION > 1000" data-i18n-placeholder="connector.attribute-placeholder" />
+                <input type="text" id="arcgisBbox" class="connector-online-input" aria-label="空间范围" data-i18n-aria-label="connector.spatial-extent" placeholder="范围 minx,miny,maxx,maxy（WGS84）" data-i18n-placeholder="connector.extent-placeholder" />
               </div>
               <div class="connector-online-row arcgis-fetch-only" style="display:none;">
-                <button class="connector-online-btn" id="arcgisInspectBtn">检查图层</button>
-                <button class="connector-online-btn" id="arcgisCancelBtn" style="display:none;">取消获取</button>
-                <button class="connector-online-btn" id="arcgisRerunBtn" style="display:none;">重跑上次配方</button>
+                <button class="connector-online-btn" id="arcgisInspectBtn" data-i18n="connector.inspect">检查图层</button>
+                <button class="connector-online-btn" id="arcgisCancelBtn" data-i18n="connector.cancel" style="display:none;">取消获取</button>
+                <button class="connector-online-btn" id="arcgisRerunBtn" data-i18n="connector.rerun" style="display:none;">重跑上次配方</button>
               </div>
               <div class="connector-online-hint arcgis-fetch-only" id="arcgisFetchStatus" style="display:none;" role="status" aria-live="polite"></div>
               <div class="connector-online-hint arcgis-fetch-only" id="arcgisFetchResult" style="display:none;"></div>
-              <div class="connector-online-hint">支持 COG(.tif)、PMTiles(.pmtiles)、GeoParquet(.parquet)、FlatGeobuf(.fgb)，流式加载不整体下载</div>
+              <div class="connector-online-hint" data-i18n="connector.supported-formats">支持 COG(.tif)、PMTiles(.pmtiles)、GeoParquet(.parquet)、FlatGeobuf(.fgb)，流式加载不整体下载</div>
             </div>
             <div class="connector-panel-footer">
-              <span>账号与密钥：设置 → 连接器</span>
+              <span data-i18n="connector.credentials-hint">账号与密钥：设置 → 连接器</span>
             </div>
           </div>
         </div>
@@ -265,85 +266,85 @@
             <!-- 文件 -->
             <div class="map-menu-trigger" data-menu="file">
               <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-f085d129a8aa.png')"></span>
-              <span>文件</span>
+              <span data-i18n="menu.file">文件</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item" data-action="geosource">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-5f556805c8b8.png')"></span>
-                  <span>全球数据超市 (GeoSource)</span>
+                  <span data-i18n="menu.data-catalog">全球数据超市 (GeoSource)</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="import">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-e5befca1a25f.png')"></span>
-                  <span>导入图层</span>
+                  <span data-i18n="menu.import-layer">导入图层</span>
                 </button>
                 <button class="map-menu-item" data-action="export">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-0f769c14acd8.png')"></span>
-                  <span>导出</span>
+                  <span data-i18n="menu.export">导出</span>
                 </button>
                 <button class="map-menu-item" data-action="save-project">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-23a6a20e01e5.png')"></span>
-                  <span>保存工程</span>
+                  <span data-i18n="menu.save-project">保存工程</span>
                 </button>
                 <button class="map-menu-item" data-action="load-project">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-2ffcf9faa1eb.png')"></span>
-                  <span>加载工程</span>
+                  <span data-i18n="menu.load-project">加载工程</span>
                 </button>
               </div>
             </div>
             <!-- 绘制 -->
             <div class="map-menu-trigger" data-menu="draw">
               <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-7da01517cad1.png')"></span>
-              <span>绘制</span>
+              <span data-i18n="menu.draw">绘制</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item map-menu-item-shortcut" data-action="shortcut-draw">
                   <span class="ui-icon shortcut-check" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-957ccd64c833.png')"></span>
-                  <span>添加至快捷栏</span>
+                  <span data-i18n="menu.add-shortcut">添加至快捷栏</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-polygon">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-1bdeabfadfaa.png')"></span>
-                  <span>多边形</span>
+                  <span data-i18n="draw.polygon">多边形</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-rectangle">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-b6b0619c33d8.png')"></span>
-                  <span>矩形</span>
+                  <span data-i18n="draw.rectangle">矩形</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-circle">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-98274ee67719.png')"></span>
-                  <span>圆</span>
+                  <span data-i18n="draw.circle">圆</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-polyline">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3e7ade8477b0.png')"></span>
-                  <span>线</span>
+                  <span data-i18n="draw.line">线</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-marker">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-735101c88687.png')"></span>
-                  <span>标记</span>
+                  <span data-i18n="draw.marker">标记</span>
                 </button>
               </div>
             </div>
             <!-- 视图 -->
             <div class="map-menu-trigger" data-menu="view">
               <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-251357cedc55.png')"></span>
-              <span>视图</span>
+              <span data-i18n="menu.view">视图</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item" data-action="toggle-layer-panel">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-23cb3a9a30b8.png')"></span>
-                  <span>图层面板</span>
+                  <span data-i18n="menu.layer-panel">图层面板</span>
                 </button>
                 <button class="map-menu-item map-menu-item-toggle" data-action="toggle-coords">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-76e31db3f60c.png')"></span>
-                  <span>坐标信息</span>
+                  <span data-i18n="menu.coordinates">坐标信息</span>
                   <span class="ui-icon toggle-check off" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-957ccd64c833.png')"></span>
                 </button>
                 <button class="map-menu-item map-menu-item-toggle" data-action="toggle-basemap">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-70b6cf7a3fec.png')"></span>
-                  <span>卫星底图</span>
+                  <span data-i18n="menu.satellite">卫星底图</span>
                   <span class="ui-icon toggle-check" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-957ccd64c833.png')"></span>
                 </button>
                 <button class="map-menu-item" data-action="toggle-3d">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-fa4f531638d9.png')"></span>
-                  <span>3D 地球 / 2D 地图</span>
+                  <span data-i18n="menu.3d">3D 地球 / 2D 地图</span>
                 </button>
                 <button class="map-menu-item" data-action="cycle-satellite-source">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-6d019c93cb3e.png')"></span>
@@ -354,185 +355,185 @@
             <!-- 工具 -->
             <div class="map-menu-trigger" data-menu="tools">
               <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-7ca9741d80f3.png')"></span>
-              <span>工具</span>
+              <span data-i18n="menu.tools">工具</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item map-menu-item-shortcut" data-action="shortcut-tools">
                   <span class="ui-icon shortcut-check" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-957ccd64c833.png')"></span>
-                  <span>添加至快捷栏</span>
+                  <span data-i18n="menu.add-shortcut">添加至快捷栏</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-feature-info">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-658e8e14699f.png')"></span>
-                  <span>选择要素</span>
+                  <span data-i18n="tool.select-feature">选择要素</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-delete">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-7a438f2a2604.png')"></span>
-                  <span>删除要素</span>
+                  <span data-i18n="tool.delete-feature">删除要素</span>
                 </button>
                 <button class="map-menu-item" data-action="toggle-attr-table">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-adba29e01c8a.png')"></span>
-                  <span>属性表</span>
+                  <span data-i18n="tool.attributes">属性表</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-network-analysis">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3e7ade8477b0.png')"></span>
-                  <span>网络分析</span>
+                  <span data-i18n="tool.network-analysis">网络分析</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-spatial-analysis">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
-                  <span>空间分析</span>
+                  <span data-i18n="tool.spatial-analysis">空间分析</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-spatial-stats">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-264735cdc8d3.png')"></span>
-                  <span>空间统计</span>
+                  <span data-i18n="tool.spatial-statistics">空间统计</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="join">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
-                  <span>属性连接</span>
+                  <span data-i18n="tool.attribute-join">属性连接</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="geomattrs">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
-                  <span>几何属性</span>
+                  <span data-i18n="tool.geometry-attributes">几何属性</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="mingeom">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
-                  <span>最小外接</span>
+                  <span data-i18n="tool.minimum-bounding-geometry">最小外接</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="p2l">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
-                  <span>点串线</span>
+                  <span data-i18n="tool.points-to-line">点串线</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="gpal">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
-                  <span>沿线布点</span>
+                  <span data-i18n="tool.points-along-lines">沿线布点</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="weights">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-264735cdc8d3.png')"></span>
-                  <span>权重矩阵</span>
+                  <span data-i18n="tool.spatial-weights">权重矩阵</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="regression">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-264735cdc8d3.png')"></span>
-                  <span>空间回归</span>
+                  <span data-i18n="tool.spatial-regression">空间回归</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="directional">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-264735cdc8d3.png')"></span>
-                  <span>标准差椭圆</span>
+                  <span data-i18n="tool.standard-deviation-ellipse">标准差椭圆</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="tendency">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-264735cdc8d3.png')"></span>
-                  <span>中心趋势</span>
+                  <span data-i18n="tool.central-tendency">中心趋势</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="od">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-264735cdc8d3.png')"></span>
-                  <span>OD 成本矩阵</span>
+                  <span data-i18n="tool.od-cost-matrix">OD 成本矩阵</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="f2r">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>矢量转栅格</span>
+                  <span data-i18n="tool.vector-to-raster">矢量转栅格</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="r2f">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>栅格转矢量</span>
+                  <span data-i18n="tool.raster-to-vector">栅格转矢量</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="fishnet">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>创建渔网</span>
+                  <span data-i18n="tool.create-fishnet">创建渔网</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="costdist">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>代价距离</span>
+                  <span data-i18n="tool.cost-distance">代价距离</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="leastcost">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>最小代价路径</span>
+                  <span data-i18n="tool.least-cost-path">最小代价路径</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
-                  <span>分析工具</span>
+                  <span data-i18n="tool.analysis-tools">分析工具</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-debug-panel">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-054c0c901442.png')"></span>
-                  <span>调试面板</span>
+                  <span data-i18n="tool.debug-panel">调试面板</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-coord-convert">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-a7deedee28a9.png')"></span>
-                  <span>坐标转换</span>
+                  <span data-i18n="tool.coordinate-conversion">坐标转换</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-topology">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-671da9ab114b.png')"></span>
-                  <span>拓扑检查</span>
+                  <span data-i18n="tool.topology-check">拓扑检查</span>
                 </button>
               </div>
             </div>
             <!-- 栅格 -->
             <div class="map-menu-trigger" data-menu="raster">
               <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-0c2f14e36120.png')"></span>
-              <span>栅格</span>
+              <span data-i18n="menu.raster">栅格</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item" data-action="tool-slope">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-29d7f91050b7.png')"></span>
-                  <span>坡度分析</span>
+                  <span data-i18n="raster.slope">坡度分析</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-aspect">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-47307ffc7e82.png')"></span>
-                  <span>坡向分析</span>
+                  <span data-i18n="raster.aspect">坡向分析</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-hillshade">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-51b3a09ff72d.png')"></span>
-                  <span>山体阴影</span>
+                  <span data-i18n="raster.hillshade">山体阴影</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-contour">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-f05554199c0d.png')"></span>
-                  <span>等高线</span>
+                  <span data-i18n="raster.contour">等高线</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-ndvi">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-aa7850988324.png')"></span>
-                  <span>NDVI 计算</span>
+                  <span data-i18n="raster.ndvi">NDVI 计算</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-rastercalc">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-176ae2516405.png')"></span>
-                  <span>栅格计算器</span>
+                  <span data-i18n="raster.calculator">栅格计算器</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-interpolate">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-d2a06ecf500b.png')"></span>
-                  <span>空间插值</span>
+                  <span data-i18n="raster.interpolate">空间插值</span>
                 </button>
                 <div class="map-menu-sep"></div>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="reclassify">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>栅格重分类</span>
+                  <span data-i18n="raster.reclassify">栅格重分类</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="focal">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>邻域统计</span>
+                  <span data-i18n="raster.focal-statistics">邻域统计</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="euclid">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>欧氏距离</span>
+                  <span data-i18n="raster.euclidean-distance">欧氏距离</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="mask">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>掩膜提取</span>
+                  <span data-i18n="raster.mask-extraction">掩膜提取</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-analysis-tools" data-op="surface">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9955681a84e8.png')"></span>
-                  <span>填挖方</span>
+                  <span data-i18n="raster.cut-fill">填挖方</span>
                 </button>
                 <button class="map-menu-item" data-action="tool-hydrology">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-0d786ed7ae54.png')"></span>
-                  <span>水文分析</span>
+                  <span data-i18n="raster.hydrology">水文分析</span>
                 </button>
               </div>
             </div>
             <!-- 帮助 -->
             <div class="map-menu-trigger" data-menu="help">
               <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-3ae040c4fdb6.png')"></span>
-              <span>帮助</span>
+              <span data-i18n="menu.help">帮助</span>
               <div class="map-menu-dropdown">
                 <button class="map-menu-item" data-action="manual">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-01bac4c88eb4.png')"></span>
@@ -875,43 +876,43 @@
 
           <!-- === 右上角：绘制 + 缩放控件 === -->
           <div class="map-zoom-controls" id="mapZoomControls">
-            <button class="map-zoom-btn map-draw-btn" data-tool="select" title="选择/移动">
+            <button class="map-zoom-btn map-draw-btn" data-tool="select" title="选择/移动" data-i18n-title="map.move">
               <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-68eba88b11ab.png')"></span>
             </button>
             <div class="map-ctrl-divider" data-shortcut-group="draw"></div>
-            <button class="map-zoom-btn map-draw-btn" data-tool="polygon" data-shortcut-group="draw" title="绘制多边形">
+            <button class="map-zoom-btn map-draw-btn" data-tool="polygon" data-shortcut-group="draw" title="绘制多边形" data-i18n-title="map.draw-polygon">
               <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-f8584aed34c3.png')"></span>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="rectangle" data-shortcut-group="draw" title="绘制矩形">
+            <button class="map-zoom-btn map-draw-btn" data-tool="rectangle" data-shortcut-group="draw" title="绘制矩形" data-i18n-title="map.draw-rectangle">
               <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-55d459d50109.png')"></span>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="circle" data-shortcut-group="draw" title="绘制圆">
+            <button class="map-zoom-btn map-draw-btn" data-tool="circle" data-shortcut-group="draw" title="绘制圆" data-i18n-title="map.draw-circle">
               <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-fb09568cabd7.png')"></span>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="polyline" data-shortcut-group="draw" title="绘制线">
+            <button class="map-zoom-btn map-draw-btn" data-tool="polyline" data-shortcut-group="draw" title="绘制线" data-i18n-title="map.draw-line">
               <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-e71631e0e33e.png')"></span>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="marker" data-shortcut-group="draw" title="添加标记点">
+            <button class="map-zoom-btn map-draw-btn" data-tool="marker" data-shortcut-group="draw" title="添加标记点" data-i18n-title="map.add-marker">
               <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-da4032db3d0e.png')"></span>
             </button>
             <div class="map-ctrl-divider" data-shortcut-group="tools"></div>
-            <button class="map-zoom-btn map-draw-btn" data-tool="feature-info" data-shortcut-group="tools" title="选择要素（点击地图要素查看属性）">
+            <button class="map-zoom-btn map-draw-btn" data-tool="feature-info" data-shortcut-group="tools" title="选择要素（点击地图要素查看属性）" data-i18n-title="map.select-feature-title">
               <span class="ui-icon" aria-hidden="true" style=";--ui-icon-image:url('/assets/ui-icons/icon-8db12d869a0f.png')"></span>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="delete" data-shortcut-group="tools" title="删除绘制要素（点击地图上已绘制的图形；不清空数据图层）" aria-label="删除绘制要素；不清空数据图层">
+            <button class="map-zoom-btn map-draw-btn" data-tool="delete" data-shortcut-group="tools" title="删除绘制要素（点击地图上已绘制的图形；不清空数据图层）" data-i18n-title="map.delete-drawn-title" aria-label="删除绘制要素；不清空数据图层" data-i18n-aria-label="map.delete-drawn-title">
               <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-7a438f2a2604.png')"></span>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="network-analysis" data-shortcut-group="tools" title="网络分析（路径/服务区/最近设施）">
+            <button class="map-zoom-btn map-draw-btn" data-tool="network-analysis" data-shortcut-group="tools" title="网络分析（路径/服务区/最近设施）" data-i18n-title="map.network">
               <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-3e7ade8477b0.png')"></span>
             </button>
-            <button class="map-zoom-btn map-draw-btn" data-tool="spatial-analysis" data-shortcut-group="tools" title="空间分析（缓冲区/叠置/裁剪）">
+            <button class="map-zoom-btn map-draw-btn" data-tool="spatial-analysis" data-shortcut-group="tools" title="空间分析（缓冲区/叠置/裁剪）" data-i18n-title="map.spatial-title">
               <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-3f8474c1d414.png')"></span>
             </button>
             <div class="map-ctrl-divider"></div>
-            <button class="map-zoom-btn" id="toggleHistoryPanel" title="处理历史（工具执行记录与重跑）">
+            <button class="map-zoom-btn" id="toggleHistoryPanel" title="处理历史（工具执行记录与重跑）" data-i18n-title="map.history">
               <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-2446122b4620.png')"></span>
             </button>
-            <button class="map-zoom-btn map-toggle-layer" id="toggleLayerPanel" title="切换图层面板">
+            <button class="map-zoom-btn map-toggle-layer" id="toggleLayerPanel" title="切换图层面板" data-i18n-title="map.layers">
               <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-d87541636149.png')"></span>
             </button>
           </div>
@@ -926,27 +927,27 @@
               <div class="map-layer-header-actions">
                 <button class="map-layer-btn" id="showAllLayersBtn" title="全部打开 (全部显示)">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-251357cedc55.png')"></span>
-                  全开
+                  <span data-i18n="layer.all-on">全开</span>
                 </button>
                 <button class="map-layer-btn" id="hideAllLayersBtn" title="全部关闭 (全部隐藏)">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-d87541636149.png')"></span>
-                  全关
+                  <span data-i18n="layer.all-off">全关</span>
                 </button>
                 <button class="map-layer-btn" id="clearAllLayersBtn" title="清空全部数据图层和绘制要素（保留底图）">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-cac4fc89d2be.png')"></span>
-                  清空
+                  <span data-i18n="layer.clear">清空</span>
                 </button>
                 <button class="map-layer-btn" id="newLayerBtn" title="新建点集/线集/集合图层">
                   <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-da4032db3d0e.png')"></span>
-                  新建
+                  <span data-i18n="layer.new">新建</span>
                 </button>
                 <button class="map-layer-btn" id="newGroupBtn" title="新建分组">
                   <span class="ui-icon" aria-hidden="true" style=";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-1bc78eefed8c.png')"></span>
-                  分组
+                  <span data-i18n="layer.group">分组</span>
                 </button>
                 <button class="map-layer-btn primary" id="uploadTriggerBtn" title="上传文件">
                   <span class="ui-icon" aria-hidden="true" style=";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-e5befca1a25f.png')"></span>
-                  上传
+                  <span data-i18n="layer.upload">上传</span>
                 </button>
               </div>
             </div>
@@ -954,9 +955,9 @@
               <!-- 空状态 -->
               <div class="map-layer-empty" id="layersEmpty">
                 <span class="ui-icon" aria-hidden="true" style=";width:28px;height:28px;--ui-icon-image:url('/assets/ui-icons/icon-d53b6d013255.png')"></span>
-                <strong>地图还没有图层</strong>
-                <p>导入本地文件，或从全球数据中接入。<br>分析结果也会出现在这里。</p>
-                <button class="layer-empty-import" data-workspace-action="upload">导入数据</button>
+                <strong data-i18n="layer.empty-title">地图还没有图层</strong>
+                <p><span data-i18n="layer.empty-copy-local">导入本地文件，或从全球数据中接入。</span><br><span data-i18n="layer.empty-copy-results">分析结果也会出现在这里。</span></p>
+                <button class="layer-empty-import" data-workspace-action="upload" data-i18n="layer.import-data">导入数据</button>
               </div>
               <!-- 图层列表 -->
               <table class="map-layer-table" id="layersTable" style="display:none;">
@@ -964,15 +965,15 @@
                   <tr>
                     <th></th>
                     <th></th>
-                    <th>名称</th>
-                    <th>类型</th>
+                    <th data-i18n="table.name">名称</th>
+                    <th data-i18n="table.type">类型</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody id="layerTbody"></tbody>
               </table>
             </div>
-            <p class="workspace-layer-hint">拖动手柄调整叠放顺序 · 双击名称重命名</p>
+            <p class="workspace-layer-hint" data-i18n="layer.reorder-hint">拖动手柄调整叠放顺序 · 双击名称重命名</p>
           </div>
 
           <!-- === 浮动处理历史面板（右上角，与图层面板并排） === -->
@@ -1094,31 +1095,31 @@
         <div class="modal-sidenav-items">
           <div class="modal-sidenav-item active" data-panel="appearance">
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-08e774e9dc94.png')"></span>
-            <span>界面设置</span>
+            <span data-i18n="settings.appearance">界面设置</span>
           </div>
           <div class="modal-sidenav-item" data-panel="ai-api">
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-780dae398160.png')"></span>
-            <span>AI 模型</span>
+            <span data-i18n="settings.ai">AI 模型</span>
           </div>
           <div class="modal-sidenav-item" data-panel="geo-api">
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-06165a411d3a.png')"></span>
-            <span>地理服务</span>
+            <span data-i18n="settings.geo">地理服务</span>
           </div>
           <div class="modal-sidenav-item" data-panel="network">
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-65b72db558ba.png')"></span>
-            <span>网络代理</span>
+            <span data-i18n="settings.network">网络代理</span>
           </div>
           <div class="modal-sidenav-item" data-panel="history">
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-21db89b5c210.png')"></span>
-            <span>历史记录</span>
+            <span data-i18n="settings.history">历史记录</span>
           </div>
           <div class="modal-sidenav-item" data-panel="logs">
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-561b7236da10.png')"></span>
-            <span>日志导出</span>
+            <span data-i18n="settings.logs">日志导出</span>
           </div>
           <div class="modal-sidenav-item" data-panel="about">
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-bf4752aa7208.png')"></span>
-            <span>关于</span>
+            <span data-i18n="settings.about">关于</span>
           </div>
         </div>
       </div>
@@ -1131,9 +1132,16 @@
 
         <!-- === 面板1：界面设置 === -->
         <div class="modal-panel" id="panelAppearance">
-          <h3>界面设置</h3>
+          <h3 data-i18n="settings.appearance">界面设置</h3>
           <div class="setting-group">
-            <label class="setting-label">字号</label>
+            <label class="setting-label" for="uiLanguageSelect" data-i18n="settings.language">界面语言</label>
+            <select class="modal-input" id="uiLanguageSelect" aria-label="界面语言" data-i18n-aria-label="settings.language">
+              <option value="zh-CN">简体中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+          <div class="setting-group">
+            <label class="setting-label" data-i18n="settings.font-size">字号</label>
             <div class="setting-slider-row">
               <span class="setting-slider-label">12</span>
               <input type="range" min="12" max="24" step="1" value="14" class="setting-slider" id="fontSizeSlider">
@@ -1142,15 +1150,15 @@
             </div>
           </div>
           <div class="setting-group">
-            <label class="setting-label">主题</label>
+            <label class="setting-label" data-i18n="settings.theme">主题</label>
             <div class="theme-options">
               <button class="theme-btn active" data-theme="light">
                 <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-ed64c3b3f0de.png')"></span>
-                浅色
+                <span data-i18n="settings.light">浅色</span>
               </button>
               <button class="theme-btn" data-theme="dark">
                 <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-78ca46c22ea5.png')"></span>
-                深色
+                <span data-i18n="settings.dark">深色</span>
               </button>
             </div>
           </div>
@@ -1169,39 +1177,39 @@
 
         <!-- === 地理服务 === -->
         <div class="modal-panel" id="panelGeoApi">
-          <h3>地理服务</h3>
+          <h3 data-i18n="settings.geo">地理服务</h3>
 
           <!-- GeoSource 全球 GIS 空间数据源目录（内嵌） -->
           <div class="model-config-card" style="border: 1px solid var(--outline-variant); background: var(--surface-container-low);">
             <div class="model-config-header">
               <span class="model-config-name" style="font-weight:600;display:inline-flex;align-items:center;gap:6px;">
                 <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-945fce68e81e.png')"></span>
-                GeoSource 全球空间服务检索 (内嵌)
+                <span data-i18n="settings.geosource-title">GeoSource 全球空间服务检索 (内嵌)</span>
               </span>
-              <span class="model-config-badge configured" id="geosourceServiceBadge">2,198 服务</span>
+              <span class="model-config-badge configured" id="geosourceServiceBadge" data-i18n="settings.geosource-count">2,198 服务</span>
             </div>
-            <div style="font-size:12px;color:var(--on-surface-variant);margin-bottom:8px;line-height:1.5;">
+            <div data-i18n="settings.geosource-copy" style="font-size:12px;color:var(--on-surface-variant);margin-bottom:8px;line-height:1.5;">
               基于本地 SQLite 索引，涵盖全球高程/地形、遥感卫星、气象水文、土地利用等 2,198+ 真实空间服务与 1,561+ 图层（WMS/XYZ/REST/GeoJSON），支持一键加载上图
             </div>
-            <button class="modal-btn modal-btn-save" id="openGeoSourceModalBtn" style="padding:6px 16px;">打开数据检索中心</button>
+            <button class="modal-btn modal-btn-save" id="openGeoSourceModalBtn" data-i18n="settings.geosource-open" style="padding:6px 16px;">打开数据检索中心</button>
           </div>
 
           <!-- 添加在线数据（云原生格式）快捷入口 -->
           <div class="model-config-card">
             <div class="model-config-header">
-              <span class="model-config-name">添加在线数据（云原生格式）</span>
+              <span class="model-config-name" data-i18n="settings.online-title">添加在线数据（云原生格式）</span>
             </div>
-            <div style="font-size:12px;color:var(--ui-gray-500);margin-bottom:8px;">
+            <div data-i18n="settings.online-copy" style="font-size:12px;color:var(--ui-gray-500);margin-bottom:8px;">
               支持 COG / 在线 GeoTIFF、PMTiles、GeoParquet、FlatGeobuf，粘贴 URL 流式加载上图
             </div>
-            <button class="connector-setup" id="openOnlineDataBtn" style="padding:6px 16px;">添加在线数据</button>
+            <button class="connector-setup" id="openOnlineDataBtn" data-i18n="settings.online-open" style="padding:6px 16px;">添加在线数据</button>
           </div>
 
           <!-- 高德地图 Web API（POI + 高程通用） -->
           <div class="model-config-card">
             <div class="model-config-header">
-              <span class="model-config-name">高德地图 Web API</span>
-              <span class="model-config-badge" id="amapKeyStatus">未配置</span>
+              <span class="model-config-name" data-i18n="settings.amap-title">高德地图 Web API</span>
+              <span class="model-config-badge" id="amapKeyStatus" data-i18n="settings.not-configured">未配置</span>
             </div>
             <div class="modal-input-wrapper">
               <input type="password" class="modal-input" id="amapApiKeyInput" placeholder="高德 Web 服务 Key" />
@@ -1211,7 +1219,7 @@
             </div>
             <div class="modal-test-result" id="amapTestResult"></div>
             <div class="model-config-actions">
-              <button class="modal-btn modal-btn-save" id="saveAmapKeyBtn">保存</button>
+              <button class="modal-btn modal-btn-save" id="saveAmapKeyBtn" data-i18n="common.save">保存</button>
             </div>
           </div>
 
@@ -1219,16 +1227,16 @@
           <div class="model-config-card">
             <div class="model-config-header">
               <span class="model-config-name">Copernicus Data Space</span>
-              <span class="model-config-badge" data-cred-status="copernicus">未配置</span>
-              <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">Sentinel 系列遥感影像</span>
+              <span class="model-config-badge" data-cred-status="copernicus" data-i18n="settings.not-configured">未配置</span>
+              <span data-i18n="settings.copernicus-desc" style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">Sentinel 系列遥感影像</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
+                <span data-i18n="settings.username" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
                 <input type="text" class="modal-input geo-cred-user" data-cred="copernicus" placeholder="CDSE 账号" autocomplete="off" />
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
+                <span data-i18n="settings.password" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="copernicus" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
@@ -1239,7 +1247,7 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="copernicus"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="copernicus">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="copernicus">保存</button>
             </div>
           </div>
 
@@ -1247,16 +1255,16 @@
           <div class="model-config-card">
             <div class="model-config-header">
               <span class="model-config-name">USGS EarthExplorer</span>
-              <span class="model-config-badge" data-cred-status="usgs">未配置</span>
+              <span class="model-config-badge" data-cred-status="usgs" data-i18n="settings.not-configured">未配置</span>
               <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">SRTM / 3DEP DEM · Landsat 影像</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
+                <span data-i18n="settings.username" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
                 <input type="text" class="modal-input geo-cred-user" data-cred="usgs" placeholder="EarthExplorer 账号" autocomplete="off" />
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
+                <span data-i18n="settings.password" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="usgs" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
@@ -1267,24 +1275,24 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="usgs"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="usgs">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="usgs">保存</button>
             </div>
           </div>
 
           <!-- 地理空间数据云 GSCloud（国产高分 / GDEM DEM） -->
           <div class="model-config-card">
             <div class="model-config-header">
-              <span class="model-config-name">地理空间数据云 GSCloud</span>
-              <span class="model-config-badge" data-cred-status="gscloud">未配置</span>
-              <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">国产高分 · GDEM DEM</span>
+              <span class="model-config-name" data-i18n="settings.gscloud-title">地理空间数据云 GSCloud</span>
+              <span class="model-config-badge" data-cred-status="gscloud" data-i18n="settings.not-configured">未配置</span>
+              <span data-i18n="settings.gscloud-desc" style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">国产高分 · GDEM DEM</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
+                <span data-i18n="settings.username" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
                 <input type="text" class="modal-input geo-cred-user" data-cred="gscloud" placeholder="GSCloud 账号" autocomplete="off" />
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
+                <span data-i18n="settings.password" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="gscloud" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
@@ -1295,22 +1303,22 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="gscloud"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="gscloud">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="gscloud">保存</button>
             </div>
           </div>
           <div class="model-config-card">
             <div class="model-config-header">
               <span class="model-config-name">NASA Earthdata</span>
-              <span class="model-config-badge" data-cred-status="nasa">未配置</span>
+              <span class="model-config-badge" data-cred-status="nasa" data-i18n="settings.not-configured">未配置</span>
               <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">MODIS / ASTER GDEM / SRTM</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
+                <span data-i18n="settings.username" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
                 <input type="text" class="modal-input geo-cred-user" data-cred="nasa" placeholder="NASA 账号" autocomplete="off" />
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
+                <span data-i18n="settings.password" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="nasa" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
@@ -1321,14 +1329,14 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="nasa"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="nasa">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="nasa">保存</button>
             </div>
           </div>
           <div class="model-config-card">
             <div class="model-config-header">
               <span class="model-config-name">OpenTopography</span>
-              <span class="model-config-badge" data-cred-status="opentopo">未配置</span>
-              <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">高精度 DEM / LiDAR 点云</span>
+              <span class="model-config-badge" data-cred-status="opentopo" data-i18n="settings.not-configured">未配置</span>
+              <span data-i18n="settings.opentopo-desc" style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">高精度 DEM / LiDAR 点云</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
@@ -1343,22 +1351,22 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="opentopo"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="opentopo">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="opentopo">保存</button>
             </div>
           </div>
           <div class="model-config-card">
             <div class="model-config-header">
-              <span class="model-config-name">ASF 阿拉斯加卫星设施</span>
-              <span class="model-config-badge" data-cred-status="asf">未配置</span>
+              <span class="model-config-name" data-i18n="settings.asf-title">ASF 阿拉斯加卫星设施</span>
+              <span class="model-config-badge" data-cred-status="asf" data-i18n="settings.not-configured">未配置</span>
               <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">Sentinel-1 雷达影像</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
+                <span data-i18n="settings.username" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
                 <input type="text" class="modal-input geo-cred-user" data-cred="asf" placeholder="ASF 账号" autocomplete="off" />
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
+                <span data-i18n="settings.password" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="asf" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
@@ -1369,14 +1377,14 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="asf"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="asf">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="asf">保存</button>
             </div>
           </div>
           <div class="model-config-card">
             <div class="model-config-header">
-              <span class="model-config-name">天地图</span>
-              <span class="model-config-badge" data-cred-status="tianditu">未配置</span>
-              <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">影像/矢量底图 · 地名搜索</span>
+              <span class="model-config-name" data-i18n="settings.tianditu-title">天地图</span>
+              <span class="model-config-badge" data-cred-status="tianditu" data-i18n="settings.not-configured">未配置</span>
+              <span data-i18n="settings.tianditu-desc" style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">影像/矢量底图 · 地名搜索</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
@@ -1391,22 +1399,22 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="tianditu"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="tianditu">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="tianditu">保存</button>
             </div>
           </div>
           <div class="model-config-card">
             <div class="model-config-header">
-              <span class="model-config-name">中科院资源环境数据中心</span>
-              <span class="model-config-badge" data-cred-status="resdc">未配置</span>
-              <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">土地利用 / 气象 / 人口栅格</span>
+              <span class="model-config-name" data-i18n="settings.resdc-title">中科院资源环境数据中心</span>
+              <span class="model-config-badge" data-cred-status="resdc" data-i18n="settings.not-configured">未配置</span>
+              <span data-i18n="settings.resdc-desc" style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">土地利用 / 气象 / 人口栅格</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
+                <span data-i18n="settings.username" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
                 <input type="text" class="modal-input geo-cred-user" data-cred="resdc" placeholder="resdc 账号" autocomplete="off" />
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
+                <span data-i18n="settings.password" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="resdc" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
@@ -1417,22 +1425,22 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="resdc"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="resdc">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="resdc">保存</button>
             </div>
           </div>
           <div class="model-config-card">
             <div class="model-config-header">
-              <span class="model-config-name">国家综合地球观测平台 China GEOSS</span>
-              <span class="model-config-badge" data-cred-status="geoss">未配置</span>
-              <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">高分系列国产卫星数据</span>
+              <span class="model-config-name" data-i18n="settings.geoss-title">国家综合地球观测平台 China GEOSS</span>
+              <span class="model-config-badge" data-cred-status="geoss" data-i18n="settings.not-configured">未配置</span>
+              <span data-i18n="settings.geoss-desc" style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">高分系列国产卫星数据</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
+                <span data-i18n="settings.username" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
                 <input type="text" class="modal-input geo-cred-user" data-cred="geoss" placeholder="GEOSS 账号" autocomplete="off" />
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
+                <span data-i18n="settings.password" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="geoss" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
@@ -1443,22 +1451,22 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="geoss"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="geoss">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="geoss">保存</button>
             </div>
           </div>
           <div class="model-config-card">
             <div class="model-config-header">
-              <span class="model-config-name">PIE-Engine 航天宏图</span>
-              <span class="model-config-badge" data-cred-status="pie">未配置</span>
-              <span style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">国产遥感云平台</span>
+              <span class="model-config-name" data-i18n="settings.pie-title">PIE-Engine 航天宏图</span>
+              <span class="model-config-badge" data-cred-status="pie" data-i18n="settings.not-configured">未配置</span>
+              <span data-i18n="settings.pie-desc" style="font-size:11px;color:var(--ui-gray-400);margin-left:auto;">国产遥感云平台</span>
             </div>
             <div style="display:grid;gap:6px;margin-top:8px;">
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
+                <span data-i18n="settings.username" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">用户名</span>
                 <input type="text" class="modal-input geo-cred-user" data-cred="pie" placeholder="PIE 账号" autocomplete="off" />
               </div>
               <div style="display:flex;gap:6px;align-items:center;">
-                <span style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
+                <span data-i18n="settings.password" style="width:56px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">密码</span>
                 <div class="modal-input-wrapper" style="flex:1;">
                   <input type="password" class="modal-input geo-cred-pass" data-cred="pie" placeholder="••••••••" autocomplete="off" />
                   <button class="modal-toggle-vis geo-cred-eye" type="button" title="显示/隐藏密码">
@@ -1469,12 +1477,12 @@
             </div>
             <div style="margin-top:8px;display:flex;justify-content:flex-end;gap:8px;align-items:center;">
               <span class="modal-test-result geo-cred-msg" data-cred="pie"></span>
-              <button class="modal-btn modal-btn-save geo-cred-save" data-cred="pie">保存</button>
+              <button class="modal-btn modal-btn-save geo-cred-save" data-i18n="common.save" data-cred="pie">保存</button>
             </div>
           </div>
 
 
-<p class="modal-note">密钥仅保存在您的浏览器中，不会上传到服务器</p>
+<p class="modal-note" data-i18n="settings.credentials-note">不同服务商的凭据处理方式不同，请在保存账号或密钥前查看其存储和访问要求。</p>
         </div>
 
         <!-- === 网络代理 === -->
@@ -1605,6 +1613,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@s3pweb/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.min.js"></script>
 
   <!-- 应用模块（按依赖顺序加载） -->
+  <script src="js/i18n.js"></script>
   <script src="js/api.js"></script>
   <script src="js/gis_state.js"></script>
   <script src="js/map.js"></script>
@@ -1637,16 +1646,16 @@
         <div class="geosource-title-area">
           <span class="geosource-title">
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-d94b206f7029.png')"></span>
-            GeoSource 全球空间数据源检索中心
+            <span data-i18n="geosource.title">GeoSource 全球空间数据源检索中心</span>
           </span>
           <span class="geosource-badge" id="geosourceModalStatsBadge">2,198 服务 · 1,561 图层</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
-          <a href="geosource_map.html" target="_blank" class="geosource-badge" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;color:var(--on-surface,#1c1b1b);background:var(--surface-container-high,#ebe7e6);border:1px solid var(--outline-variant,#c4c7c7);font-weight:500;" title="在大屏世界地图中探索全球数据分布与下钻">
+          <a href="geosource_map.html" target="_blank" class="geosource-badge" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;color:var(--on-surface,#1c1b1b);background:var(--surface-container-high,#ebe7e6);border:1px solid var(--outline-variant,#c4c7c7);font-weight:500;" title="在大屏世界地图中探索全球数据分布与下钻" data-i18n-title="geosource.open-map-title">
             <span class="ui-icon" aria-hidden="true" style=";width:12px;height:12px;--ui-icon-image:url('/assets/ui-icons/icon-5f556805c8b8.png')"></span>
-            打开全球数据地图
+            <span data-i18n="geosource.open-map">打开全球数据地图</span>
           </a>
-          <button class="modal-close-top workspace-icon-btn" id="geosourceCloseBtn" title="关闭" aria-label="关闭检索中心" style="position:static;">
+          <button class="modal-close-top workspace-icon-btn" id="geosourceCloseBtn" title="关闭" aria-label="关闭检索中心" data-i18n-title="common.close" data-i18n-aria-label="geosource.close" style="position:static;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
         </div>
@@ -1660,39 +1669,39 @@
               <span class="geosource-search-icon">
                 <span class="ui-icon" aria-hidden="true" style=";width:15px;height:15px;--ui-icon-image:url('/assets/ui-icons/icon-2f93b29e7150.png')"></span>
               </span>
-              <input type="text" id="geosourceKeyword" class="geosource-search-input" placeholder="输入搜索关键词（如：DEM、影像、气象、土地利用、道路、Sentinel、Landsat）..." />
-              <button class="geosource-search-clear" id="geosourceSearchClear" title="清除输入">
+              <input type="text" id="geosourceKeyword" class="geosource-search-input" placeholder="输入搜索关键词（如：DEM、影像、气象、土地利用、道路、Sentinel、Landsat）..." data-i18n-placeholder="geosource.search-placeholder" aria-label="搜索全球空间数据" data-i18n-aria-label="geosource.search-label" />
+              <button class="geosource-search-clear" id="geosourceSearchClear" title="清除输入" data-i18n-title="geosource.clear-search">
                 <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-74de74efcc96.png')"></span>
               </button>
             </div>
             <button class="geosource-search-btn" id="geosourceSearchBtn">
               <span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-75a78f502b5f.png')"></span>
-              检索
+              <span data-i18n="geosource.search">检索</span>
             </button>
           </div>
 
           <!-- 快捷分类芯片 -->
           <div class="geosource-chips-row" id="geosourceQuickChips">
-            <span class="geosource-chip-label">快捷分类:</span>
-            <span class="geosource-chip active" data-cat="">全部</span>
-            <span class="geosource-chip" data-cat="遥感">遥感影像</span>
-            <span class="geosource-chip" data-cat="高程">高程地形</span>
-            <span class="geosource-chip" data-cat="气象">气象气候</span>
-            <span class="geosource-chip" data-cat="土地利用">土地利用</span>
-            <span class="geosource-chip" data-cat="交通">交通路网</span>
-            <span class="geosource-chip" data-cat="水利">水利海洋</span>
-            <span class="geosource-chip" data-cat="人口">人口社会</span>
-            <span class="geosource-chip" data-cat="开放政府数据">开放数据</span>
+            <span class="geosource-chip-label" data-i18n="geosource.quick-categories">快捷分类:</span>
+            <span class="geosource-chip active" data-cat="" data-i18n="geosource.all">全部</span>
+            <span class="geosource-chip" data-cat="遥感" data-i18n="geosource.remote-sensing">遥感影像</span>
+            <span class="geosource-chip" data-cat="高程" data-i18n="geosource.elevation">高程地形</span>
+            <span class="geosource-chip" data-cat="气象" data-i18n="geosource.weather">气象气候</span>
+            <span class="geosource-chip" data-cat="土地利用" data-i18n="geosource.land-use">土地利用</span>
+            <span class="geosource-chip" data-cat="交通" data-i18n="geosource.transport">交通路网</span>
+            <span class="geosource-chip" data-cat="水利" data-i18n="geosource.water">水利海洋</span>
+            <span class="geosource-chip" data-cat="人口" data-i18n="geosource.population">人口社会</span>
+            <span class="geosource-chip" data-cat="开放政府数据" data-i18n="geosource.open-data">开放数据</span>
           </div>
 
           <!-- 多维筛选下拉与开关 -->
           <div class="geosource-options-row">
             <div class="geosource-filter-item">
-              <span>协议:</span>
+              <span data-i18n="geosource.protocol">协议:</span>
               <select id="geosourceProtocol" class="geosource-select">
-                <option value="">全部协议</option>
+                <option value="" data-i18n="geosource.all-protocols">全部协议</option>
                 <option value="WMS">OGC WMS</option>
-                <option value="XYZ">XYZ 瓦片</option>
+                <option value="XYZ" data-i18n="geosource.xyz-tiles">XYZ 瓦片</option>
                 <option value="ArcGIS REST">ArcGIS REST</option>
                 <option value="WMTS">OGC WMTS</option>
                 <option value="WFS">OGC WFS</option>
@@ -1701,51 +1710,51 @@
             </div>
 
             <div class="geosource-filter-item">
-              <span>国家/地区:</span>
+              <span data-i18n="geosource.country">国家/地区:</span>
               <select id="geosourceCountry" class="geosource-select">
-                <option value="">全部国家</option>
-                <option value="全球">全球 (Global)</option>
-                <option value="中国">中国</option>
-                <option value="美国">美国</option>
-                <option value="德国">德国</option>
-                <option value="日本">日本</option>
-                <option value="英国">英国</option>
-                <option value="加拿大">加拿大</option>
-                <option value="澳大利亚">澳大利亚</option>
-                <option value="法国">法国</option>
+                <option value="" data-i18n="geosource.all-countries">全部国家</option>
+                <option value="全球" data-i18n="country.global">全球 (Global)</option>
+                <option value="中国" data-i18n="country.china">中国</option>
+                <option value="美国" data-i18n="country.us">美国</option>
+                <option value="德国" data-i18n="country.germany">德国</option>
+                <option value="日本" data-i18n="country.japan">日本</option>
+                <option value="英国" data-i18n="country.uk">英国</option>
+                <option value="加拿大" data-i18n="country.canada">加拿大</option>
+                <option value="澳大利亚" data-i18n="country.australia">澳大利亚</option>
+                <option value="法国" data-i18n="country.france">法国</option>
               </select>
             </div>
 
             <div class="geosource-filter-item">
-              <span>细分类别:</span>
+              <span data-i18n="geosource.category">细分类别:</span>
               <select id="geosourceCategory" class="geosource-select">
-                <option value="">全部分类</option>
-                <option value="高程">高程 / 地形</option>
-                <option value="遥感">遥感 / 卫星影像</option>
-                <option value="气象">气象 / 气候</option>
-                <option value="水利">水利 / 水文 / 海洋</option>
-                <option value="土地利用">土地利用 / 地表覆盖</option>
-                <option value="交通">交通 / 道路网</option>
-                <option value="人口">人口 / 经济社会</option>
-                <option value="开放政府数据">开放政府数据</option>
+                <option value="" data-i18n="geosource.all-categories">全部分类</option>
+                <option value="高程" data-i18n="geosource.elevation-category">高程 / 地形</option>
+                <option value="遥感" data-i18n="geosource.remote-category">遥感 / 卫星影像</option>
+                <option value="气象" data-i18n="geosource.weather-category">气象 / 气候</option>
+                <option value="水利" data-i18n="geosource.water-category">水利 / 水文 / 海洋</option>
+                <option value="土地利用" data-i18n="geosource.land-category">土地利用 / 地表覆盖</option>
+                <option value="交通" data-i18n="geosource.transport-category">交通 / 道路网</option>
+                <option value="人口" data-i18n="geosource.population-category">人口 / 经济社会</option>
+                <option value="开放政府数据" data-i18n="geosource.open-category">开放政府数据</option>
               </select>
             </div>
 
             <label class="geosource-checkbox-label">
               <input type="checkbox" id="geosourceNoKeyOnly" />
-              <span>免 API Key</span>
+              <span data-i18n="geosource.no-key">免 API Key</span>
             </label>
 
             <label class="geosource-checkbox-label">
               <input type="checkbox" id="geosourceFreeOnly" />
-              <span>免费服务</span>
+              <span data-i18n="geosource.free-only">免费服务</span>
             </label>
           </div>
         </div>
 
         <div class="geosource-status-line">
-          <span id="geosourceResultCount">准备就绪</span>
-          <span style="font-size:11px;color:var(--on-surface-variant,#444748);opacity:0.8;">支持 WMS / XYZ / 矢量与 ArcGIS REST 服务一键上图</span>
+          <span id="geosourceResultCount" data-i18n="geosource.ready">准备就绪</span>
+          <span data-i18n="geosource.support-hint" style="font-size:11px;color:var(--on-surface-variant,#444748);opacity:0.8;">支持 WMS / XYZ / 矢量与 ArcGIS REST 服务一键上图</span>
         </div>
 
         <div class="geosource-results-list" id="geosourceResultsList"></div>
@@ -1754,7 +1763,7 @@
       <!-- 分页底栏 -->
       <div class="geosource-pagination-bar">
         <div class="geosource-page-info">
-          共 <strong id="geosourceTotalCount">0</strong> 条记录，当前第 <strong id="geosourceCurrentPage">1</strong> / <strong id="geosourceTotalPages">1</strong> 页
+          <span data-i18n="geosource.records-prefix">共 </span><strong id="geosourceTotalCount">0</strong><span data-i18n="geosource.pages-middle"> 条记录，当前第 </span><strong id="geosourceCurrentPage">1</strong><span> / </span><strong id="geosourceTotalPages">1</strong><span data-i18n="geosource.page-suffix"> 页</span>
         </div>
         <div class="geosource-page-controls" id="geosourcePageControls">
           <!-- 动态渲染分页按钮 -->

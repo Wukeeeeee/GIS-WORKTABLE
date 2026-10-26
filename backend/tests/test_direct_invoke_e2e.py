@@ -161,10 +161,53 @@ def test_e2e_raster_resample_output_real(dem_registered):
     # dem_result 影像叠加 op 真实指向已落盘文件
     overlay = [op for op in data["layer_ops"] if op["action"] == "dem_result"]
     assert overlay and overlay[0]["url"].startswith("/output/uploads/")
-    fname = os.path.basename(overlay[0]["url"])
-    from backend.services.tools import init_temp_dir, _temp_output_dir
-    init_temp_dir()
-    assert os.path.exists(os.path.join(_temp_output_dir, "uploads", fname))
+    # The URL is percent-encoded for HTTP; don't treat its URL basename as a disk filename.
+    preview = client.get(overlay[0]["url"])
+    assert preview.status_code == 200
+    assert preview.headers.get("content-type", "").startswith("image/png")
+    source_url = overlay[0]["raster"]["source_url"]
+    source = client.get(source_url)
+    assert source.status_code == 200
+    assert source.headers.get("content-type", "").startswith("image/tiff")
+
+
+def test_e2e_spatial_interpolate_registers_reusable_raster():
+    name = f"interpolation-{uuid.uuid4().hex[:8]}"
+    points = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"value": 1}, "geometry": {"type": "Point", "coordinates": [116.0, 39.0]}},
+        {"type": "Feature", "properties": {"value": 3}, "geometry": {"type": "Point", "coordinates": [116.1, 39.0]}},
+        {"type": "Feature", "properties": {"value": 4}, "geometry": {"type": "Point", "coordinates": [116.0, 39.1]}},
+    ]}
+    tool_service._register_layer(name, points)
+
+    data = _invoke("spatial_interpolate", {"layer_name": name, "field": "value", "resolution": 16})
+
+    overlays = [op for op in data["layer_ops"] if op.get("action") == "dem_result"]
+    assert overlays
+    raster = overlays[0].get("raster")
+    assert raster and raster["crs"] == "EPSG:4326"
+    assert raster["source_layer"] == name
+    assert raster["value_units"] is None, "input vector has no declared value units"
+    assert raster["pixel_units"] == "degree"
+    assert any("外推" in warning for warning in raster["quality_warnings"])
+    assert client.get(overlays[0]["url"]).headers.get("content-type", "").startswith("image/png")
+    source = client.get(raster["source_url"])
+    assert source.status_code == 200
+    assert source.headers.get("content-type", "").startswith("image/tiff")
+    import rasterio
+    with rasterio.MemoryFile(source.content) as memory_file:
+        with memory_file.open() as dataset:
+            assert dataset.crs.to_string() == "EPSG:4326"
+            assert dataset.shape == (16, 16)
+            values = dataset.read(1)
+            assert values.min() >= 1 and values.max() <= 4
+    registered = {item["filename"]: item for item in tool_service.get_registered_layers_snapshot()}
+    assert registered[raster["source_name"]]["raster"]["source_url"] == raster["source_url"]
+    second_analysis = _invoke("raster_resample", {
+        "layer_name": raster["source_name"], "scale_factor": 2, "method": "bilinear",
+    })
+    assert "重采样完成" in second_analysis["response"]
+    assert any(op.get("raster") for op in second_analysis["layer_ops"] if op.get("action") == "dem_result")
 
 
 # ============================================================
@@ -220,3 +263,24 @@ def test_e2e_history_endpoint_shape():
     hist = client.get("/api/history?limit=5").json()["history"]
     for h in hist:
         assert {"index", "tool", "args", "time", "ok", "layer_ids"} <= set(h.keys())
+
+
+def test_e2e_corrupt_history_warning_and_failed_clear_response(tmp_path, monkeypatch):
+    path = tmp_path / "history.json"
+    path.write_bytes(b'{"entries": BROKEN')
+    history_service.set_history_file(str(path))
+    try:
+        history_service.record("focus_map", {"center": "116,39"}, True)
+        response = client.get("/api/history?limit=5")
+        assert response.status_code == 200
+        assert response.json()["warning"]
+        assert response.json()["history"][0]["tool"] == "focus_map"
+
+        original = path.read_bytes()
+        monkeypatch.setattr(history_service.os, "replace", lambda *_: (_ for _ in ()).throw(OSError("test failure")))
+        clear_response = client.delete("/api/history")
+        assert clear_response.status_code == 500
+        assert path.read_bytes() == original
+        assert client.get("/api/history?limit=5").json()["history"][0]["tool"] == "focus_map"
+    finally:
+        history_service.set_history_file(None)

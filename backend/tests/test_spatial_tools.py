@@ -63,6 +63,7 @@ dem_analysis = T.dem_analysis
 extract_contours = T.extract_contours
 ndvi_analysis = T.ndvi_analysis
 raster_calculator = T.raster_calculator
+raster_reclassify = T.raster_reclassify
 spatial_interpolate = T.spatial_interpolate
 topology_check = T.topology_check
 hydrology_analysis = T.hydrology_analysis
@@ -133,7 +134,29 @@ def _setup(name, geojson):
     return name
 
 
+def test_provenance_processing_drops_malformed_buffer_parameters_without_raising():
+    provenance = T._normalize_layer_provenance({
+        "processing": {"tool": "spatial_buffer", "source_layer": "roads",
+                       "parameters": {"distance": 10 ** 1000, "unit": [], "dissolve": "yes"}},
+    })
+    assert provenance is None
+
+
 class TestSpatialBuffer:
+    @pytest.mark.parametrize("distance,unit", [
+        (0, "m"), (-100, "m"), (float("nan"), "m"),
+        (float("inf"), "m"), (1e308, "km"),
+    ])
+    def test_invalid_distance_preserves_existing_result(self, distance, unit):
+        _setup("pts", _POINTS)
+        _setup("pts_缓冲区", _SQUARE_A)
+        before = _registered_layers["pts_缓冲区"]["geojson"]
+        result = spatial_buffer.invoke({"layer_name": "pts", "distance": distance, "unit": unit})
+        assert result.startswith("缓冲区分析失败:")
+        assert "有限正数" in result
+        assert _registered_layers["pts_缓冲区"]["geojson"] == before
+        assert not _pending_layers
+
     @pytest.mark.parametrize("unit", ["feet", "ft", "光年", ""])
     def test_buffer_rejects_unsupported_units_without_creating_output(self, unit):
         _setup("pts", _POINTS)
@@ -149,16 +172,57 @@ class TestSpatialBuffer:
         r = spatial_buffer.invoke({"layer_name": "square", "distance": 10, "unit": "m", "dissolve": False})
         assert "缓冲区" in r
         assert len(_pending_layers) == 1
+        expected = {"tool": "spatial_buffer", "source_layer": "square",
+                    "parameters": {"distance": 10.0, "unit": "m", "dissolve": False}}
+        assert _pending_layers[0]["provenance"]["processing"] == expected
+        assert _registered_layers["square_缓冲区"]["provenance"]["processing"] == expected
 
     def test_buffer_dissolve(self):
         _setup("pts", _POINTS)
         r = spatial_buffer.invoke({"layer_name": "pts", "distance": 100, "unit": "m", "dissolve": True})
         assert "缓冲区" in r
 
+    @pytest.mark.parametrize("coordinates,expected", [
+        ([[179.9, 10.0], [-179.9, 10.0]], "跨越日期变更线"),
+        ([[0.0, 85.0]], "超出 UTM 投影适用纬度"),
+    ])
+    def test_buffer_rejects_extents_outside_local_utm_domain(self, coordinates, expected):
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for index, coordinate in enumerate(coordinates)
+        ]}
+        _setup("edge_points", points)
+
+        result = spatial_buffer.invoke({"layer_name": "edge_points", "distance": 1000, "unit": "m"})
+
+        assert expected in result
+        assert not _pending_layers
+
 
 
 
 class TestSpatialIntersect:
+    def test_polygon_intersection_with_line_keeps_line_result(self):
+        polygon = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"zone": "A"},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]},
+        }]}
+        line = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"road": "R1"},
+            "geometry": {"type": "LineString", "coordinates": [[-1, 1], [3, 1]]},
+        }]}
+        _setup("overlay_polygon", polygon)
+        _setup("overlay_line", line)
+
+        result = spatial_intersect.invoke({"layer_a": "overlay_polygon", "layer_b": "overlay_line"})
+
+        assert "相交分析完成" in result, result
+        assert "相交覆盖面积" not in result
+        features = _registered_layers["overlay_polygon_∩_overlay_line"]["geojson"]["features"]
+        assert len(features) == 1
+        assert features[0]["geometry"]["type"] == "LineString"
+        assert features[0]["properties"]["road"] == "R1"
     def test_overlapping_input_records_use_unique_coverage(self):
         """覆盖范围叠置自身：保留四条属性组合，覆盖占比仍为 100%。"""
         from pyproj import Transformer
@@ -172,6 +236,12 @@ class TestSpatialIntersect:
         _setup("overlapping_B", rectangles)
         result = spatial_intersect.invoke({"layer_a": "overlapping_A", "layer_b": "overlapping_B"})
         assert len(_pending_layers[-1]["geojson"]["features"]) == 4
+        assert _pending_layers[-1]["provenance"]["processing"] == {
+            "tool": "spatial_intersect", "source_layer": "overlapping_A", "other_layer": "overlapping_B",
+        }
+        assert _registered_layers["overlapping_A_∩_overlapping_B"]["provenance"]["processing"] == {
+            "tool": "spatial_intersect", "source_layer": "overlapping_A", "other_layer": "overlapping_B",
+        }
         assert result.count("100.00%") == 2, result
         projection = Transformer.from_crs("EPSG:4326", "EPSG:6933", always_xy=True)
         left, bottom = projection.transform(0, 0)
@@ -195,6 +265,7 @@ class TestSpatialIntersect:
         _setup("far", far)
         r = spatial_intersect.invoke({"layer_a": "A", "layer_b": "far"})
         assert "没有重叠" in r
+        assert not _pending_layers, "empty intersection should not register a result layer"
 
 
 class TestSpatialUnion:
@@ -204,6 +275,28 @@ class TestSpatialUnion:
         r = spatial_union.invoke({"layer_a": "A", "layer_b": "B"})
         assert "合并" in r
         assert len(_pending_layers) == 1
+        expected = {"tool": "spatial_union", "source_layer": "A", "other_layer": "B"}
+        assert _pending_layers[0]["provenance"]["processing"] == expected
+        assert _registered_layers["A__B"]["provenance"]["processing"] == expected
+
+    def test_union_retains_line_geometry_from_mixed_inputs(self):
+        polygon = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"zone": "A"},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]},
+        }]}
+        line = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"road": "R1"},
+            "geometry": {"type": "LineString", "coordinates": [[-1, 1], [3, 1]]},
+        }]}
+        _setup("union_polygon", polygon)
+        _setup("union_line", line)
+
+        result = spatial_union.invoke({"layer_a": "union_polygon", "layer_b": "union_line"})
+
+        assert "合并完成" in result, result
+        features = _registered_layers["union_polygon__union_line"]["geojson"]["features"]
+        assert any(feature["geometry"]["type"] == "LineString" for feature in features)
+        assert any(feature["properties"].get("road") == "R1" for feature in features)
 
 
 class TestSpatialDifference:
@@ -213,6 +306,21 @@ class TestSpatialDifference:
         r = spatial_difference.invoke({"layer_a": "A", "layer_b": "B"})
         assert "差异" in r
         assert len(_pending_layers) == 1
+        expected = {"tool": "spatial_difference", "source_layer": "A", "other_layer": "B"}
+        assert _pending_layers[0]["provenance"]["processing"] == expected
+        assert _registered_layers["A_减_B"]["provenance"]["processing"] == expected
+
+    def test_no_remaining_geometry_does_not_register_result(self):
+        _setup("A", _SQUARE_A)
+        _setup("same_as_A", _SQUARE_A)
+        result = spatial_difference.invoke({"layer_a": "A", "layer_b": "same_as_A"})
+        assert "完全被" in result
+        assert not _pending_layers
+
+    def test_difference_provenance_requires_both_input_layers(self):
+        assert T._normalize_layer_provenance({
+            "processing": {"tool": "spatial_difference", "source_layer": "A", "other_layer": ""},
+        }) is None
 
 
 
@@ -227,6 +335,20 @@ class TestSpatialClip:
         r = spatial_clip.invoke({"layer_name": "A", "clip_layer": "clip"})
         assert "裁剪" in r
         assert len(_pending_layers) == 1
+        expected = {"tool": "spatial_clip", "source_layer": "A", "clip_layer": "clip"}
+        assert _pending_layers[0]["provenance"]["processing"] == expected
+        assert _registered_layers["A_裁剪"]["provenance"]["processing"] == expected
+
+    def test_clip_provenance_requires_both_input_layers(self):
+        assert T._normalize_layer_provenance({
+            "processing": {"tool": "spatial_clip", "source_layer": "A", "clip_layer": ""},
+        }) is None
+        assert T._normalize_layer_provenance({
+            "processing": {"tool": "spatial_union", "source_layer": "A", "other_layer": []},
+        }) is None
+        assert T._normalize_layer_provenance({
+            "processing": {"tool": "spatial_intersect", "source_layer": "A", "other_layer": ""},
+        }) is None
 
 
 
@@ -236,6 +358,26 @@ class TestSpatialCentroid:
         r = spatial_centroid.invoke({"layer_name": "square"})
         assert "质心" in r
         assert len(_pending_layers) == 1
+
+    def test_polygon_centroid_uses_metric_projection(self):
+        from shapely.geometry import Point
+
+        polygon = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[
+                [10, 60], [15, 60], [14, 65], [10, 65], [10, 60]
+            ]]},
+        }]}
+        _setup("high_lat", polygon)
+        gdf, _ = T._layer_to_gdf("high_lat")
+        expected = (gdf.to_crs(gdf.estimate_utm_crs()).geometry.centroid
+                    .to_crs("EPSG:4326").iloc[0])
+
+        result = spatial_centroid.invoke({"layer_name": "high_lat"})
+        assert "已提取 1 个质心" in result
+        coords = _pending_layers[-1]["geojson"]["features"][0]["geometry"]["coordinates"]
+        actual = Point(coords)
+        assert actual.distance(expected) < 1e-6
 
 
 
@@ -251,6 +393,18 @@ class TestSpatialSimplify:
         assert "简化" in r
         assert len(_pending_layers) == 1
 
+    @pytest.mark.parametrize("tolerance", [0, -0.1, float("nan"), float("inf")])
+    def test_invalid_tolerance_does_not_register_result(self, tolerance):
+        _setup("complex", _SQUARE_A)
+        before = set(_registered_layers)
+
+        result = spatial_simplify.invoke({"layer_name": "complex", "tolerance": tolerance})
+
+        assert result.startswith("简化失败:")
+        assert "有限正数" in result
+        assert set(_registered_layers) == before
+        assert not _pending_layers
+
 
 
 class TestSpatialDissolve:
@@ -259,6 +413,33 @@ class TestSpatialDissolve:
         r = spatial_dissolve.invoke({"layer_name": "multi"})
         assert "融合" in r
         assert len(_pending_layers) == 1
+
+    def test_grouped_dissolve_keeps_features_with_missing_group_value(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"zone": "north"},
+             "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}},
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Polygon", "coordinates": [[[2, 0], [3, 0], [3, 1], [2, 1], [2, 0]]]}},
+        ]}
+        _setup("zoned", features)
+
+        result = spatial_dissolve.invoke({"layer_name": "zoned", "group_by": "zone"})
+
+        assert "2 个要素" in result
+        output = _pending_layers[0]["geojson"]["features"]
+        assert len(output) == 2
+        assert {feature["properties"].get("zone") for feature in output} == {"north", None}
+
+    def test_unknown_group_field_fails_without_dissolving_all(self):
+        _setup("multi", _MULTI_POLY)
+        before = set(_registered_layers)
+
+        result = spatial_dissolve.invoke({"layer_name": "multi", "group_by": "missing_field"})
+
+        assert result.startswith("融合失败:")
+        assert "missing_field" in result
+        assert set(_registered_layers) == before
+        assert not _pending_layers
 
 
 
@@ -294,6 +475,38 @@ class TestSpatialJoin:
         assert "连接" in r
         assert len(_pending_layers) == 1
 
+    def test_nearest_predicate_reports_supported_tool_without_creating_layer(self):
+        _setup("target", _JOIN_TARGET)
+        _setup("points", _JOIN_LAYER)
+
+        result = spatial_join.invoke({
+            "target_layer": "target", "join_layer": "points", "predicate": "nearest",
+        })
+
+        assert "nearest_pair" in result
+        assert "空间连接失败" in result
+        assert _pending_layers == []
+
+    def test_join_preserves_existing_reserved_index_right_attribute(self):
+        target = json.loads(json.dumps(_JOIN_TARGET))
+        target["features"][0]["properties"]["index_right"] = "original-source-id"
+        points = json.loads(json.dumps(_JOIN_LAYER))
+        points["features"][0]["properties"]["index_right"] = "original-join-id"
+        _setup("target_with_index_right", target)
+        _setup("points_for_index_right", points)
+
+        result = spatial_join.invoke({
+            "target_layer": "target_with_index_right",
+            "join_layer": "points_for_index_right",
+            "how": "left",
+            "predicate": "intersects",
+        })
+
+        assert "空间连接完成" in result, result
+        properties = _registered_layers["target_with_index_right_连接points_for_index_right"]["geojson"]["features"][0]["properties"]
+        assert properties["index_right_target"] == "original-source-id"
+        assert properties["index_right_join"] == "original-join-id"
+
 
 
 class TestLayerMerge:
@@ -304,6 +517,31 @@ class TestLayerMerge:
         assert "合并" in r
         assert len(_pending_layers) == 1
 
+    def test_repeated_default_merge_keeps_distinct_results_registered(self):
+        _setup("A", _SQUARE_A)
+        _setup("B", _SQUARE_B)
+
+        first = layer_merge.invoke({"layer_names": "A, B"})
+        second = layer_merge.invoke({"layer_names": "A, B"})
+
+        assert "A_B_合并" in first
+        assert "A_B_合并_1" in second
+        assert "A_B_合并" in _registered_layers
+        assert "A_B_合并_1" in _registered_layers
+        assert len(_registered_layers["A"]["geojson"]["features"]) == 1
+        assert len(_registered_layers["B"]["geojson"]["features"]) == 1
+        assert len(_pending_layers) == 2
+
+    def test_explicit_output_name_collision_does_not_replace_an_input(self):
+        _setup("A", _SQUARE_A)
+        _setup("B", _SQUARE_B)
+
+        result = layer_merge.invoke({"layer_names": "A, B", "new_name": "A"})
+
+        assert "A_1" in result
+        assert len(_registered_layers["A"]["geojson"]["features"]) == 1
+        assert len(_registered_layers["A_1"]["geojson"]["features"]) == 2
+
 
 
 class TestLayerSplit:
@@ -311,6 +549,22 @@ class TestLayerSplit:
         _setup("multi", _MULTI_POLY)
         r = layer_split.invoke({"layer_name": "multi", "by_field": "group"})
         assert "拆分" in r
+
+    def test_split_by_field_keeps_features_with_missing_group_values(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"zone": "north"},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        _setup("zones", features)
+
+        result = layer_split.invoke({"layer_name": "zones", "by_field": "zone"})
+
+        assert "2 个子图层" in result
+        outputs = [layer["geojson"]["features"] for layer in _pending_layers]
+        assert sum(len(group) for group in outputs) == 2
+        assert any(feature["properties"].get("zone") is None for group in outputs for feature in group)
 
 
 
@@ -321,6 +575,37 @@ class TestLayerAddGeometry:
         r = layer_add_geometry.invoke({"layer_name": "coords"})
         assert "创建" in r
         assert len(_pending_layers) == 1
+
+    def test_accepts_inclusive_geographic_coordinate_boundaries(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"longitude": -180, "latitude": -90}, "geometry": None},
+            {"type": "Feature", "properties": {"longitude": 180, "latitude": 90}, "geometry": None},
+        ]}
+        _setup("coords-boundary", features)
+
+        result = layer_add_geometry.invoke({"layer_name": "coords-boundary"})
+
+        assert "2 个点" in result
+        points = _pending_layers[0]["geojson"]["features"]
+        assert [feature["geometry"]["coordinates"] for feature in points] == [[-180.0, -90.0], [180.0, 90.0]]
+
+    @pytest.mark.parametrize("longitude,latitude,expected", [
+        (180.1, 0, "有效范围"), (0, 90.1, "有效范围"),
+        (float("nan"), 0, "有限数值"), (None, 0, "有效数值"), ("invalid", 0, "有效数值"),
+    ])
+    def test_rejects_invalid_coordinates_without_registering_partial_layer(self, longitude, latitude, expected):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"longitude": longitude, "latitude": latitude},
+             "geometry": None},
+        ]}
+        _setup("coords", features)
+        registered_before = set(_registered_layers)
+
+        result = layer_add_geometry.invoke({"layer_name": "coords"})
+
+        assert expected in result
+        assert _pending_layers == []
+        assert set(_registered_layers) == registered_before
 
 
 
@@ -352,6 +637,25 @@ class TestSpatialSelect:
         assert "选择" in r
         assert len(_pending_layers) == 1
 
+    def test_select_preserves_distinct_duplicate_features(self):
+        same_geometry = {"type": "Point", "coordinates": [0.5, 0.5]}
+        targets = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "id": "target-1", "properties": {}, "geometry": same_geometry},
+            {"type": "Feature", "id": "target-2", "properties": {}, "geometry": same_geometry},
+        ]}
+        source = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}},
+        ]}
+        _setup("duplicate_targets", targets)
+        _setup("covering_source", source)
+
+        result = spatial_select.invoke({"target_layer": "duplicate_targets", "source_layer": "covering_source"})
+
+        assert "2/2" in result
+        output = _pending_layers[0]["geojson"]["features"]
+        assert len(output) == 2
+
 
 
 
@@ -361,6 +665,30 @@ class TestSpatialSample:
         r = spatial_sample.invoke({"layer_name": "pts", "n": 2})
         assert "采样" in r
         assert len(_pending_layers) == 1
+
+    def test_sample_fraction(self):
+        _setup("pts", _POINTS)
+
+        result = spatial_sample.invoke({"layer_name": "pts", "frac": 0.5})
+
+        assert "采样" in result
+        assert 1 <= len(_pending_layers[0]["geojson"]["features"]) <= 3
+
+    @pytest.mark.parametrize("args", [
+        {"n": -1},
+        {"frac": -0.1},
+        {"frac": float("nan")},
+        {"frac": float("inf")},
+        {"frac": 1.1},
+        {"n": 1, "frac": 0.5},
+    ])
+    def test_sample_rejects_invalid_or_ambiguous_parameters_without_registering(self, args):
+        _setup("pts", _POINTS)
+
+        result = spatial_sample.invoke({"layer_name": "pts", **args})
+
+        assert "失败" in result
+        assert _pending_layers == []
 
 
 
@@ -374,6 +702,46 @@ class TestSpatialNear:
         _setup("pts", pts)
         r = spatial_near.invoke({"layer_name": "target", "target_layer": "pts", "distance": 1000})
         assert "找到" in r or "要素" in r
+
+    def test_near_distance_uses_local_ground_meters_at_high_latitude(self):
+        source = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Point", "coordinates": [3.0, 60.0]}},
+        ]}
+        target = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Point", "coordinates": [3.01, 60.0]}},
+        ]}
+        _setup("source", source)
+        _setup("target", target)
+
+        result = spatial_near.invoke({"layer_name": "source", "target_layer": "target", "distance": 600})
+
+        assert "找到 1 个" in result
+        assert len(_pending_layers) == 1
+
+    @pytest.mark.parametrize("distance", [-1, float("nan"), float("inf"), float("-inf")])
+    def test_near_rejects_negative_or_non_finite_distance(self, distance):
+        _setup("source", _POINTS)
+        _setup("target", _POINTS)
+
+        result = spatial_near.invoke({"layer_name": "source", "target_layer": "target", "distance": distance})
+
+        assert "有限的非负米数" in result
+        assert _pending_layers == []
+
+    def test_near_zero_distance_includes_intersecting_points(self):
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Point", "coordinates": [3.0, 60.0]}},
+        ]}
+        _setup("source", points)
+        _setup("target", points)
+
+        result = spatial_near.invoke({"layer_name": "source", "target_layer": "target", "distance": 0})
+
+        assert "找到 1 个" in result
+        assert len(_pending_layers) == 1
 
 
 
@@ -390,6 +758,63 @@ class TestSpatialCluster:
         assert "聚类" in r
         assert len(_pending_layers) == 1
 
+    def test_cluster_rejects_non_point_input_without_registering_a_result(self):
+        _setup("areas", _SQUARE_A)
+
+        result = spatial_cluster.invoke({"layer_name": "areas", "eps": 0.01, "min_samples": 2})
+
+        assert "仅支持 Point 点图层" in result
+        assert _pending_layers == []
+
+    @pytest.mark.parametrize("eps,min_samples", [
+        (0, 2), (-0.1, 2), (float("nan"), 2), (float("inf"), 2), (0.01, 0),
+    ])
+    def test_cluster_rejects_invalid_parameters_without_registering_a_result(self, eps, min_samples):
+        _setup("pts", _POINTS)
+
+        result = spatial_cluster.invoke({"layer_name": "pts", "eps": eps, "min_samples": min_samples})
+
+        assert result.startswith("聚类失败:")
+        assert _pending_layers == []
+
+    @pytest.mark.parametrize("eps,unit,labels", [
+        (500, "m", [0, 0]), (100, "m", [-1, -1]),
+        (0.5, "km", [0, 0]), (0.1, "km", [-1, -1]),
+    ])
+    def test_cluster_supports_ground_distance_units_at_high_latitude(self, eps, unit, labels):
+        sites = [[0.0, 80.0], [0.02, 80.0]]
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for index, coordinate in enumerate(sites)
+        ]}
+        _setup("high_latitude_sites", points)
+        from pyproj import Geod
+        ground_distance_m = abs(Geod(ellps="WGS84").inv(*sites[0], *sites[1])[2])
+        assert 100 < ground_distance_m < 500
+
+        result = spatial_cluster.invoke({
+            "layer_name": "high_latitude_sites", "eps": eps,
+            "min_samples": 2, "distance_unit": unit,
+        })
+
+        expected_clusters = 1 if labels[0] == 0 else 0
+        expected_noise = 0 if expected_clusters else 2
+        assert f"{expected_clusters} 个簇，{expected_noise} 个噪声点" in result
+        assert f"eps={eps}{unit}" in result
+        assert [feature["properties"]["cluster"]
+                for feature in _pending_layers[-1]["geojson"]["features"]] == labels
+
+    def test_cluster_rejects_unsupported_distance_unit_without_registering_result(self):
+        _setup("pts", _POINTS)
+
+        result = spatial_cluster.invoke({
+            "layer_name": "pts", "eps": 500, "min_samples": 2, "distance_unit": "yards",
+        })
+
+        assert "仅支持 degrees、m 或 km" in result
+        assert _pending_layers == []
+
 
 
 class TestSpatialVoronoi:
@@ -398,6 +823,50 @@ class TestSpatialVoronoi:
         r = spatial_voronoi.invoke({"layer_name": "pts"})
         assert "泰森" in r or "生成" in r
         assert len(_pending_layers) == 1
+
+    def test_voronoi_rejects_non_point_input_without_registering_a_result(self):
+        _setup("areas", _SQUARE_A)
+
+        result = spatial_voronoi.invoke({"layer_name": "areas"})
+
+        assert "仅支持 Point 或 MultiPoint" in result
+        assert _pending_layers == []
+
+    @pytest.mark.parametrize("coordinates", [
+        [[3.0, 60.0]],
+        [[3.0, 60.0], [3.0, 60.0]],
+    ])
+    def test_voronoi_requires_two_distinct_point_locations(self, coordinates):
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for index, coordinate in enumerate(coordinates)
+        ]}
+        _setup("sites", points)
+
+        result = spatial_voronoi.invoke({"layer_name": "sites"})
+
+        assert "至少需要 2 个位置不同的点" in result
+        assert _pending_layers == []
+
+    def test_voronoi_uses_local_metric_coordinates_for_high_latitude_sites(self):
+        sites = [[0.0, 80.0], [1.0, 80.0], [1.0, 81.0]]
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for index, coordinate in enumerate(sites)
+        ]}
+        _setup("polar_sites", points)
+
+        result = spatial_voronoi.invoke({"layer_name": "polar_sites"})
+
+        assert "已生成" in result
+        from shapely.geometry import Point, shape
+        cells = [shape(feature["geometry"]) for feature in _pending_layers[0]["geojson"]["features"]]
+        site_zero_cell = next(cell for cell in cells if cell.covers(Point(*sites[0])))
+        # In this high-latitude sample, degree-plane Voronoi incorrectly puts
+        # this probe in site 0's region; local UTM ground distance makes site 2 nearer.
+        assert not site_zero_cell.covers(Point(0.01, 80.52))
 
 
 
@@ -484,6 +953,38 @@ class TestSelectByAttribute:
         r = spatial_select_by_attribute.invoke({"layer_name": "pts", "field": "val", "operator": ">", "value": "30"})
         assert "选择了 2/5" in r
 
+    def test_like_treats_regex_metacharacters_as_literal_text(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"label": "zone [A]"},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"label": "zone A"},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        _setup("labels", features)
+
+        result = spatial_select_by_attribute.invoke({
+            "layer_name": "labels", "field": "label", "operator": "like", "value": "[",
+        })
+
+        assert "选择了 1/2 个要素" in result
+        assert len(_pending_layers[0]["geojson"]["features"]) == 1
+
+    def test_like_does_not_match_null_values_after_string_conversion(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"label": None},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"label": "none"},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        _setup("nullable_labels", features)
+
+        result = spatial_select_by_attribute.invoke({
+            "layer_name": "nullable_labels", "field": "label", "operator": "like", "value": "none",
+        })
+
+        assert "选择了 1/2 个要素" in result
+        assert len(_pending_layers[0]["geojson"]["features"]) == 1
+
 
 
 
@@ -564,11 +1065,88 @@ _MULTI_RING = {
 }
 
 class TestMultiRingBuffer:
+    @pytest.mark.parametrize("unit", ["feet", "ft", "光年", ""])
+    def test_unsupported_unit_creates_no_output(self, unit):
+        _setup("pt", _MULTI_RING)
+        before = set(_registered_layers)
+        result = spatial_multi_ring_buffer.invoke({"layer_name": "pt", "distances": "100,200", "unit": unit})
+        assert result.startswith("多环缓冲区失败:")
+        assert "仅支持 m 或 km" in result
+        assert set(_registered_layers) == before
+        assert not _pending_layers
+
+    @pytest.mark.parametrize("distances,unit", [
+        ("0,100", "m"), ("-100,200", "m"), ("100,nan", "m"),
+        ("100,inf", "m"), ("100,-inf", "m"), ("100,1e309", "m"),
+        ("100,1e308", "km"), ("100,,200", "m"), ("100,", "m"),
+        ("bad,200", "m"), ("", "m"),
+    ])
+    def test_invalid_distance_preserves_existing_result(self, distances, unit):
+        _setup("pt", _MULTI_RING)
+        result_name = f"pt_多环{unit}"
+        _setup(result_name, _SQUARE_A)
+        before = _registered_layers[result_name]["geojson"]
+        result = spatial_multi_ring_buffer.invoke({"layer_name": "pt", "distances": distances, "unit": unit})
+        assert result.startswith("多环缓冲区失败:")
+        assert "有限正数" in result
+        assert _registered_layers[result_name]["geojson"] == before
+        assert not _pending_layers
+
+    @pytest.mark.parametrize("unit", ["km", "KM", " kilometers "])
+    @pytest.mark.parametrize("dissolve", [False, True])
+    def test_kilometer_aliases_have_correct_ground_distance(self, unit, dissolve):
+        # Check ellipsoidal ground distance, independently of the UTM buffer calculation.
+        from pyproj import Geod
+        _setup("pt", _MULTI_RING)
+        result = spatial_multi_ring_buffer.invoke({
+            "layer_name": "pt", "distances": "1,2", "unit": unit, "dissolve": dissolve,
+        })
+        assert result.startswith("已为")
+        assert len(_pending_layers) == 1
+        assert _pending_layers[0]["name"] == "pt_多环km"
+        features = _pending_layers[0]["geojson"]["features"]
+        assert len(features) == 2
+        geod = Geod(ellps="WGS84")
+        for feature, radius_m in zip(features, [1000, 2000]):
+            assert feature["properties"]["distance"] == radius_m / 1000
+            assert feature["geometry"]["type"] == "Polygon"
+            for lon, lat in feature["geometry"]["coordinates"][0]:
+                actual_m = geod.inv(116.4, 39.9, lon, lat)[2]
+                assert actual_m == pytest.approx(radius_m, rel=0.001)
+
     def test_multi_ring_basic(self):
         _setup("pt", _MULTI_RING)
         r = spatial_multi_ring_buffer.invoke({"layer_name": "pt", "distances": "100,200", "unit": "m"})
         assert "多环缓冲区" in r
         assert "2" in r
+
+    @pytest.mark.parametrize("dissolve", [False, True])
+    def test_outer_ring_excludes_the_area_inside_the_previous_distance(self, dissolve):
+        from shapely.geometry import Point, shape
+        _setup("pt", _MULTI_RING)
+        result = spatial_multi_ring_buffer.invoke({"layer_name": "pt", "distances": "100,200", "unit": "m", "dissolve": dissolve})
+        assert result.startswith("已为")
+        outer_ring = shape(_pending_layers[-1]["geojson"]["features"][1]["geometry"])
+        center = Point(116.4, 39.9)
+        assert not outer_ring.contains(center), "第二环应排除第一环覆盖的内区"
+
+    def test_rings_keep_input_order_when_distances_are_descending(self):
+        from shapely.geometry import Point, shape
+        _setup("pt", _MULTI_RING)
+        result = spatial_multi_ring_buffer.invoke({"layer_name": "pt", "distances": "200,100", "unit": "m"})
+        assert result.startswith("已为")
+        features = _pending_layers[-1]["geojson"]["features"]
+        assert [feature["properties"]["distance"] for feature in features] == [200, 100]
+        assert not shape(features[0]["geometry"]).contains(Point(116.4, 39.9))
+        assert shape(features[1]["geometry"]).contains(Point(116.4, 39.9))
+
+    def test_duplicate_ring_distances_are_rejected_without_replacing_output(self):
+        _setup("pt", _MULTI_RING)
+        _setup("pt_多环m", _SQUARE_A)
+        previous = _registered_layers["pt_多环m"]["geojson"]
+        result = spatial_multi_ring_buffer.invoke({"layer_name": "pt", "distances": "100,100", "unit": "m"})
+        assert result == "多环缓冲区失败: 距离不能重复，否则会生成重复环带"
+        assert _registered_layers["pt_多环m"]["geojson"] == previous
 
 
 
@@ -824,6 +1402,71 @@ class TestRasterCalculator:
         r = raster_calculator.invoke({"layer_name": "nope", "expression": "B1"})
         assert "未找到" in r or "请先上传" in r
 
+    def test_calc_marks_division_by_zero_pixels_as_nodata(self):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        input_path = os.path.join(upload_dir, "calc_nonfinite.tif")
+        band1 = np.arange(1, 401, dtype=np.float32).reshape(20, 20)
+        band2 = np.full((20, 20), 2, dtype=np.float32)
+        band2[0, 0] = 0
+        with rasterio.open(input_path, "w", driver="GTiff", width=20, height=20, count=2,
+                           dtype="float32", crs="EPSG:4326",
+                           transform=from_bounds(116, 39, 117, 40, 20, 20)) as dst:
+            dst.write(band1, 1)
+            dst.write(band2, 2)
+
+        result = raster_calculator.invoke({"layer_name": "calc_nonfinite", "expression": "B1/B2"})
+
+        assert "结果栅格" in result
+        op = next(op for op in T._pending_layer_ops if op.get("raster"))
+        output_path = T._find_uploaded_tif(op["layer_name"])
+        with rasterio.open(output_path) as dataset:
+            values = dataset.read(1)
+            assert np.isnan(values[0, 0])
+            assert np.isfinite(values[1:, :]).all()
+            assert np.isnan(dataset.nodata)
+        from PIL import Image
+        preview_path = os.path.join(upload_dir, op["raster"]["filename"])
+        preview = np.asarray(Image.open(preview_path).convert("RGB"))
+        assert np.array_equal(preview[0, 0], [0, 0, 0])
+
+    @pytest.mark.parametrize("width,height,count", [(3000, 2000, 1), (2000, 1000, 9)])
+    def test_calc_rejects_oversized_raster_before_reading_band_arrays(self, monkeypatch, width, height, count):
+        import rasterio
+        read_called = False
+
+        class MetadataOnlyDataset:
+            nodata = None
+
+            def __init__(self):
+                self.width, self.height, self.count = width, height, count
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, *_args, **_kwargs):
+                nonlocal read_called
+                read_called = True
+                raise AssertionError("oversized raster data should not be read")
+
+            def tags(self):
+                return {}
+
+        monkeypatch.setattr(T, "_find_uploaded_tif", lambda _name: "metadata-only.tif")
+        monkeypatch.setattr(rasterio, "open", lambda *_args, **_kwargs: MetadataOnlyDataset())
+
+        result = raster_calculator.invoke({"layer_name": "large", "expression": "B1*2"})
+
+        assert "超过单次处理上限" in result
+        assert read_called is False
+        assert T._pending_layer_ops == []
+
 
 
 
@@ -835,6 +1478,135 @@ class TestInterpolate:
     def test_interpolate_basic(self):
         r = spatial_interpolate.invoke({"layer_name": "pts", "field": "id", "method": "idw"})
         assert "插值" in r or "生成" in r
+
+    def test_interpolate_keeps_values_aligned_when_geometry_is_missing(self):
+        fc = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"v": 1}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"v": 2}, "geometry": None},
+            {"type": "Feature", "properties": {"v": 3}, "geometry": {"type": "Point", "coordinates": [1, 0]}},
+            {"type": "Feature", "properties": {"v": 4}, "geometry": {"type": "Point", "coordinates": [0, 1]}},
+        ]}
+        _register_layer("mixed_points", fc)
+
+        result = spatial_interpolate.invoke({"layer_name": "mixed_points", "field": "v", "resolution": 16})
+
+        assert "已生成" in result
+
+    def test_interpolate_supports_declared_multipoint_input(self):
+        fc = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"v": 1}, "geometry": {"type": "MultiPoint", "coordinates": [[0, 0], [1, 0]]}},
+            {"type": "Feature", "properties": {"v": 3}, "geometry": {"type": "Point", "coordinates": [0, 1]}},
+            {"type": "Feature", "properties": {"v": 4}, "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        _register_layer("multipoints", fc)
+
+        result = spatial_interpolate.invoke({"layer_name": "multipoints", "field": "v", "resolution": 16})
+
+        assert "已生成" in result
+
+    def test_interpolate_uses_metric_distances_at_high_latitudes(self, monkeypatch):
+        import numpy as np
+        from scipy.spatial import distance
+        fc = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"v": 1}, "geometry": {"type": "Point", "coordinates": [3.0, 60.0]}},
+            {"type": "Feature", "properties": {"v": 3}, "geometry": {"type": "Point", "coordinates": [3.1, 60.0]}},
+            {"type": "Feature", "properties": {"v": 4}, "geometry": {"type": "Point", "coordinates": [3.0, 60.1]}},
+        ]}
+        _register_layer("high_latitude", fc)
+        original_cdist = distance.cdist
+        captured = {}
+
+        def capture_cdist(grid, points):
+            captured["points"] = points.copy()
+            return original_cdist(grid, points)
+
+        monkeypatch.setattr(distance, "cdist", capture_cdist)
+        result = spatial_interpolate.invoke({"layer_name": "high_latitude", "field": "v", "resolution": 8})
+
+        assert "已生成" in result
+        delta_m = np.linalg.norm(captured["points"][0] - captured["points"][1])
+        assert 5_000 < delta_m < 6_000
+
+    @pytest.mark.parametrize("resolution", [1, 1025])
+    def test_interpolate_rejects_resolution_outside_supported_bounds(self, resolution):
+        result = spatial_interpolate.invoke({
+            "layer_name": "pts", "field": "id", "resolution": resolution,
+        })
+
+        assert "resolution" in result
+        assert T._pending_layer_ops == []
+
+    def test_interpolate_rejects_extent_wider_than_local_projection_limit(self):
+        fc = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"v": 1}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"v": 3}, "geometry": {"type": "Point", "coordinates": [4, 1]}},
+            {"type": "Feature", "properties": {"v": 4}, "geometry": {"type": "Point", "coordinates": [8, 2]}},
+        ]}
+        _register_layer("wide_points", fc)
+
+        result = spatial_interpolate.invoke({"layer_name": "wide_points", "field": "v", "resolution": 16})
+
+        assert "超过 6° 经度" in result
+        assert T._pending_layer_ops == []
+
+    def test_interpolate_rejects_pairwise_work_above_budget_before_grid_allocation(self):
+        fc = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"v": i + 1},
+             "geometry": {"type": "Point", "coordinates": [116 + i * 0.001, 39 + (i % 3) * 0.001]}}
+            for i in range(50)
+        ]}
+        _register_layer("many_points", fc)
+
+        result = spatial_interpolate.invoke({
+            "layer_name": "many_points", "field": "v", "resolution": 1024,
+        })
+
+        assert "超过单次上限" in result
+        assert T._pending_layer_ops == []
+
+    def test_interpolate_batches_idw_distance_matrix(self, monkeypatch):
+        from scipy.spatial import distance
+        fc = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"v": i + 1},
+             "geometry": {"type": "Point", "coordinates": [116 + (i % 10) * 0.001, 39 + (i // 10) * 0.001]}}
+            for i in range(100)
+        ]}
+        _register_layer("batch_points", fc)
+        original_cdist = distance.cdist
+        pair_counts = []
+
+        def capture_cdist(grid, points):
+            pair_counts.append(len(grid) * len(points))
+            return original_cdist(grid, points)
+
+        monkeypatch.setattr(distance, "cdist", capture_cdist)
+        result = spatial_interpolate.invoke({"layer_name": "batch_points", "field": "v", "resolution": 200})
+
+        assert "已生成" in result
+        assert len(pair_counts) > 1
+        assert max(pair_counts) <= 1_000_000
+
+    def test_interpolate_rbf_batches_grid_evaluation(self):
+        result = spatial_interpolate.invoke({
+            "layer_name": "pts", "field": "id", "method": "rbf", "resolution": 16,
+        })
+
+        assert "已生成" in result
+
+    def test_interpolate_rejects_large_rbf_samples_before_fitting(self):
+        fc = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"v": i + 1},
+             "geometry": {"type": "Point", "coordinates": [116 + (i % 25) * 0.001, 39 + (i // 25) * 0.001]}}
+            for i in range(501)
+        ]}
+        _register_layer("rbf_many_points", fc)
+
+        result = spatial_interpolate.invoke({
+            "layer_name": "rbf_many_points", "field": "v", "method": "rbf", "resolution": 16,
+        })
+
+        assert "RBF 最多支持 500 个有效点" in result
+        assert T._pending_layer_ops == []
 
 
 
@@ -873,7 +1645,7 @@ class TestHydrology:
         tmp = tempfile.NamedTemporaryFile(suffix='.tif', delete=False)
         tmp.close()
         with rasterio.open(tmp.name, 'w', driver='GTiff', height=rows, width=cols,
-                           count=1, dtype='float64', crs=None,
+                           count=1, dtype='float64', crs='EPSG:4326',
                            transform=transform) as dst:
             dst.write(dem, 1)
         upload_dir = os.path.join(T._temp_output_dir, "uploads")
@@ -884,10 +1656,99 @@ class TestHydrology:
         return dest
 
     def test_hydro_flowdir(self):
-        dest = self._make_dem_tif("hydro_fd")
-        r = hydrology_analysis.invoke({"layer_name": "hydro_fd", "analysis": "flowdir"})
+        import uuid
+        source_name = f"hydro_fd_{uuid.uuid4().hex[:8]}"
+        dest = self._make_dem_tif(source_name)
+        r = hydrology_analysis.invoke({"layer_name": source_name, "analysis": "flowdir"})
+        assert "流向" in r and "可继续分析" in r
+        flowdir_name = f"{source_name}_flowdir"
+        assert flowdir_name in _registered_layers
+        raster_info = _registered_layers[flowdir_name]["raster"]
+        assert raster_info["source_layer"] == source_name
+        assert "D8 direction code" in raster_info["value_units"]
+        assert raster_info["crs"] == "EPSG:4326"
+        assert "未经外部水文基准验证" in " ".join(raster_info["quality_warnings"])
+        assert len(T._pending_layer_ops) == 1
+        assert T._pending_layer_ops[0]["raster"]["source_url"].endswith(flowdir_name + ".tif")
+
+        import rasterio
+        with rasterio.open(os.path.join(T._temp_output_dir, "uploads", flowdir_name + ".tif")) as result:
+            assert result.crs.to_string() == "EPSG:4326"
+            assert result.shape == (30, 30)
+            assert result.nodata is not None
+            assert "PROCESSING" in result.tags()
+
+        follow_on = raster_reclassify.invoke({
+            "layer_name": flowdir_name, "method": "quantile", "classes": 3,
+        })
+        assert isinstance(follow_on, str)
+        assert f"{flowdir_name}_重分类" in _registered_layers
+
+        for analysis in ("flowacc", "streamnet"):
+            result = hydrology_analysis.invoke({
+                "layer_name": source_name, "analysis": analysis,
+            })
+            assert "可继续分析" in result
+            assert f"{source_name}_{analysis}" in _registered_layers
         os.unlink(dest)
-        assert "流向" in r or "水文" in r
+
+    def test_hydro_flowdir_uses_geographic_ground_distance(self):
+        import numpy as np
+        import rasterio
+        import uuid
+        from rasterio.transform import from_bounds
+
+        source_name = f"hydro_distance_case_{uuid.uuid4().hex[:8]}"
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        dest = os.path.join(upload_dir, source_name + ".tif")
+        dem = np.array([
+            [100, 92, 100],
+            [100, 100, 94],
+            [100, 100, 100],
+        ], dtype=np.float32)
+        with rasterio.open(
+            dest, "w", driver="GTiff", height=3, width=3, count=1,
+            dtype="float32", crs="EPSG:4326",
+            transform=from_bounds(0, 58, 3, 61, 3, 3),
+        ) as src:
+            src.write(dem, 1)
+
+        result = hydrology_analysis.invoke({
+            "layer_name": source_name, "analysis": "flowdir",
+        })
+
+        assert "已生成水文分析图层" in result
+        with rasterio.open(os.path.join(upload_dir, source_name + "_flowdir.tif")) as output:
+            # At 59.5°N, a one-degree east step is shorter than a one-degree north step.
+            # The 6 m east drop is therefore steeper than the 8 m north drop.
+            assert output.read(1)[1, 1] == 0  # D8 code 0 = east
+        os.unlink(dest)
+
+    def test_hydrology_rejects_raster_without_crs(self):
+        import numpy as np
+        import rasterio
+        import uuid
+        from rasterio.transform import from_bounds
+
+        source_name = f"hydro_no_crs_{uuid.uuid4().hex[:8]}"
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        dest = os.path.join(upload_dir, source_name + ".tif")
+        with rasterio.open(
+            dest, "w", driver="GTiff", height=3, width=3, count=1,
+            dtype="float32", transform=from_bounds(0, 0, 3, 3, 3, 3),
+        ) as src:
+            src.write(np.arange(9, dtype=np.float32).reshape(3, 3), 1)
+
+        result = hydrology_analysis.invoke({
+            "layer_name": source_name, "analysis": "flowdir",
+        })
+
+        assert "要求输入 GeoTIFF 带有有效 CRS" in result
+        assert T._pending_layer_ops == []
+        assert f"{source_name}_flowdir" not in _registered_layers
+        os.unlink(dest)
 
 
 

@@ -17,12 +17,14 @@ from backend.services.tools import _fill_sinks, hydrology_analysis, reset_state,
 
 @pytest.fixture(autouse=True)
 def _clean(tmp_path):
+    previous_output_dir = T._temp_output_dir
     reset_state()
     _pending_layer_ops.clear()
     T._temp_output_dir = str(tmp_path)
     yield
     reset_state()
     _pending_layer_ops.clear()
+    T._temp_output_dir = previous_output_dir
 
 
 def _local_min_still_there(a):
@@ -81,7 +83,7 @@ class TestHydrologyTool:
         z = np.tile(np.arange(n, 0, -1, dtype=np.float32).reshape(-1, 1), (1, n)).astype(np.float32)
         z[n // 2, n // 2] = 1.0
         with rasterio.open(os.path.join(upd, f"{name}.tif"), "w", driver="GTiff",
-                           height=n, width=n, count=1, dtype="float32", crs=None,
+                           height=n, width=n, count=1, dtype="float32", crs="EPSG:4326",
                            transform=from_origin(113.0, 23.0, 0.0002, 0.0002)) as dst:
             dst.write(z, 1)
 

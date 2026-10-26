@@ -15,6 +15,53 @@ window.GIS = window.GIS || {};
   var _panelTop = NaN;
   var PANEL_WIDTH = 380;
 
+  function tr(key, fallback) {
+    return GIS.i18n ? GIS.i18n.t(key, fallback) : fallback;
+  }
+
+  function localizePanel() {
+    var panel = document.getElementById('spatialPanel');
+    if (!panel) return;
+    var set = function(selector, key, fallback) {
+      var node = panel.querySelector(selector);
+      if (node) node.textContent = tr(key, fallback);
+    };
+    set('.spatial-toolbar-title', 'spatial.title', '空间分析');
+    set('.workspace-tool-intro', 'spatial.intro', '选择图层和参数后运行。生成的图层会加入左侧列表，处理记录保存在历史中。');
+    set('.spatial-tabs [data-tab="buffer"]', 'spatial.buffer', '缓冲区');
+    set('.spatial-tabs [data-tab="overlay"]', 'spatial.overlay', '叠置');
+    set('.spatial-tabs [data-tab="clip"]', 'spatial.clip', '裁剪');
+    set('.spatial-tabs [data-tab="geom"]', 'spatial.geometry', '几何工具');
+    set('.spatial-tabs [data-tab="select"]', 'spatial.select', '选择');
+    set('.spatial-tabs [data-tab="stats"]', 'spatial.statistics', '统计');
+    set('.spatial-tabs [data-tab="data"]', 'spatial.get-data', '获取数据');
+    var labels = panel.querySelectorAll('#tabBuffer .spatial-field > label');
+    if (labels[0]) labels[0].textContent = tr('spatial.layer', '图层');
+    if (labels[1]) labels[1].textContent = tr('spatial.distance', '距离');
+    if (labels[2]) labels[2].textContent = tr('spatial.rings', '多环缓冲距离（可选）');
+    var layerSelect = panel.querySelector('#bufferLayer');
+    if (layerSelect && layerSelect.options[0]) layerSelect.options[0].textContent = tr('spatial.choose-layer', '选择图层');
+    var unit = panel.querySelector('#bufferUnit');
+    if (unit && unit.options.length >= 2) {
+      unit.options[0].textContent = tr('spatial.meters', '米');
+      unit.options[1].textContent = tr('spatial.kilometers', '公里');
+    }
+    var rings = panel.querySelector('#bufferRings');
+    if (rings) rings.placeholder = tr('spatial.rings-placeholder', '例如 100,300,500；留空使用上方距离');
+    var dissolve = panel.querySelector('.spatial-checkbox-label');
+    if (dissolve) {
+      var checkboxText = Array.prototype.slice.call(dissolve.childNodes).find(function(node) { return node.nodeType === 3; });
+      if (checkboxText) checkboxText.textContent = ' ' + tr('spatial.dissolve', '融合重叠区域');
+    }
+    var clusterUnit = panel.querySelector('#geomClusterUnit');
+    if (clusterUnit && clusterUnit.options.length >= 3) {
+      clusterUnit.options[0].textContent = tr('spatial.degrees', '度');
+      clusterUnit.options[1].textContent = tr('spatial.meters', '米');
+      clusterUnit.options[2].textContent = tr('spatial.kilometers', '公里');
+    }
+    set('.spatial-run-btn[data-op="buffer"]', 'spatial.run-buffer', '运行缓冲区');
+  }
+
   var SEL = '<option value="">选择图层</option>';
 
   var PANEL_HTML =
@@ -110,7 +157,10 @@ window.GIS = window.GIS || {};
           '<div class="spatial-field" id="geomClusterField" style="display:none">' +
             '<label>DBSCAN 参数</label>' +
             '<div class="spatial-row">' +
-              '<input type="number" id="geomClusterEps" class="spatial-input" value="0.01" step="0.005" title="邻域半径（度）">' +
+              '<input type="number" id="geomClusterEps" class="spatial-input" value="0.01" step="0.005" title="邻域半径">' +
+              '<select id="geomClusterUnit" class="spatial-select-short" title="邻域半径单位">' +
+                '<option value="degrees">度</option><option value="m">米</option><option value="km">公里</option>' +
+              '</select>' +
               '<input type="number" id="geomClusterMin" class="spatial-input" value="3" min="1" step="1" title="最小点数">' +
             '</div>' +
           '</div>' +
@@ -278,12 +328,13 @@ window.GIS = window.GIS || {};
       wrapper.appendChild(container);
     }
     container.innerHTML = PANEL_HTML;
+    localizePanel();
 
     _centerPanel(container);
     _initDrag(container);
 
     document.getElementById('spatialClose').addEventListener('click', deactivate);
-    if (GIS.workspace) GIS.workspace.preparePanel('spatialPanel', 'spatialToolbar', 'spatialClose', '空间分析');
+    if (GIS.workspace) GIS.workspace.preparePanel('spatialPanel', 'spatialToolbar', 'spatialClose', tr('spatial.title', '空间分析'));
 
     document.getElementById('spatialTabs').addEventListener('click', function(e) {
       var btn = e.target.closest('.spatial-tab');
@@ -328,12 +379,19 @@ window.GIS = window.GIS || {};
     container.querySelectorAll('.spatial-run-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
         try { _runOperation(this.dataset.op, this); }
-        catch (error) { if (GIS.workspace) GIS.workspace.toolFeedback('spatialPanel', null, error); }
+        catch (error) {
+          if (GIS.workspace) GIS.workspace.toolFeedback('spatialPanel', null, error);
+          else {
+            document.getElementById('spatialResultBody').textContent = '执行失败: ' + error.message;
+            document.getElementById('spatialResult').style.display = '';
+          }
+        }
       });
     });
     const intro = document.createElement('p');
     intro.className = 'workspace-tool-intro';
-    intro.textContent = '选择图层和参数后运行。生成的图层会加入左侧列表，处理记录保存在历史中。';
+    intro.textContent = tr('spatial.intro', '选择图层和参数后运行。生成的图层会加入左侧列表，处理记录保存在历史中。');
+    document.addEventListener('gis:languagechange', localizePanel);
     document.getElementById('spatialBody').prepend(intro);
     const hint = document.createElement('p');
     hint.id = 'statsOperationHint';
@@ -351,6 +409,8 @@ window.GIS = window.GIS || {};
 
     _initialized = true;
   }
+
+  document.addEventListener('gis:languagechange', localizePanel);
 
 
   function activate() {
@@ -515,7 +575,7 @@ window.GIS = window.GIS || {};
       names.forEach(function(n) {
         var opt = document.createElement('option');
         opt.value = n;
-        opt.textContent = n;
+        opt.textContent = GIS.i18n && GIS.i18n.layerLabel ? GIS.i18n.layerLabel(n) : n;
         if (n === current) opt.selected = true;
         sel.appendChild(opt);
       });
@@ -606,7 +666,8 @@ window.GIS = window.GIS || {};
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
       _refreshLayers();
       // 文本结果展示在面板底部
-      resultBody.textContent = result.response || '';
+      var parameterWarnings = Array.isArray(result.param_warnings) ? result.param_warnings.map(String).filter(Boolean) : [];
+      resultBody.textContent = [result.response || '', parameterWarnings.length ? '参数提示：' + parameterWarnings.join('；') : ''].filter(Boolean).join('\n\n');
       resultEl.style.display = GIS.workspace ? 'none' : '';
     }).catch(function(err) {
       loader.style.display = 'none';
@@ -650,7 +711,17 @@ window.GIS = window.GIS || {};
       if (gOp === 'simplify') return _invoke('spatial_simplify', { layer_name: gLayer, tolerance: parseFloat(_val('geomSimplifyTolerance')) || 0.001 }, btn);
       if (gOp === 'dissolve') return _invoke('spatial_dissolve', { layer_name: gLayer, group_by: _val('geomDissolveFieldSel') || '' }, btn);
       if (gOp === 'voronoi') return _invoke('spatial_voronoi', { layer_name: gLayer }, btn);
-      if (gOp === 'cluster') return _invoke('spatial_cluster', { layer_name: gLayer, eps: parseFloat(_val('geomClusterEps')) || 0.01, min_samples: parseInt(_val('geomClusterMin'), 10) || 3 }, btn);
+      if (gOp === 'cluster') {
+        var eps = Number(_val('geomClusterEps'));
+        var minSamples = Number(_val('geomClusterMin'));
+        var distanceUnit = _val('geomClusterUnit') || 'degrees';
+        if (!Number.isFinite(eps) || eps <= 0) throw new Error('聚类半径必须为有限正数。');
+        if (!Number.isInteger(minSamples) || minSamples < 1) throw new Error('最小点数必须为正整数。');
+        if (['degrees', 'm', 'km'].indexOf(distanceUnit) === -1) throw new Error('聚类半径单位无效。');
+        return _invoke('spatial_cluster', {
+          layer_name: gLayer, eps: eps, min_samples: minSamples, distance_unit: distanceUnit,
+        }, btn);
+      }
       if (gOp === 'merge') {
         var others = _val('geomMergeOthers').trim();
         if (!others) { alert('请填写要合并的其它图层名'); return; }
@@ -683,8 +754,18 @@ window.GIS = window.GIS || {};
       if (mode === 'sample') {
         var raw = _val('selectSampleN').trim();
         var args = { layer_name: sLayer };
-        if (raw.indexOf('.') >= 0) args.frac = parseFloat(raw) || 0.1;
-        else args.n = parseInt(raw, 10) || 50;
+        if (!raw) throw new Error('请输入采样数量（正整数）或比例（0 到 1 之间）。');
+        if (/^\d+$/.test(raw)) {
+          var sampleCount = Number(raw);
+          if (!Number.isSafeInteger(sampleCount) || sampleCount < 1) throw new Error('采样数量必须是正整数。');
+          args.n = sampleCount;
+        } else {
+          var sampleFraction = Number(raw);
+          if (!Number.isFinite(sampleFraction) || sampleFraction <= 0 || sampleFraction > 1) {
+            throw new Error('采样比例必须大于 0 且不超过 1。');
+          }
+          args.frac = sampleFraction;
+        }
         return _invoke('spatial_sample', args, btn);
       }
       return;
@@ -754,7 +835,7 @@ window.GIS = window.GIS || {};
     if (!option) {
       option = document.createElement('option');
       option.value = layerName;
-      option.textContent = layerName;
+      option.textContent = GIS.i18n && GIS.i18n.layerLabel ? GIS.i18n.layerLabel(layerName) : layerName;
       select.appendChild(option);
     }
     select.value = layerName;

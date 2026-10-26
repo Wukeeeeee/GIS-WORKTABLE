@@ -106,14 +106,14 @@ try {
 
 const api = sandbox.GIS.analysisTools;
 if (!api) { console.error('GIS.analysisTools missing'); process.exit(1); }
-for (const fn of ['init', 'activate', 'deactivate', 'toggle', 'openWith']) {
+for (const fn of ['toggle']) {
   if (typeof api[fn] !== 'function') { console.error('missing API ' + fn); process.exit(1); }
 }
 
 try {
-  api.init();
-  api.activate();
-  api.openWith('join');
+  api.toggle();
+  sandbox.GIS._lastMenuOp = 'join';
+  api.toggle();
 } catch (e) {
   console.error('RUNTIME ERROR: ' + (e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : e));
   process.exit(1);

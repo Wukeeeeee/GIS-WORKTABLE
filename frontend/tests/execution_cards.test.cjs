@@ -85,6 +85,28 @@ test('execution failure, waiting, and cancellation each expose a matching status
   assert.equal(steps[2].children[0].children[2].children[1].textContent, '已取消');
 });
 
+test('workflow node progress appears as completed, failed, and skipped step cards', () => {
+  const { cards, container } = createCards();
+  cards.handle({ type: 'tool_start', step_id: 'workflow-node-buffer', step_label: '缓冲工作流 · 生成缓冲',
+    name: 'spatial_buffer', tool_call_id: 'wf-buffer', input: { workflow_node: '生成缓冲' } });
+  cards.handle({ type: 'tool_end', step_id: 'workflow-node-buffer', name: 'spatial_buffer',
+    tool_call_id: 'wf-buffer', status: 'success', output: '工作流节点已完成' });
+  cards.handle({ type: 'tool_start', step_id: 'workflow-node-centroid', step_label: '缓冲工作流 · 计算质心',
+    name: 'spatial_centroid', tool_call_id: 'wf-centroid', input: { workflow_node: '计算质心' } });
+  cards.handle({ type: 'tool_end', step_id: 'workflow-node-centroid', name: 'spatial_centroid',
+    tool_call_id: 'wf-centroid', status: 'error', is_error: true, error_message: '坏几何', output: '坏几何' });
+  cards.handle({ type: 'tool_start', step_id: 'workflow-node-export', step_label: '缓冲工作流 · 导出',
+    name: 'export_layer', tool_call_id: 'wf-export', input: { workflow_node: '导出' } });
+  cards.handle({ type: 'tool_end', step_id: 'workflow-node-export', name: 'export_layer',
+    tool_call_id: 'wf-export', status: 'partial', has_warning: true, output: '未执行：依赖的上游节点未完成' });
+
+  const steps = container.children[0].children;
+  assert.match(steps[0].className, /ai-step-success/);
+  assert.match(steps[1].className, /ai-step-failed/);
+  assert.match(steps[2].className, /ai-step-warning/);
+  assert.match(steps[2].children[3].children[1].children[0].children[2].textContent, /上游节点未完成/);
+});
+
 function start(cards, id, step = 'shared', name = 'search_web', extra = {}) {
   cards.handle({ type: 'tool_start', tool_call_id: id, step_id: step, name, input: {}, ...extra });
 }
@@ -111,6 +133,7 @@ test('a successful retry resolves only the failed tool it retried', () => {
   end(h.cards, 'retry');
   assert.match(row(h).className, /ai-step-success/);
   assert.match(row(h).children[3].children[1].children[0].className, /ai-tool-failed/);
+  assert.equal(h.cards.finish('success').partial, false, 'a recovered retry should not mark the whole task partial');
 });
 
 test('parallel success does not resolve another call failure', () => {
@@ -207,6 +230,7 @@ test('map completion does not overwrite an earlier tool failure', () => {
     { action: 'center', center: [0, 0], _stream_id: 'center-1' },
   ] });
   assert.match(row(h).className, /ai-step-failed/);
+  assert.equal(h.cards.finish('success').partial, true, 'an unresolved tool failure should mark the task partial');
 });
 
 test('zoom zero is preserved and map readiness must be confirmed', () => {

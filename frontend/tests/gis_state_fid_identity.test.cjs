@@ -33,6 +33,26 @@ test('data source IDs take precedence over repeated feature names', () => {
   assert.deepEqual(geojson.features.map(item => item.properties._fid), ['id:1', 'id:2']);
 });
 
+test('shared layer state forwards source provenance to the layer panel', () => {
+  let panelLayer;
+  const window = { GIS: {
+    map: { loadGeoJSON() {} },
+    layers: { addLayer(layer) { panelLayer = layer; } },
+  } };
+  const sourcePath = path.resolve(__dirname, '../js/gis_state.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, Date, Math, Object, Array, String, Number,
+  }, { filename: sourcePath });
+  const provenance = { provider_name: 'OpenStreetMap', crs: 'EPSG:4326' };
+
+  const layer = window.GIS.state.addLayer({
+    name: '下载道路', geojson: { type: 'FeatureCollection', features: [] }, provenance,
+  });
+
+  assert.equal(layer.provenance.provider_name, 'OpenStreetMap');
+  assert.equal(panelLayer.provenance.crs, 'EPSG:4326');
+});
+
 test('a hidden state-only layer is rendered when it becomes visible without changing map extent', () => {
   const mapLayers = new Map();
   const loads = [];

@@ -6,14 +6,30 @@ const assert = require('node:assert/strict');
 
 const layerSource = fs.readFileSync(path.resolve(__dirname, '../js/layers.js'), 'utf8');
 
-function createLayers(features, applied = []) {
+function createLayers(features, applied = [], mapApplyResult = true, labelApplyResult = true, withLegendPanel = false) {
+  const messages = [];
+  let legendLookups = 0;
+  const legendElements = withLegendPanel ? {
+    mapFloatingLegend: { style: {}, addEventListener() {} },
+    mapLegendTogglePill: { style: {}, addEventListener() {} },
+    mapLegendToggleText: { textContent: '', style: {}, addEventListener() {} },
+    mapLegendTitle: { textContent: '' },
+    mapLegendField: { textContent: '' },
+    mapLegendItems: { innerHTML: '', appendChild() {} },
+    mapLegendClose: { addEventListener() {} },
+  } : {};
+  const document = {
+    getElementById(id) { legendLookups++; return legendElements[id] || null; },
+    createElement() { return { style: {}, appendChild() {} }; },
+    addEventListener() {},
+  };
   const window = { GIS: { map: {
     loadGeoJSON() {}, setLayerColor() {}, setLayerVisible() {},
-    applySymbology(_name, _geojson, styles) { applied.push(JSON.parse(JSON.stringify(styles))); },
+    applySymbology(_name, _geojson, styles) { applied.push(JSON.parse(JSON.stringify(styles))); return mapApplyResult; },
+    setLabels() { return labelApplyResult; },
     clearAll() { return { ok: true, remaining: 0 }; },
     removeLayer() {},
-  } } };
-  const document = { getElementById() { return null; } };
+  }, chat: { addMessage(message) { messages.push(message); } } } };
   const context = vm.createContext({ window, document, console, Promise, Date, Math, Number, String, Object, Array, JSON, Set, Map });
   const instrumentedSource = layerSource.replace('  GIS.layers = {',
     '  GIS.__applySymbologyForTest = _applySymbology;\n  GIS.layers = {');
@@ -21,7 +37,8 @@ function createLayers(features, applied = []) {
   window.GIS.layers.addLayer({
     layer_id: 'population-layer', filename: '长沙区县', geojson: { type: 'FeatureCollection', features },
   }, true);
-  return { layers: window.GIS.layers, applied, applySymbology: window.GIS.__applySymbologyForTest };
+  return { layers: window.GIS.layers, applied, messages, getLegendLookups() { return legendLookups; },
+    applySymbology: window.GIS.__applySymbologyForTest };
 }
 
 function feature(fid, value, geometryType = 'Polygon') {
@@ -69,6 +86,35 @@ test('a failed field change keeps the last successful thematic style and legend'
   const after = source.layers.getSymbologyState('population-layer');
   assert.deepEqual(JSON.parse(JSON.stringify(after)), JSON.parse(JSON.stringify(before)));
   assert.equal(source.applied.length, 1, 'a failed attempt must not redraw the map');
+});
+
+test('failed map rendering does not save symbology as a successful layer state and informs the user', () => {
+  const source = createLayers([feature('adcode:1', 12), feature('adcode:2', 28)], [], false);
+
+  assert.equal(source.layers.applyGraduatedColors('长沙区县', 'population', 2, 'ylorrd', 'quantile'), false);
+  assert.equal(source.layers.getSymbologyState('population-layer'), null);
+  assert.ok(source.messages.some(message => message.includes('地图未能渲染图层符号化结果')));
+});
+
+test('label requests report failure when the map cannot apply the label field', () => {
+  const source = createLayers([feature('adcode:1', 12)], [], true, false);
+  assert.equal(source.layers.addLabels('长沙区县', 'population'), false);
+  assert.ok(source.messages.some(message => message.includes('请确认字段存在且有非空值')));
+  assert.equal(source.layers.addLabels('missing-layer', 'population'), false);
+
+  const applied = createLayers([feature('adcode:1', 12)]);
+  assert.equal(applied.layers.addLabels('长沙区县', 'population'), true);
+});
+
+test('requesting a legend for a missing named layer never redraws the previous layer legend', () => {
+  const source = createLayers([feature('adcode:1', 12), feature('adcode:2', 28)], [], true, true, true);
+  assert.equal(source.layers.applyGraduatedColors('长沙区县', 'population', 2, 'ylorrd', 'quantile'), true);
+  assert.equal(source.layers.addLegend('长沙区县'), true);
+  const lookupsAfterValidLegend = source.getLegendLookups();
+
+  assert.equal(source.layers.addLegend('不存在的图层'), false);
+  assert.equal(source.getLegendLookups(), lookupsAfterValidLegend);
+  assert.ok(source.messages.some(message => message.includes('不存在的图层') && message.includes('无法显示图例')));
 });
 
 test('graduated symbology gives null and non-numeric values a counted no-data style', () => {

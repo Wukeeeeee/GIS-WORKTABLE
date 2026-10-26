@@ -144,6 +144,53 @@ def test_raster_assets_survive_project_save_export_import_and_restore(tmp_path, 
     assert imported_asset.content == source.read_bytes()
 
 
+def test_interpolation_raster_survives_project_save_load_and_reanalysis(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    point_layer = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"value": 1}, "geometry": {"type": "Point", "coordinates": [116.0, 39.0]}},
+        {"type": "Feature", "properties": {"value": 3}, "geometry": {"type": "Point", "coordinates": [116.1, 39.0]}},
+        {"type": "Feature", "properties": {"value": 4}, "geometry": {"type": "Point", "coordinates": [116.0, 39.1]}},
+    ]}
+    tools._register_layer("插值输入点", point_layer)
+
+    interpolation_result = tools.spatial_interpolate.invoke({
+        "layer_name": "插值输入点", "field": "value", "resolution": 16,
+    })
+
+    assert "已生成" in interpolation_result
+    output_op = next(op for op in tools._pending_layer_ops if op.get("raster"))
+    output_name = output_op["layer_name"]
+    project = project_service.save_project(
+        project_id=None, name="插值结果往返", session_id="interpolation-roundtrip", provider="test",
+        map_state={}, messages=[], layers=[{
+            "filename": output_name, "name": output_name, "geometry_type": "Raster",
+            "raster": output_op["raster"], "visible": True,
+        }],
+    )
+    restored = project_service.load_project(project["id"])
+    restored_layer = restored["layers"][0]
+    restored_raster = restored_layer["raster"]
+    assert restored_raster["crs"] == "EPSG:4326"
+    assert restored_raster["value_units"] is None
+    assert any("外推" in warning for warning in restored_raster["quality_warnings"])
+    assert restored_raster["source_url"].startswith(f"/api/projects/{project['id']}/assets/")
+
+    tools.reset_registered_layers(restored["layers"])
+    followup_result = tools.raster_resample.invoke({
+        "layer_name": restored_layer["name"], "scale_factor": 2, "method": "bilinear",
+    })
+
+    assert "重采样完成" in followup_result
+    followup_ops = [op for op in tools._pending_layer_ops if op.get("action") == "dem_result"]
+    assert followup_ops and followup_ops[0].get("raster")
+    with TestClient(main.app) as client:
+        saved_preview = client.get(restored_raster["url"])
+        saved_source = client.get(restored_raster["source_url"])
+    assert saved_preview.status_code == 200
+    assert saved_source.status_code == 200
+    assert saved_source.headers.get("content-type", "").startswith("image/tiff")
+
+
 def test_autosave_includes_uploaded_raster_layers(tmp_path, monkeypatch):
     source = _use_temp_projects(tmp_path, monkeypatch)
     monkeypatch.setattr(ai_service, "conversation_history", {
@@ -179,6 +226,10 @@ def _upload_real_raster(tmp_path, monkeypatch):
     client = TestClient(main.app)
     result = client.post('/api/upload', files={'file': ('original#1.tif', data.getvalue(), 'image/tiff')}).json()
     assert result.get('registration_token'), result
+    assert result['raster_info']['crs'] == 'EPSG:4326'
+    assert result['raster_info']['source_width'] == 4
+    assert result['raster_info']['pixel_units'] == 'degree'
+    assert '单位未在文件元数据中标注' in result['raster_info']['quality_warnings'][0]
     saved = client.post('/api/projects', json={
         'name': '原始栅格工程', 'session_id': 'raw-session', 'provider': 'test', 'map_state': {}, 'messages': [],
         'layers': [{'filename': '自定义高程', 'raster': result['raster_info'], 'geometry_type': 'Raster'}],
@@ -202,12 +253,55 @@ def test_original_raster_survives_import_without_runtime_or_original_project_fil
     assert response.status_code == 200
     layer = response.json()['layers'][0]
     assert layer['geojson'] is None and layer['registration_token']
+    restored_raster = layer['raster']
+    assert restored_raster['crs'] == uploaded['raster_info']['crs']
+    assert restored_raster['source_width'] == uploaded['raster_info']['source_width']
+    assert restored_raster['source_height'] == uploaded['raster_info']['source_height']
+    assert restored_raster['pixel_units'] == uploaded['raster_info']['pixel_units']
+    assert restored_raster['quality_warnings'] == uploaded['raster_info']['quality_warnings']
     assert client.get(layer['raster']['source_url']).content == original
     located = tools._find_uploaded_tif('自定义高程')
     assert str(Path(project_service._project_dir(imported['id']))) in located
     result = tools.raster_calculator.invoke({'layer_name': '自定义高程', 'expression': 'B1*2'})
     assert '范围 [2.00, 32.00]' in result
     assert (runtime / '自定义高程_calc.png').exists()
+
+
+def test_derived_dem_layer_survives_project_restore_and_can_be_reanalyzed(tmp_path, monkeypatch):
+    client, uploaded, _, _ = _upload_real_raster(tmp_path, monkeypatch)
+    result = tools.dem_analysis.invoke({'layer_name': uploaded['name'], 'analysis': 'slope'})
+    assert 'GeoTIFF' in result and '可继续分析' in result
+    op = next(op for op in tools._pending_layer_ops if op.get('action') == 'dem_result')
+    layer_name = op['layer_name']
+    # The authoritative source path comes from the backend registry, not the URL's display form.
+    source_path = Path(tools._registered_layers[layer_name]['raster_source_path'])
+    assert source_path.is_file()
+
+    saved = client.post('/api/projects', json={
+        'name': '派生地形工程', 'session_id': 'derived-session', 'provider': 'test',
+        'map_state': {}, 'messages': [],
+        'layers': [{'filename': layer_name, 'geometry_type': 'Raster', 'crs': op['crs'],
+                    'source': 'ai', 'raster': op['raster']}],
+    }).json()
+    assert saved.get('id'), saved
+    restored = client.get('/api/projects/' + saved['id'])
+    assert restored.status_code == 200
+    layer = restored.json()['layers'][0]
+    assert layer['name'] == layer_name
+    restored_raster = layer['raster']
+    for key in ('crs', 'source_width', 'source_height', 'bands', 'pixel_size',
+                'pixel_units', 'value_units', 'source_label', 'source_reference',
+                'processing', 'valid_pixel_ratio', 'quality_warnings'):
+        assert restored_raster.get(key) == op['raster'].get(key)
+    assert layer['raster']['source_asset'].endswith('.tif')
+    assert client.get(layer['raster']['url']).status_code == 200
+    assert client.get(layer['raster']['source_url']).content == source_path.read_bytes()
+
+    project_service.activate_project(saved['id'])
+    restored_source = tools._find_uploaded_tif(layer_name)
+    assert restored_source and str(Path(project_service._project_dir(saved['id']))) in restored_source
+    follow_up = tools.raster_calculator.invoke({'layer_name': layer_name, 'expression': 'B1*2'})
+    assert '结果栅格' in follow_up and '已上图' in follow_up
 
 
 def test_raster_tool_outputs_do_not_modify_project_assets(tmp_path, monkeypatch):

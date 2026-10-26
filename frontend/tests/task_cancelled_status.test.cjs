@@ -30,6 +30,57 @@ test('cancelled tasks are visibly distinct and can be rerun', () => {
   assert.match(taskList.innerHTML, /task-rerun/);
 });
 
+test('partially completed tasks are labeled distinctly and can be rerun', () => {
+  const taskList = { innerHTML: '', addEventListener() {} };
+  const document = { getElementById(id) { return id === 'historyList' ? taskList : null; } };
+  const storage = new Map();
+  const window = { GIS: { api: { resolveProvider() { return null; } } } };
+  const sourcePath = path.resolve(__dirname, '../js/task.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, localStorage: { getItem(key) { return storage.get(key) || null; }, setItem(key, value) { storage.set(key, value); } },
+    Date, Math, JSON, String, Number, Array, Object, console: { warn() {} },
+  }, { filename: sourcePath });
+
+  window.GIS.task.init();
+  const task = window.GIS.task.createTask('缓冲分析', 'test', []);
+  window.GIS.task.updateTask(task.id, { status: 'partial' });
+
+  assert.match(taskList.innerHTML, /task-status-partial/);
+  assert.match(taskList.innerHTML, /部分完成/);
+  assert.match(taskList.innerHTML, /task-rerun/);
+  assert.equal(JSON.parse(storage.get('gis_task_history'))[0].status, 'partial');
+});
+
+test('stale in-progress tasks recover as interrupted and can be checked before rerun', () => {
+  const staleTasks = [
+    { id: '4', goal: '规划中的任务', provider: 'test', model: 'test', timestamp: 1, status: 'planning', resultLayers: [], saved: true },
+    { id: '3', goal: '执行中的任务', provider: 'test', model: 'test', timestamp: 2, status: 'executing', resultLayers: [{ name: '可能已生成的图层' }], saved: false },
+    { id: '2', goal: '已完成任务', provider: 'test', model: 'test', timestamp: 3, status: 'success', resultLayers: [], saved: false },
+  ];
+  const storage = new Map([['gis_task_history', JSON.stringify(staleTasks)]]);
+  const taskList = { innerHTML: '', addEventListener() {} };
+  const window = { GIS: { api: { resolveProvider() { return null; } } } };
+  const sourcePath = path.resolve(__dirname, '../js/task.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document: { getElementById(id) { return id === 'historyList' ? taskList : null; } },
+    localStorage: { getItem(key) { return storage.get(key) || null; }, setItem(key, value) { storage.set(key, value); } },
+    Date, Math, JSON, String, Number, Array, Object, console: { warn() {} },
+  }, { filename: sourcePath });
+
+  window.GIS.task.init();
+
+  const recovered = JSON.parse(storage.get('gis_task_history'));
+  assert.equal(recovered[0].status, 'interrupted');
+  assert.match(recovered[0].error, /先检查地图后再重试/);
+  assert.ok(recovered[0].completedAt);
+  assert.equal(recovered[1].status, 'interrupted');
+  assert.equal(recovered[1].resultLayers[0].name, '可能已生成的图层');
+  assert.equal(recovered[2].status, 'success', 'terminal task status must remain unchanged');
+  assert.match(taskList.innerHTML, /执行中断，结果待核对/);
+  assert.match(taskList.innerHTML, /task-status-interrupted/);
+  assert.match(taskList.innerHTML, /task-rerun/);
+});
+
 test('task history persistence retains the newest 20 unsaved tasks', () => {
   const storage = new Map();
   const localStorage = {

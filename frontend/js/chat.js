@@ -834,34 +834,42 @@ function scrollMessages() {
       window._idleKilled = false;
       _armIdleWatchdog();
       try {
-        // 发送前同步所有图层到后端（后端重启后内存中的注册信息会丢失，这里重新注册）
+        // 发送前同步当前图层；复用面板的版本队列，矢量和栅格都与 AI 共用同一份后端状态。
         try {
           const allLayers = (window.GIS.layers && typeof window.GIS.layers.getLayers === 'function')
             ? window.GIS.layers.getLayers() : [];
-          const groupNamesById = Object.create(null);
-          const groupState = (window.GIS.layers && typeof window.GIS.layers.getGroupState === 'function')
-            ? window.GIS.layers.getGroupState() : [];
-          groupState.forEach(function(group) {
-            if (group && group.id) groupNamesById[group.id] = group.name || '';
-          });
-          const registerPromises = [];
-          for (const lyr of allLayers) {
-            const lname = lyr.filename || lyr.name || lyr.layer_id;
-            if (lname && lyr.geojson) {
-              const groupName = lyr.groupId ? (groupNamesById[lyr.groupId] || '') : '';
-              registerPromises.push(
-                fetch(window.GIS.api.BASE_URL + '/api/layer/register', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ name: lname, geojson: lyr.geojson, group_name: groupName }),
-                }).catch(function() {})
-              );
+          const syncLayer = window.GIS.layers && window.GIS.layers.syncToolLayer;
+          if (typeof syncLayer === 'function') {
+            const results = await Promise.all(allLayers.map(function(layer) {
+              const name = layer.filename || layer.name || layer.layer_id;
+              return name && (layer.geojson || layer.raster) ? syncLayer(name) : true;
+            }));
+            if (results.some(function(ok) { return ok === false; })) {
+              throw new Error('有图层未能同步到分析数据');
+            }
+          } else {
+            const results = await Promise.all(allLayers.map(async function(layer) {
+              const name = layer.filename || layer.name || layer.layer_id;
+              if (!name || (!layer.geojson && !layer.raster)) return true;
+              const response = await fetch(window.GIS.api.BASE_URL + '/api/layer/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, geojson: layer.geojson, raster: layer.raster }),
+              });
+              if (!response.ok) return false;
+              const payload = await response.json();
+              return payload && payload.success === true;
+            }));
+            if (results.some(function(ok) { return !ok; })) {
+              throw new Error('有图层未能同步到分析数据');
             }
           }
-          if (registerPromises.length > 0) {
-            await Promise.all(registerPromises);
-          }
-        } catch(e) { console.warn('图层同步失败:', e); }
+        } catch (error) {
+          console.warn('图层同步失败:', error);
+          const syncError = new Error('当前图层未能同步到 AI 分析数据，请检查连接后重试。');
+          syncError.layerSyncError = true;
+          throw syncError;
+        }
 
         var currentSessionId = (window.GIS.project && window.GIS.project.getCurrentSessionId)
           ? window.GIS.project.getCurrentSessionId()
@@ -919,6 +927,25 @@ function scrollMessages() {
             if (evt.type === 'tool_start' || evt.type === 'tool_end' || evt.type === 'layer_ops_delta' || evt.type === 'waiting_choice') {
               if (executionCards) executionCards.handle(evt);
               scrollMessages();
+            } else if (evt.type === 'note' && evt.message) {
+              var noteText = String(evt.message).slice(0, 300);
+              if (window.GIS.i18n && window.GIS.i18n.isEnglish && window.GIS.i18n.isEnglish()) {
+                var noteTranslations = {
+                  '服务端临时故障已自动重试成功。': 'A temporary server issue was recovered by retrying.',
+                  '本轮没有收到可见答复，正在按原请求自动重试。': 'No visible response was received. Retrying the request automatically.',
+                };
+                noteText = noteTranslations[noteText] || noteText;
+              }
+              if (window.GIS.utils && typeof window.GIS.utils.escapeHtml === 'function') {
+                noteText = window.GIS.utils.escapeHtml(noteText);
+              } else {
+                noteText = noteText.replace(/[&<>\"']/g, function(char) {
+                  return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' }[char];
+                });
+              }
+              if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+                window.GIS.chat.addMessage(noteText, 'system', { pill: true });
+              }
             } else if (evt.type === 'done') {
               _receivedDone = true;
               result = evt;
@@ -955,6 +982,7 @@ function scrollMessages() {
       } catch (streamErr) {
         // 清除超时计时器
         _clearAllTimeouts();
+        if (streamErr && streamErr.layerSyncError) throw streamErr;
         // P0-3: 明确区分异常类型
         var _errMsg = streamErr.message || '';
         if (_errMsg === '__USER_CANCELLED__') {
@@ -1005,7 +1033,8 @@ function scrollMessages() {
       // 更新任务卡状态
       if (taskId && window.GIS.task) {
         window._currentTaskId = null;
-        var taskUpdate = { status: 'success' };
+        var _executionStatus = result.execution_status || 'success';
+        var taskUpdate = { status: _executionStatus === 'timeout' ? 'failed' : 'success' };
         // 收集结果图层信息
         var resultLayers = [];
         if (result.layers && result.layers.length > 0) {
@@ -1027,6 +1056,9 @@ function scrollMessages() {
         var plainText = result.response ? result.response.replace(/<[^>]+>/g, '').replace(/```[\s\S]*?```/g, '') : '';
         taskUpdate.resultSummary = plainText.slice(0, 300) + (plainText.length > 300 ? '...' : '');
         taskUpdate.completedAt = Date.now();
+        if (_executionStatus === 'timeout') {
+          taskUpdate.error = '等待时限已到；后台调用可能仍在执行';
+        }
         window.GIS.task.updateTask(taskId, taskUpdate);
       }
 
@@ -1379,6 +1411,7 @@ function scrollMessages() {
               geojson: geojson,
               style: layer.style || null,
               source: 'ai',
+              provenance: layer.provenance || null,
             });
             return;
           }
@@ -1397,6 +1430,7 @@ function scrollMessages() {
               geojson: geojson,
               visible: true,
               source: 'ai',
+              provenance: layer.provenance || null,
             });
           }
         });
@@ -1412,6 +1446,7 @@ function scrollMessages() {
             name: layerName,
             geojson: result.geojson,
             source: 'ai',
+            provenance: result.provenance || null,
           });
         } else {
           if (GIS.map && GIS.map.loadGeoJSON) GIS.map.loadGeoJSON(result.geojson, layerName);
@@ -1425,6 +1460,7 @@ function scrollMessages() {
               geojson: result.geojson,
               visible: true,
               source: 'ai',
+              provenance: result.provenance || null,
             });
           }
         }
@@ -1433,29 +1469,34 @@ function scrollMessages() {
       // 【兜底】layer_ops 引用的图层若不在前端面板（后端已注册但本轮未随 done 推送），
       // 先从后端 /api/layers 拉取补挂再执行操作——修复「未找到图层」导致设色/图例全部落空
       if (result.layer_ops && result.layer_ops.length > 0) {
+        var _unrestoredNames = [];
+        var _layerTargetActions = {
+          remove: true, toggle: true, set_color: true, set_style: true,
+          rename: true, clear_symbology: true, symbology: true, legend: true,
+          labels: true, fit: true, edit_vertices: true,
+        };
         var _opLayerNames = [];
         result.layer_ops.forEach(function(op) {
           if (executionCards && op && executionCards.hasAppliedMapOp(op._stream_id)) return;
-          if (op && op.name && _opLayerNames.indexOf(op.name) < 0) _opLayerNames.push(op.name);
+          if (op && Object.prototype.hasOwnProperty.call(_layerTargetActions, op.action) &&
+              op.name && _opLayerNames.indexOf(op.name) < 0) {
+            _opLayerNames.push(op.name);
+          }
         });
         var _panelNow = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
         var _missing = _opLayerNames.filter(function(nm) {
           return !_panelNow.some(function(l) {
-            return l._rawName === nm || l.filename === nm || l.layer_id === nm
-              || (l.filename && l.filename.indexOf(nm) === 0)
-              || (l._rawName && l._rawName.indexOf(nm) === 0);
+            return l.name === nm || l._rawName === nm || l.filename === nm || l.layer_id === nm;
           });
         });
         if (_missing.length > 0) {
           try {
             var _lyrRes = await fetch(((window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || '') + '/api/layers');
+            if (!_lyrRes.ok) throw new Error('图层列表请求失败');
             var _lyrData = await _lyrRes.json();
             (_lyrData.layers || []).forEach(function(lyr) {
               if (!lyr || !lyr.geojson) return;
-              var _hit = _missing.some(function(m) {
-                return lyr.name === m || (lyr.name && (lyr.name.indexOf(m) === 0 || m.indexOf(lyr.name) === 0));
-              });
-              if (!_hit) return;
+              if (_missing.indexOf(lyr.name) < 0) return;
               if (window.GIS.state && window.GIS.state.addLayer) {
                 window.GIS.state.addLayer({
                   name: lyr.name,
@@ -1474,6 +1515,20 @@ function scrollMessages() {
             console.log('[GIS Chat] layer_ops 引用图层缺失，已从后端补挂:', _missing.join(', '));
           } catch (e) {
             console.warn('[GIS Chat] 补挂缺失图层失败:', e);
+          }
+          var _panelAfterRestore = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
+          _unrestoredNames = _missing.filter(function(nm) {
+            return !_panelAfterRestore.some(function(l) {
+              return l.name === nm || l._rawName === nm || l.filename === nm || l.layer_id === nm;
+            });
+          });
+          if (_unrestoredNames.length) {
+            addMessage('以下图层未能从分析状态恢复，相关地图操作可能未应用：' +
+              _unrestoredNames.map(function(name) {
+                return String(name).replace(/[&<>"']/g, function(char) {
+                  return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[char];
+                });
+              }).join('、'), 'system');
           }
         }
       }
@@ -1514,16 +1569,24 @@ function scrollMessages() {
               break;
             case 'set_color':
               if (target && window.GIS.layers) {
-                target.color = op.color;
-                window.GIS.layers.renderList();
-                if (GIS.map && GIS.map.setLayerColor) {
-                  GIS.map.setLayerColor(target._rawName || target.layer_id, op.color);
+                var colorApplied = GIS.map && GIS.map.setLayerColor &&
+                  GIS.map.setLayerColor(target._rawName || target.layer_id, op.color) === true;
+                if (colorApplied) {
+                  target.color = op.color;
+                  window.GIS.layers.renderList();
+                } else {
+                  addMessage('地图未能应用图层颜色，请检查图层是否仍可显示后重试。', 'system');
                 }
+              } else if (_unrestoredNames.indexOf(op.name) < 0) {
+                addMessage('未找到目标图层，未应用颜色设置。', 'system');
               }
               break;
             case 'set_style':
-              if (target && GIS.map && GIS.map.setLayerStyle) {
-                GIS.map.setLayerStyle(target._rawName || target.layer_id, op.style || {});
+              if (!target || !GIS.map || !GIS.map.setLayerStyle ||
+                  GIS.map.setLayerStyle(target._rawName || target.layer_id, op.style || {}) !== true) {
+                if (_unrestoredNames.indexOf(op.name) < 0) {
+                  addMessage('地图未能应用图层样式，请检查图层是否仍可显示后重试。', 'system');
+                }
               }
               break;
             case 'clear_symbology':
@@ -1660,11 +1723,8 @@ function scrollMessages() {
               }
               break;
             case 'dem_result':
-              if (op.url && op.bounds) {
-                window.GIS.map.addImageOverlay(op.url, op.bounds, op.name);
-                if (window.GIS.chat) {
-                  window.GIS.chat.addMessage('已添加地形分析图层: ' + (op.label || op.name), 'system');
-                }
+              if (applyRasterResult(op) && window.GIS.chat) {
+                window.GIS.chat.addMessage('已添加可继续分析的栅格图层: ' + (op.label || op.layer_name || op.name), 'system');
               }
               break;
             case 'time_animation':
@@ -1790,7 +1850,17 @@ function scrollMessages() {
       if (window.GIS.project && typeof window.GIS.project.autoSave === 'function') {
         window.GIS.project.autoSave();
       }
-      if (executionCards) executionCards.finish(result.confirm_pending ? 'waiting' : 'success');
+      if (executionCards) {
+        var _cardOutcome;
+        if (result.execution_status === 'timeout') {
+          _cardOutcome = executionCards.finish('interrupted', '等待时限已到；后台调用可能仍在执行，请检查工作区后再重试');
+        } else {
+          _cardOutcome = executionCards.finish(result.confirm_pending ? 'waiting' : 'success');
+        }
+        if (_cardOutcome && _cardOutcome.partial && taskId && window.GIS.task) {
+          window.GIS.task.updateTask(taskId, { status: 'partial' });
+        }
+      }
     } catch (err) {
       // 清除超时计时器
       _clearAllTimeouts();
@@ -1858,15 +1928,24 @@ function scrollMessages() {
    * 定义在模块作用域：图片下载按钮与 AI 回复中的文件路径下载按钮共用。
    */
   function downloadFile(url, filename) {
-    fetch(url).then(function(res) { return res.blob(); }).then(function(blob) {
+    fetch(url).then(function(res) {
+      if (!res || !res.ok) throw new Error('HTTP ' + (res && res.status ? res.status : 'error'));
+      return res.blob();
+    }).then(function(blob) {
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
+      const objectUrl = URL.createObjectURL(blob);
+      a.href = objectUrl;
       a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      URL.revokeObjectURL(a.href);
-    }).catch(function(e) { console.warn('下载失败:', e); });
+      setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 1000);
+    }).catch(function(e) {
+      console.warn('下载失败:', e);
+      if (window.GIS && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
+        window.GIS.chat.addMessage('文件下载失败: ' + (e && e.message ? e.message : '网络错误'), 'system');
+      }
+    });
   }
 
   /**
@@ -1878,7 +1957,7 @@ function scrollMessages() {
     contentEl._outputBtnsAttached = true;
 
     var baseUrl = (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || 'http://localhost:8000';
-    var pathRe = /(?:\/?)(?:output|cache|uploads|downloads)\/[A-Za-z0-9_\-\u4e00-\u9fa5.\/()（）]+?\.(?:geojson|json|csv|shp|zip|png|jpe?g|html?|tiff?|kml|kmz|gpkg|gpx|dxf)/g;
+    var pathRe = /(?:\/?)(?:output|cache|uploads|downloads)\/[A-Za-z0-9_\-\u4e00-\u9fa5.\/()（）]+?\.(?:geojson|json|csv|shp|zip|png|jpe?g|gif|webp|svg|pdf|xlsx?|md|txt|html?|tiff?|kml|kmz|gpkg|gpx|dxf)/g;
 
     // 1. 查找是否存在「结果真实性自检」免责声明块，自检段落内的探针或不存在路径必须排除
     var guardNode = null;
@@ -1931,7 +2010,7 @@ function scrollMessages() {
         if (/probe|tiny_probe/i.test(fileName)) continue;
 
         var fullUrl = baseUrl + filePath;
-        var isImg = /\.(png|jpe?g|webp|svg)$/i.test(fileName);
+        var isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(fileName);
         var bareFileName = fileName.replace(/^\d{14}_/, '');
         var alreadyRendered = isImg && (existingImgSrcs.has(fileName) || existingImgSrcs.has(bareFileName));
 
@@ -2340,6 +2419,47 @@ function scrollMessages() {
   function getMode() { return 'full'; }
   function setMode(mode) { /* 已禁用模式切换 */ }
 
+  function applyRasterResult(op) {
+    if (!op || !op.url || !op.bounds) return false;
+    var mapName = op.name || op.layer_name;
+    if (GIS.map && GIS.map.addImageOverlay) GIS.map.addImageOverlay(op.url, op.bounds, mapName, op.layer_name || mapName);
+    if (!op.raster || !GIS.layers || !GIS.layers.addLayer) return true;
+    var layerName = op.layer_name || op.raster.source_name || op.name;
+    var existing = (GIS.layers.getLayers ? GIS.layers.getLayers() : []).find(function(layer) {
+      return layer._registeredName === layerName || layer.filename === layerName;
+    });
+    if (existing) {
+      existing.raster = op.raster;
+      existing.geometry_type = 'Raster';
+      existing.crs = op.crs || existing.crs || '';
+      existing._rawName = mapName;
+      existing._registeredName = layerName;
+      existing.visible = true;
+      if (op.registration_token) {
+        existing._registrationTokens = existing._registrationTokens || Object.create(null);
+        existing._registrationTokens[layerName] = op.registration_token;
+      }
+      if (GIS.layers.renderList) GIS.layers.renderList();
+    } else {
+      var tokens = Object.create(null);
+      if (op.registration_token) tokens[layerName] = op.registration_token;
+      GIS.layers.addLayer({
+        layer_id: 'ai_raster_' + Date.now() + '_' + Math.floor(Math.random() * 1e6),
+        filename: layerName,
+        _rawName: mapName,
+        _registeredName: layerName,
+        geometry_type: 'Raster',
+        crs: op.crs || '',
+        raster: op.raster,
+        _registrationTokens: tokens,
+        visible: true,
+        source: 'ai',
+      }, true);
+    }
+    if (GIS.project && typeof GIS.project.autoSave === 'function') GIS.project.autoSave();
+    return true;
+  }
+
   /** 直连工具结果上图（手动面板通道）：与聊天返回同构，走共享状态与既有 op 逻辑 */
   function applyToolResult(result) {
     if (!result) return;
@@ -2357,6 +2477,7 @@ function scrollMessages() {
         geojson: layer.geojson || layer,
         style: layer.style || null,
         source: 'manual',
+        provenance: layer.provenance || null,
       });
     });
     (result.layer_ops || []).forEach(function (op) {
@@ -2411,7 +2532,7 @@ function scrollMessages() {
           }
           break;
         case 'dem_result':
-          if (op.url && op.bounds) GIS.map.addImageOverlay(op.url, op.bounds, op.name);
+          applyRasterResult(op);
           break;
         case 'time_animation':
           if (GIS.map.startTimeAnimation) GIS.map.startTimeAnimation(op.name, op.time_field, op.time_values, op.interval_ms);
@@ -2444,9 +2565,14 @@ function scrollMessages() {
       GIS.map.loadHeatmap(result.heatmap.points, result.heatmap.name || '热力图', result.heatmap.options || {});
     }
     // 地理质量自检警告：显式展示，不静默吞掉可疑数据
+    const escapeWarningText = function(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
+        return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char];
+      });
+    };
     (result.qa_warnings || []).forEach(function (w) {
       if (window.GIS.chat && window.GIS.chat.addMessage) {
-        window.GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> 质量提示[' + (w.layer || '') + ']: ' + w.warning, 'system');
+        window.GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> 质量提示[' + escapeWarningText(w && w.layer) + ']: ' + escapeWarningText(w && w.warning), 'system');
       }
     });
     if (window.GIS.history && typeof window.GIS.history.refresh === 'function') {

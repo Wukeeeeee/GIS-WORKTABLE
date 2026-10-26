@@ -73,8 +73,6 @@ def test_geojson_conformance_for_leaflet_vectorgrid(sample_polygon_geojson):
 
 
 def test_geosource_proxy_endpoint(client):
-    """验证数据源代理端点（跨域保护与异常传递）"""
-    # 代理合法非外部地址
+    """无效目标 URL 必须作为参数错误拒绝，不能伪装成服务端故障。"""
     resp = client.get("/api/geosource/proxy?url=invalid-url-format")
-    # 应返回 400 或 500 结构，而不是未捕获崩溃
-    assert resp.status_code in [400, 500, 502]
+    assert resp.status_code == 400

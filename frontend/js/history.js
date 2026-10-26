@@ -77,7 +77,7 @@
         return r.json();
       })
       .then(function (data) {
-        if (requestId === _refreshRequestId) render(data.history || []);
+        if (requestId === _refreshRequestId) render(data.history || [], data.warning || '');
       })
       .catch(function () {
         if (requestId !== _refreshRequestId) return;
@@ -85,13 +85,22 @@
       });
   }
 
-  function render(entries) {
+  function render(entries, warning) {
     if (!_body) return;
+    _body.innerHTML = '';
+    if (warning) {
+      var warningEl = document.createElement('div');
+      warningEl.className = 'toolhist-warning';
+      warningEl.textContent = warning;
+      _body.appendChild(warningEl);
+    }
     if (!entries.length) {
-      _body.innerHTML = '<div class="toolhist-empty">暂无记录：执行任意工具后在此查看</div>';
+      var emptyEl = document.createElement('div');
+      emptyEl.className = 'toolhist-empty';
+      emptyEl.textContent = warning ? '历史记录暂不可用' : '暂无记录：执行任意工具后在此查看';
+      _body.appendChild(emptyEl);
       return;
     }
-    _body.innerHTML = '';
     entries.forEach(function (e) {
       _body.appendChild(_renderItem(e));
     });

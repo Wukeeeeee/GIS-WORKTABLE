@@ -390,7 +390,7 @@ Ion 何时有价值：想要开箱即用的全球地形/建筑/影像且接受�
 2. 3D 需求里权重最高的「数据驱动 extrusion + 成熟 picking + 未来 DEM/3D Tiles」正是 Cesium 的原生强项，MapLibre globe 尚年轻（terrain-in-globe 2025 年才落地），deck.gl 方案需要同时维护底图与叠加层的坐标/相机一致性；
 3. Three.js 一切自建，与「AI 工作台」目标完全错位；
 4. Cesium Entity 模型（properties/picking/material）与 GeoJSON Feature 概念几乎一一对应，Agent 产出的 GeoJSON 零转换进 3D——这是 deck.gl/Three 不具备的开发效率。
-5. 许可 Apache-2.0，与项目 AGPL-3.0 无冲突。
+5. 项目根目录声明 MIT License。采用 Apache-2.0 第三方代码时，还须保留 Apache-2.0 要求的声明与通知。
 
 ---
 
