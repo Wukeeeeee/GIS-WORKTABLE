@@ -50,7 +50,8 @@ window.GIS = window.GIS || {};
       if (!emptyEl) return;
 
       var latest = projs[0];
-      var name = (latest.name || '未命名工程').replace(/^\[用户引用了上一条回复.*?\]\s*/s, '').replace(/^\[附图层:.*?\]\s*/s, '').trim() || '未命名工程';
+      var name = (typeof latest.name === 'string' ? latest.name : '未命名工程')
+        .replace(/^\[用户引用了上一条回复.*?\]\s*/s, '').replace(/^\[附图层:.*?\]\s*/s, '').trim() || '未命名工程';
       if (name.length > 22) name = name.slice(0, 22) + '…';
 
       var banner = document.createElement('div');
@@ -279,10 +280,27 @@ window.GIS = window.GIS || {};
         GIS.chat.addMessage('加载工程失败', 'system');
         return false;
       }
+      var projectName = typeof data.name === 'string' ? data.name : '未命名工程';
+      var skippedProjectRecords = 0;
+      var projectMessages = Array.isArray(data.messages) ? data.messages.filter(function(msg) {
+        var valid = msg && typeof msg === 'object' && !Array.isArray(msg) &&
+          (msg.role === 'user' || msg.role === 'assistant') && typeof msg.content === 'string';
+        if (!valid) skippedProjectRecords++;
+        return valid;
+      }) : [];
+      if (data.messages != null && !Array.isArray(data.messages)) skippedProjectRecords++;
+      var projectLayers = Array.isArray(data.layers) ? data.layers.filter(function(layer) {
+        var valid = layer && typeof layer === 'object' && !Array.isArray(layer);
+        if (!valid) skippedProjectRecords++;
+        return valid;
+      }) : [];
+      if (data.layers != null && !Array.isArray(data.layers)) skippedProjectRecords++;
+      var projectLayerGroups = Array.isArray(data.layerGroups) ? data.layerGroups : [];
+      if (data.layerGroups != null && !Array.isArray(data.layerGroups)) skippedProjectRecords++;
       _currentProjectId = data.id;
       _currentSessionId = data.sessionId || ('proj_' + data.id);
       var capsuleName = document.getElementById('workspaceCurrentProjectName');
-      if (capsuleName) capsuleName.textContent = data.name || '未命名工程';
+      if (capsuleName) capsuleName.textContent = projectName || '未命名工程';
       // 先恢复聊天面板可见
       _hideHistory();
       // 先清理旧图层与地图要素，避免与旧工程叠加冲突
@@ -296,132 +314,143 @@ window.GIS = window.GIS || {};
         try { GIS.map.clearAll(); } catch(_) {}
       }
       if (GIS.layers && typeof GIS.layers.setGroupState === 'function') {
-        GIS.layers.setGroupState(data.layerGroups || []);
+        GIS.layers.setGroupState(projectLayerGroups);
       }
       GIS.chat.clear();
-      if (data.messages) {
-        data.messages.forEach(function(msg) {
-          if (msg.role === 'user') GIS.chat.addMessage(_escapeMarkup(msg.content), 'user');
-          else if (msg.role === 'assistant') GIS.chat.addMessage(msg.content, 'ai');
-        });
-      }
-      if (data.layers && data.layers.length > 0) {
+      projectMessages.forEach(function(msg) {
+        if (msg.role === 'user') GIS.chat.addMessage(_escapeMarkup(msg.content), 'user');
+        else if (msg.role === 'assistant') GIS.chat.addMessage(msg.content, 'ai');
+      });
+      if (projectLayers.length > 0) {
         var restoredLayerIds = new Set();
         var restoreWarnings = [];
-        data.layers.forEach(function(layer, layerIndex) {
-          var layerName = layer.name || '图层';
-          var layerColor = layer.color || '#1c1b1b';
-          var isVis = layer.visible !== false;
-          var mapLayerName = 'project_' + data.id + '_layer_' + layerIndex;
-          var baseLayerId = typeof layer.layer_id === 'string' && layer.layer_id
-            ? layer.layer_id : mapLayerName;
-          var restoredLayerId = baseLayerId;
-          var duplicateSuffix = 2;
-          while (restoredLayerIds.has(restoredLayerId)) {
-            restoredLayerId = baseLayerId + '_' + duplicateSuffix++;
-          }
-          restoredLayerIds.add(restoredLayerId);
-          var serviceUrl = layer.url || layer.service_url || '';
-          var proto = (layer.service_type || layer.protocol || '').toLowerCase();
+        projectLayers.forEach(function(layer, layerIndex) {
+          try {
+            var layerName = layer.name || '图层';
+            var layerColor = layer.color || '#1c1b1b';
+            var isVis = layer.visible !== false;
+            var mapLayerName = 'project_' + data.id + '_layer_' + layerIndex;
+            var baseLayerId = typeof layer.layer_id === 'string' && layer.layer_id
+              ? layer.layer_id : mapLayerName;
+            var restoredLayerId = baseLayerId;
+            var duplicateSuffix = 2;
+            while (restoredLayerIds.has(restoredLayerId)) {
+              restoredLayerId = baseLayerId + '_' + duplicateSuffix++;
+            }
+            restoredLayerIds.add(restoredLayerId);
+            var serviceUrl = layer.url || layer.service_url || '';
+            var proto = (layer.service_type || layer.protocol || layer.geometry_type || '').toLowerCase();
 
-          if (layer.geojson && GIS.map && GIS.map.loadGeoJSON) {
-            var restoredStyle = Object.assign({}, layer.style || {});
-            var legacyOpacity = layer.opacity === undefined && restoredStyle.opacity !== undefined;
-            var vectorOpacity = Number(layer.opacity !== undefined ? layer.opacity :
-              (legacyOpacity ? restoredStyle.opacity : 1));
-            if (legacyOpacity) delete restoredStyle.opacity;
-            if (!Number.isFinite(vectorOpacity)) vectorOpacity = 1;
-            try {
-              var renderedVector = GIS.map.loadGeoJSON(layer.geojson, mapLayerName, restoredStyle);
-              if (renderedVector === null) {
+            if (layer.geojson && GIS.map && GIS.map.loadGeoJSON) {
+              var restoredStyle = Object.assign({}, layer.style || {});
+              var legacyOpacity = layer.opacity === undefined && restoredStyle.opacity !== undefined;
+              var vectorOpacity = Number(layer.opacity !== undefined ? layer.opacity :
+                (legacyOpacity ? restoredStyle.opacity : 1));
+              if (legacyOpacity) delete restoredStyle.opacity;
+              if (!Number.isFinite(vectorOpacity)) vectorOpacity = 1;
+              try {
+                var renderedVector = GIS.map.loadGeoJSON(layer.geojson, mapLayerName, restoredStyle);
+                if (renderedVector === null) {
+                  restoreWarnings.push(layerName);
+                  return;
+                }
+              } catch(_) {
                 restoreWarnings.push(layerName);
                 return;
               }
-            } catch(_) {
-              restoreWarnings.push(layerName);
-              return;
-            }
-            if (GIS.layers && GIS.layers.addLayer) {
-              var restoredLayer = GIS.layers.addLayer({
-                layer_id: restoredLayerId,
-                filename: layerName,
-                _rawName: mapLayerName,
-                geojson: layer.geojson,
-                geometry_type: layer.geometry_type || 'Vector',
-                crs: layer.crs || 'WGS-84',
-                color: layerColor,
-                style: restoredStyle,
-                opacity: vectorOpacity,
-                visible: isVis,
-                source: layer.source || 'ai',
-                provenance: layer.provenance || null,
-                groupId: layer.groupId || null,
-              });
+              if (GIS.layers && GIS.layers.addLayer) {
+                var restoredLayer = GIS.layers.addLayer({
+                  layer_id: restoredLayerId,
+                  filename: layerName,
+                  _rawName: mapLayerName,
+                  geojson: layer.geojson,
+                  geometry_type: layer.geometry_type || 'Vector',
+                  crs: layer.crs || 'WGS-84',
+                  color: layerColor,
+                  style: restoredStyle,
+                  opacity: vectorOpacity,
+                  visible: isVis,
+                  source: layer.source || 'ai',
+                  provenance: layer.provenance || null,
+                  groupId: layer.groupId || null,
+                });
+                if (!isVis && GIS.map.setLayerVisible) {
+                  GIS.map.setLayerVisible(mapLayerName, false);
+                }
+                if (layer.symbology && typeof GIS.layers.restoreSymbologyState === 'function') {
+                  GIS.layers.restoreSymbologyState(
+                    restoredLayer && restoredLayer.layer_id || layer.layer_id,
+                    layer.symbology
+                  );
+                }
+                if (GIS.map.setLayerOpacity) GIS.map.setLayerOpacity(mapLayerName, vectorOpacity);
+                if (restoredLayer && GIS.state && GIS.state.setOpacity) {
+                  GIS.state.setOpacity(restoredLayer.layer_id, vectorOpacity);
+                }
+              }
+            } else if (layer.raster && layer.raster.url && Array.isArray(layer.raster.bounds) &&
+                GIS.map && GIS.map.addImageOverlay) {
+              var rasterOpacity = Number(layer.opacity !== undefined ? layer.opacity :
+                (layer.style && layer.style.opacity !== undefined ? layer.style.opacity : 1));
+              GIS.map.addImageOverlay(layer.raster.url, layer.raster.bounds, mapLayerName, layerName);
               if (!isVis && GIS.map.setLayerVisible) {
                 GIS.map.setLayerVisible(mapLayerName, false);
               }
-              if (layer.symbology && typeof GIS.layers.restoreSymbologyState === 'function') {
-                GIS.layers.restoreSymbologyState(
-                  restoredLayer && restoredLayer.layer_id || layer.layer_id,
-                  layer.symbology
+              if (Number.isFinite(rasterOpacity) && GIS.map.setLayerOpacity) {
+                GIS.map.setLayerOpacity(mapLayerName, rasterOpacity);
+              }
+              if (GIS.layers && GIS.layers.addLayer) {
+                var restoredRaster = {
+                  layer_id: restoredLayerId,
+                  filename: layerName,
+                  _rawName: mapLayerName,
+                  geometry_type: layer.geometry_type || 'Raster',
+                  crs: layer.crs || 'WGS-84',
+                  source: layer.source || 'upload',
+                  style: layer.style || {},
+                  opacity: Number.isFinite(rasterOpacity) ? rasterOpacity : 1,
+                  raster: layer.raster,
+                  _registeredName: layerName,
+                  visible: isVis,
+                  groupId: layer.groupId || null,
+                };
+                if (typeof layer.registration_token === 'string') {
+                  restoredRaster._registrationTokens = Object.create(null);
+                  restoredRaster._registrationTokens[layerName] = layer.registration_token;
+                }
+                GIS.layers.addLayer(restoredRaster, true);
+              }
+            } else if (serviceUrl && proto.indexOf('wms') >= 0 && GIS.geosource &&
+                (GIS.geosource.loadSavedServiceLayer || GIS.geosource.loadWmsSublayer)) {
+              if (GIS.geosource.loadSavedServiceLayer) {
+                GIS.geosource.loadSavedServiceLayer(Object.assign({}, layer, { layer_id: restoredLayerId }));
+              } else {
+                GIS.geosource.loadWmsSublayer(
+                  encodeURIComponent(serviceUrl), encodeURIComponent(layer.sublayer || ''),
+                  encodeURIComponent(layerName), layer.groupId || null
                 );
               }
-              if (GIS.map.setLayerOpacity) GIS.map.setLayerOpacity(mapLayerName, vectorOpacity);
-              if (restoredLayer && GIS.state && GIS.state.setOpacity) {
-                GIS.state.setOpacity(restoredLayer.layer_id, vectorOpacity);
+            } else if (serviceUrl && (proto.indexOf('xyz') >= 0 || /\{[xyz]\}/i.test(serviceUrl)) && GIS.map && GIS.map.addTileLayer) {
+              if (GIS.geosource && GIS.geosource.loadSavedServiceLayer) {
+                GIS.geosource.loadSavedServiceLayer(Object.assign({}, layer, { layer_id: restoredLayerId }));
+              } else {
+                GIS.map.addTileLayer(serviceUrl, layerName);
+                if (GIS.layers && GIS.layers.addLayer) {
+                  GIS.layers.addLayer({
+                    filename: layerName,
+                    geometry_type: 'XYZ瓦片',
+                    crs: 'WebMercator',
+                    source: 'geosource',
+                    url: serviceUrl,
+                    service_type: 'XYZ',
+                    visible: isVis,
+                    groupId: layer.groupId || null
+                  }, true);
+                }
               }
             }
-          } else if (layer.raster && layer.raster.url && Array.isArray(layer.raster.bounds) &&
-              GIS.map && GIS.map.addImageOverlay) {
-            var rasterOpacity = Number(layer.opacity !== undefined ? layer.opacity :
-              (layer.style && layer.style.opacity !== undefined ? layer.style.opacity : 1));
-            GIS.map.addImageOverlay(layer.raster.url, layer.raster.bounds, mapLayerName, layerName);
-            if (!isVis && GIS.map.setLayerVisible) {
-              GIS.map.setLayerVisible(mapLayerName, false);
-            }
-            if (Number.isFinite(rasterOpacity) && GIS.map.setLayerOpacity) {
-              GIS.map.setLayerOpacity(mapLayerName, rasterOpacity);
-            }
-            if (GIS.layers && GIS.layers.addLayer) {
-              var restoredRaster = {
-                layer_id: restoredLayerId,
-                filename: layerName,
-                _rawName: mapLayerName,
-                geometry_type: layer.geometry_type || 'Raster',
-                crs: layer.crs || 'WGS-84',
-                source: layer.source || 'upload',
-                style: layer.style || {},
-                opacity: Number.isFinite(rasterOpacity) ? rasterOpacity : 1,
-                raster: layer.raster,
-                _registeredName: layerName,
-                visible: isVis,
-                groupId: layer.groupId || null,
-              };
-              if (typeof layer.registration_token === 'string') {
-                restoredRaster._registrationTokens = Object.create(null);
-                restoredRaster._registrationTokens[layerName] = layer.registration_token;
-              }
-              GIS.layers.addLayer(restoredRaster, true);
-            }
-          } else if (serviceUrl && proto.indexOf('wms') >= 0 && GIS.geosource && GIS.geosource.loadWmsSublayer) {
-            GIS.geosource.loadWmsSublayer(
-              encodeURIComponent(serviceUrl), encodeURIComponent(layer.sublayer || ''),
-              encodeURIComponent(layerName), layer.groupId || null
-            );
-          } else if (serviceUrl && (proto.indexOf('xyz') >= 0 || /\{[xyz]\}/i.test(serviceUrl)) && GIS.map && GIS.map.addTileLayer) {
-            GIS.map.addTileLayer(serviceUrl, layerName);
-            if (GIS.layers && GIS.layers.addLayer) {
-              GIS.layers.addLayer({
-                filename: layerName,
-                geometry_type: 'XYZ瓦片',
-                crs: 'WebMercator',
-                source: 'geosource',
-                url: serviceUrl,
-                service_type: 'XYZ',
-                visible: isVis,
-                groupId: layer.groupId || null
-              }, true);
-            }
+          } catch(_) {
+            restoreWarnings.push(typeof layer.name === 'string' && layer.name ? layer.name : '图层');
           }
         });
         if (GIS.layers && typeof GIS.layers.syncLayerOrder === 'function') {
@@ -434,12 +463,19 @@ window.GIS = window.GIS || {};
           GIS.chat.addMessage('工程已部分恢复：' + failedSummary + '未能显示，请检查数据后重试。', 'system');
         }
       }
+      if (skippedProjectRecords) {
+        GIS.chat.addMessage('工程中有 ' + skippedProjectRecords + ' 条格式异常的记录已跳过，其余内容已尽量恢复。', 'system');
+      }
+      if (Array.isArray(data.registration_warnings) && data.registration_warnings.length) {
+        GIS.chat.addMessage('其中 ' + data.registration_warnings.length +
+          ' 个图层未能注册到分析工具；请检查这些图层的数据后再对其执行分析。', 'system');
+      }
       var savedMapView = _readSavedMapView(data.mapState);
       if (savedMapView && GIS.map && GIS.map.setView) {
         try { GIS.map.setView(savedMapView.center, savedMapView.zoom); } catch(_) {}
       }
-      var displayProjName = (data.name || '').replace(/^\[用户引用了上一条回复.*?\]\s*/s, '').replace(/^\[附图层:.*?\]\s*/s, '').trim();
-      if (!displayProjName || displayProjName === '未命名工程') displayProjName = data.name || '未命名工程';
+      var displayProjName = projectName.replace(/^\[用户引用了上一条回复.*?\]\s*/s, '').replace(/^\[附图层:.*?\]\s*/s, '').trim();
+      if (!displayProjName || displayProjName === '未命名工程') displayProjName = projectName || '未命名工程';
       if (displayProjName.length > 25) displayProjName = displayProjName.slice(0, 25) + '…';
       GIS.chat.addMessage('已恢复工程: ' + _escapeMarkup(displayProjName), 'system', { pill: true });
       if (GIS.workspace && GIS.workspace.renderRecentProjects) {
@@ -478,12 +514,13 @@ window.GIS = window.GIS || {};
     if (nameEl) currentName = nameEl.textContent;
     function doRename(newName) {
       if (!newName || newName.trim() === '') return;
-      GIS.api.renameProject(pid, newName.trim()).then(function() {
+      GIS.api.renameProject(pid, newName.trim()).then(function(result) {
         if (nameEl) nameEl.textContent = newName.trim();
         if (_currentProjectId === pid) {
           var topCapsule = document.getElementById('workspaceCurrentProjectName');
           if (topCapsule) topCapsule.textContent = newName.trim();
         }
+        if (result && result.warning && GIS.toast && typeof GIS.toast.warn === 'function') GIS.toast.warn(result.warning);
       }).catch(function(err) {
         GIS.chat.addMessage('重命名失败: ' + _escapeMarkup(err.message || err), 'system');
       });
@@ -609,6 +646,7 @@ window.GIS = window.GIS || {};
         if (res && res.id && _currentSessionId === sessionId && _loadGeneration === generation && _currentProjectId === projectId) {
           _currentProjectId = res.id;
         }
+        if (res && res.warning && GIS.toast && typeof GIS.toast.warn === 'function') GIS.toast.warn(res.warning);
         return res;
       }).catch(function(error) {
         console.warn('[GIS Project] 自动保存失败', error);

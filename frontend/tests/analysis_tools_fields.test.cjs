@@ -53,21 +53,22 @@ class Element {
   getBoundingClientRect() { return { left: 0, top: 0, right: 0, width: 0 }; }
 }
 
-function loadAnalysis(fetchResponse) {
+function loadAnalysis(fetchResponse, language = 'zh-CN') {
   elements.clear();
+  const listeners = {};
   const document = {
     documentElement: new Element('html'),
     createElement(tag) { const el = new Element(); el.tagName = tag; return el; },
     getElementById(id) { return elements.get(id) || null; },
     querySelector() { return null; },
-    addEventListener() {},
+    addEventListener(name, callback) { (listeners[name] ||= []).push(callback); },
     removeEventListener() {},
   };
   const features = [
     { properties: { population: null, district: 'A' } },
     { properties: { population: 125, late_field: 'available later' } },
   ];
-  const calls = [], feedback = [], alerts = [];
+  const calls = [], feedback = [], alerts = [], preparedPanels = [];
   const layer = {geojson: {type: 'FeatureCollection', features}};
   const names = ['Districts'];
   const window = {
@@ -75,8 +76,9 @@ function loadAnalysis(fetchResponse) {
     innerHeight: 800,
     addEventListener() {},
     GIS: {
+      i18n: { t(key, fallback) { return language === 'en' ? 'EN:' + key : fallback; } },
       api: { BASE_URL: '', syncLayer() { return Promise.resolve(); }, invokeTool(tool, args) { calls.push({tool, args}); return Promise.resolve({response: 'done'}); } },
-      workspace: {preparePanel() {}, expandPanel() {}, centerPanel() {return [0, 0];}, clampPanel(_c, x, y) {return [x, y];}, toolPending() {}, toolFeedback(...args) {feedback.push(args); return !args[2];}},
+      workspace: {preparePanel(...args) { preparedPanels.push(args); }, expandPanel() {}, centerPanel() {return [0, 0];}, clampPanel(_c, x, y) {return [x, y];}, toolPending() {}, toolFeedback(...args) {feedback.push(args); return !args[2];}},
       layers: {
         getLayerNames() { return names; },
         getLayerByName(name) { return name === 'Districts' ? layer : null; },
@@ -90,11 +92,40 @@ function loadAnalysis(fetchResponse) {
     alert(message) { alerts.push(message); }, console,
   }, { filename: sourcePath });
 
-  return {window, layer, names, calls, feedback, alerts, open(op) {
+  return {window, layer, names, calls, feedback, alerts, preparedPanels, setLanguage(next) {
+    language = next;
+    (listeners['gis:languagechange'] || []).forEach(callback => callback({detail: {language: next}}));
+  }, launcherChildren() {
+    const body = elements.get('analysisToolsBody');
+    return body && body.children && body.children[0] ? body.children[0].children : [];
+  }, open(op) {
     window.GIS._lastMenuOp = op; window.GIS.analysisTools.toggle();
     return elements.get('analysisToolsPanel-' + op);
   }};
 }
+
+test('analysis tool launcher localizes its title, groups, and all tool labels', () => {
+  const h = loadAnalysis(undefined, 'en');
+  h.window.GIS.analysisTools.toggle();
+
+  const children = h.launcherChildren();
+  const groups = children.filter(element => element.tagName === 'div');
+  const tools = children.filter(element => element.className === 'at-tool-btn');
+  assert.equal(groups.length, 4);
+  assert.equal(tools.length, 20);
+  assert.ok(groups.every(element => element.textContent.startsWith('EN:')));
+  assert.ok(tools.every(element => element.textContent.startsWith('EN:')));
+  assert.ok(h.preparedPanels.some(args => args[0] === 'analysisToolsPanel' && args[3] === 'EN:tool.analysis-tools'));
+});
+
+test('analysis tool launcher follows language changes while it is open', () => {
+  const h = loadAnalysis(undefined, 'en');
+  h.window.GIS.analysisTools.toggle();
+  h.setLanguage('zh-CN');
+  assert.ok(h.launcherChildren().every(element => !element.textContent.startsWith('EN:')));
+  h.setLanguage('en');
+  assert.ok(h.launcherChildren().every(element => element.textContent.startsWith('EN:')));
+});
 
 test('analysis tool field selector includes properties present after the first feature', async () => {
   const h = loadAnalysis(); const root = h.open('regression');

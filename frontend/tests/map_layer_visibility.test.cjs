@@ -8,20 +8,28 @@ function createHarness() {
   const layers = new Map();
   const activeLayers = new Set();
   const fitBoundsCalls = [];
+  const attributionValues = [];
   let zoom = 8;
   const mapInstance = {
     getZoom() { return zoom; },
     hasLayer(layer) { return activeLayers.has(layer); },
     addLayer(layer) { activeLayers.add(layer); return this; },
     removeLayer(layer) { activeLayers.delete(layer); return this; },
+    eachLayer(callback) { renderedFeatures.forEach(callback); },
     fitBounds(bounds, options) { fitBoundsCalls.push({ bounds, options }); },
   };
   const renderedFeatures = [];
+  const makeOverlay = (url, options = {}) => ({
+    url,
+    options,
+    addTo(map) { map.addLayer(this); return this; },
+  });
   const L = { geoJSON(geojson, options = {}) {
     const features = geojson.type === 'FeatureCollection' ? (geojson.features || []) : [geojson];
     features.forEach(feature => {
       const leafletLayer = {
         tooltip: null,
+        feature,
         bindTooltip(text, config) { this.tooltip = { text, config }; },
         unbindTooltip() { this.tooltip = null; },
         on() {},
@@ -34,10 +42,12 @@ function createHarness() {
     getBounds() { return {}; },
   }; }, CircleMarker: class {}, latLng(lat, lng) { return { lat, lng }; },
   latLngBounds(southWest, northEast) { return { southWest, northEast }; },
-  imageOverlay(url) { return {
-    url,
-    addTo(map) { map.addLayer(this); return this; },
-  }; } };
+  imageOverlay(url, _bounds, options) { attributionValues.push(options.attribution); return makeOverlay(url, options); },
+  tileLayer(url, options) { attributionValues.push(options.attribution); return makeOverlay(url, options); } };
+  L.tileLayer.wms = function(url, options) {
+    attributionValues.push(options.attribution);
+    return makeOverlay(url, options);
+  };
   const window = { GIS: {} };
   const document = { getElementById() { return null; }, addEventListener() {} };
   const source = fs.readFileSync(path.resolve(__dirname, '../js/map.js'), 'utf8')
@@ -53,6 +63,7 @@ function createHarness() {
   const layer = {};
   window.GIS.__setTestLayer('demo', layer);
   return { map: window.GIS.map, mapInstance, layer, fitBoundsCalls, activeLayers, renderedFeatures,
+    attributionValues,
     setMapInstance: window.GIS.__setMapInstanceForTest, setZoom(value) { zoom = value; } };
 }
 
@@ -142,6 +153,23 @@ test('raster overlays replace a restored overlay by stable layer id after rerun'
   assert.equal(map.getLayer('dem_slope.png').url, '/new.png');
 });
 
+test('raster, XYZ, and WMS layer attributions escape provider-controlled names as text', () => {
+  const { map, attributionValues } = createHarness();
+  const unsafeName = '<img src=x onerror="alert(1)">';
+
+  map.addImageOverlay('/preview.png', [0, 0, 1, 1], unsafeName, 'raster-id');
+  map.addTileLayer('https://tiles.example/{z}/{x}/{y}.png', unsafeName);
+  map.addWmsLayer('https://maps.example/wms', 'roads', unsafeName, {
+    attribution: '<svg onload="alert(2)">',
+  });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(attributionValues)), [
+    '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;',
+    '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;',
+    '&lt;svg onload=&quot;alert(2)&quot;&gt;',
+  ]);
+});
+
 test('applying thematic styles preserves user visibility and scale visibility', () => {
   const { map, mapInstance } = createHarness();
   const geojson = { type: 'FeatureCollection', features: [] };
@@ -184,4 +212,19 @@ test('setLabels reports visible labels, preserves the previous config on an inva
   assert.equal(map.setLabels('labeled-layer', 'missing'), false);
   assert.equal(renderedFeatures[0].tooltip.text, '0', 'a failed field change must leave the prior label visible');
   assert.equal(map.setLabels('missing-layer', 'label'), false);
+});
+
+test('feature labels and chart-link tooltips render untrusted properties as text', () => {
+  const { map, renderedFeatures } = createHarness();
+  map.loadGeoJSON({ type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: {
+      label: '<img src=x onerror=alert(1)>',
+      chart: '<svg onload=alert(2)>',
+    }, geometry: { type: 'Point', coordinates: [0, 0] } },
+  ] }, 'untrusted-tooltip-layer');
+
+  assert.equal(map.setLabels('untrusted-tooltip-layer', 'label'), true);
+  assert.equal(renderedFeatures[0].tooltip.text, '&lt;img src=x onerror=alert(1)&gt;');
+  map.enableChartLink('untrusted-tooltip-layer', 'chart');
+  assert.equal(renderedFeatures[0].tooltip.text, '&lt;svg onload=alert(2)&gt;');
 });

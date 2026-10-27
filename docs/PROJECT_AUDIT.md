@@ -35,7 +35,7 @@ GIS-WorkTable 采用 **前后端分离 + Agent 工作流 + 2D/3D 双地图引擎
 - **空间量测**：`measure_area`（自动选择最佳 UTM 带投影，带 Albers 交叉验证）、`measure_distance`。
 - **3D 地球与数据驱动拉伸**：2D/3D 一键切换，`visualize_3d` 面图层高度挤出渲染。
 - **手动直连面板与历史重跑**：`/api/tools/invoke`，不消耗 LLM token 即可调用所有核心空间工具，工具面板与处理历史一键复现。
-- **GeoSource 全球数据超市与 MCP 互通**：本地 SQLite 索引 11,000+ 个空间服务与 18,000+ 图层，零拷贝热同步机制。
+- **GeoSource 服务与图层目录**：内嵌模块通过 SQLite 索引提供关键词、国家、协议和类别筛选及分页检索，并提供服务接入入口。随仓库提供的快照实测包含 2,198 条服务记录和 1,561 条图层记录；运行时也可通过 `GEOSOURCE_DB_PATH` 或较新的同级数据库切换快照。目录检索不代表第三方端点当前可用或所有条目都能下载；现有代码和验证记录也不足以支持“与独立 GeoSource-MCP 零拷贝热同步”的说法。详见[仓库盘点与方向评估](repository-audit.md)。
 
 ### 2. 已实现但依赖外部网络/API Key (Conditional)
 - **高德地图服务**：`amap_poi_search`、`amap_geocode`（依赖有效的 AMAP Web Key）。

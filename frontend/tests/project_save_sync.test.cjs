@@ -13,6 +13,7 @@ function deferred() {
 function setup(layers = [], wait = () => Promise.resolve([])) {
   const saves = [];
   const errors = [];
+  const warnings = [];
   const api = {
     autoSaveProject(session, id, groups, assignments) {
       saves.push({ session, id, groups, assignments });
@@ -22,12 +23,12 @@ function setup(layers = [], wait = () => Promise.resolve([])) {
   };
   const window = { GIS: { api, layers: {
     getLayers: () => layers, waitForRegistrySync: wait, getGroupState: () => [],
-  }, toast: { error(message) { errors.push(message); } } } };
+  }, toast: { error(message) { errors.push(message); }, warn(message) { warnings.push(message); } } } };
   vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../js/project.js'), 'utf8'), {
     window, document: { getElementById: () => null }, Promise, Date, Math, Number, String, Object, Array, JSON,
     console: { warn() {} },
   });
-  return { api, layers, saves, errors, project: window.GIS.project };
+  return { api, layers, saves, errors, warnings, project: window.GIS.project };
 }
 
 test('autosave collects names and groups after current registration finishes', async () => {
@@ -110,4 +111,17 @@ test('failed autosave does not poison the queue for a later full manual save', a
   assert.equal((await two).id, 'saved');
   assert.equal(h.saves.length, 1);
   assert.equal(h.saves[0].name, 'Manual');
+});
+
+test('autosave surfaces a successful save with a project-index warning', async () => {
+  const h = setup();
+  h.api.autoSaveProject = () => Promise.resolve({
+    id: 'saved', warning: '工程内容已保存，但最近工程列表暂未写入索引。',
+  });
+
+  await h.project.autoSave();
+
+  assert.equal(h.project.getCurrentProjectId(), 'saved');
+  assert.deepEqual(h.warnings, ['工程内容已保存，但最近工程列表暂未写入索引。']);
+  assert.deepEqual(h.errors, []);
 });

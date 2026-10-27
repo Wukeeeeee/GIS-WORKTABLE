@@ -80,7 +80,7 @@ window.GIS = window.GIS || {};
       + "</div>"
       + "<div id=\"networkBreaksField\" class=\"network-field\" style=\"display:none\">"
       + "<label>断值（米）"
-      + "<span class=\"network-help\" title=\"从设施点出发沿路网可到达的距离范围\">ⓘ"
+      + "<span class=\"network-help\" title=\"边界为可达路网节点凸包估算，可能包含实际不可达区域，不是精确等时圈\">ⓘ"
       + "</span>"
       + "</label>"
       + "<div class=\"network-breaks-row\">"
@@ -877,7 +877,8 @@ window.GIS = window.GIS || {};
         var allBounds = L.geoJSON(data.polygons).getBounds();
         if (allBounds.isValid()) map.fitBounds(allBounds.pad(0.1));
       }
-      resultBody.innerHTML = (data.areas || []).map(function(a) {
+      resultBody.innerHTML = '<div class="network-stat network-approximation-note" role="note">近似范围：按可达路网节点凸包估算，可能包含实际不可达区域，不代表精确等时圈。</div>' +
+        (data.areas || []).map(function(a) {
         return '<div class="network-stat">' + a.break + 'm 服务区: <strong>' + a.area_km2 + '</strong> km²</div>';
       }).join('');
       _autoAddResultLayer(data);

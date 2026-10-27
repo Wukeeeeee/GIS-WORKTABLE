@@ -51,6 +51,30 @@ test('partially completed tasks are labeled distinctly and can be rerun', () => 
   assert.equal(JSON.parse(storage.get('gis_task_history'))[0].status, 'partial');
 });
 
+test('corrupted persisted task IDs and statuses cannot inject task card markup', () => {
+  const taskList = { innerHTML: '', addEventListener() {} };
+  const storage = new Map([['gis_task_history', JSON.stringify([{
+    id: 'task-1" onmouseover="alert(1)',
+    status: 'success" onmouseover="alert(2)',
+    goal: '保留的任务', saved: true,
+  }])]]);
+  const window = { GIS: { api: { resolveProvider() { return null; } } } };
+  const sourcePath = path.resolve(__dirname, '../js/task.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window,
+    document: { getElementById(id) { return id === 'historyList' ? taskList : null; } },
+    localStorage: { getItem(key) { return storage.get(key) || null; }, setItem(key, value) { storage.set(key, value); } },
+    Date, Math, JSON, String, Number, Array, Object, console: { warn() {} },
+  }, { filename: sourcePath });
+
+  window.GIS.task.init();
+
+  assert.match(taskList.innerHTML, /data-task-id="task-1&quot; onmouseover=&quot;alert\(1\)"/);
+  assert.match(taskList.innerHTML, /task-status-unknown/);
+  assert.match(taskList.innerHTML, /未知状态/);
+  assert.doesNotMatch(taskList.innerHTML, /onmouseover="alert/);
+});
+
 test('stale in-progress tasks recover as interrupted and can be checked before rerun', () => {
   const staleTasks = [
     { id: '4', goal: '规划中的任务', provider: 'test', model: 'test', timestamp: 1, status: 'planning', resultLayers: [], saved: true },

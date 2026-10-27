@@ -39,7 +39,7 @@
 
 - 矢量分析：缓冲区、叠加分析、融合、简化、质心、空间连接、邻近分析、聚类、Voronoi 图等
 - 空间统计：Moran's I 全局/局部自相关、Getis-Ord Gi\* 热点分析、核密度估计（KDE）
-- 网络分析：基于 OSM 路网的最短路径、服务区分析、路网下载
+- 网络分析：基于 OSM 路网的最短路径、服务区范围估算（可达节点凸包，可能覆盖实际不可达区域）、路网下载
 - 编辑与数据质量：移动/旋转/缩放、字段管理、几何修复、重复检测、拓扑检查
 
 ### 栅格与遥感
@@ -51,7 +51,7 @@
 
 ### 数据获取与连接器
 
-- **GeoSource 全球空间服务与图层目录**：基于 SQLite 索引检索 GIS 服务和图层，支持 WMS、WFS、WMTS、XYZ、ArcGIS REST、STAC、CKAN 等协议。提供关键词/国家/协议等筛选、地图接入与 Agent 检索；条目数和可用性随数据库快照及外部服务变化。数据库路径配置见 [README](../README.md#配置)。独立目录项目见 [GeoSource-MCP](https://github.com/Wukeeeeee/GeoSource-MCP.git)。
+- **GeoSource 全球空间服务与图层目录**：基于 SQLite 索引检索 GIS 服务和图层，支持 WMS、WFS、WMTS、XYZ、ArcGIS REST、STAC、CKAN 等协议。提供关键词/国家/协议等筛选、地图接入与 Agent 检索；界面显示所选快照时间和目录记录状态，但不代表第三方端点实时可用。若服务支持 URL 查询参数形式的 API Key，用户可在接入时填写；请求经本机 WorkTable 代理转发，密钥只发送给服务方，不交给 AI，也不保存到工程。代理允许用户直接选择内网服务，并拦截公网服务跳转至内网或回环地址。请求头、OAuth 和账号密码认证暂不支持。数据库路径配置见 [README](../README.md#配置)。独立目录项目见 [GeoSource-MCP](https://github.com/Wukeeeeee/GeoSource-MCP.git)。
 - **云原生格式流式加载**：COG（/vsicurl 降采样预览）、PMTiles（HTTP Range 按需读瓦片，MVT 解码上图）、GeoParquet / FlatGeobuf（pyogrio + BBOX 空间过滤/行数上限）；粘贴 URL、拖拽文件、AI 指令三入口
 - 高德地图：POI 搜索、地理编码/逆地理编码/批量地理编码
 - DataV 行政区划边界、OSM 开放数据发现与下载、USGS 地震、Open-Meteo 天气

@@ -30,6 +30,35 @@ def test_upload_filename_cannot_escape_upload_directory(tmp_path, monkeypatch, c
     assert not (output_dir / "escape.geojson").exists()
 
 
+def test_oversized_upload_body_is_rejected_before_multipart_file_parsing(monkeypatch):
+    middleware_config = next(
+        item for item in main.app.user_middleware
+        if item.cls is main.ProjectImportBodyLimitMiddleware
+        and item.kwargs.get("path") == "/api/upload"
+    )
+    original_limit = middleware_config.kwargs["max_body_bytes"]
+    original_stack = main.app.middleware_stack
+    middleware_config.kwargs["max_body_bytes"] = 512
+    main.app.middleware_stack = None
+
+    async def upload_must_not_run(_file):
+        raise AssertionError("oversized request must be rejected before upload parsing")
+
+    monkeypatch.setattr(main, "_process_uploaded_file", upload_must_not_run)
+    try:
+        with TestClient(main.app) as client:
+            response = client.post(
+                "/api/upload",
+                files={"file": ("large.geojson", b"x" * 1024, "application/geo+json")},
+            )
+    finally:
+        middleware_config.kwargs["max_body_bytes"] = original_limit
+        main.app.middleware_stack = original_stack
+
+    assert response.status_code == 413
+    assert "上传请求体超出允许大小" in response.json()["detail"]
+
+
 @pytest.mark.parametrize(
     ("filename", "payload", "error"),
     [

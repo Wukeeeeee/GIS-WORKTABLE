@@ -42,6 +42,15 @@ def test_db_path_and_connection():
         conn.close()
 
 
+def test_explicit_missing_db_path_does_not_fall_back_to_another_snapshot(monkeypatch, tmp_path):
+    requested_path = tmp_path / "missing-geosource.db"
+    monkeypatch.setenv("GEOSOURCE_DB_PATH", str(requested_path))
+
+    assert gs.get_db_path() == str(requested_path.resolve())
+    with pytest.raises(FileNotFoundError, match="missing-geosource.db"):
+        gs.get_db_connection(readonly=True)
+
+
 def test_list_categories_and_stats():
     """验证统计总览数据。"""
     stats = gs.list_categories_and_stats()
@@ -50,6 +59,41 @@ def test_list_categories_and_stats():
     assert len(stats["top_categories"]) > 0
     assert len(stats["top_protocols"]) > 0
     assert len(stats["top_countries"]) > 0
+
+
+def test_stats_cache_hits_without_exposing_or_depending_on_db_path(monkeypatch):
+    db_path = gs.get_db_path()
+    original_getmtime = os.path.getmtime
+    mtime = [100.0]
+    connection_calls = []
+    original_connection = gs.get_db_connection
+
+    def getmtime(path):
+        if os.path.abspath(path) == os.path.abspath(db_path):
+            return mtime[0]
+        return original_getmtime(path)
+
+    def get_connection(readonly=False):
+        connection_calls.append(readonly)
+        return original_connection(readonly=readonly)
+
+    monkeypatch.setattr(gs.os.path, "getmtime", getmtime)
+    monkeypatch.setattr(gs, "get_db_path", lambda: db_path)
+    monkeypatch.setattr(gs, "get_db_connection", get_connection)
+    monkeypatch.setattr(gs, "_cached_stats_data", None)
+    monkeypatch.setattr(gs, "_cached_stats_db_path", None)
+    monkeypatch.setattr(gs, "_last_db_mtime", 0.0)
+
+    first = gs.list_categories_and_stats()
+    second = gs.list_categories_and_stats()
+    assert len(connection_calls) == 1
+    assert "db_path" not in first and "db_path" not in second
+    assert first == second
+
+    mtime[0] = 101.0
+    assert gs.os.path.getmtime(db_path) == 101.0
+    gs.list_categories_and_stats()
+    assert len(connection_calls) == 2
 
 
 def test_search_services_by_keyword():
@@ -69,6 +113,22 @@ def test_search_services_by_filters():
     assert res["total_returned"] > 0
     for r in res["results"]:
         assert "中国" in (r.get("country") or "") or "中国" in (r.get("region") or "")
+
+
+def test_search_results_preserve_partial_free_metadata():
+    result = gs.search_services(keyword="Esri World Geocoding Demo", limit=10)
+    service = next(row for row in result["results"] if row["service_id"] == "AGOL-0051")
+
+    assert service["free"] == "部分免费"
+    assert service["is_free"] == "是"
+
+
+def test_search_clamps_out_of_range_page_before_sqlite_offset():
+    result = gs.search_services(page=10**100, page_size=5)
+
+    assert result["page"] == result["total_pages"]
+    assert result["total_returned"] > 0
+    assert result["total_returned"] <= result["page_size"]
 
 
 def test_get_service_detail():
@@ -103,6 +163,26 @@ def test_query_sql_safe_execution():
 
     bad_res2 = gs.query_sql("DELETE FROM master")
     assert "error" in bad_res2
+
+
+def test_query_sql_interrupts_expensive_recursive_queries(monkeypatch):
+    monkeypatch.setattr(gs, "_SQL_QUERY_TIMEOUT_SECONDS", 0.001)
+
+    result = gs.query_sql(
+        "WITH RECURSIVE counter(value) AS (SELECT 1 UNION ALL "
+        "SELECT value + 1 FROM counter WHERE value < 100000000) "
+        "SELECT value FROM counter ORDER BY value DESC"
+    )
+
+    assert "error" in result
+    assert "0.001" in result["error"]
+
+
+def test_query_sql_rejects_oversized_statements():
+    result = gs.query_sql("SELECT " + " " * gs._SQL_QUERY_MAX_LENGTH + "1")
+
+    assert "error" in result
+    assert "不能超过" in result["error"]
 
 
 def test_langchain_tools():

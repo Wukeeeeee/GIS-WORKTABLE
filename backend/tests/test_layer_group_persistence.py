@@ -4,6 +4,7 @@ import gzip
 import io
 import json
 import os
+import stat
 import zipfile
 
 import pytest
@@ -63,6 +64,35 @@ def test_autosave_can_remove_all_layers_without_chat_history(tmp_path, monkeypat
     assert result["messages"] == messages
 
 
+def test_activate_project_skips_malformed_conversation_records(tmp_path, monkeypatch):
+    from backend.services import ai_service, tools
+
+    _use_temp_project_store(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="损坏历史", session_id="damaged-history", provider="test",
+        map_state={}, messages=[
+            {"role": "user", "content": "保留的问题"}, None,
+            {"role": "tool", "content": "不支持的角色"},
+            {"role": "assistant", "content": 42},
+            {"role": "assistant", "content": "保留的回答"},
+        ], layers=[],
+    )
+    monkeypatch.setattr(ai_service, "conversation_history", {})
+    monkeypatch.setattr(tools, "_registered_layers", {})
+    monkeypatch.setattr(tools, "_active_project_id", None)
+    monkeypatch.setattr(tools, "_pending_layers", [])
+    monkeypatch.setattr(tools, "_pending_layer_ops", [])
+    monkeypatch.setattr(tools, "reset_registered_layers", lambda _layers, **_kwargs: [])
+
+    activated = project_service.activate_project(saved["id"], session_id="restored-session")
+
+    assert activated["sessionId"] == "restored-session"
+    assert ai_service.conversation_history["restored-session"] == [
+        {"role": "user", "content": "保留的问题"},
+        {"role": "assistant", "content": "保留的回答"},
+    ]
+
+
 def test_downloaded_layer_provenance_survives_autosave_and_restore(tmp_path, monkeypatch):
     from backend.services import ai_service, tools
 
@@ -93,6 +123,29 @@ def test_downloaded_layer_provenance_survives_autosave_and_restore(tmp_path, mon
     project_service.activate_project(saved["id"], session_id="provenance-restored")
     restored = tools.get_registered_layers_snapshot()
     assert restored[0]["provenance"] == provenance
+
+
+def test_open_project_registers_valid_layers_when_another_layer_is_invalid(tmp_path, monkeypatch):
+    from backend.services import tools
+
+    _use_temp_project_store(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="混合图层工程", session_id="mixed-layers", provider="test",
+        map_state={}, messages=[], layers=[
+            {"name": "坏图层", "geojson": {"type": "FeatureCollection", "features": [None]}},
+            {"name": "好图层", "geojson": _GEOJSON},
+        ],
+    )
+    monkeypatch.setattr(tools, "_registered_layers", {})
+    monkeypatch.setattr(tools, "_active_project_id", None)
+    monkeypatch.setattr(tools, "_pending_layers", [])
+    monkeypatch.setattr(tools, "_pending_layer_ops", [])
+
+    opened = project_service.open_project(saved["id"])
+
+    assert [layer["name"] for layer in opened["layers"]] == ["坏图层", "好图层"]
+    assert opened["registration_warnings"] == ["坏图层"]
+    assert set(tools._registered_layers) == {"好图层"}
 
 
 @pytest.mark.parametrize("assignment", [None, {}, {"names": "old"}, {"names": [None]},
@@ -157,6 +210,108 @@ def test_project_round_trip_preserves_stable_layer_id(tmp_path, monkeypatch):
     imported = project_service.import_project(project_service.export_project(saved["id"]))
     imported_project = project_service.load_project(imported["id"])
     assert imported_project["layers"][0]["layer_id"] == "layer-stable-123"
+
+
+def test_service_layer_round_trip_keeps_safe_endpoint_and_reauthentication_metadata(tmp_path, monkeypatch):
+    _use_temp_project_store(tmp_path, monkeypatch)
+    secrets = ("USER_SECRET", "PASSWORD_SECRET", "CUSTOM_CODE_SECRET", "API_KEY_SECRET")
+    service_url = (
+        "https://user:USER_SECRET@tiles.example.test/wms/{z}/{x}/{y}"
+        "?version=1.3.0&code=CUSTOM_CODE_SECRET&api_key=API_KEY_SECRET#FRAGMENT_SECRET"
+    )
+    saved = project_service.save_project(
+        project_id=None,
+        name="外部服务工程",
+        session_id="service-session",
+        provider="test",
+        map_state={},
+        messages=[],
+        layers=[{
+            "layer_id": "service-layer-1",
+            "filename": "需要重新授权的底图",
+            "url": service_url,
+            "service_type": "xyz",
+            "requires_auth": True,
+            "auth_parameter": "code",
+            "geometry_type": "XYZ",
+            "opacity": 0.6,
+        }],
+    )
+
+    loaded = project_service.load_project(saved["id"])
+    layer = loaded["layers"][0]
+    assert layer["url"] == "https://tiles.example.test/wms/{z}/{x}/{y}?version=1.3.0"
+    assert layer["service_type"] == "xyz"
+    assert layer["requires_auth"] is True
+    assert layer["auth_parameter"] == "code"
+    assert layer["layer_id"] == "service-layer-1"
+    assert layer["opacity"] == 0.6
+
+    exported = project_service.export_project(saved["id"])
+    imported = project_service.import_project(exported)
+    imported_layer = project_service.load_project(imported["id"])["layers"][0]
+    assert imported_layer["url"] == layer["url"]
+    assert imported_layer["requires_auth"] is True
+    assert imported_layer["auth_parameter"] == "code"
+    with zipfile.ZipFile(io.BytesIO(exported)) as archive:
+        serialized_export = archive.read("project.json").decode("utf-8")
+    for secret in (*secrets, "FRAGMENT_SECRET"):
+        assert secret not in serialized_export
+
+
+def test_legacy_service_credentials_are_redacted_on_load_and_export(tmp_path, monkeypatch):
+    _use_temp_project_store(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None,
+        name="旧服务工程",
+        session_id="legacy-service-session",
+        provider="test",
+        map_state={},
+        messages=[],
+        layers=[{"filename": "旧 XYZ", "url": "https://tiles.example.test/{z}/{x}/{y}",
+                 "service_type": "XYZ", "geometry_type": "XYZ瓦片"}],
+    )
+    legacy = project_service._load_project_data(saved["id"])
+    legacy["layers"][0]["url"] = (
+        "https://user:LEGACY_PASSWORD@tiles.example.test/{z}/{x}/{y}"
+        "?api_key=LEGACY_API_KEY&style=light#LEGACY_FRAGMENT"
+    )
+    project_service._save_project_data(saved["id"], legacy)
+
+    loaded_layer = project_service.load_project(saved["id"])["layers"][0]
+    assert loaded_layer["url"] == "https://tiles.example.test/{z}/{x}/{y}?style=light"
+    assert loaded_layer["requires_auth"] is True
+    assert loaded_layer["auth_parameter"] == "api_key"
+
+    exported = project_service.export_project(saved["id"])
+    with zipfile.ZipFile(io.BytesIO(exported)) as archive:
+        serialized = archive.read("project.json").decode("utf-8")
+    assert "LEGACY_PASSWORD" not in serialized
+    assert "LEGACY_API_KEY" not in serialized
+    assert "LEGACY_FRAGMENT" not in serialized
+
+    imported = project_service.import_project(exported)
+    imported_layer = project_service.load_project(imported["id"])["layers"][0]
+    assert imported_layer["requires_auth"] is True
+    assert imported_layer["auth_parameter"] == "api_key"
+
+    legacy_archive = io.BytesIO()
+    with zipfile.ZipFile(legacy_archive, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("project.json", json.dumps({
+            "name": "外部旧工程",
+            "messages": [],
+            "layers": [{
+                "name": "外部 XYZ",
+                "url": "https://tiles.example.test/{z}/{x}/{y}?token=IMPORTED_TOKEN&style=dark",
+                "service_type": "XYZ",
+            }],
+        }))
+    imported_legacy = project_service.import_project(legacy_archive.getvalue())
+    imported_legacy_layer = project_service.load_project(imported_legacy["id"])["layers"][0]
+    assert imported_legacy_layer["url"] == "https://tiles.example.test/{z}/{x}/{y}?style=dark"
+    assert imported_legacy_layer["requires_auth"] is True
+    assert imported_legacy_layer["auth_parameter"] == "token"
+    assert "IMPORTED_TOKEN" not in json.dumps(project_service._load_project_data(imported_legacy["id"]))
 
 
 def test_export_refuses_to_silently_omit_a_missing_vector_blob(tmp_path, monkeypatch):
@@ -351,6 +506,40 @@ def test_project_import_rejects_unsafe_archive_paths_before_extract(
     assert not (project_root / "proj_import-test").exists()
 
 
+def test_project_import_rejects_symbolic_link_entries_before_extract(tmp_path, monkeypatch):
+    _use_temp_project_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(project_service, "_generate_id", lambda: "symlink-import")
+    archive = io.BytesIO()
+    link = zipfile.ZipInfo("assets/linked.tif")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("project.json", json.dumps({"layers": [], "messages": []}))
+        zipped.writestr(link, "../../outside.tif")
+
+    with pytest.raises(ValueError, match="不安全路径"):
+        project_service.import_project(archive.getvalue())
+
+    assert not (tmp_path / "projects" / "proj_symlink-import").exists()
+    assert not (tmp_path / "outside.tif").exists()
+
+
+def test_project_import_replaces_non_string_name_with_safe_default(tmp_path, monkeypatch):
+    _use_temp_project_store(tmp_path, monkeypatch)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("project.json", json.dumps({
+            "name": {"unexpected": "object"}, "layers": [], "messages": [],
+        }))
+
+    imported = project_service.import_project(archive.getvalue())
+    expected_name = f"导入工程 {imported['id'][:4]}"
+
+    assert imported["name"] == expected_name
+    assert project_service.load_project(imported["id"])["name"] == expected_name
+    assert project_service._load_index()["projects"][imported["id"]]["name"] == expected_name
+
+
 @pytest.mark.parametrize(
     "limit_name,archive_members,error_match",
     [
@@ -486,6 +675,7 @@ def test_project_import_body_limit_is_wired_before_fastapi_upload_parsing(monkey
     middleware_config = next(
         item for item in main.app.user_middleware
         if item.cls is main.ProjectImportBodyLimitMiddleware
+        and item.kwargs.get("path", "/api/projects/import") == "/api/projects/import"
     )
     original_limit = middleware_config.kwargs["max_body_bytes"]
     original_stack = main.app.middleware_stack

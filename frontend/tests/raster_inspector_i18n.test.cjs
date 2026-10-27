@@ -32,6 +32,9 @@ function loadRasterInspector() {
   const raster = {
     crs: 'EPSG:4326', bounds: [100, 20, 101, 21], pixel_size: [0.01, 0.01], pixel_units: 'degree',
     source_width: 100, source_height: 100, bands: 1, processing: '坡度(Slope)', value_units: '°（角度）',
+    source_filename: 'dem-slope.tif', source_layer: 'source-dem',
+    source_label: 'AWS Terrain Tiles (SRTM-derived)', source_reference: 'https://example.invalid/dem-metadata',
+    vertical_datum: 'EGM96', valid_pixel_ratio: 0.895,
     quality_warnings: ['有效像元比例低于 90%，请检查 NoData 或输入覆盖范围'],
   };
   window.GIS.layers.addLayer({ layer_id: 'raster-one', filename: 'Elevation', geometry_type: 'Raster', raster }, true);
@@ -49,6 +52,12 @@ test('raster metadata inspector follows the selected UI language, including afte
   assert.match(h.body.innerHTML, /Source CRS/);
   assert.match(h.body.innerHTML, /Valid pixel ratio is below 90%/);
   assert.match(h.body.innerHTML, /EPSG:4326/);
+  assert.match(h.body.innerHTML, /AWS Terrain Tiles \(SRTM-derived\)/);
+  assert.match(h.body.innerHTML, /dem-slope\.tif/);
+  assert.match(h.body.innerHTML, /source-dem/);
+  assert.match(h.body.innerHTML, /href="https:\/\/example\.invalid\/dem-metadata"/);
+  assert.match(h.body.innerHTML, /EGM96/);
+  assert.match(h.body.innerHTML, /89\.50%/);
   assert.match(h.body.innerHTML, />Slope<\/span>/);
   assert.match(h.body.innerHTML, />degree \(°\)<\/span>/);
 
@@ -56,6 +65,11 @@ test('raster metadata inspector follows the selected UI language, including afte
   assert.equal(h.title.textContent, '栅格检查');
   assert.match(h.body.innerHTML, /源数据 CRS/);
   assert.match(h.body.innerHTML, /有效像元比例低于 90%/);
+  assert.match(h.body.innerHTML, /AWS Terrain Tiles \(SRTM-derived\)/);
+  assert.match(h.body.innerHTML, /dem-slope\.tif/);
+  assert.match(h.body.innerHTML, /href="https:\/\/example\.invalid\/dem-metadata"/);
+  assert.match(h.body.innerHTML, /EGM96/);
+  assert.match(h.body.innerHTML, /89\.50%/);
   assert.match(h.body.innerHTML, /坡度\(Slope\)/);
   assert.match(h.body.innerHTML, /°（角度）/);
 });

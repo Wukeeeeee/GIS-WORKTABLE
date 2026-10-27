@@ -24,6 +24,7 @@ import hashlib
 import ast
 import shutil
 import urllib.request
+import urllib.parse
 import uuid
 from typing import Optional, Dict, Any, List, Literal
 
@@ -797,9 +798,10 @@ def get_registered_layers_snapshot() -> list:
     return result
 
 
-def reset_registered_layers(layers: list = None):
+def reset_registered_layers(layers: list = None, tolerate_invalid: bool = False):
     """重置/替换当前注册的图层字典（切换工程或清空工程时调用，实现工程间严格图层隔离）"""
     global _active_project_id
+    skipped = []
     with _state_lock:
         _active_project_id = None
         _registered_layers.clear()
@@ -808,13 +810,21 @@ def reset_registered_layers(layers: list = None):
         if layers:
             for l in layers:
                 if not isinstance(l, dict):
+                    if tolerate_invalid:
+                        skipped.append("图层")
                     continue
                 name = l.get("name") or l.get("filename")
                 geojson = l.get("geojson") or l.get("geojson_data")
-                if name and isinstance(l.get('raster'), dict):
-                    _register_raster_layer(name, l['raster'])
-                elif name and geojson:
-                    _register_layer(name, geojson, provenance=l.get("provenance"))
+                try:
+                    if name and isinstance(l.get('raster'), dict):
+                        _register_raster_layer(name, l['raster'])
+                    elif name and geojson:
+                        _register_layer(name, geojson, provenance=l.get("provenance"))
+                except Exception:
+                    if not tolerate_invalid:
+                        raise
+                    skipped.append(name if isinstance(name, str) and name else "图层")
+    return skipped
 
 
 def _add_pending_item(url: str, file_path: str = None):
@@ -1488,15 +1498,47 @@ def _rename_output_files(new_files: set, suffix: str, temp_dir: str) -> list:
         if not fname.lower().endswith(suffix):
             continue
         src = os.path.join(temp_dir, fname)
-        dest_name = f'{ts}_{fname}'
-        dest = os.path.join(temp_dir, dest_name)
+        dest = _unique_output_destination(temp_dir, f'{ts}_{fname}')
+        dest_name = os.path.basename(dest)
         try:
             shutil.copy2(src, dest)
         except Exception:
-            pass
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+            continue
         _add_pending_item(f'/output/{dest_name}', dest)
         renamed.append(dest_name)
     return renamed
+
+
+def _unique_output_destination(directory: str, filename: str) -> str:
+    stem, extension = os.path.splitext(filename)
+    candidate_name = filename
+    while True:
+        candidate = os.path.join(directory, candidate_name)
+        try:
+            descriptor = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+        except FileExistsError:
+            suffix = uuid.uuid4().hex[:12]
+            candidate_name = f'{stem}_{suffix}{extension}'
+            continue
+        os.close(descriptor)
+        return candidate
+
+
+def _is_safe_exec_output_path(exec_root: str, path: str) -> bool:
+    """Only collect regular paths that resolve inside the per-run directory."""
+    try:
+        if os.path.islink(path):
+            return False
+        root = os.path.realpath(exec_root)
+        resolved = os.path.realpath(path)
+        common = os.path.commonpath((root, resolved))
+        return os.path.normcase(common) == os.path.normcase(root)
+    except (OSError, ValueError):
+        return False
 
 
 def _cleanup_charts(temp_dir: str, max_charts: int = 20):
@@ -1522,15 +1564,53 @@ def _extract_geojson(name: str, data: dict):
 
 
 # ============================================================
-# 工具: execute_python — 执行 GIS 代码（三层轻量沙箱）
+# 工具: execute_python — 执行 GIS 代码（AST 限制 + 本地子进程）
 # ============================================================
+
+_EXEC_PYTHON_SENSITIVE_ENV_RE = re.compile(
+    r"(?i)(?:^|_)(?:API[_-]?KEY|ACCESS[_-]?KEY|KEY|SECRET|TOKEN|PASSWORD|PASSWD|USERPWD|"
+    r"CREDENTIALS?|AUTH|PRIVATE[_-]?KEY|DATABASE[_-]?(?:URL|URI)|DB[_-]?(?:URL|URI)|"
+    r"CONNECTION[_-]?STRING|DSN)(?:_|$)"
+)
+_EXEC_PYTHON_PROXY_ENV_NAMES = {"http_proxy", "https_proxy", "all_proxy"}
+
+
+def _proxy_environment_contains_credentials(value: str) -> bool:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(candidate if "://" in candidate else "//" + candidate)
+        return parsed.username is not None or parsed.password is not None
+    except ValueError:
+        return "@" in candidate
+
+
+def _execute_python_child_environment() -> dict:
+    """Copy the runtime environment while filtering common credential names."""
+    env = os.environ.copy()
+    for name in tuple(env):
+        lower_name = name.casefold()
+        if (
+            lower_name == "amap_key"
+            or _EXEC_PYTHON_SENSITIVE_ENV_RE.search(name)
+            or (lower_name in _EXEC_PYTHON_PROXY_ENV_NAMES and _proxy_environment_contains_credentials(env[name]))
+        ):
+            env.pop(name, None)
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
 
 @tool
 def execute_python(code: str) -> str:
-    """执行自定义 Python GIS 分析与可视化代码（沙箱隔离）。
+    """执行自定义 Python GIS 分析与可视化代码（本地子进程）。
+    运行前会检查部分导入、反射和路径模式，并设置 120 秒超时；这不是操作系统级安全沙箱，
+    会按名称尽可能过滤常见凭据环境变量，并移除带认证信息的 HTTP(S) 代理环境变量；
+    但不提供文件、网络或资源隔离。不要将其用于执行不可信用户代码。
     仅当需绘制多子图图表(matplotlib/pyecharts)、指标看板或无现有工具覆盖的高级矢量/栅格运算时使用。
     允许库：geopandas, shapely, numpy, pandas, matplotlib, pyecharts, rasterio, pyproj, osmnx, json, math, re, datetime, io, tempfile。
-    不允许在用户代码中联网（requests/urllib 被沙箱拦截）；边界和要素使用 fetch_osm_boundary_or_features 等现有 GIS 工具。
+    导入 OSMnx 不会触发联网探测。AST 规则会拒绝 requests/urllib 等常见导入，但不构成网络隔离；
+    边界和要素使用 fetch_osm_boundary_or_features 等现有 GIS 工具。
     输出规范：print(GeoJSON) 自动加载到地图（加 name 属性为图层名）；plt.savefig('chart_xxx.png') 自动注册图表。"""
     global _exec_call_count, _exec_log
     _exec_call_count += 1
@@ -1577,7 +1657,7 @@ def execute_python(code: str) -> str:
     start_time = time.time()
 
     try:
-        # 按用户代码需要初始化，避免每次 print/numpy 运算也探测 OSM 网络和加载绘图库。
+        # 仅根据代码需要初始化绘图环境；导入 OSMnx 不触发网络探测。
         _code_tree = ast.parse(code)
         _imports = set()
         for _node in ast.walk(_code_tree):
@@ -1593,29 +1673,6 @@ def execute_python(code: str) -> str:
             for _node in ast.walk(_code_tree)
         )
         _needs_plot = _has_plot_import or _has_plot_call or ('plot' in code) or ('savefig' in code)
-        _osm_setup_code = r"""
-try:
-    import osmnx as _ox
-    import requests, json
-    _OVERPass_MIRRORS = [
-        'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
-        'https://overpass.osm.ch/api/interpreter',
-        'https://overpass-api.de/api/interpreter',
-        'https://overpass.kumi.systems/api/interpreter',
-        'https://overpass.openstreetmap.ie/api/interpreter',
-    ]
-    for _url in _OVERPass_MIRRORS:
-        try:
-            _test = requests.get(_url, params={'data': '[out:json];node(0,0,1,1);out;'}, timeout=5)
-            if _test.status_code == 200:
-                _ox.settings.overpass_url = _url
-                break
-        except Exception:
-            continue
-except Exception:
-    pass
-""" if 'osmnx' in _imports else ""
-
         _setup_blocks = r"""
 # matplotlib 中文字体配置（由公共模块动态生成，避免重复实现）
 {font_setup_code}
@@ -1630,7 +1687,8 @@ _os.makedirs('output', exist_ok=True)
         if _needs_plot:
             _font_setup_code = get_sandbox_setup_code()
         _setup_blocks_filled = _setup_blocks.replace('{font_setup_code}', _font_setup_code)
-        _final_code = _osm_setup_code + _setup_blocks_filled.rstrip() + '\n\n' + code
+        # Keep helper-only system modules out of the namespace seen by user code.
+        _final_code = _setup_blocks_filled.rstrip() + '\n\ndel _os\n\n' + code
 
         temp_path = os.path.join(exec_dir, '_user_code_.py')
         with open(temp_path, 'w', encoding='utf-8') as f:
@@ -1642,10 +1700,9 @@ _os.makedirs('output', exist_ok=True)
         except Exception:
             before_files = set()
 
-        env = os.environ.copy()
-        # Provider credentials belong to dedicated GIS tools, never user code.
-        env.pop('AMAP_KEY', None)
-        env['PYTHONIOENCODING'] = 'utf-8'
+        # Filter common credentials by variable name as defense in depth. This
+        # does not isolate files, network access, or secrets stored under other names.
+        env = _execute_python_child_environment()
 
         # ================================================================
         # 第三层：子进程执行 + 超时强杀
@@ -1665,20 +1722,23 @@ _os.makedirs('output', exist_ok=True)
             _dirs_to_scan = [exec_dir]
             for _sub in ('output', 'cache', os.path.join('cache', 'charts'), 'reports'):
                 _sd = os.path.join(exec_dir, _sub)
-                if os.path.isdir(_sd):
+                if os.path.isdir(_sd) and _is_safe_exec_output_path(exec_dir, _sd):
                     _dirs_to_scan.append(_sd)
             for _scan_dir in _dirs_to_scan:
                 for fname in os.listdir(_scan_dir):
                     if fname == '_user_code_.py':
                         continue
                     fpath = os.path.join(_scan_dir, fname)
-                    if os.path.isfile(fpath):
-                        dest = os.path.join(_temp_output_dir, fname)
-                        if os.path.exists(dest):
-                            ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-                            name_part, ext = os.path.splitext(fname)
-                            dest = os.path.join(_temp_output_dir, f'{name_part}_{ts}{ext}')
-                        shutil.copy2(fpath, dest)
+                    if os.path.isfile(fpath) and _is_safe_exec_output_path(exec_dir, fpath):
+                        dest = _unique_output_destination(_temp_output_dir, fname)
+                        try:
+                            shutil.copy2(fpath, dest)
+                        except Exception:
+                            try:
+                                os.remove(dest)
+                            except OSError:
+                                pass
+                            continue
         except Exception:
             pass
 
@@ -9592,13 +9652,18 @@ def load_cog(url: str, layer_name: str = "", max_size: int = 2048) -> str:
     url: http(s) 遥感影像地址；layer_name: 图层名（默认取文件名）；max_size: 预览最长边像素（默认 2048）。
     用户给了一个在线 .tif/.tiff 链接要求"加载/叠加到地图"时调用。"""
     from backend.services import cloud_native as cn
+    from backend.services.url_security import sanitize_error_text, sanitize_http_url
     from PIL import Image as _PILImage
     init_temp_dir()
     try:
         result = cn.read_cog(url, max_size=max_size)
     except cn.CloudNativeError as e:
-        return f"加载失败: {e}"
-    name = (layer_name or os.path.splitext(os.path.basename(str(url)))[0]).strip() or "COG影像"
+        return f"加载失败: {sanitize_error_text(e, url)}"
+    except Exception as e:
+        return f"加载异常: {sanitize_error_text(e, url)}"
+    parsed_url = urllib.parse.urlsplit(str(url))
+    source_path = parsed_url.path if parsed_url.scheme.lower() in {"http", "https"} else str(url)
+    name = (layer_name or os.path.splitext(os.path.basename(source_path))[0]).strip() or "COG影像"
     upload_dir = os.path.join(_temp_output_dir, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     safe = re.sub(r'[\\/:*?"<>|]', "_", name)
@@ -9621,7 +9686,7 @@ def load_cog(url: str, layer_name: str = "", max_size: int = 2048) -> str:
         "type": "Feature",
         "geometry": {"type": "Polygon", "coordinates": [[
             [minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]]},
-        "properties": {"name": name, "source": "cog", "url": str(url)[:500]},
+        "properties": {"name": name, "source": "cog", "url": sanitize_http_url(url)[:500]},
     }]}
     _push_layer(name, footprint, {"color": "#e74c3c", "fillColor": "#e74c3c", "fillOpacity": 0.02, "weight": 1.5, "dashArray": "6 4"})
     _register_layer(name, footprint)
@@ -9638,12 +9703,15 @@ def get_cog_info(url: str) -> str:
     """查询在线 COG/GeoTIFF 元信息：CRS、范围、尺寸、波段、数据类型、统计值（min/max/mean，采样）。
     只读元数据与降采样统计，不整体下载。用户问"这个 tif 是什么/什么坐标系/波段信息"时调用。"""
     from backend.services import cloud_native as cn
+    from backend.services.url_security import sanitize_error_text, sanitize_http_url
     try:
         info = cn.cog_info(url)
     except cn.CloudNativeError as e:
-        return f"查询失败: {e}"
+        return f"查询失败: {sanitize_error_text(e, url)}"
+    except Exception as e:
+        return f"查询异常: {sanitize_error_text(e, url)}"
     lines = [
-        f"== COG 元信息: {url[:120]} ==",
+        f"== COG 元信息: {sanitize_http_url(url)[:120]} ==",
         f"CRS: {info['crs']}  范围(WGS84): {info['bounds_wgs84']}",
         f"尺寸: {info['width']} x {info['height']}  波段数: {info['count']}  类型: {', '.join(info['dtypes'])}",
         f"nodata: {info['nodata']}  瓦片化: {info['is_tiled']}  压缩: {info['compression']}",
@@ -9660,9 +9728,12 @@ def load_pmtiles(source: str, layer_name: str = "", max_features: int = 5000) ->
     source: 本地 .pmtiles 路径或 URL；layer_name: 图层名；max_features: 最多解码要素数（默认 5000）。
     用户给了一个 .pmtiles 地址要求"加载到地图"时调用。"""
     from backend.services import cloud_native as cn
+    from backend.services.url_security import sanitize_error_text
     init_temp_dir()
     src = str(source).strip()
-    name = (layer_name or os.path.splitext(os.path.basename(src))[0]).strip() or "PMTiles图层"
+    parsed_source = urllib.parse.urlsplit(src)
+    display_source = parsed_source.path if parsed_source.scheme.lower() in {"http", "https"} else src
+    name = (layer_name or os.path.splitext(os.path.basename(display_source))[0]).strip() or "PMTiles图层"
     try:
         header = cn.pmtiles_header(src)
         _tt = header.get("tile_type", 0)
@@ -9696,12 +9767,15 @@ def load_pmtiles(source: str, layer_name: str = "", max_features: int = 5000) ->
             "提示：栅格 PMTiles 全量浏览需前端瓦片渲染，此处先以采样瓦片预览"
         )
     except cn.CloudNativeError as e:
-        return f"加载失败: {e}"
+        return f"加载失败: {sanitize_error_text(e, src)}"
+    except Exception as e:
+        return f"加载异常: {sanitize_error_text(e, src)}"
 
 
 def _load_cloud_vector_tool(source: str, fmt: str, layer_name: str, bbox: str, limit: int) -> str:
     """load_geoparquet / load_flatgeobuf 共用实现"""
     from backend.services import cloud_native as cn
+    from backend.services.url_security import sanitize_error_text
     try:
         bbox_tuple = cn.parse_bbox(bbox)
     except cn.CloudNativeError as e:
@@ -9711,8 +9785,12 @@ def _load_cloud_vector_tool(source: str, fmt: str, layer_name: str, bbox: str, l
     try:
         geojson, meta2 = cn.cloud_vector_to_geojson(source, fmt, bbox=bbox_tuple, limit=limit)
     except cn.CloudNativeError as e:
-        return str(e)
-    name = (layer_name or os.path.splitext(os.path.basename(str(source)))[0]).strip() or fmt
+        return sanitize_error_text(e, source)
+    except Exception as e:
+        return sanitize_error_text(e, source)
+    parsed_source = urllib.parse.urlsplit(str(source))
+    display_source = parsed_source.path if parsed_source.scheme.lower() in {"http", "https"} else str(source)
+    name = (layer_name or os.path.splitext(os.path.basename(display_source))[0]).strip() or fmt
     _push_layer(name, geojson, {"color": "#388e3c", "weight": 1.5})
     _register_layer(name, geojson)
     crs_note = f"，几何已从 {meta2['crs']} 重投影到 WGS84" if meta2.get("geometry_reprojected") else ""
@@ -10354,16 +10432,17 @@ def inspect_gis_url(url: str) -> str:
     支持 ArcGIS REST (MapServer/FeatureServer)、OGC (WFS/WMS/WMTS)、GeoJSON、GeoParquet、FlatGeobuf、PMTiles、COG、Shapefile ZIP、CSV。
     只读取并返回结构化元数据报告，不强制自动上图。用户提供在线 GIS 服务/数据链接或问"这个链接是什么数据"时调用。"""
     from backend.services import url_gis_service as ugs
+    from backend.services.url_security import sanitize_error_text, sanitize_http_url
     try:
         info = ugs.inspect_gis_url(url)
     except ugs.UrlGisError as e:
-        return f"探测失败: {e}"
+        return f"探测失败: {sanitize_error_text(e, url)}"
     except Exception as e:
-        return f"探测异常: {str(e)[:300]}"
+        return f"探测异常: {sanitize_error_text(e, url)[:300]}"
 
     stype = info.get("service_type", "未知")
     lines = [
-        f"== GIS 资源探测报告: {info.get('url', url)[:120]} ==",
+        f"== GIS 资源探测报告: {sanitize_http_url(info.get('url', url))[:120]} ==",
         f"服务/数据类型: {stype}",
     ]
     if info.get("service_name"):
@@ -10414,6 +10493,7 @@ def fetch_gis_data_url(
     - auto_render: 是否同时渲染上图(默认 False)；mode: preview(限量)/full(ArcGIS REST 完整获取)。
     - max_features: full 模式资源上限(默认 100000，最大 1000000)。"""
     from backend.services import url_gis_service as ugs
+    from backend.services.url_security import sanitize_error_text
     try:
         res = ugs.fetch_gis_data_url(
             url=url,
@@ -10427,9 +10507,9 @@ def fetch_gis_data_url(
             max_features=max_features,
         )
     except ugs.UrlGisError as e:
-        return f"数据抓取失败: {e}"
+        return f"数据抓取失败: {sanitize_error_text(e, url)}"
     except Exception as e:
-        return f"数据抓取异常: {str(e)[:300]}"
+        return f"数据抓取异常: {sanitize_error_text(e, url)[:300]}"
 
     if not res.get("file_path"):
         return f"未抓取到有效要素: {res.get('message', '返回要素为 0')}"

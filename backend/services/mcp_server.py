@@ -337,11 +337,12 @@ def inspect_url(url: str) -> str:
     """智能探测指定 URL 的 GIS 服务或空间数据类型，提取图层、坐标系、字段元数据、要素量级与范围。
     支持 ArcGIS REST (MapServer/FeatureServer)、OGC (WFS/WMS/WMTS)、GeoJSON、GeoParquet、FlatGeobuf、PMTiles、COG、Shapefile ZIP、CSV。"""
     from backend.services import url_gis_service as ugs
+    from backend.services.url_security import sanitize_error_text
     try:
         info = ugs.inspect_gis_url(url)
         return json.dumps(info, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+        return json.dumps({"ok": False, "error": sanitize_error_text(e, url)}, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -357,6 +358,7 @@ def fetch_url_data(
     支持 ArcGIS REST (MapServer/FeatureServer)、OGC WFS、GeoJSON URL、GeoParquet、FlatGeobuf、Shapefile ZIP、CSV 坐标表。
     返回物理文件路径与结构化元数据报告（字段列表、要素预览样本、BBox等）。"""
     from backend.services import url_gis_service as ugs
+    from backend.services.url_security import sanitize_error_text
     try:
         res = ugs.fetch_gis_data_url(
             url=url,
@@ -368,7 +370,7 @@ def fetch_url_data(
         )
         return json.dumps(res, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False)
+        return json.dumps({"ok": False, "error": sanitize_error_text(e, url)}, ensure_ascii=False)
 
 
 @mcp.tool()

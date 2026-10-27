@@ -174,7 +174,7 @@
             </div>  <!-- close model-picker -->
             </div>  <!-- close model-bar-left -->
             <div class="model-bar-right">
-              <button class="icon-btn" id="geosourceTrigger" title="全球空间数据超市 (GeoSource) · 11,000+ 在线图层" data-i18n-title="header.data-catalog">
+              <button class="icon-btn" id="geosourceTrigger" title="空间服务目录 (GeoSource)" data-i18n-title="header.data-catalog">
                 <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-4205168da1f5.png')"></span>
               </button>
               <button class="icon-btn" id="connectorBtn" title="连接器（数据源）" data-i18n-title="header.connectors">
@@ -208,7 +208,7 @@
                 <span data-i18n="connector.catalog-title">GeoSource 全球空间数据源 (内嵌)</span>
               </div>
               <div style="font-size:11px;color:var(--ui-gray-500);margin-bottom:6px;">
-                <span data-i18n="connector.catalog-copy">内置 2,198+ 全球 GIS 服务，支持 WMS / XYZ / REST 检索与一键上图</span>
+                <span data-i18n="connector.catalog-copy">搜索 GeoSource 服务目录；需要 URL 参数 Key 的服务可在接入时手动填写。</span>
               </div>
               <button class="connector-online-btn" id="connectorOpenGeoSourceBtn" data-i18n="connector.catalog-open" style="width:100%;text-align:center;background:var(--ui-accent, #3b82f6);color:#fff;">检索并一键上图</button>
             </div>
@@ -834,7 +834,7 @@
                       <li>支持三种分析类型：
                         <ul>
                           <li><strong>最短路径</strong> — 设起点和终点，计算沿路网的最短驾驶路径</li>
-                          <li><strong>服务区</strong> — 设设施点，计算沿路网可到达的范围（如 1km / 3km / 5km）</li>
+                          <li><strong>服务区</strong> — 设设施点，估算沿路网可到达范围（如 1km / 3km / 5km）；边界使用可达节点凸包，可能包含实际不可达区域，不是精确等时圈</li>
                           <li><strong>最近设施</strong> — 设事件点和多个设施点，找出最近的 N 个设施</li>
                         </ul>
                       </li>
@@ -856,7 +856,7 @@
                       <li>在 AI 聊天中输入「获取 XX 的行政边界」</li>
                       <li>支持中国省/市/区三级行政区划（数据来源：阿里云 DataV）</li>
                       <li>坐标自动转为 WGS-84，结果自动加载到地图</li>
-                      <li>国外地区边界请用 AI 的 execute_python + osmnx 获取</li>
+                      <li>国外地区边界请用专用 GIS 工具获取；Python 执行工具不用于联网取数</li>
                     </ul>
 
                     <h3>热力图</h3>
@@ -1168,11 +1168,11 @@
         <div class="modal-panel" id="panelAiApi">
           <h3>AI 模型</h3>
           <div class="model-config-toolbar" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-            <span style="font-size:12px;color:var(--ui-gray-500);">支持任意 OpenAI 兼容接口 · 加模型 = 这里加一行</span>
+            <span data-i18n="settings.ai-provider-setup-hint" data-i18n-zh="接入模型时，请从服务商获取 API Key、兼容接口地址和模型名，再填写在下方。" style="font-size:12px;color:var(--ui-gray-500);">接入模型时，请从服务商获取 API Key、兼容接口地址和模型名，再填写在下方。</span>
             <button class="modal-btn modal-btn-save" id="addProviderBtn" type="button">＋ 添加 Provider</button>
           </div>
           <div id="providerList"><!-- 由 settings.js 动态渲染 --></div>
-          <p class="modal-note">密钥仅保存在浏览器 localStorage，随请求即用即弃。改动即时自动保存；右上角「API Key」逻辑已收敛为这一份 Provider 列表。</p>
+          <p class="modal-note" data-i18n="settings.ai-provider-note">自定义接入需从模型服务商控制台获取 API Key，并填写其兼容接口地址和模型名；GIS WorkTable 不提供模型服务商的 Key。密钥保存在浏览器 localStorage；每次聊天或测速时会发送给当前连接的 WorkTable 后端，再由后端访问所选模型服务，不会保存在工程或后端设置中。公网模型地址必须使用 HTTPS；本机或明确解析为内网地址的 HTTP 模型服务仍可使用，但 HTTP 请求不加密，只应在可信本地网络中使用。使用远程部署时，密钥也会发送到该远程后端，请确认你信任它。不会在启动时自动调用模型；点击「测速」会发送一条最短消息，供应商可能按使用量计费。改动即时自动保存；右上角「API Key」逻辑已收敛为这一份 Provider 列表。</p>
         </div>
 
         <!-- === 地理服务 === -->
@@ -1186,10 +1186,10 @@
                 <span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-945fce68e81e.png')"></span>
                 <span data-i18n="settings.geosource-title">GeoSource 全球空间服务检索 (内嵌)</span>
               </span>
-              <span class="model-config-badge configured" id="geosourceServiceBadge" data-i18n="settings.geosource-count">2,198 服务</span>
+              <span class="model-config-badge configured" id="geosourceServiceBadge" data-i18n="settings.geosource-count">查看目录统计</span>
             </div>
             <div data-i18n="settings.geosource-copy" style="font-size:12px;color:var(--on-surface-variant);margin-bottom:8px;line-height:1.5;">
-              基于本地 SQLite 索引，涵盖全球高程/地形、遥感卫星、气象水文、土地利用等 2,198+ 真实空间服务与 1,561+ 图层（WMS/XYZ/REST/GeoJSON），支持一键加载上图
+              基于本地 SQLite 服务目录。目录状态不是实时连通检测。支持的服务可在接入时手动填写 URL 参数形式的 API Key，由本机 WorkTable 代理转发给原服务；跨主机跳转时会移除该认证参数，若新地址仍要求认证，请使用服务方提供的直连地址。密钥不会交给 AI 或保存到工程。
             </div>
             <button class="modal-btn modal-btn-save" id="openGeoSourceModalBtn" data-i18n="settings.geosource-open" style="padding:6px 16px;">打开数据检索中心</button>
           </div>
@@ -1221,6 +1221,7 @@
             <div class="model-config-actions">
               <button class="modal-btn modal-btn-save" id="saveAmapKeyBtn" data-i18n="common.save">保存</button>
             </div>
+            <p class="modal-note" data-i18n="settings.amap-storage-note">高德 Key 保存在浏览器，并同步到本机的加密凭据库；不同于仅在浏览器保存的模型 Provider Key。</p>
           </div>
 
                     <!-- 数据下载服务账号：DEM / 遥感影像自动下载凭据（存 localStorage） -->
@@ -1488,7 +1489,7 @@
         <!-- === 网络代理 === -->
         <div class="modal-panel" id="panelNetwork">
           <h3>网络代理</h3>
-          <p class="modal-panel-desc">配置 HTTP 代理地址，用于 Esri 等海外卫星瓦片下载。留空则自动检测系统代理。</p>
+          <p class="modal-panel-desc" data-i18n="settings.proxy-desc">配置 HTTP 代理地址，供模型服务、GeoSource、在线 GIS 数据和影像等后端网络请求使用。自定义代理也会用于私网模型地址；请只使用你信任的代理。留空则自动检测系统代理。</p>
 
           <div class="model-config-card">
             <div class="model-config-header">
@@ -1505,9 +1506,9 @@
           </div>
 
           <div class="proxy-info-box">
-            <div class="proxy-info-title">说明</div>
-            <div class="proxy-info-text">常见代理工具端口：Clash 7890、V2Ray 10809、Shadowrocket 7890 等</div>
-            <div class="proxy-info-text">代理仅用于后端下载瓦片和数据，不影响浏览器访问</div>
+            <div class="proxy-info-title" data-i18n="settings.proxy-info-title">说明</div>
+            <div class="proxy-info-text" data-i18n="settings.proxy-common">常见代理工具端口：Clash 7890、V2Ray 10809、Shadowrocket 7890 等</div>
+            <div class="proxy-info-text" data-i18n="settings.proxy-private">此设置影响后端请求，不改变浏览器本身。私网模型直连可清空自定义代理或设置系统代理绕过规则；私网 HTTP 请求不加密，若经代理，代理可读取请求内容和 API Key。</div>
           </div>
         </div>
 
@@ -1639,6 +1640,24 @@
   <script src="js/time.js"></script>
   <script src="js/workspace.js"></script>
 
+  <!-- ===== GeoSource 自助认证弹窗 ===== -->
+  <div class="modal-overlay" id="geosourceCredentialModal" style="display:none;z-index:10020;">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="geosourceCredentialTitle" style="padding:20px;box-sizing:border-box;">
+      <h3 id="geosourceCredentialTitle" data-i18n="geosource.auth-title" style="margin:0 0 8px;">本次接入的 API Key</h3>
+      <p data-i18n="geosource.auth-copy" style="font-size:13px;line-height:1.5;color:var(--on-surface-variant);margin:0 0 14px;">密钥由本机 WorkTable 代理转发给服务方，仅用于本次连接；不会交给 AI 或保存到工程。仅支持 URL 查询参数形式的 API Key。</p>
+      <label for="geosourceCredentialParam" data-i18n="geosource.auth-param-label" style="display:block;font-size:12px;margin:8px 0 4px;">服务方要求的参数名</label>
+      <input id="geosourceCredentialParam" type="text" autocomplete="off" spellcheck="false" placeholder="例如 key 或 token" style="width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid var(--outline-variant);border-radius:6px;background:var(--surface);color:var(--on-surface);">
+      <label for="geosourceCredentialValue" data-i18n="geosource.auth-key-label" style="display:block;font-size:12px;margin:10px 0 4px;">API Key</label>
+      <input id="geosourceCredentialValue" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" style="width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid var(--outline-variant);border-radius:6px;background:var(--surface);color:var(--on-surface);">
+      <p data-i18n="geosource.auth-url-note" style="font-size:11px;line-height:1.45;color:var(--on-surface-variant);margin:8px 0 14px;">Key 会通过本机 WorkTable 代理随 URL 请求发送给服务方。公网服务必须使用 HTTPS；明确的本机/内网 HTTP 服务可用，但传输未加密。当前不支持请求头、OAuth 或账号密码认证。</p>
+      <div style="display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;">
+        <button type="button" class="modal-btn" id="geosourceCredentialCancelBtn" data-i18n="common.cancel">取消</button>
+        <button type="button" class="modal-btn" id="geosourceCredentialNoKeyBtn" data-i18n="geosource.auth-try-without">不填 Key，继续尝试</button>
+        <button type="button" class="modal-btn modal-btn-save" id="geosourceCredentialSubmitBtn" data-i18n="geosource.auth-connect">仅本次接入</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ===== GeoSource 全球空间数据源弹窗（统一 SVG UI 设计） ===== -->
   <div class="modal-overlay" id="geosourceModal" style="display:none;">
     <div class="geosource-modal-content">
@@ -1648,7 +1667,7 @@
             <span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-d94b206f7029.png')"></span>
             <span data-i18n="geosource.title">GeoSource 全球空间数据源检索中心</span>
           </span>
-          <span class="geosource-badge" id="geosourceModalStatsBadge">2,198 服务 · 1,561 图层</span>
+          <span class="geosource-badge" id="geosourceModalStatsBadge" data-i18n="geosource.stats-loading">正在读取目录统计…</span>
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           <a href="geosource_map.html" target="_blank" class="geosource-badge" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px;color:var(--on-surface,#1c1b1b);background:var(--surface-container-high,#ebe7e6);border:1px solid var(--outline-variant,#c4c7c7);font-weight:500;" title="在大屏世界地图中探索全球数据分布与下钻" data-i18n-title="geosource.open-map-title">
@@ -1747,15 +1766,16 @@
 
             <label class="geosource-checkbox-label">
               <input type="checkbox" id="geosourceFreeOnly" />
-              <span data-i18n="geosource.free-only">免费服务</span>
+              <span data-i18n="geosource.free-only">免费或部分免费</span>
             </label>
           </div>
         </div>
 
         <div class="geosource-status-line">
           <span id="geosourceResultCount" data-i18n="geosource.ready">准备就绪</span>
-          <span data-i18n="geosource.support-hint" style="font-size:11px;color:var(--on-surface-variant,#444748);opacity:0.8;">支持 WMS / XYZ / 矢量与 ArcGIS REST 服务一键上图</span>
+          <span data-i18n="geosource.support-hint" style="font-size:11px;color:var(--on-surface-variant,#444748);opacity:0.8;">目录状态不是实时检测。支持的服务可在接入时填写仅本次使用的 URL 参数 API Key；AI 不会猜测或代填。</span>
         </div>
+        <div id="geosourceCatalogMeta" style="font-size:11px;color:var(--on-surface-variant,#444748);padding:0 2px 6px;line-height:1.5;" data-i18n="geosource.meta-loading">正在读取目录快照信息…</div>
 
         <div class="geosource-results-list" id="geosourceResultsList"></div>
       </div>

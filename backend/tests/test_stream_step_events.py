@@ -186,6 +186,40 @@ def test_stream_does_not_retry_whole_turn_after_tool_result_then_connection_erro
     assert any(event.get("type") == "done" for event in events)
 
 
+def test_stream_provider_error_redacts_key_from_sse_and_console(monkeypatch, capsys):
+    from backend.services import graph
+    from backend.services.llm_config import LLMConfig
+
+    key = "stream-provider-key-sentinel"
+
+    class FakeAgent:
+        def stream(self, payload, config=None, **kwargs):
+            raise RuntimeError(
+                f"provider echoed {key}; https://user:{key}@api.example.test/v1?api_key={key}"
+            )
+
+    class FakeLLM:
+        def invoke(self, *args, **kwargs):
+            return SimpleNamespace(content="")
+
+    monkeypatch.setattr(graph, "build_llm", lambda cfg: FakeLLM())
+    monkeypatch.setattr(graph, "create_react_agent", lambda llm, tools: FakeAgent())
+    user_text = "加载并导出分析结果"
+    lines = list(graph.run_agent_stream(
+        [SystemMessage(content="test"), HumanMessage(content=user_text)],
+        cfg=LLMConfig(api_key=key, base_url="https://api.example.test/v1", model="mock"),
+        original_message=user_text, session_id="stream-provider-error-redaction",
+    ))
+    captured = capsys.readouterr()
+    events = [json.loads(line[6:]) for line in lines if line.startswith("data: ")]
+    error = next(event for event in events if event.get("type") == "error")
+
+    assert key not in error["message"]
+    assert key not in captured.out
+    assert key not in captured.err
+    assert "provider echoed" in error["message"]
+
+
 @pytest.mark.parametrize("content,expected", [
     ({"partial": True}, True), ({"warnings": ["skipped"]}, True),
     ({"qa_warnings": ["invalid"]}, True), ({"skipped_count": "2"}, True),

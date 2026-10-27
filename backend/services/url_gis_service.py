@@ -26,11 +26,30 @@ from typing import Dict, Any, Optional
 import requests
 
 from backend.services.cloud_native import get_effective_proxies, parse_bbox
+from backend.services.url_security import (
+    PinnedAddressHTTPAdapter,
+    is_public_http_target,
+    redirect_origin_key,
+    redirect_is_allowed,
+    sanitize_error_text,
+    sanitize_http_url,
+    sensitive_query_parameter_names,
+    strip_query_parameters,
+)
+
+_HTTP_RESPONSE_CAP_BYTES = 300 * 1024 * 1024
+_ZIP_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
+_ZIP_MAX_MEMBERS = 10000
 
 
 class UrlGisError(Exception):
     """URL GIS 服务错误"""
     pass
+
+
+def _size_limit_message(resource: str, max_bytes: int) -> str:
+    limit_mb = max(1, max_bytes // (1024 * 1024))
+    return f"{resource}超过 {limit_mb} MB 限制"
 
 
 def _get_request_headers() -> dict:
@@ -43,19 +62,94 @@ def _get_request_headers() -> dict:
 def _http_get(url: str, params: dict = None, timeout: int = 15) -> requests.Response:
     proxies = get_effective_proxies()
     headers = _get_request_headers()
+    session = requests.Session()
     try:
-        resp = requests.get(url, params=params, headers=headers, proxies=proxies, timeout=timeout)
-        resp.raise_for_status()
-        return resp
+        current_url = url
+        credentials_stripped = False
+        credential_parameters = sensitive_query_parameter_names(url)
+        if params:
+            credential_query = urllib.parse.urlencode(params, doseq=True)
+            credential_parameters.update(sensitive_query_parameter_names("?" + credential_query))
+        initial_classification = is_public_http_target(url)
+        protect_public_target = initial_classification is not False
+        if initial_classification is not True:
+            proxies = {"http": None, "https": None}
+        # Only a clearly private initial target may use the direct-private path.
+        # Mixed or unresolved DNS answers must not select an arbitrary address.
+        pinned_adapter = PinnedAddressHTTPAdapter(
+            initial_classification is not False,
+            initial_private_url=url if initial_classification is False else None,
+        )
+        session.mount("http://", pinned_adapter)
+        session.mount("https://", pinned_adapter)
+        for redirect_count in range(11):
+            resp = session.get(
+                current_url,
+                params=params if redirect_count == 0 else None,
+                headers=headers,
+                proxies=proxies,
+                timeout=timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+            if resp.status_code not in {301, 302, 303, 307, 308}:
+                try:
+                    if credentials_stripped and resp.status_code in {401, 403}:
+                        raise UrlGisError(
+                            "远程 GIS 服务在跨主机跳转后要求认证；为避免向新主机泄露凭据，认证参数未转发。"
+                            "请改用服务方提供的直连地址。"
+                        )
+                    resp.raise_for_status()
+                    content_length = resp.headers.get("Content-Length")
+                    if content_length:
+                        try:
+                            if int(content_length) > _HTTP_RESPONSE_CAP_BYTES:
+                                raise UrlGisError(_size_limit_message("远程 GIS 响应", _HTTP_RESPONSE_CAP_BYTES))
+                        except ValueError:
+                            pass
+                    chunks = []
+                    total_bytes = 0
+                    for chunk in resp.iter_content(chunk_size=64 * 1024):
+                        if not chunk:
+                            continue
+                        total_bytes += len(chunk)
+                        if total_bytes > _HTTP_RESPONSE_CAP_BYTES:
+                            raise UrlGisError(_size_limit_message("远程 GIS 响应", _HTTP_RESPONSE_CAP_BYTES))
+                        chunks.append(chunk)
+                    resp._content = b"".join(chunks)
+                    resp._content_consumed = True
+                except Exception:
+                    resp.close()
+                    raise
+                resp.close()
+                return resp
+            location = resp.headers.get("Location")
+            next_url = urllib.parse.urljoin(current_url, location or "")
+            resp.close()
+            if not location or not redirect_is_allowed(next_url, protect_public_target):
+                raise UrlGisError("远程 GIS 服务跳转地址不符合安全策略")
+            if (
+                credential_parameters
+                and redirect_origin_key(current_url) != redirect_origin_key(next_url)
+            ):
+                stripped_url = strip_query_parameters(next_url, credential_parameters)
+                credentials_stripped = credentials_stripped or stripped_url != next_url
+                next_url = stripped_url
+            if redirect_count == 10:
+                raise UrlGisError("远程 GIS 服务跳转次数过多")
+            # Preserve the user's private-origin allowance for private hops,
+            # but make the guard sticky after a public or ambiguous hop.
+            if is_public_http_target(next_url) is not False:
+                protect_public_target = True
+            current_url = next_url
+            pinned_adapter.require_public_target = protect_public_target
+        raise UrlGisError("远程 GIS 服务跳转次数过多")
     except Exception as e:
         safe_url = _sanitize_source_url(url)
-        detail = re.sub(
-            r"(?i)(token|api[_-]?key|password|secret|auth|credential|signature)=([^&\s]+)",
-            r"\1=[已隐藏]",
-            str(e),
-        )
-        detail = re.sub(r"(?i)(https?://)[^/@\s]+@", r"\1[已隐藏]@", detail)
+        detail = sanitize_error_text(e, url)
         raise UrlGisError(f"HTTP 请求失败 ({safe_url}): {detail}")
+    finally:
+        session.close()
 
 
 def _get_output_dir() -> str:
@@ -76,8 +170,13 @@ def _is_safe_zip_member(name: str) -> bool:
 
 
 def _safe_extract_zip(archive: zipfile.ZipFile, destination: str) -> None:
-    if any(not _is_safe_zip_member(member.filename) for member in archive.infolist()):
+    members = archive.infolist()
+    if len(members) > _ZIP_MAX_MEMBERS:
+        raise UrlGisError("ZIP 压缩包文件数量超过限制")
+    if any(not _is_safe_zip_member(member.filename) for member in members):
         raise UrlGisError("ZIP 压缩包包含不安全的文件路径")
+    if sum(member.file_size for member in members) > _ZIP_MAX_UNCOMPRESSED_BYTES:
+        raise UrlGisError(_size_limit_message("ZIP 压缩包解压后", _ZIP_MAX_UNCOMPRESSED_BYTES))
     archive.extractall(destination)
 
 
@@ -272,8 +371,9 @@ def _flatten_coords(c, out):
 def _inspect_arcgis_rest(url: str) -> dict:
     """探测 ArcGIS MapServer / FeatureServer REST 接口"""
     clean_url = url.split("?")[0].rstrip("/")
+    credential_names = sensitive_query_parameter_names(url)
     auth_params = {k: v for k, v in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
-                   if any(word in k.lower() for word in ("token", "key", "password", "secret", "auth", "credential", "signature"))}
+                   if k in credential_names}
     # 请求 json 元数据
     resp = _http_get(clean_url, params=dict(auth_params, f="pjson"), timeout=30)
     try:
@@ -927,21 +1027,7 @@ def fetch_gis_data_url(
 
 
 def _sanitize_source_url(url: str) -> str:
-    parsed = urllib.parse.urlsplit(str(url or ""))
-    sensitive = ("token", "key", "password", "secret", "auth", "credential", "signature")
-    query = [(k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-             if not any(word in k.lower() for word in sensitive)]
-    netloc = parsed.netloc
-    if parsed.username is not None or parsed.password is not None:
-        try:
-            host = parsed.hostname or ""
-            if ":" in host and not host.startswith("["):
-                host = f"[{host}]"
-            port = parsed.port
-            netloc = f"{host}:{port}" if port is not None else host
-        except ValueError:
-            netloc = parsed.netloc.rsplit("@", 1)[-1]
-    return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, urllib.parse.urlencode(query), ""))
+    return sanitize_http_url(url)
 
 
 def _fetch_arcgis_features(
@@ -952,8 +1038,9 @@ def _fetch_arcgis_features(
     import geopandas as gpd
     import pandas as pd
     clean_url = url.split("?")[0].rstrip("/")
+    credential_names = sensitive_query_parameter_names(url)
     auth_params = {k: v for k, v in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query)
-                   if any(word in k.lower() for word in ("token", "key", "password", "secret", "auth", "credential", "signature"))}
+                   if k in credential_names}
 
     # 1. 若为服务目录根（/services），自动寻找第一个 FeatureServer
     if clean_url.endswith("/services"):

@@ -243,6 +243,7 @@
         if (!res || !res.id) throw new Error('保存工程未返回工程编号');
         if (nameEl) nameEl.textContent = res.name || saveName;
         renderRecentProjects();
+        if (res.warning && GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage(escapeMarkup(res.warning), 'system', { pill: true });
         if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><path d="M20 6L9 17l-5-5"/></svg> ' + tr('project.saved', '已保存工程「') + escapeMarkup(res.name || saveName) + (GIS.i18n && GIS.i18n.isEnglish() ? '' : '」'), 'system');
       }).catch(function(err) {
         if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;margin-right:4px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> ' + tr('project.save-failed', '保存工程失败: ') + escapeMarkup(err.message || err), 'system');
@@ -255,6 +256,7 @@
         saved = true;
         if (nameEl) nameEl.textContent = res.name || exportName;
         renderRecentProjects();
+        if (res.warning && GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage(escapeMarkup(res.warning), 'system', { pill: true });
         if (!GIS.project.exportCurrent) throw new Error('工程导出功能不可用');
         return GIS.project.exportCurrent(res.id, exportName);
       }).then(function() {
@@ -868,12 +870,18 @@
         const oldName = nameEl ? nameEl.textContent : '未命名工程';
         promptModal(tr('project.rename-heading', '重命名当前工程'), tr('project.rename-desc', '修改工程显示名称，并同步至最近记录。'), oldName, function(newName) {
           if (newName && newName.trim()) {
-            nameEl.textContent = newName.trim();
             const curId = GIS.project && GIS.project.getCurrentProjectId && GIS.project.getCurrentProjectId();
             if (curId && GIS.api && GIS.api.renameProject) {
-              GIS.api.renameProject(curId, newName.trim()).then(function() {
+              GIS.api.renameProject(curId, newName.trim()).then(function(result) {
+                if (nameEl) nameEl.textContent = result && result.name || newName.trim();
                 renderRecentProjects();
+                if (result && result.warning && GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage(escapeMarkup(result.warning), 'system', { pill: true });
+              }).catch(function(err) {
+                if (nameEl) nameEl.textContent = oldName;
+                if (GIS.chat && GIS.chat.addMessage) GIS.chat.addMessage('重命名失败: ' + escapeMarkup(err.message || err), 'system');
               });
+            } else if (nameEl) {
+              nameEl.textContent = newName.trim();
             }
           }
         });

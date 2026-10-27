@@ -1,6 +1,8 @@
 import os, json, hashlib, gzip, shutil, uuid, datetime, zipfile, io, re, stat, math, threading
 from functools import wraps
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
+
+from backend.services.url_security import sanitize_http_url
 
 _PROJECT_LOCK = threading.RLock()
 
@@ -11,6 +13,63 @@ def _with_project_lock(func):
         with _PROJECT_LOCK:
             return func(*args, **kwargs)
     return wrapped
+
+
+def _project_service_metadata(layer: dict) -> dict:
+    """Persist reconnectable service metadata without access-bearing URL values."""
+    raw_url = layer.get("url") or layer.get("service_url") or ""
+    auth_parameter = layer.get("auth_parameter")
+    has_url_credentials = False
+    try:
+        raw_parts = urlsplit(str(raw_url))
+        has_url_credentials = raw_parts.username is not None or raw_parts.password is not None
+        if not isinstance(auth_parameter, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", auth_parameter):
+            auth_parameter = next((key for key, _ in parse_qsl(raw_parts.query, keep_blank_values=True)
+                                   if re.search(r"token|api[_-]?key|password|secret|auth|credential|signature|^key$", key, re.I)), "")
+    except (TypeError, ValueError):
+        has_url_credentials = False
+        if not isinstance(auth_parameter, str):
+            auth_parameter = ""
+    safe_url = sanitize_http_url(raw_url)
+    if not isinstance(auth_parameter, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", auth_parameter):
+        auth_parameter = ""
+
+    if safe_url and auth_parameter:
+        try:
+            parts = urlsplit(safe_url)
+            query = [
+                (key, value)
+                for key, value in parse_qsl(parts.query, keep_blank_values=True)
+                if key.lower() != auth_parameter.lower()
+            ]
+            safe_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), ""))
+        except (TypeError, ValueError):
+            pass
+
+    return {
+        "url": safe_url,
+        "requires_auth": layer.get("requires_auth") is True or bool(auth_parameter) or has_url_credentials,
+        "auth_parameter": auth_parameter,
+    }
+
+
+def _sanitize_project_service_layers(project: dict) -> dict:
+    """Return a project copy with service URLs cleaned, including legacy imports."""
+    cleaned = dict(project)
+    layers = []
+    for layer in project.get("layers", []):
+        if not isinstance(layer, dict):
+            layers.append(layer)
+            continue
+        item = dict(layer)
+        if item.get("url") or item.get("service_url"):
+            metadata = _project_service_metadata(item)
+            item.update(metadata)
+            if "service_url" in item:
+                item["service_url"] = metadata["url"]
+        layers.append(item)
+    cleaned["layers"] = layers
+    return cleaned
 
 def extract_clean_title(content: str, max_len: int = 30) -> str:
     """从可能包含引用回复、图层注入等系统前缀的用户消息中，提取真实提问作为工程名/摘要"""
@@ -304,6 +363,56 @@ def _blob_remove(sha: str):
 # Index 管理
 # ============================================================
 
+def _project_index_summary(pid: str, proj: dict) -> dict:
+    messages = proj.get("messages") if isinstance(proj.get("messages"), list) else []
+    layers = proj.get("layers") if isinstance(proj.get("layers"), list) else []
+    preview = next((extract_clean_title(msg.get("content", ""), 60)
+                    for msg in messages
+                    if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("content")), "")
+    return {
+        "id": pid,
+        "name": proj.get("name") or f"工程 {pid[:4]}",
+        "createdAt": proj.get("createdAt", ""),
+        "updatedAt": proj.get("updatedAt", ""),
+        "msgPreview": preview,
+        "layerCount": len(layers),
+        "messageCount": len(messages),
+        "provider": proj.get("provider", ""),
+    }
+
+
+def _project_index_matches_files(index: dict) -> bool:
+    summaries = index.get("projects") if isinstance(index, dict) else None
+    if not isinstance(summaries, dict) or not os.path.isdir(_PROJECT_DIR):
+        return False
+    valid_project_ids = set()
+    for entry in os.listdir(_PROJECT_DIR):
+        if not entry.startswith("proj_"):
+            continue
+        pid = entry[len("proj_"):]
+        try:
+            if not os.path.isdir(_project_dir(pid)):
+                continue
+        except ValueError:
+            continue
+        proj = _load_project_data(pid)
+        if proj is None:
+            continue
+        valid_project_ids.add(pid)
+        if summaries.get(pid) != _project_index_summary(pid, proj):
+            return False
+    # A missing/corrupt project file should retain its existing summary so the
+    # user can see that a project needs recovery; only remove entries whose
+    # project directory is actually gone.
+    for pid in summaries:
+        try:
+            if not os.path.isdir(_project_dir(pid)):
+                return False
+        except ValueError:
+            return False
+    return valid_project_ids.issubset(summaries)
+
+
 def _load_index() -> dict:
     try:
         with open(_INDEX_PATH, "r", encoding="utf-8") as f:
@@ -312,7 +421,8 @@ def _load_index() -> dict:
         if (isinstance(projects, dict)
                 and all(isinstance(pid, str) and isinstance(summary, dict)
                         for pid, summary in projects.items())):
-            return index
+            if _project_index_matches_files(index):
+                return index
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         pass
 
@@ -326,21 +436,7 @@ def _load_index() -> dict:
             proj = _load_project_data(pid)
             if not proj:
                 continue
-            messages = proj.get("messages") if isinstance(proj.get("messages"), list) else []
-            layers = proj.get("layers") if isinstance(proj.get("layers"), list) else []
-            preview = next((extract_clean_title(msg.get("content", ""), 60)
-                            for msg in messages
-                            if isinstance(msg, dict) and msg.get("role") == "user" and msg.get("content")), "")
-            projects[pid] = {
-                "id": pid,
-                "name": proj.get("name") or f"工程 {pid[:4]}",
-                "createdAt": proj.get("createdAt", ""),
-                "updatedAt": proj.get("updatedAt", ""),
-                "msgPreview": preview,
-                "layerCount": len(layers),
-                "messageCount": len(messages),
-                "provider": proj.get("provider", ""),
-            }
+            projects[pid] = _project_index_summary(pid, proj)
     rebuilt = {"projects": projects}
     try:
         _save_index(rebuilt)
@@ -464,6 +560,7 @@ def save_project(
             if raster:
                 raster = _store_project_raster(pid, raster)
                 raster_assets.update(_raster_asset_names(raster))
+            service_metadata = _project_service_metadata(layer)
             layer_refs.append({
                 "layer_id": layer.get("layer_id") if isinstance(layer.get("layer_id"), str) and layer.get("layer_id").strip() else None,
                 "name": layer.get("filename") or layer.get("name", "未命名"),
@@ -477,9 +574,11 @@ def save_project(
                 "source": layer.get("source", "ai"),
                 "provenance": layer.get("provenance") if isinstance(layer.get("provenance"), dict) else None,
                 "order": idx,
-                "url": layer.get("url") or layer.get("service_url") or "",
+                "url": service_metadata["url"],
                 "service_type": layer.get("service_type") or layer.get("protocol") or "",
                 "sublayer": layer.get("sublayer") or layer.get("sublayer_name") or "",
+                "requires_auth": service_metadata["requires_auth"],
+                "auth_parameter": service_metadata["auth_parameter"],
                 "crs": layer.get("crs") or "WGS-84",
                 "groupId": layer.get("groupId") or None,
                 "raster": raster,
@@ -555,12 +654,24 @@ def save_project(
     # 上限修剪
     projs = index["projects"]
     if len(projs) > _MAX_PROJECTS:
-        sorted_items = sorted(projs.items(), key=lambda x: x[1].get("updatedAt", ""))
-        for old_pid, _ in sorted_items[:len(projs) - _MAX_PROJECTS]:
-            _delete_project_data(old_pid, index)
-    _save_index(index)
+        # The current save must survive even when timestamps have only
+        # second-level precision and tie with an older project.
+        older_projects = ((old_pid, summary) for old_pid, summary in projs.items() if old_pid != pid)
+        sorted_items = sorted(older_projects, key=lambda x: x[1].get("updatedAt", ""))
+        for old_pid, _ in sorted_items[:max(0, len(projs) - _MAX_PROJECTS)]:
+            _delete_project_data(old_pid, index, persist_index=False)
+    index_warning = None
+    try:
+        _save_index(index)
+    except OSError:
+        # The project file is already the durable source of truth. The index is
+        # a rebuildable summary, so do not report a committed save as failed.
+        index_warning = "工程内容已保存，但最近工程列表暂未写入索引；刷新列表会从工程文件恢复。"
 
-    return {"id": pid, "name": sanitized_name, "updatedAt": now}
+    result = {"id": pid, "name": sanitized_name, "updatedAt": now}
+    if index_warning:
+        result["warning"] = index_warning
+    return result
 
 def _project_exists(pid: str) -> bool:
     try:
@@ -568,7 +679,7 @@ def _project_exists(pid: str) -> bool:
     except ValueError:
         return False
 
-def _delete_project_data(pid: str, index: dict = None):
+def _delete_project_data(pid: str, index: dict = None, persist_index: bool = True):
     """删除工程数据，释放 blob 引用"""
     proj = _load_project_data(pid)
     if proj:
@@ -582,20 +693,23 @@ def _delete_project_data(pid: str, index: dict = None):
         if index is None:
             index = _load_index()
         index["projects"].pop(pid, None)
-        _save_index(index)
+        if persist_index:
+            _save_index(index)
         return
     if os.path.exists(d):
         shutil.rmtree(d)
     if index is None:
         index = _load_index()
     index["projects"].pop(pid, None)
-    _save_index(index)
+    if persist_index:
+        _save_index(index)
 
 @_with_project_lock
 def load_project(pid: str) -> dict | None:
     proj = _load_project_data(pid)
     if not proj:
         return None
+    proj = _sanitize_project_service_layers(proj)
     # 解析 blob → 完整图层
     resolved_layers = []
     for layer in proj.get("layers", []):
@@ -618,6 +732,17 @@ def load_project(pid: str) -> dict | None:
     result = {**proj, "layers": resolved_layers}
     return result
 
+
+def _restorable_project_messages(messages):
+    if not isinstance(messages, list):
+        return []
+    return [
+        message for message in messages
+        if isinstance(message, dict)
+        and message.get("role") in {"user", "assistant"}
+        and isinstance(message.get("content"), str)
+    ]
+
 @_with_project_lock
 def activate_project(pid: str, session_id: str = None) -> dict | None:
     """激活指定工程：加载工程并将其历史消息和图层恢复到后端，实现工程隔离与上下文精准记忆"""
@@ -628,13 +753,14 @@ def activate_project(pid: str, session_id: str = None) -> dict | None:
     from backend.services.ai_service import conversation_history
     from backend.services import tools as registry
     layers = data.get("layers", [])
+    skipped_layers = []
     with registry._state_lock:
         old = dict(registry._registered_layers)
         old_project = registry._active_project_id
         old_pending = list(registry._pending_layers)
         old_ops = list(registry._pending_layer_ops)
         try:
-            registry.reset_registered_layers(layers)
+            skipped_layers = registry.reset_registered_layers(layers, tolerate_invalid=True)
             registry._active_project_id = pid
             tokens = {name: info.get('registration_token') for name, info in registry._registered_layers.items()}
         except Exception:
@@ -644,9 +770,9 @@ def activate_project(pid: str, session_id: str = None) -> dict | None:
             registry._pending_layers[:] = old_pending
             registry._pending_layer_ops[:] = old_ops
             raise
-    conversation_history[sid] = list(data.get("messages", []))
+    conversation_history[sid] = _restorable_project_messages(data.get("messages", []))
     return {"sessionId": sid, "layerCount": len(data.get("layers", [])),
-            "registration_tokens": tokens}
+            "registration_tokens": tokens, "registration_warnings": skipped_layers}
 
 @_with_project_lock
 def open_project(pid: str) -> dict | None:
@@ -656,6 +782,7 @@ def open_project(pid: str) -> dict | None:
         return None
     activated = activate_project(pid)
     tokens = activated['registration_tokens']
+    data['registration_warnings'] = activated.get('registration_warnings', [])
     for layer in data.get('layers', []):
         layer['registration_token'] = tokens.get(layer.get('name') or layer.get('filename'))
     return data
@@ -697,14 +824,19 @@ def rename_project(pid: str, new_name: str):
     index = _load_index()
     if pid in index.get("projects", {}):
         index["projects"][pid]["name"] = new_name
-    _save_index(index)
-    return {"id": pid, "name": new_name}
+    result = {"id": pid, "name": new_name}
+    try:
+        _save_index(index)
+    except OSError:
+        result["warning"] = "工程名称已修改，但最近工程列表索引未能写入；刷新列表会从工程文件恢复。"
+    return result
 
 @_with_project_lock
 def export_project(pid: str) -> bytes:
     proj = _load_project_data(pid)
     if not proj:
         return None
+    proj = _sanitize_project_service_layers(proj)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         # 工程数据
@@ -788,6 +920,9 @@ def import_project(zip_bytes) -> dict:
             or not isinstance(proj_data.get("messages", []), list)):
         shutil.rmtree(target_dir, ignore_errors=True)
         raise ValueError("导入的工程文件无效：project.json 结构不正确")
+    if not isinstance(proj_data.get("name"), str):
+        proj_data["name"] = f"导入工程 {pid[:4]}"
+    proj_data = _sanitize_project_service_layers(proj_data)
     for layer in proj_data.get("layers", []):
         blob = layer.get("blob")
         if blob is not None and (not isinstance(blob, str) or re.fullmatch(r"[0-9a-f]{12}", blob) is None):

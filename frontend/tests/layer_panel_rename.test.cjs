@@ -31,13 +31,17 @@ function loadLayerPanel() {
     layerTbody: tbody,
     layersTable: makeElement(),
     layersEmpty: makeElement(),
-    attrDataTable: { querySelectorAll() { return []; } },
+    layerInspector: makeElement(),
+    inspectorBody: makeElement(),
+    inspectorTitle: makeElement(),
+    attrDataTable: makeElement(),
     attrFillValue: { value: '' },
   };
   const registered = [];
   const mapRenames = [];
   const mapLoads = [];
   const toastErrors = [];
+  const toastWarnings = [];
   const stateRenames = [];
   const stateLayer = { fidIndex: {} };
   let failRegistration = false;
@@ -50,6 +54,7 @@ function loadLayerPanel() {
   };
   const map = {
     setLayerColor() {}, getLayer() { return null; },
+    removeLayer() {},
     loadGeoJSON(data) { mapLoads.push(data); },
     renameLayer(oldName, newName) { mapRenames.push([oldName, newName]); },
   };
@@ -60,10 +65,16 @@ function loadLayerPanel() {
     addEventListener() {},
     getElementById(id) { return elements[id] || null; },
     querySelector(selector) { return selector === '.layer-name[data-id="layer-1"]' ? nameElement : null; },
+    querySelectorAll() { return []; },
     createElement(tag) { return makeElement(tag); },
   };
-  const window = { GIS: { map, state, api: backend, toast: { error(message) { toastErrors.push(message); }, success() {} } } };
-  const context = { window, document, console, Promise, Set, Map, Math, Date, Array, Object, String, Number, JSON };
+  const window = { GIS: { map, state, api: backend, toast: {
+    error(message) { toastErrors.push(message); },
+    warn(message) { toastWarnings.push(message); },
+    success() {},
+  } } };
+  const context = { window, document, console, Promise, Set, Map, Math, Date, Array, Object, String, Number, JSON,
+    CSS: { escape(value) { return String(value).replace(/["\\]/g, '\\$&'); } } };
   const sourcePath = path.resolve(__dirname, '../js/layers.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   window.GIS.layers.init();
@@ -72,8 +83,44 @@ function loadLayerPanel() {
   });
   state.getLayer = id => id === 'layer-1' ? stateLayer : null;
   return { window, layers: window.GIS.layers, tbody, nameElement, registered, mapRenames, stateRenames, stateLayer,
-    state, backend, elements, mapLoads, toastErrors, failRegistration(value) { failRegistration = value; } };
+    state, backend, elements, mapLoads, toastErrors, toastWarnings, failRegistration(value) { failRegistration = value; } };
 }
+
+test('restored layer IDs, colors, and opacity cannot inject table markup', () => {
+  const harness = loadLayerPanel();
+  const importedId = 'imported-layer" onmouseover="alert(1)';
+  harness.layers.addLayer({
+    layer_id: importedId,
+    filename: 'Imported layer',
+    color: 'red" onmouseover="alert(2)',
+    opacity: '1" onmouseover="alert(3)',
+  }, true);
+
+  const html = harness.tbody.innerHTML;
+  assert.doesNotMatch(html, /data-id="imported-layer" onmouseover=/);
+  assert.doesNotMatch(html, /style="background:red" onmouseover=/);
+  assert.match(html, /data-id="imported-layer&quot; onmouseover=&quot;alert\(1\)"/);
+  assert.match(html, /style="background:#e74c3c;opacity:1"/);
+  assert.equal(harness.layers.getLayers()[1].color, '#e74c3c');
+});
+
+test('restored layer IDs cannot inject the attribute inspector toolbar', async () => {
+  const harness = loadLayerPanel();
+  harness.state.getLayer = null;
+  const importedId = 'imported-layer" onmouseover="alert(1)';
+  harness.layers.addLayer({
+    layer_id: importedId,
+    filename: 'Imported layer',
+    geojson: { type: 'FeatureCollection', features: [
+      { type: 'Feature', properties: { name: 'A' }, geometry: { type: 'Point', coordinates: [120, 30] } },
+    ] },
+  }, true);
+
+  await harness.layers.showLayerInspector(importedId);
+  const html = harness.elements.inspectorBody.innerHTML;
+  assert.doesNotMatch(html, /data-layer="imported-layer" onmouseover=/);
+  assert.match(html, /data-layer="imported-layer&quot; onmouseover=&quot;alert\(1\)"/);
+});
 
 test('attribute data synchronization updates shared identity index and backend registration', async () => {
   const harness = loadLayerPanel();
@@ -181,6 +228,21 @@ test('deleting a layer keeps its unregister request visible to project autosave'
   assert.deepEqual(JSON.parse(JSON.stringify(await pending)), [{ success: true }]);
   assert.equal(finished, true);
   assert.equal(harness.layers.getLayers().length, 0);
+});
+
+test('map cleanup failure does not leave a deleted layer registered for AI tools', async () => {
+  const harness = loadLayerPanel();
+  harness.state.getLayer = undefined;
+  harness.window.GIS.map.removeLayer = () => { throw new Error('map cleanup failed'); };
+
+  harness.layers.removeLayer('layer-1');
+  await harness.layers.waitForRegistrySync();
+
+  assert.equal(harness.layers.getLayers().length, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.registered)), [
+    ['register', 'Original'], ['unregister', 'Original'],
+  ]);
+  assert.ok(harness.toastWarnings.some(message => /地图显示清理失败/.test(message)));
 });
 
 test('double-click rename synchronizes panel, map, shared state, and backend registration', async () => {

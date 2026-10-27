@@ -1,6 +1,6 @@
 // ============================================================
 // geosource.js — GeoSource 全球 GIS 空间服务库（统一 SVG UI 与分页/代理模块）
-// 检索 2,198+ 全球真实空间服务与 1,561+ 图层，支持多维过滤、分页浏览与一键上图
+// 根据当前 SQLite 快照检索空间服务与图层，支持多维过滤、分页浏览与手动接入
 // ============================================================
 
 (function () {
@@ -18,6 +18,8 @@
   var _isLoading = false;
   var _searchRequestId = 0;
   var _arcgisBusy = false;
+  var _pendingCredentialCallback = null;
+  var _credentialPromptQueue = [];
 
   function isEnglish() {
     return !!(window.GIS.i18n && window.GIS.i18n.isEnglish());
@@ -25,6 +27,194 @@
 
   function uiText(english, chinese) {
     return isEnglish() ? english : chinese;
+  }
+
+  function closeCredentialDialog() {
+    var overlay = document.getElementById('geosourceCredentialModal');
+    var paramInput = document.getElementById('geosourceCredentialParam');
+    var keyInput = document.getElementById('geosourceCredentialValue');
+    if (overlay) overlay.style.display = 'none';
+    if (paramInput) paramInput.value = '';
+    if (keyInput) keyInput.value = '';
+    _pendingCredentialCallback = null;
+  }
+
+  function notifyCredentialDialogUnavailable() {
+    var message = uiText(
+      'Credential entry is unavailable. Refresh the page and try connecting again.',
+      '密钥输入框未加载，请刷新页面后重试接入。'
+    );
+    if (window.GIS.toast && typeof window.GIS.toast.error === 'function') window.GIS.toast.error(message);
+    else if (typeof window.alert === 'function') window.alert(message);
+  }
+
+  function bindCredentialDialog() {
+    var overlay = document.getElementById('geosourceCredentialModal');
+    if (!overlay || overlay.dataset.bound === 'true') return;
+    overlay.dataset.bound = 'true';
+
+    var paramInput = document.getElementById('geosourceCredentialParam');
+    var keyInput = document.getElementById('geosourceCredentialValue');
+    var cancelBtn = document.getElementById('geosourceCredentialCancelBtn');
+    var withoutKeyBtn = document.getElementById('geosourceCredentialNoKeyBtn');
+    var submitBtn = document.getElementById('geosourceCredentialSubmitBtn');
+
+    function finish(value) {
+      var callback = _pendingCredentialCallback;
+      closeCredentialDialog();
+      var nextPrompt = _credentialPromptQueue.shift();
+      if (nextPrompt) showCredentialPrompt(nextPrompt);
+      if (callback) callback(value);
+    }
+
+    if (cancelBtn) cancelBtn.addEventListener('click', function () { finish(null); });
+    if (withoutKeyBtn) withoutKeyBtn.addEventListener('click', function () { finish({ skipCredentialPrompt: true }); });
+    if (submitBtn) submitBtn.addEventListener('click', function () {
+      var parameter = (paramInput && paramInput.value || '').trim();
+      var key = (keyInput && keyInput.value || '').trim();
+      if (!/^[A-Za-z0-9_.-]{1,64}$/.test(parameter) || !key || key.length > 4096) {
+        window.alert(uiText(
+          'Enter the query parameter name and API key from the provider documentation.',
+          '请按服务方文档填写参数名和 API Key。参数名仅支持字母、数字、下划线、点和连字符。'
+        ));
+        return;
+      }
+      finish({ parameter: parameter, key: key });
+    });
+    overlay.addEventListener('click', function (event) {
+      if (event.target === overlay) finish(null);
+    });
+    overlay.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') finish(null);
+      else if (event.key === 'Enter' && submitBtn) submitBtn.click();
+    });
+  }
+
+  function showCredentialPrompt(prompt) {
+    var overlay = document.getElementById('geosourceCredentialModal');
+    if (!overlay) {
+      notifyCredentialDialogUnavailable();
+      return prompt.callback(null);
+    }
+    _pendingCredentialCallback = prompt.callback;
+    overlay.style.display = 'flex';
+    if (window.GIS.i18n && typeof window.GIS.i18n.translate === 'function') window.GIS.i18n.translate(overlay);
+    var title = document.getElementById('geosourceCredentialTitle');
+    if (title) title.textContent = uiText('API key for: ', '接入服务：') + (prompt.service.service_name || prompt.service.service_id || 'GeoSource');
+    var paramInput = document.getElementById('geosourceCredentialParam');
+    var keyInput = document.getElementById('geosourceCredentialValue');
+    if (paramInput) paramInput.value = prompt.parameter || '';
+    if (keyInput) keyInput.value = '';
+    (prompt.parameter && keyInput ? keyInput : paramInput)?.focus();
+  }
+
+  function requestCredentialForService(service, callback) {
+    var overlay = document.getElementById('geosourceCredentialModal');
+    if (!overlay) {
+      notifyCredentialDialogUnavailable();
+      return callback(null);
+    }
+    var prompt = { service: service || {}, callback: callback, parameter: service && service.auth_parameter || '' };
+    if (_pendingCredentialCallback) {
+      _credentialPromptQueue.push(prompt);
+      return;
+    }
+    showCredentialPrompt(prompt);
+  }
+
+  function withQueryCredential(urlValue, credential) {
+    if (!credential || !credential.parameter || !credential.key) return urlValue;
+    var url = new URL(urlValue, window.location.href);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error(uiText('Only HTTP and HTTPS services can use this credential option.', '仅支持通过 HTTP 或 HTTPS 接入此类凭据。'));
+    url.searchParams.set(credential.parameter, credential.key);
+    return url.href.replace(/%7B(-y|[xyz])%7D/ig, '{$1}');
+  }
+
+  function hasUrlUserInfo(urlValue) {
+    try {
+      var rawUrl = String(urlValue || '').trim();
+      var url = new URL(rawUrl, window.location && window.location.href || 'http://localhost/');
+      var authority = rawUrl.match(/^https?:\/\/([^/?#]*)/i);
+      return url.username !== '' || url.password !== '' || !!(authority && authority[1].includes('@'));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function notifyUnsupportedUrlCredentials() {
+    window.alert(uiText(
+      'This service URL contains a username or password. GeoSource supports query-parameter API keys only; remove the credentials from the URL and check the provider instructions.',
+      '服务地址里包含用户名或密码。GeoSource 目前只支持 URL 参数形式的 API Key；请移除账号密码，并查看服务方提供的接入说明。'
+    ));
+  }
+
+  function watchCredentialTileErrors(tileLayer, credential) {
+    if (!credential || !credential.key || !tileLayer || typeof tileLayer.on !== 'function') return;
+    var notified = false;
+    tileLayer.on('tileerror', function () {
+      if (notified) return;
+      notified = true;
+      if (window.GIS.toast && typeof window.GIS.toast.error === 'function') {
+        window.GIS.toast.error(uiText(
+          'The authenticated service tile could not be loaded. If this is a public service, use HTTPS; otherwise check the key parameter and service access.',
+          '带密钥的服务瓦片加载失败。若这是公网服务，请改用 HTTPS；否则请检查 Key 参数和服务权限。'
+        ));
+      }
+    });
+  }
+
+  function geosourceTileProxyUrl(targetUrl, authParameter) {
+    var proxyBase = (window.GIS.api.BASE_URL || '') + '/api/geosource/proxy';
+    var encodedTarget = encodeURIComponent(String(targetUrl || ''))
+      .replace(/%7B(-y|[zxys])%7D/ig, '{$1}');
+    var parameter = authParameter || inferAuthParameter(targetUrl);
+    return proxyBase + '?_geosource_tile=1' +
+      (parameter ? '&_geosource_auth_parameter=' + encodeURIComponent(parameter) : '') +
+      '&url=' + encodedTarget;
+  }
+
+  function isCredentialParameterName(name) {
+    return /(?:^|[^a-z0-9])(?:api[_-]?key|token|key|password|secret|auth|credential|signature)(?:$|[^a-z0-9])/i
+      .test(String(name || ''));
+  }
+
+  function inferAuthParameter(urlValue) {
+    try {
+      var url = new URL(String(urlValue), window.location && window.location.href || 'http://localhost/');
+      var keys = Array.from(url.searchParams.keys());
+      return keys.find(isCredentialParameterName) || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function serviceUrlForPersistence(urlValue, authParameter) {
+    var safeUrl = sanitizeServiceUrl(urlValue);
+    if (!authParameter) return safeUrl;
+    try {
+      var url = new URL(safeUrl, window.location && window.location.href || 'http://localhost/');
+      url.searchParams.delete(authParameter);
+      return url.href.replace(/%7B(-y|[xyz])%7D/ig, '{$1}');
+    } catch (e) {
+      return safeUrl;
+    }
+  }
+
+  function serviceLayerMetadata(serviceUrl, serviceType, credential, requiresAuth, sublayer, authParameterOverride) {
+    var authParameter = credential && credential.parameter || authParameterOverride || inferAuthParameter(serviceUrl);
+    return {
+      url: serviceUrlForPersistence(serviceUrl, authParameter),
+      service_type: serviceType,
+      requires_auth: !!requiresAuth || !!authParameter,
+      auth_parameter: authParameter || '',
+      sublayer: sublayer || '',
+    };
+  }
+
+  function redactCredentialText(value, credential) {
+    var message = String(value == null ? '' : value);
+    if (credential && credential.key) message = message.split(credential.key).join('[redacted]');
+    return message;
   }
 
   function countryLabel(value) {
@@ -213,7 +403,7 @@
     }
   }
 
-  async function browseArcgis(url, name) {
+  async function browseArcgis(url, name, credential, authRequired, authParameter) {
     if (_arcgisBusy) return;
     _arcgisBusy = true;
     var panel = document.getElementById('arcgisBrowser');
@@ -259,15 +449,15 @@
     modeRow.className = 'arcgis-browser-mode-row';
     modeRow.innerHTML = 
       '<span style="font-size:12px;font-weight:600;color:var(--on-surface);">导入方式:</span>' +
-      '<label class="geosource-radio-label" title="自动分批抓取全量要素（如3,143个县全量），带实时进度与主键去重">' +
+      '<label class="geosource-radio-label" title="逐批请求，单次最多 12 批、12,000 条；超过上限会提示结果不完整">' +
       '  <input type="radio" name="arcgisFetchMode" value="all" checked />' +
-      '  <span>自动分批拉全（全量 3,000+ 县级，推荐）</span>' +
+      '  <span>分批拉取（上限 12,000 条）</span>' +
       '</label>' +
       '<label class="geosource-radio-label" title="仅快速获取前 1,000 条作为轻量预览">' +
       '  <input type="radio" name="arcgisFetchMode" value="preview" />' +
       '  <span>快速预览（前 1,000 条）</span>' +
       '</label>' +
-      '<label class="geosource-radio-label" title="仅加载当前地图可视区域内的要素，极致省内存">' +
+      '<label class="geosource-radio-label" title="只请求当前地图视窗范围，单次最多 1,000 条">' +
       '  <input type="radio" name="arcgisFetchMode" value="bbox" />' +
       '  <span>当前视窗（BBOX过滤）</span>' +
       '</label>';
@@ -309,7 +499,8 @@
 
     try {
       var base = url.split('?')[0].replace(/\/+$/, '');
-      var data = await fetchWithProxy(base + '?f=json');
+      var data = await fetchWithProxy(withQueryCredential(base + '?f=json', credential),
+        authParameter || (credential && credential.parameter));
       if (data.error) throw new Error(data.error.message || '服务拒绝访问');
       body.replaceChildren();
 
@@ -325,14 +516,14 @@
 
       var root = base.replace(/(\/rest\/services)(?:\/.*)?$/i, '$1');
       if (base.toLowerCase() !== root.toLowerCase()) {
-        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> 返回上一级目录</span>', function() { browseArcgis(root, 'ArcGIS'); });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg> 返回上一级目录</span>', function() { browseArcgis(root, 'ArcGIS', credential, authRequired, authParameter); });
       }
       (data.folders || []).forEach(function(folder) {
-        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ' + window.GIS.utils.escapeHtml(folder) + '</span><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() { browseArcgis(root + '/' + folder.split('/').map(encodeURIComponent).join('/'), folder); });
+        item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> ' + window.GIS.utils.escapeHtml(folder) + '</span><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() { browseArcgis(root + '/' + folder.split('/').map(encodeURIComponent).join('/'), folder, credential, authRequired, authParameter); });
       });
       (data.services || []).forEach(function(service) {
         item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg> ' + window.GIS.utils.escapeHtml(service.name) + ' · ' + window.GIS.utils.escapeHtml(service.type) + '</span><svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>', function() {
-          browseArcgis(root + '/' + service.name.split('/').map(encodeURIComponent).join('/') + '/' + service.type, service.name);
+          browseArcgis(root + '/' + service.name.split('/').map(encodeURIComponent).join('/') + '/' + service.type, service.name, credential, authRequired, authParameter);
         });
       });
       if (data.tileInfo && /\/MapServer$/i.test(base)) {
@@ -343,7 +534,8 @@
             initialPct: 50
           });
           try {
-            loadXyzLayer(base + '/tile/{z}/{y}/{x}', name);
+            loadXyzLayer(withQueryCredential(base + '/tile/{z}/{y}/{x}', credential), name,
+              serviceLayerMetadata(base + '/tile/{z}/{y}/{x}', 'XYZ', credential, !!authRequired));
             setArcgisProgress(panel, 'success', {
               title: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg> 导入成功',
               desc: '已成功将「' + name + '」缓存瓦片地图图层添加到工作区！'
@@ -359,12 +551,12 @@
       (data.layers || []).forEach(function(layer) {
         if (layer.type === 'Group Layer') return;
         item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> 加载 ' + window.GIS.utils.escapeHtml(layer.name) + '</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 加载图层</span>', function(btn) {
-          loadArcgisFeatures(base + '/' + layer.id, name + ' - ' + layer.name, panel, btn);
+          loadArcgisFeatures(base + '/' + layer.id, name + ' - ' + layer.name, panel, btn, credential, authParameter);
         });
       });
       if (data.type === 'Feature Layer' && /\/(FeatureServer|MapServer)\/\d+$/i.test(base)) {
         item('<span style="display:inline-flex;align-items:center;gap:6px;"><svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg> 加载当前要素图层</span><span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:#166534;background:#dcfce7;border:1px solid #bbf7d0;padding:2px 8px;border-radius:4px;"><svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg> 加载图层</span>', function(btn) {
-          loadArcgisFeatures(base, name, panel, btn);
+          loadArcgisFeatures(base, name, panel, btn, credential, authParameter);
         });
       }
 
@@ -382,17 +574,18 @@
         });
       }
     } catch (error) {
-      body.textContent = '读取服务失败：' + error.message;
+      var safeError = redactCredentialText(error.message, credential);
+      body.textContent = '读取服务失败：' + safeError;
       setArcgisProgress(panel, 'error', {
         title: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 目录读取失败',
-        desc: '无法连接到服务或服务拒绝访问：' + error.message
+        desc: '无法连接到服务或服务拒绝访问：' + safeError
       });
     } finally {
       _arcgisBusy = false;
     }
   }
 
-  async function loadArcgisFeatures(url, name, panel, clickedBtn) {
+  async function loadArcgisFeatures(url, name, panel, clickedBtn, credential, authParameter) {
     if (_arcgisBusy) return;
     _arcgisBusy = true;
 
@@ -419,30 +612,41 @@
 
     // 针对 BBOX 模式，获取当前地图视窗范围
     var bboxParam = '';
+    var bboxError = '';
     if (fetchMode === 'bbox') {
       try {
         var bounds = window.GIS.map && window.GIS.map.getBounds && window.GIS.map.getBounds();
-        if (bounds) {
-          var west = bounds.getWest();
-          var south = bounds.getSouth();
-          var east = bounds.getEast();
-          var north = bounds.getNorth();
-          bboxParam = '&geometry=' + encodeURIComponent(west + ',' + south + ',' + east + ',' + north) +
-                      '&geometryType=esriGeometryEnvelope&spatialRel=esriSpatialRelIntersects&inSR=4326';
+        if (!bounds) throw new Error(uiText('The current map extent is unavailable. Open the map and try again.', '当前地图视窗不可用，请打开地图后重试。'));
+        var west = Number(bounds.getWest());
+        var south = Number(bounds.getSouth());
+        var east = Number(bounds.getEast());
+        var north = Number(bounds.getNorth());
+        if (![west, south, east, north].every(Number.isFinite)) {
+          throw new Error(uiText('The current map extent is invalid; a safe filter could not be created.', '当前地图视窗范围无效，无法安全生成筛选范围。'));
         }
+        west = Math.max(-180, west);
+        east = Math.min(180, east);
+        south = Math.max(-90, south);
+        north = Math.min(90, north);
+        if (west > east || south > north) {
+          throw new Error(uiText('The current map extent cannot be represented as one geographic filter. Try preview mode or adjust the map.', '当前地图视窗无法表示为单个地理范围，请改用预览模式或调整地图范围。'));
+        }
+        bboxParam = '&geometry=' + encodeURIComponent(west + ',' + south + ',' + east + ',' + north) +
+                    '&geometryType=esriGeometryEnvelope&spatialRel=esriSpatialRelIntersects&inSR=4326';
       } catch (e) {
-        console.warn('[GeoSource] 获取地图视窗 BBOX 失败，使用全域查询', e);
+        bboxError = e && e.message || uiText('The current map extent is unavailable.', '当前地图视窗不可用。');
       }
     }
 
     try {
+      if (bboxError) throw new Error(bboxError);
       while (hasMore && currentBatch < maxBatches) {
         currentBatch++;
         var batchTitle = fetchMode === 'all'
           ? '正在拉取图层「' + name + '」（第 ' + currentBatch + ' 批）…'
           : '正在加载图层「' + name + '」…';
         var batchDesc = fetchMode === 'all'
-          ? '正在通过代理请求要素（已获取 ' + allFeatures.length + ' 条）…'
+          ? '正在通过本机代理请求要素（已获取 ' + allFeatures.length + ' 条）…'
           : (fetchMode === 'bbox' ? '正在按当前地图视窗 BBOX 范围检索要素…' : '正在请求前 1000 条要素预览…');
 
         var initialPct = fetchMode === 'all'
@@ -459,7 +663,8 @@
         var queryUrl = url + '/query?where=1%3D1&outFields=*&outSR=4326&f=geojson&resultRecordCount=' + pageSize +
                        '&resultOffset=' + offset + bboxParam;
 
-        var data = await fetchWithProxy(queryUrl);
+        var data = await fetchWithProxy(withQueryCredential(queryUrl, credential),
+          authParameter || (credential && credential.parameter));
         if (data.error) throw new Error(data.error.message || '服务端查询返回错误');
         if (data.type !== 'FeatureCollection') throw new Error('该图层不支持 GeoJSON 矢量查询接口');
 
@@ -511,9 +716,9 @@
       } else if (fetchMode === 'preview') {
         note = '（快速预览模式）';
       } else if (fetchMode === 'bbox') {
-        note = '（已按当前地图可视范围精准过滤）';
+        note = '（已按当前地图可视范围筛选，单次最多 1,000 条）';
       } else if (currentBatch > 1) {
-        note = '（全量分批拉取完成，共 ' + currentBatch + ' 批，0 重复 0 缺失）';
+        note = '（分页请求完成，共 ' + currentBatch + ' 批；已按要素标识去重）';
       }
 
       setArcgisProgress(panel, 'success', {
@@ -524,9 +729,9 @@
     } catch (error) {
       setArcgisProgress(panel, 'error', {
         title: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> 导入失败',
-        desc: '图层「' + name + '」加载失败：' + (error.message || '网络或格式错误') + '。可尝试选择其他模式或图层。',
+        desc: '图层「' + name + '」加载失败：' + redactCredentialText(error.message || '网络或格式错误', credential) + '。可尝试选择其他模式或图层。',
         retryFn: function () {
-          loadArcgisFeatures(url, name, panel, clickedBtn);
+          loadArcgisFeatures(url, name, panel, clickedBtn, credential, authParameter);
         }
       });
     } finally {
@@ -559,6 +764,7 @@
   function init() {
     _modal = document.getElementById('geosourceModal');
     if (!_modal) return;
+    bindCredentialDialog();
 
     // 绑定关闭按钮与背景点击
     var closeBtn = document.getElementById('geosourceCloseBtn');
@@ -693,8 +899,8 @@
     if (!window.GIS.api || typeof window.GIS.api.geosourceStats !== 'function') return;
     window.GIS.api.geosourceStats().then(function (data) {
       _stats = data;
-      var totalSvc = (data.total_services || 11054).toLocaleString();
-      var totalLyr = (data.total_layers || 18292).toLocaleString();
+      var totalSvc = Number.isFinite(Number(data.total_services)) ? Number(data.total_services).toLocaleString() : '—';
+      var totalLyr = Number.isFinite(Number(data.total_layers)) ? Number(data.total_layers).toLocaleString() : '—';
 
       var badge = document.getElementById('geosourceModalStatsBadge');
       if (badge) {
@@ -705,6 +911,26 @@
       var cardBadge = document.getElementById('geosourceServiceBadge');
       if (cardBadge) {
         cardBadge.textContent = totalSvc + (isEnglish() ? ' services' : ' 服务');
+      }
+
+      var meta = document.getElementById('geosourceCatalogMeta');
+      if (meta) {
+        var snapshotDate = data.db_modified_at ? new Date(data.db_modified_at) : null;
+        var snapshotText = snapshotDate && !Number.isNaN(snapshotDate.getTime())
+          ? snapshotDate.toLocaleString()
+          : uiText('date unavailable', '更新时间未知');
+        var statusSummary = (data.catalog_status_counts || []).map(function (item) {
+          var count = Number(item.count) || 0;
+          return catalogStatusLabel(item.status) + ' ' + count.toLocaleString();
+        }).join(' · ');
+        if (!statusSummary) statusSummary = uiText('No catalog verification status recorded', '目录未记录验证状态');
+        meta.innerHTML = uiText('Snapshot: ', '目录快照：')
+          + window.GIS.utils.escapeHtml(data.db_name || uiText('unknown file', '未知文件'))
+          + ' · ' + uiText('modified ', '文件更新时间 ')
+          + window.GIS.utils.escapeHtml(snapshotText)
+          + ' · ' + uiText('recorded status: ', '目录记录状态：')
+          + window.GIS.utils.escapeHtml(statusSummary)
+          + ' · ' + uiText('these are catalog records, not live checks.', '以上为目录记录，不是实时连通性检测。');
       }
 
       // 动态将真实覆盖的国家/地区注入国家筛选下拉列表
@@ -725,6 +951,12 @@
       }
     }).catch(function (e) {
       console.warn('[GeoSource] 加载统计概况失败', e);
+      var badge = document.getElementById('geosourceModalStatsBadge');
+      var cardBadge = document.getElementById('geosourceServiceBadge');
+      var meta = document.getElementById('geosourceCatalogMeta');
+      if (badge) badge.textContent = uiText('Catalog stats unavailable', '目录统计暂不可用');
+      if (cardBadge) cardBadge.textContent = uiText('Stats unavailable', '统计不可用');
+      if (meta) meta.textContent = uiText('Could not read the selected catalog snapshot.', '无法读取当前目录快照信息。');
     });
   }
 
@@ -797,6 +1029,7 @@
     results.forEach(function (s, index) {
       var proto = (s.protocol || uiText('General', '通用')).trim();
       var capability = classifyService(s);
+      var displayUrl = safeHttpUrl(s.service_url || s.official_url || '');
       var isWms = capability.isWms;
       var isXyz = capability.isXyz;
       var isRest = capability.isRest;
@@ -828,9 +1061,16 @@
         html += '<span class="geosource-tag">' + UI_ICONS.building + ' ' + window.GIS.utils.escapeHtml(s.provider) + '</span>';
       }
       if (s.need_no_key === '是') {
-        html += '<span class="geosource-tag tag-success">' + UI_ICONS.check + ' ' + uiText('No API key', '免Key') + '</span>';
+        html += '<span class="geosource-tag tag-success" title="' + uiText('Catalog metadata only; this does not guarantee live access.', '仅为目录标注，不保证服务当前可访问。') + '">' + UI_ICONS.check + ' ' + uiText('Catalog says no key', '目录标注免密') + '</span>';
+      } else if (s.need_no_key === '否') {
+        html += '<span class="geosource-tag tag-info" title="' + uiText('Catalog metadata indicates authentication is required. Only provider-documented query-parameter API keys are supported here; header auth and OAuth are not supported.', '目录元数据标注需要认证。当前仅支持按服务方文档填写 URL 参数 API Key；暂不支持请求头认证或 OAuth。') + '">' + uiText('Catalog indicates auth required', '目录标注需认证') + '</span>';
       }
-      if (s.is_free === '是') {
+      if (s.status) {
+        html += '<span class="geosource-tag" title="' + uiText('Recorded catalog status; not a live availability check.', '目录中记录的状态，不是实时可用性检测。') + '">' + window.GIS.utils.escapeHtml(catalogStatusLabel(s.status)) + '</span>';
+      }
+      if (s.free === '部分免费') {
+        html += '<span class="geosource-tag tag-info">' + UI_ICONS.check + ' ' + uiText('Partially free', '部分免费') + '</span>';
+      } else if (s.is_free === '是' || s.free === '是') {
         html += '<span class="geosource-tag tag-info">' + UI_ICONS.check + ' ' + uiText('Free', '免费') + '</span>';
       }
       if (s.crs) {
@@ -843,10 +1083,14 @@
       }
 
       html += '  <div class="geosource-card-url-row">';
-      html += '    <input type="text" readonly class="geosource-url-input" value="' + escapeAttribute(s.service_url || s.official_url || '') + '" />';
-      html += '    <button class="geosource-copy-btn" onclick="window.GIS.geosource.copyUrl(' + inlineJsString(encodeURIComponent(s.service_url || s.official_url || '')) + ', this)" title="' + uiText('Copy URL', '复制 URL') + '">';
-      html += '      ' + UI_ICONS.copy + ' <span>' + uiText('Copy', '复制') + '</span>';
-      html += '    </button>';
+      if (displayUrl) {
+        html += '    <input type="text" readonly class="geosource-url-input" value="' + escapeAttribute(displayUrl) + '" />';
+        html += '    <button class="geosource-copy-btn" onclick="window.GIS.geosource.copyUrl(' + inlineJsString(encodeURIComponent(displayUrl)) + ', this)" title="' + uiText('Copy URL', '复制 URL') + '">';
+        html += '      ' + UI_ICONS.copy + ' <span>' + uiText('Copy', '复制') + '</span>';
+        html += '    </button>';
+      } else {
+        html += '    <span class="geosource-url-missing">' + uiText('No valid URL is listed for this catalog entry.', '目录未提供有效地址，暂时无法复制或直接接入。') + '</span>';
+      }
       html += '  </div>';
 
       html += '  <div class="geosource-card-actions">';
@@ -854,8 +1098,11 @@
       html += '      ' + UI_ICONS.layers + ' <span>' + uiText('Layers and details', '图层与详情') + '</span>';
       html += '    </button>';
       if (canLoad && s.service_url) {
+        var connectLabel = s.need_no_key === '否'
+          ? uiText('Enter key and connect', '填写 Key 后接入')
+          : (isRest ? uiText('Browse and connect', '浏览并接入') : uiText('Add layer', '加载图层'));
         html += '    <button class="geosource-action-btn btn-primary" onclick="window.GIS.geosource.loadService(' + index + ', this)">';
-        html += '      ' + UI_ICONS.mapPlus + ' <span>' + (isRest ? uiText('Browse and connect', '浏览并接入') : uiText('Add layer', '加载图层')) + '</span>';
+        html += '      ' + UI_ICONS.mapPlus + ' <span>' + connectLabel + '</span>';
         html += '    </button>';
       }
       var officialHref = safeHttpUrl(s.official_url || s.docs_url);
@@ -892,6 +1139,15 @@
     };
   }
 
+  function catalogStatusLabel(status) {
+    var labels = {
+      '已验证': uiText('Verified in catalog', '目录标记已验证'),
+      '未验证': uiText('Unverified in catalog', '目录标记未验证'),
+      '已停止': uiText('Listed as stopped', '目录标记已停止')
+    };
+    return labels[status] || (status ? String(status) : uiText('Status not recorded', '目录未记录状态'));
+  }
+
   function escapeAttribute(value) {
     return window.GIS.utils.escapeHtml(String(value == null ? '' : value))
       .replace(/"/g, '&quot;')
@@ -904,10 +1160,30 @@
 
   function safeHttpUrl(value) {
     try {
-      var url = new URL(String(value), window.location.href);
-      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+      var raw = String(value || '').trim();
+      var match = raw.match(/^(https?:\/\/[^\s（]+)/i);
+      if (!match) return '';
+      var url = new URL(match[1]);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? sanitizeServiceUrl(url.href) : '';
     } catch (e) {
       return '';
+    }
+  }
+
+  function sanitizeServiceUrl(value) {
+    try {
+      var url = new URL(String(value), window.location.href);
+      url.username = '';
+      url.password = '';
+      Array.from(url.searchParams.keys()).forEach(function (key) {
+        if (isCredentialParameterName(key)) {
+          url.searchParams.delete(key);
+        }
+      });
+      url.hash = '';
+      return url.href.replace(/%7B([xyz])%7D/ig, '{$1}');
+    } catch (e) {
+      return String(value || '').replace(/([?&](?:[^=]*?(?:token|key|password|secret|auth|credential|signature)[^=]*)=)[^&#]*/ig, '$1[redacted]');
     }
   }
 
@@ -965,7 +1241,7 @@
   }
 
   function copyUrl(encodedUrl, btn) {
-    var url = decodeURIComponent(encodedUrl);
+    var url = sanitizeServiceUrl(decodeURIComponent(encodedUrl));
     if (!url) return;
     navigator.clipboard.writeText(url).then(function () {
       if (window.GIS.toast && typeof window.GIS.toast.success === 'function') {
@@ -1016,7 +1292,7 @@
           dHtml += '<div class="geosource-sublayer-item">';
           dHtml += '  <span class="geosource-sublayer-name">[' + window.GIS.utils.escapeHtml(String(l.layer_idx)) + '] ' + window.GIS.utils.escapeHtml(l.layer_name) + '</span>';
           if (/WMS/i.test(det.protocol || '')) {
-            dHtml += '  <button class="geosource-sublayer-load-btn" onclick="window.GIS.geosource.loadWmsSublayer(' + inlineJsString(encodeURIComponent(det.service_url)) + ', ' + inlineJsString(encodeURIComponent(l.layer_name)) + ', ' + inlineJsString(encodeURIComponent(det.service_name + ' - ' + l.layer_name)) + ')">' + UI_ICONS.mapPlus + ' ' + uiText('Add to map', '上图') + '</button>';
+            dHtml += '  <button class="geosource-sublayer-load-btn" onclick="window.GIS.geosource.loadWmsServiceSublayer(' + index + ', ' + inlineJsString(l.layer_name) + ', this)">' + UI_ICONS.mapPlus + ' ' + uiText('Add to map', '上图') + '</button>';
           }
           dHtml += '</div>';
         });
@@ -1032,12 +1308,45 @@
     });
   }
 
-  function loadService(index, btnEl) {
+  function loadWmsServiceSublayer(index, layerName, btnEl) {
+    var s = typeof index === 'object' ? index : _lastResults[index];
+    if (!s || !s.service_url || !layerName) return false;
+    loadService(index, btnEl, null, false, String(layerName));
+    return true;
+  }
+
+  function loadService(index, btnEl, credential, skipCredentialPrompt, sublayerOverride) {
     var s = typeof index === 'object' ? index : _lastResults[index];
     if (!s || !s.service_url) return;
+    if (hasUrlUserInfo(s.service_url)) {
+      notifyUnsupportedUrlCredentials();
+      return;
+    }
 
     var name = s.service_name || s.service_id;
     var capability = classifyService(s);
+    var catalogRequiresAuth = s.need_no_key === '否';
+    var authParameter = inferAuthParameter(s.service_url) || s.auth_parameter || '';
+    if ((catalogRequiresAuth || authParameter) && !credential && !skipCredentialPrompt) {
+      var promptService = authParameter && !s.auth_parameter
+        ? Object.assign({}, s, { auth_parameter: authParameter })
+        : s;
+      requestCredentialForService(promptService, function (choice) {
+        if (!choice) return;
+        if (choice.skipCredentialPrompt) loadService(index, btnEl, null, true, sublayerOverride);
+        else loadService(index, btnEl, choice, true, sublayerOverride);
+      });
+      return;
+    }
+
+    var requestUrl = s.service_url;
+    var authRequired = catalogRequiresAuth || !!credential || !!authParameter;
+    try {
+      if (credential) requestUrl = withQueryCredential(requestUrl, credential);
+    } catch (err) {
+      window.alert(err.message || String(err));
+      return;
+    }
 
     // 按钮反馈与防止重复点击
     var origText = '';
@@ -1059,7 +1368,7 @@
 
     if (capability.isRest) {
       restoreBtn();
-      browseArcgis(s.service_url, name);
+      browseArcgis(requestUrl, name, credential, authRequired, credential && credential.parameter || authParameter);
       return;
     }
 
@@ -1067,14 +1376,16 @@
     if (capability.isWms) {
       window.GIS.api.geosourceDetail(s.service_id).then(function (det) {
         restoreBtn();
-        var layerName = '';
-        if (det.layers && det.layers.length > 0) {
+        var layerName = sublayerOverride || '';
+        if (!layerName && det.layers && det.layers.length > 0) {
           layerName = det.layers[0].layer_name;
         }
-        loadWmsSublayer(encodeURIComponent(s.service_url), encodeURIComponent(layerName), encodeURIComponent(name));
+        loadWmsSublayer(encodeURIComponent(requestUrl), encodeURIComponent(layerName), encodeURIComponent(layerName ? name + ' - ' + layerName : name), null,
+          serviceLayerMetadata(s.service_url, 'WMS', credential, authRequired, layerName));
       }).catch(function (err) {
         restoreBtn();
-        loadWmsSublayer(encodeURIComponent(s.service_url), '', encodeURIComponent(name));
+        loadWmsSublayer(encodeURIComponent(requestUrl), encodeURIComponent(sublayerOverride || ''), encodeURIComponent(sublayerOverride ? name + ' - ' + sublayerOverride : name), null,
+          serviceLayerMetadata(s.service_url, 'WMS', credential, authRequired, sublayerOverride || ''));
       });
       return;
     }
@@ -1082,12 +1393,12 @@
     // 2. XYZ 瓦片服务
     if (capability.isXyz) {
       restoreBtn();
-      loadXyzLayer(s.service_url, name);
+      loadXyzLayer(requestUrl, name, serviceLayerMetadata(s.service_url, 'XYZ', credential, authRequired));
       return;
     }
 
-    // 5. 默认尝试以 GeoJSON 格式加载（优先直连，CORS 失败自动回退代理）
-    fetchWithProxy(s.service_url)
+    // 5. 默认尝试以 GeoJSON 格式加载，通过本机代理统一执行重定向安全策略
+    fetchWithProxy(requestUrl, credential && credential.parameter || authParameter)
       .then(function (gj) {
         restoreBtn();
         if (gj && (gj.type === 'FeatureCollection' || gj.type === 'Feature' || gj.coordinates || gj.features)) {
@@ -1098,24 +1409,26 @@
       })
       .catch(function (err) {
         restoreBtn();
-        fallbackNotifyUrl(s, name, err.message || '网络连接或 CORS 拦截失败');
+        fallbackNotifyUrl(s, name, redactCredentialText(err.message || '本机代理请求失败', credential));
       });
   }
 
-  function fetchWithProxy(url) {
-    return fetch(url, {signal: AbortSignal.timeout(15000)})
-      .then(function (res) {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
-      })
-      .catch(function () {
-        // 直连失败（如浏览器 CORS 拦截），自动通过后端代理重试
-        var proxyUrl = (window.GIS.api.BASE_URL || '') + '/api/geosource/proxy?url=' + encodeURIComponent(url);
-        return fetch(proxyUrl, {signal: AbortSignal.timeout(15000)}).then(function (res) {
-          if (!res.ok) throw new Error('代理获取失败 (HTTP ' + res.status + ')');
-          return res.json();
-        });
+  function fetchWithProxy(url, authParameter) {
+    var proxyUrl = (window.GIS.api.BASE_URL || '') + '/api/geosource/proxy';
+    var parameter = authParameter || inferAuthParameter(url);
+    return fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: url, auth_parameter: parameter || '' }),
+      signal: AbortSignal.timeout(15000)
+    }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (payload) {
+        if (!res.ok) {
+          throw new Error(payload && (payload.detail || payload.message) || '代理获取失败 (HTTP ' + res.status + ')');
+        }
+        return payload;
       });
+    });
   }
 
   function _enforceMaxLayersRule(incomingName) {
@@ -1177,7 +1490,8 @@
     return true;
   }
 
-  function loadWmsSublayer(encUrl, encLayerName, encName, groupId) {
+  function loadWmsSublayer(encUrl, encLayerName, encName, groupId, metadata) {
+    metadata = metadata || {};
     var rawUrl = decodeURIComponent(encUrl);
     var layerName = decodeURIComponent(encLayerName);
     var name = decodeURIComponent(encName);
@@ -1188,17 +1502,25 @@
     if (!_enforceMaxLayersRule(name)) return false;
 
     if (window.GIS.map && typeof window.GIS.map.addWmsLayer === 'function') {
-      window.GIS.map.addWmsLayer(cleanUrl, layerName, name);
+      var wmsLayer = window.GIS.map.addWmsLayer(geosourceTileProxyUrl(cleanUrl,
+        metadata.auth_parameter || (metadata.credential && metadata.credential.parameter)), layerName, name, { opacity: metadata.opacity });
+      watchCredentialTileErrors(wmsLayer, metadata.credential);
       if (window.GIS.layers && typeof window.GIS.layers.addLayer === 'function') {
         window.GIS.layers.addLayer({
-          layer_id: 'wms_' + Date.now(),
+          layer_id: metadata.layer_id || ('wms_' + Date.now()),
           filename: name,
           geometry_type: 'WMS',
           crs: 'EPSG:3857/4326',
           source: 'geosource',
-          visible: true,
-          groupId: groupId || null
+          visible: metadata.visible !== false,
+          opacity: metadata.opacity === undefined ? 1 : metadata.opacity,
+          groupId: groupId || metadata.groupId || null,
+          ...serviceLayerMetadata(metadata.url || cleanUrl, 'WMS', metadata.credential,
+            metadata.requires_auth, layerName, metadata.auth_parameter),
         }, true);
+        if (metadata.visible === false && window.GIS.map.setLayerVisible) {
+          window.GIS.map.setLayerVisible(name, false);
+        }
       }
       notifySuccess(name);
       return true;
@@ -1208,19 +1530,29 @@
     }
   }
 
-  function loadXyzLayer(url, name) {
+  function loadXyzLayer(url, name, metadata) {
+    metadata = metadata || {};
     if (!_enforceMaxLayersRule(name)) return false;
     if (window.GIS.map && typeof window.GIS.map.addTileLayer === 'function') {
-      window.GIS.map.addTileLayer(url, name);
+      var tileLayer = window.GIS.map.addTileLayer(geosourceTileProxyUrl(url,
+        metadata.auth_parameter || (metadata.credential && metadata.credential.parameter)), name, { opacity: metadata.opacity });
+      watchCredentialTileErrors(tileLayer, metadata.credential);
       if (window.GIS.layers && typeof window.GIS.layers.addLayer === 'function') {
         window.GIS.layers.addLayer({
-          layer_id: 'xyz_' + Date.now(),
+          layer_id: metadata.layer_id || ('xyz_' + Date.now()),
           filename: name,
           geometry_type: 'XYZ瓦片',
           crs: 'WebMercator',
           source: 'geosource',
-          visible: true
+          visible: metadata.visible !== false,
+          opacity: metadata.opacity === undefined ? 1 : metadata.opacity,
+          groupId: metadata.groupId || null,
+          ...serviceLayerMetadata(metadata.url || url, 'XYZ', metadata.credential,
+            metadata.requires_auth, '', metadata.auth_parameter),
         }, true);
+        if (metadata.visible === false && window.GIS.map.setLayerVisible) {
+          window.GIS.map.setLayerVisible(name, false);
+        }
       }
       notifySuccess(name);
       return true;
@@ -1230,12 +1562,60 @@
     }
   }
 
+  function loadSavedServiceLayer(layer) {
+    var rawUrl = layer && (layer.url || layer.service_url);
+    if (!rawUrl) return false;
+    if (hasUrlUserInfo(rawUrl)) {
+      notifyUnsupportedUrlCredentials();
+      return false;
+    }
+    var serviceName = layer.filename || layer.name || rawUrl;
+    var serviceType = (layer.service_type || layer.protocol || '').toLowerCase();
+    var isWms = serviceType.indexOf('wms') >= 0 || String(layer.geometry_type || '').toLowerCase() === 'wms';
+    var authParameter = layer.auth_parameter || inferAuthParameter(rawUrl);
+    var url = serviceUrlForPersistence(rawUrl, authParameter);
+    var requiresAuth = !!layer.requires_auth || !!authParameter;
+
+    function connect(credential) {
+      var runtimeUrl;
+      try {
+        runtimeUrl = credential ? withQueryCredential(url, credential) : url;
+      } catch (error) {
+        window.alert(error.message || String(error));
+        return false;
+      }
+      var metadata = {
+        url: url,
+        credential: credential || null,
+        requires_auth: requiresAuth,
+        auth_parameter: authParameter,
+        visible: layer.visible !== false,
+        groupId: layer.groupId || null,
+        layer_id: layer.layer_id || null,
+        opacity: layer.opacity,
+      };
+      if (isWms) {
+        return loadWmsSublayer(encodeURIComponent(runtimeUrl),
+          encodeURIComponent(layer.sublayer || ''), encodeURIComponent(serviceName),
+          layer.groupId || null, metadata);
+      }
+      return loadXyzLayer(runtimeUrl, serviceName, metadata);
+    }
+
+    if (!requiresAuth) return connect(null);
+    requestCredentialForService({ service_name: serviceName, auth_parameter: authParameter }, function (choice) {
+      if (!choice) return;
+      connect(choice.skipCredentialPrompt ? null : choice);
+    });
+    return true;
+  }
+
   function fallbackNotifyUrl(serviceObj, name, reason) {
     var cleanName = (name || '').replace(/\*\*/g, '');
     if (window.GIS.toast && typeof window.GIS.toast.error === 'function') {
       window.GIS.toast.error('数据源接入失败，请在对话框查看排查指引');
     }
-    var url = serviceObj.service_url || serviceObj.official_url || '';
+    var url = sanitizeServiceUrl(serviceObj.service_url || serviceObj.official_url || '');
     var reasonText = reason ? ('\n\n**具体原因**：' + reason) : '';
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       var proto = serviceObj.protocol || 'REST';
@@ -1266,7 +1646,9 @@
     copyUrl: copyUrl,
     toggleDetails: toggleDetails,
     loadService: loadService,
+    loadWmsServiceSublayer: loadWmsServiceSublayer,
     loadWmsSublayer: loadWmsSublayer,
+    loadSavedServiceLayer: loadSavedServiceLayer,
     openWorldMap: openWorldMap,
     closeWorldMap: closeWorldMap
   };

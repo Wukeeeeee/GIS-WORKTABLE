@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from contextlib import closing
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 # 默认数据库路径：优先环境变量 GEOSOURCE_DB_PATH，其次 data/gis_services.db
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _DEFAULT_DB_PATH = os.path.join(_REPO_ROOT, "data", "gis_services.db")
+_SQL_QUERY_MAX_LENGTH = 10_000
+_SQL_QUERY_TIMEOUT_SECONDS = 5.0
 
 
 def get_db_path() -> str:
@@ -25,7 +29,9 @@ def get_db_path() -> str:
     3. 本地 data/gis_services.db
     """
     env_path = os.environ.get("GEOSOURCE_DB_PATH", "").strip()
-    if env_path and os.path.exists(env_path):
+    if env_path:
+        # An explicit path is an operator choice. Do not silently serve a
+        # different snapshot when it is mistyped or temporarily unavailable.
         return os.path.abspath(env_path)
 
     local_path = _DEFAULT_DB_PATH if os.path.exists(_DEFAULT_DB_PATH) else os.path.join(
@@ -140,21 +146,19 @@ def search_services(
     # 分页参数计算
     if limit is not None and limit > 0:
         actual_limit = min(limit, 100)
-        actual_offset = max(0, (page - 1) * actual_limit)
         actual_page_size = actual_limit
     else:
         actual_page_size = min(max(1, page_size), 100)
-        actual_page = max(1, page)
-        actual_offset = (actual_page - 1) * actual_page_size
         actual_limit = actual_page_size
 
     total_pages = max(1, (total_count + actual_page_size - 1) // actual_page_size) if total_count > 0 else 1
-    current_page = max(1, page)
+    current_page = min(max(1, page), total_pages)
+    actual_offset = (current_page - 1) * actual_page_size
 
     sql = f"""
         SELECT 
             service_id, service_name, country, region, provider, category, protocol,
-            service_url, official_url, docs_url, is_free, need_no_key, format,
+            service_url, official_url, docs_url, free, is_free, need_no_key, format,
             spatial_coverage, status, data_description, crs
         FROM master
         {where_clause}
@@ -212,11 +216,12 @@ def get_service_detail(service_id: str) -> Dict[str, Any]:
 
 _last_db_mtime = 0.0
 _cached_stats_data = None
+_cached_stats_db_path = None
 
 
 def list_categories_and_stats() -> Dict[str, Any]:
     """获取 GeoSource 数据源库全貌统计信息：总数、主流分类、协议及国家覆盖（根据 DB 修改时间智能缓存）。"""
-    global _last_db_mtime, _cached_stats_data
+    global _last_db_mtime, _cached_stats_data, _cached_stats_db_path
     db_path = get_db_path()
     try:
         current_mtime = os.path.getmtime(db_path)
@@ -225,7 +230,7 @@ def list_categories_and_stats() -> Dict[str, Any]:
 
     if (
         _cached_stats_data is not None
-        and db_path == _cached_stats_data.get("db_path")
+        and db_path == _cached_stats_db_path
         and current_mtime == _last_db_mtime
     ):
         return dict(_cached_stats_data)
@@ -253,21 +258,37 @@ def list_categories_and_stats() -> Dict[str, Any]:
         )
         top_countries = [dict(r) for r in cur.fetchall()]
 
+        cur.execute(
+            "SELECT COALESCE(NULLIF(status, ''), '') as status, count(*) as count "
+            "FROM master GROUP BY COALESCE(NULLIF(status, ''), '') ORDER BY count DESC"
+        )
+        catalog_status_counts = [dict(r) for r in cur.fetchall()]
+
+    try:
+        db_modified_at = datetime.fromtimestamp(current_mtime, tz=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        db_modified_at = None
+
     _cached_stats_data = {
         "total_services": total_services,
         "total_layers": total_layers,
         "top_categories": top_categories,
         "top_protocols": top_protocols,
         "top_countries": top_countries,
-        "db_path": db_path
+        "db_name": os.path.basename(db_path),
+        "db_modified_at": db_modified_at,
+        "catalog_status_counts": catalog_status_counts,
     }
     _last_db_mtime = current_mtime
+    _cached_stats_db_path = db_path
     return dict(_cached_stats_data)
 
 
 def query_sql(query: str) -> Dict[str, Any]:
     """执行针对 GeoSource 数据库的安全只读 SELECT 查询。"""
     clean_query = (query or "").strip()
+    if len(clean_query) > _SQL_QUERY_MAX_LENGTH:
+        return {"error": f"查询语句不能超过 {_SQL_QUERY_MAX_LENGTH} 个字符。"}
     clean_upper = clean_query.upper()
     if not clean_upper.startswith("SELECT") and not clean_upper.startswith("WITH"):
         return {"error": "仅允许执行 SELECT 或 WITH 只读查询。"}
@@ -279,6 +300,8 @@ def query_sql(query: str) -> Dict[str, Any]:
             return {"error": f"不允许在只读查询中包含 '{word}' 关键字。"}
 
     conn = get_db_connection(readonly=True)
+    deadline = time.monotonic() + _SQL_QUERY_TIMEOUT_SECONDS
+    conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10_000)
     cur = conn.cursor()
     try:
         cur.execute(clean_query)
@@ -290,6 +313,12 @@ def query_sql(query: str) -> Dict[str, Any]:
             "rows": results,
             "truncated": len(rows) > 100,
         }
+    except sqlite3.OperationalError as e:
+        if "interrupt" in str(e).lower():
+            return {
+                "error": f"查询超过 {_SQL_QUERY_TIMEOUT_SECONDS:g} 秒限制，请缩小查询范围后重试。"
+            }
+        return {"error": str(e)}
     except Exception as e:
         return {"error": str(e)}
     finally:

@@ -15,29 +15,29 @@ window.GIS = window.GIS || {};
 
   var OPS = [
     // 栅格分析
-    { id: 'reclassify', group: '栅格分析', label: '栅格重分类', tool: 'raster_reclassify', args: {}, layerHint: '栅格图层', extra: 'reclassify' },
-    { id: 'focal', group: '栅格分析', label: '邻域统计', tool: 'raster_focal_stats', args: {}, layerHint: '栅格图层', extra: 'focal' },
-    { id: 'euclid', group: '栅格分析', label: '欧氏距离', tool: 'euclidean_distance', args: {}, layerHint: '栅格图层', extra: 'sourceValue' },
-    { id: 'mask', group: '栅格分析', label: '按掩膜提取', tool: 'raster_extract_by_mask', args: {}, layerHint: '栅格图层', layerHint2: '掩膜矢量', layers: ['raster_layer', 'zone_layer'], extra: 'inside' },
-    { id: 'surface', group: '栅格分析', label: '表面体积', tool: 'surface_volumes', args: {}, layerHint: '变化前 DEM', layerHint2: '变化后 DEM', layers: ['before_layer', 'after_layer'], optionalLayers: ['after_layer'], extra: 'reference' },
+    { id: 'reclassify', group: '栅格分析', label: '栅格重分类', i18nKey: 'raster.reclassify', tool: 'raster_reclassify', args: {}, layerHint: '栅格图层', extra: 'reclassify' },
+    { id: 'focal', group: '栅格分析', label: '邻域统计', i18nKey: 'raster.focal-statistics', tool: 'raster_focal_stats', args: {}, layerHint: '栅格图层', extra: 'focal' },
+    { id: 'euclid', group: '栅格分析', label: '欧氏距离', i18nKey: 'raster.euclidean-distance', tool: 'euclidean_distance', args: {}, layerHint: '栅格图层', extra: 'sourceValue' },
+    { id: 'mask', group: '栅格分析', label: '按掩膜提取', i18nKey: 'raster.mask-extraction', tool: 'raster_extract_by_mask', args: {}, layerHint: '栅格图层', layerHint2: '掩膜矢量', layers: ['raster_layer', 'zone_layer'], extra: 'inside' },
+    { id: 'surface', group: '栅格分析', label: '表面体积', i18nKey: 'tool.surface-volumes', tool: 'surface_volumes', args: {}, layerHint: '变化前 DEM', layerHint2: '变化后 DEM', layers: ['before_layer', 'after_layer'], optionalLayers: ['after_layer'], extra: 'reference' },
     // 矢量与属性
-    { id: 'join', group: '矢量与属性', label: '属性字段连接', tool: 'join_field', args: {}, layerHint: '目标图层', layerHint2: '连接图层', layers: ['target_layer', 'join_layer'], extra: 'join' },
-    { id: 'geomattrs', group: '矢量与属性', label: '几何属性', tool: 'geometry_attributes', args: {}, layerHint: '矢量图层', extra: 'metrics' },
-    { id: 'mingeom', group: '矢量与属性', label: '最小包络几何', tool: 'minimum_bounding_geometry', args: {}, layerHint: '矢量图层', extra: 'minGeom' },
-    { id: 'p2l', group: '矢量与属性', label: '点集转线', tool: 'points_to_line', args: {}, layerHint: '点图层', extra: 'p2l' },
-    { id: 'gpal', group: '矢量与属性', label: '沿线生成点', tool: 'generate_points_along_lines', args: {}, layerHint: '线图层', extra: 'gpal' },
+    { id: 'join', group: '矢量与属性', label: '属性字段连接', i18nKey: 'tool.attribute-join', tool: 'join_field', args: {}, layerHint: '目标图层', layerHint2: '连接图层', layers: ['target_layer', 'join_layer'], extra: 'join' },
+    { id: 'geomattrs', group: '矢量与属性', label: '几何属性', i18nKey: 'tool.geometry-attributes', tool: 'geometry_attributes', args: {}, layerHint: '矢量图层', extra: 'metrics' },
+    { id: 'mingeom', group: '矢量与属性', label: '最小包络几何', i18nKey: 'tool.minimum-bounding-geometry', tool: 'minimum_bounding_geometry', args: {}, layerHint: '矢量图层', extra: 'minGeom' },
+    { id: 'p2l', group: '矢量与属性', label: '点集转线', i18nKey: 'tool.points-to-line', tool: 'points_to_line', args: {}, layerHint: '点图层', extra: 'p2l' },
+    { id: 'gpal', group: '矢量与属性', label: '沿线生成点', i18nKey: 'tool.points-along-lines', tool: 'generate_points_along_lines', args: {}, layerHint: '线图层', extra: 'gpal' },
     // 空间统计
-    { id: 'weights', group: '空间统计', label: '空间权重矩阵', tool: 'spatial_weights_matrix', args: {}, layerHint: '矢量图层', extra: 'weights' },
-    { id: 'regression', group: '空间统计', label: '空间回归', tool: 'spatial_regression', args: {}, layerHint: '矢量图层', extra: 'regression' },
-    { id: 'directional', group: '空间统计', label: '方向分布', tool: 'directional_distribution', args: {}, layerHint: '点图层', extra: 'directional' },
-    { id: 'tendency', group: '空间统计', label: '中心趋势', tool: 'central_tendency', args: {}, layerHint: '点图层', extra: 'tendency' },
-    { id: 'od', group: '空间统计', label: 'OD 成本矩阵', tool: 'od_cost_matrix', args: {}, layerHint: '起点图层', layerHint2: '终点图层', layers: ['origins_layer', 'destinations_layer'], extra: 'od' },
+    { id: 'weights', group: '空间统计', label: '空间权重矩阵', i18nKey: 'tool.spatial-weights', tool: 'spatial_weights_matrix', args: {}, layerHint: '矢量图层', extra: 'weights' },
+    { id: 'regression', group: '空间统计', label: '空间回归', i18nKey: 'tool.spatial-regression', tool: 'spatial_regression', args: {}, layerHint: '矢量图层', extra: 'regression' },
+    { id: 'directional', group: '空间统计', label: '方向分布', i18nKey: 'tool.standard-deviation-ellipse', tool: 'directional_distribution', args: {}, layerHint: '点图层', extra: 'directional' },
+    { id: 'tendency', group: '空间统计', label: '中心趋势', i18nKey: 'tool.central-tendency', tool: 'central_tendency', args: {}, layerHint: '点图层', extra: 'tendency' },
+    { id: 'od', group: '空间统计', label: 'OD 成本矩阵', i18nKey: 'tool.od-cost-matrix', tool: 'od_cost_matrix', args: {}, layerHint: '起点图层', layerHint2: '终点图层', layers: ['origins_layer', 'destinations_layer'], extra: 'od' },
     // 转换与代价距离
-    { id: 'f2r', group: '转换与代价距离', label: '矢量转栅格', tool: 'feature_to_raster', args: {}, layerHint: '矢量图层', extra: 'f2r' },
-    { id: 'r2f', group: '转换与代价距离', label: '栅格转矢量', tool: 'raster_to_feature', args: {}, layerHint: '栅格图层', extra: 'r2f' },
-    { id: 'fishnet', group: '转换与代价距离', label: '渔网格网', tool: 'create_fishnet', args: {}, layerHint: '范围图层（可选）', layers: ['extent_layer'], optionalLayers: ['extent_layer'], extra: 'fishnet' },
-    { id: 'costdist', group: '转换与代价距离', label: '代价距离', tool: 'cost_distance', args: {}, layerHint: '代价栅格', layerHint2: '源图层', layers: ['cost_layer', 'source_layer'], extra: 'costDistance' },
-    { id: 'leastcost', group: '转换与代价距离', label: '最小成本路径', tool: 'least_cost_path', args: {}, layerHint: '代价栅格', layerHint2: '源图层', layerHint3: '目标图层', layers: ['cost_layer', 'source_layer', 'destination_layer'], extra: 'leastCost' },
+    { id: 'f2r', group: '转换与代价距离', label: '矢量转栅格', i18nKey: 'tool.vector-to-raster', tool: 'feature_to_raster', args: {}, layerHint: '矢量图层', extra: 'f2r' },
+    { id: 'r2f', group: '转换与代价距离', label: '栅格转矢量', i18nKey: 'tool.raster-to-vector', tool: 'raster_to_feature', args: {}, layerHint: '栅格图层', extra: 'r2f' },
+    { id: 'fishnet', group: '转换与代价距离', label: '渔网格网', i18nKey: 'tool.create-fishnet', tool: 'create_fishnet', args: {}, layerHint: '范围图层（可选）', layers: ['extent_layer'], optionalLayers: ['extent_layer'], extra: 'fishnet' },
+    { id: 'costdist', group: '转换与代价距离', label: '代价距离', i18nKey: 'tool.cost-distance', tool: 'cost_distance', args: {}, layerHint: '代价栅格', layerHint2: '源图层', layers: ['cost_layer', 'source_layer'], extra: 'costDistance' },
+    { id: 'leastcost', group: '转换与代价距离', label: '最小成本路径', i18nKey: 'tool.least-cost-path', tool: 'least_cost_path', args: {}, layerHint: '代价栅格', layerHint2: '源图层', layerHint3: '目标图层', layers: ['cost_layer', 'source_layer', 'destination_layer'], extra: 'leastCost' },
   ];
 
   var PANEL_HTML =
@@ -292,6 +292,27 @@ window.GIS = window.GIS || {};
   var PANEL_ICON = _iconUrl(_iconTags[0], '');
   var CLOSE_ICON = _iconUrl(_iconTags[1] || _iconTags[0], PANEL_ICON);
   var PANEL_TITLE = (PANEL_HTML.match(/spatial-toolbar-title">([^<]*)</) || [])[1] || '';
+  var GROUP_I18N_KEYS = {
+    '栅格分析': 'analysis.group.raster',
+    '矢量与属性': 'analysis.group.vector',
+    '空间统计': 'analysis.group.statistics',
+    '转换与代价距离': 'analysis.group.conversion',
+  };
+
+  function _translate(key, fallback) {
+    return GIS.i18n && typeof GIS.i18n.t === 'function' ? GIS.i18n.t(key, fallback) : fallback;
+  }
+
+  function _refreshLauncherLabels() {
+    if (!_launcher || !_launcher.grid) return;
+    Array.prototype.forEach.call(_launcher.grid.children, function (element) {
+      if (!element._i18nKey) return;
+      element.textContent = _translate(element._i18nKey, element._i18nFallback);
+      if (element._toolId) element.title = element.textContent + ' - ' + element._toolId;
+    });
+    if (_launcher.titleElement) _launcher.titleElement.textContent = _translate('tool.analysis-tools', PANEL_TITLE);
+  }
+  if (document.addEventListener) document.addEventListener('gis:languagechange', _refreshLauncherLabels);
 
   var GROUP_COLOR = {};
   var GROUP_ORDER = [];
@@ -430,7 +451,7 @@ window.GIS = window.GIS || {};
       '<div class="spatial-panel" id="analysisToolsPanel">' +
         '<div class="spatial-toolbar" id="analysisToolsToolbar">' +
           '<span class="ui-icon" aria-hidden="true" style=";width:18px;height:18px;--ui-icon-image:url(\'' + PANEL_ICON + '\')"></span>' +
-          '<span class="spatial-toolbar-title">' + PANEL_TITLE + '</span>' +
+          '<span class="spatial-toolbar-title">' + _translate('tool.analysis-tools', PANEL_TITLE) + '</span>' +
           '<button class="spatial-toolbar-close" id="analysisToolsClose">' +
             '<span class="ui-icon" aria-hidden="true" style=";width:16px;height:16px;--ui-icon-image:url(\'' + CLOSE_ICON + '\')"></span>' +
           '</button>' +
@@ -446,15 +467,21 @@ window.GIS = window.GIS || {};
     GROUP_ORDER.forEach(function (group) {
       var head = document.createElement('div');
       head.style.cssText = 'flex:0 0 100%;margin:6px 0 2px;font-size:12px;color:var(--on-surface-variant,#5f5f5f);';
-      head.textContent = group;
+      head.textContent = _translate(GROUP_I18N_KEYS[group], group);
+      head._i18nKey = GROUP_I18N_KEYS[group];
+      head._i18nFallback = group;
       grid.appendChild(head);
       OPS.forEach(function (o) {
         if (o.group !== group) return;
         var b = document.createElement('button');
         b.type = 'button';
         b.className = 'at-tool-btn';
-        b.title = o.label + ' - ' + o.tool;
-        b.textContent = o.label.replace(/\uFF08.*?\uFF09/g, '');
+        var label = _translate(o.i18nKey, o.label);
+        b.title = label + ' - ' + o.tool;
+        b.textContent = label.replace(/\uFF08.*?\uFF09/g, '');
+        b._i18nKey = o.i18nKey;
+        b._i18nFallback = o.label.replace(/\uFF08.*?\uFF09/g, '');
+        b._toolId = o.tool;
         b.style.cssText = 'font-size:12px;padding:4px 10px;border:1px solid var(--outline-variant,#e2e2e2);' +
           'border-radius:4px;background:var(--surface-container-low,#f7f7f7);color:var(--on-surface,#202020);cursor:pointer;line-height:1.4;';
         b.onclick = function () { _showTool(o.id); };
@@ -466,12 +493,19 @@ window.GIS = window.GIS || {};
     var closeBtn = container.querySelector('#analysisToolsClose');
     if (closeBtn) closeBtn.addEventListener('click', function () { container.style.display = 'none'; });
     if (GIS.workspace) {
-      GIS.workspace.preparePanel('analysisToolsPanel', 'analysisToolsToolbar', 'analysisToolsClose', PANEL_TITLE);
+      GIS.workspace.preparePanel('analysisToolsPanel', 'analysisToolsToolbar', 'analysisToolsClose', _translate('tool.analysis-tools', PANEL_TITLE));
     }
     _centerPanel(container);
     _initDrag(container);
     _bindResize();
-    _launcher = { wrapper: wrapper, container: container, root: root };
+    _launcher = {
+      wrapper: wrapper,
+      container: container,
+      root: root,
+      grid: grid,
+      titleElement: container.querySelector('.spatial-toolbar-title'),
+    };
+    _refreshLauncherLabels();
     return _launcher;
   }
 

@@ -40,6 +40,7 @@ function loadUploadModule(readFailure, uploadResponse, config = {}) {
   const vectorLoads = [];
   const vectorRemovals = [];
   const requests = [];
+  const statusRequests = [];
   const reads = [];
   const warnings = [];
   const stateLayerIds = [];
@@ -80,9 +81,15 @@ function loadUploadModule(readFailure, uploadResponse, config = {}) {
   }
   const window = { GIS: {
     utils: { escapeHtml: value => String(value) },
-    api: { upload(file, signal) { uploadCalls.push(file.name); requests.push({ file, signal });
-      return typeof uploadResponse === 'function' ? uploadResponse(file, signal)
-        : Promise.resolve(uploadResponse || { error: 'test upload' }); } },
+    api: {
+      upload(file, signal, requestId) { uploadCalls.push(file.name); requests.push({ file, signal, requestId });
+        return typeof uploadResponse === 'function' ? uploadResponse(file, signal, requestId)
+          : Promise.resolve(uploadResponse || { error: 'test upload' }); },
+      getUploadStatus(requestId) {
+        statusRequests.push(requestId);
+        return config.uploadStatus ? config.uploadStatus(requestId) : Promise.resolve({ status: 'unknown' });
+      },
+    },
     map: {
       addImageOverlay(...args) { rasterOverlays.push(args); },
       loadGeoJSON(...args) { vectorLoads.push(args); },
@@ -128,7 +135,7 @@ function loadUploadModule(readFailure, uploadResponse, config = {}) {
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   window.GIS.upload.init();
   const input = elements.get('fileInput');
-  return { window, upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, rasterRemovals, layerAdds, layerRemovals, vectorLoads, vectorRemovals, requests, reads, warnings, stateLayerIds,
+  return { window, upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, rasterRemovals, layerAdds, layerRemovals, vectorLoads, vectorRemovals, requests, statusRequests, reads, warnings, stateLayerIds,
     selectFiles(files) { input.files = files; return input.fire('change', { target: input }); },
     dropFiles(files) { return document.body.fire('drop', { preventDefault() {}, dataTransfer: { files } }); },
     chatMessages: elements.get('chatMessages') };
@@ -351,4 +358,61 @@ test('an interrupted upload warns that the server may have received the file bef
   assert.match(message, /服务器可能已收到文件/);
   assert.match(message, /检查图层列表/);
   assert.doesNotMatch(message, /Failed to fetch/);
+});
+
+test('a backend without status recovery support does not offer a potentially duplicating retry', async () => {
+  const h = loadUploadModule(false,
+    () => Promise.reject(Object.assign(new Error('Failed to fetch'), { code: 'UPLOAD_NETWORK_ERROR' })),
+    { uploadStatus: () => Promise.reject(Object.assign(new Error('Not Found'), { status: 404 })) });
+  await h.selectFiles([{ name: 'older-server.tif', size: 10 }]);
+  const row = h.chatMessages.children[0];
+  assert.match(row.children[0].innerHTML, /无法安全核对上传状态/);
+  assert.equal(row.querySelector('.system-pill').children.length, 0);
+  assert.equal(h.uploadCalls.length, 1);
+});
+
+test('a completed upload is recovered after a lost response without sending the file again', async () => {
+  const geojson = { type: 'FeatureCollection', features: [{
+    type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [-122.3, 47.6] },
+  }] };
+  const h = loadUploadModule(false,
+    () => Promise.reject(Object.assign(new Error('Failed to fetch'), { code: 'UPLOAD_NETWORK_ERROR' })),
+    { uploadStatus: () => Promise.resolve({ status: 'completed', result: {
+      name: 'recovered.geojson', geojson, registration_token: 'recovered-version',
+    } }) });
+  const pending = h.selectFiles([csv('recovered.geojson', JSON.stringify(geojson))]);
+  await tick();
+  await h.overlays[0].querySelector('.preview-btn-confirm').fire('click');
+  await pending;
+
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.statusRequests.length, 1);
+  assert.equal(h.requests[0].requestId.length > 0, true);
+  assert.equal(h.layerAdds.length, 1);
+  assert.equal(h.layerAdds[0][0].filename, 'recovered.geojson');
+  assert.match(h.chatMessages.children[0].children[0].innerHTML, /上传成功/);
+});
+
+test('manual recovery retries the same upload request ID after checking an unknown receipt', async () => {
+  const geojson = { type: 'FeatureCollection', features: [{
+    type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [-122.3, 47.6] },
+  }] };
+  let uploadCount = 0;
+  const h = loadUploadModule(false, () => {
+    uploadCount += 1;
+    if (uploadCount === 1) return Promise.reject(Object.assign(new Error('Failed to fetch'), { code: 'UPLOAD_NETWORK_ERROR' }));
+    return Promise.resolve({ name: 'recovered.geojson', geojson, registration_token: 'recovered-version' });
+  }, { uploadStatus: () => Promise.resolve({ status: 'unknown' }) });
+  const pending = h.selectFiles([csv('recovered.geojson', JSON.stringify(geojson))]);
+  await tick();
+  await h.overlays[0].querySelector('.preview-btn-confirm').fire('click');
+  await pending;
+  const errorRow = h.chatMessages.children[0];
+  const recoveryButton = errorRow.querySelector('.system-pill').children[0];
+  assert.equal(recoveryButton.textContent, '检查并恢复');
+
+  await recoveryButton.fire('click');
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.requests[1].requestId, h.requests[0].requestId);
+  assert.equal(h.layerAdds.length, 1);
 });

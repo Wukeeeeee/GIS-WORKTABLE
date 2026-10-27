@@ -195,6 +195,9 @@ class TestServiceArea:
         assert len(result["polygons"]["features"]) == 1
         assert result["areas"][0]["break"] == 500
         assert result["areas"][0]["area_km2"] > 0
+        properties = result["polygons"]["features"][0]["properties"]
+        assert properties["approximate"] is True
+        assert properties["boundary_method"] == "reachable_node_convex_hull"
 
 
 

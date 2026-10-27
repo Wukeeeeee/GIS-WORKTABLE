@@ -93,6 +93,56 @@ test('loading a project renders project names and saved user messages as text', 
   assert.equal(restoredNotice.message.includes('<img'), false);
 });
 
+test('loading a project with a non-text name uses a safe display fallback', async () => {
+  const capsule = { textContent: '' };
+  const messages = [];
+  const window = { GIS: {
+    api: { loadProject() { return Promise.resolve({ id: 'bad-name', name: { value: '工程名' }, messages: [], layers: [], mapState: {} }); } },
+    chat: { clear() {}, addMessage(message, type) { messages.push({ message, type }); } },
+    map: { clearAll() {} },
+  } };
+  const document = { getElementById(id) { return id === 'workspaceCurrentProjectName' ? capsule : null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  assert.equal(await window.GIS.project.loadProject('bad-name'), true);
+  assert.equal(capsule.textContent, '未命名工程');
+  assert.ok(messages.some(item => item.type === 'system' && item.message === '已恢复工程: 未命名工程'));
+});
+
+test('project restore skips malformed saved messages and layer rows while restoring valid data', async () => {
+  const messages = [];
+  const restoredLayers = [];
+  const payload = {
+    id: 'partially-damaged-project', name: '可恢复工程',
+    messages: [null, { role: 'user', content: '保留的消息' }, { role: 'assistant', content: 42 }],
+    layers: [null, { name: '可恢复图层', geojson: { type: 'FeatureCollection', features: [] } }],
+    layerGroups: {}, mapState: {}, registration_warnings: ['坏图层'],
+  };
+  const window = { GIS: {
+    api: { loadProject() { return Promise.resolve(payload); } },
+    chat: { clear() {}, addMessage(message, type) { messages.push({ message, type }); } },
+    map: { clearAll() {}, loadGeoJSON() { return {}; } },
+    layers: { clearAll() {}, setGroupState(groups) { assert.equal(groups.length, 0); },
+      addLayer(layer) { restoredLayers.push(layer); }, syncLayerOrder() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON, Set,
+  }, { filename: sourcePath });
+
+  const restored = await window.GIS.project.loadProject(payload.id);
+  assert.equal(restored, true, JSON.stringify(messages));
+  assert.ok(messages.some(item => item.type === 'user' && item.message === '保留的消息'));
+  assert.equal(restoredLayers.length, 1);
+  assert.equal(restoredLayers[0].filename, '可恢复图层');
+  assert.ok(messages.some(item => item.type === 'system' && item.message.includes('4 条格式异常')));
+  assert.ok(messages.some(item => item.type === 'system' && item.message.includes('1 个图层未能注册到分析工具')));
+});
+
 test('restoring legacy same-name layers without IDs delegates unique ID creation to the layer registry', async () => {
   const addedLayers = [];
   const opacities = [];
@@ -152,6 +202,34 @@ test('a vector layer that fails to render is not registered as restored and is r
   assert.equal(addedLayers.length, 0, 'a failed map layer must not appear in the layer registry');
   assert.ok(messages.some(item => item.message.includes('无法渲染的图层未能显示')));
   assert.ok(messages.some(item => item.message.includes('已恢复工程')));
+});
+
+test('a raster restore error does not stop later project layers from loading', async () => {
+  const addedLayers = [];
+  const messages = [];
+  const payload = {
+    id: 'raster-error-project', name: '栅格损坏工程', messages: [], mapState: {},
+    layers: [
+      { name: '损坏栅格', raster: { url: 'blob:broken', bounds: [[0, 0], [1, 1]] } },
+      { name: '后续矢量', geojson: { type: 'FeatureCollection', features: [] } },
+    ],
+  };
+  const window = { GIS: {
+    api: { loadProject() { return Promise.resolve(payload); } },
+    chat: { clear() {}, addMessage(message, type) { messages.push({ message, type }); } },
+    map: { clearAll() {}, addImageOverlay() { throw new Error('invalid raster source'); }, loadGeoJSON() { return {}; } },
+    layers: { clearAll() {}, setGroupState() {}, addLayer(layer) { addedLayers.push(layer); }, syncLayerOrder() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON, Set,
+  }, { filename: sourcePath });
+
+  assert.equal(await window.GIS.project.loadProject(payload.id), true);
+  assert.deepEqual(addedLayers.map(layer => layer.filename), ['后续矢量']);
+  assert.ok(messages.some(item => item.type === 'system' && item.message.includes('损坏栅格未能显示')));
+  assert.ok(messages.some(item => item.type === 'system' && item.message.includes('已恢复工程')));
 });
 
 test('autosave sends stable layer IDs alongside names and display state', async () => {
@@ -278,6 +356,36 @@ test('project restore recreates saved raster overlays and their layer-panel visi
   assert.deepEqual({ ...addedLayers[0].raster }, raster);
   assert.equal(addedLayers[0]._registeredName, '高程');
   assert.equal(addedLayers[0]._registrationTokens['高程'], 'restored-version');
+});
+
+test('project restore routes saved WMS and XYZ sources through GeoSource reauthentication', async () => {
+  const restoredSources = [];
+  const payload = { id: 'service-project', name: '在线图层工程', messages: [], mapState: {}, layers: [
+    { layer_id: 'duplicate-service-id', filename: '在线 WMS', geometry_type: 'WMS', service_type: 'WMS',
+      url: 'https://maps.example.test/wms', sublayer: 'roads', requires_auth: true, auth_parameter: 'token' },
+    { layer_id: 'duplicate-service-id', filename: 'XYZ 底图', geometry_type: 'XYZ瓦片', service_type: 'XYZ',
+      url: 'https://tiles.example.test/{z}/{x}/{y}', requires_auth: false },
+  ] };
+  const window = { GIS: {
+    api: { loadProject() { return Promise.resolve(payload); } },
+    chat: { clear() {}, addMessage() {} },
+    map: { clearAll() {}, addTileLayer() {} },
+    layers: { setGroupState() {}, clearAll() {}, syncLayerOrder() {} },
+    geosource: { loadSavedServiceLayer(layer) { restoredSources.push(layer); } },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  assert.equal(await window.GIS.project.loadProject('service-project'), true);
+  assert.equal(restoredSources.length, 2);
+  assert.equal(restoredSources[0].requires_auth, true);
+  assert.equal(restoredSources[0].auth_parameter, 'token');
+  assert.equal(restoredSources[1].service_type, 'XYZ');
+  assert.equal(restoredSources[0].layer_id, 'duplicate-service-id');
+  assert.equal(restoredSources[1].layer_id, 'duplicate-service-id_2');
 });
 
 test('project restore reapplies saved thematic symbology after registering the layer', async () => {

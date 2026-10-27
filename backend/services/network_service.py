@@ -345,9 +345,10 @@ def service_area(
         points = [Point(n) for n in nodes_in_range]
         if len(points) < 3:
             continue
-        # 用点集的凸包作为服务区边界
+        # This is a visual estimate, not a true network isochrone: the convex
+        # hull fills gaps and may include places without reachable roads.
         hull = unary_union(points).convex_hull
-        # 用缓冲区让边界平滑一些
+        # Keep a small display buffer around the estimated boundary.
         hull_buffered = hull.buffer(0.001)
         if hull_buffered.is_empty:
             continue
@@ -369,6 +370,8 @@ def service_area(
                 "area_km2": area_km2,
                 "from_m": from_break,
                 "to_m": brk,
+                "approximate": True,
+                "boundary_method": "reachable_node_convex_hull",
             },
         })
         area_infos.append({"break": brk, "area_km2": area_km2})

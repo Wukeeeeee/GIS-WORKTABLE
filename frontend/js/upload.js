@@ -259,8 +259,9 @@ window.GIS = window.GIS || {};
     });
   }
 
-  async function startUpload(file) {
+  async function startUpload(file, requestId, recoverExisting) {
     const uploadId = 'upload_' + (++_uploadIdCounter);
+    requestId = requestId || _newUploadRequestId();
     var controller = new AbortController();
     _uploadAbortControllers.set(uploadId, controller);
     showUploadToast('importing', file.name, uploadId);
@@ -271,7 +272,35 @@ window.GIS = window.GIS || {};
     var handoffCommitted = false;
 
     try {
-      const result = await GIS.api.upload(file, signal);
+      var result = null;
+      if (recoverExisting && GIS.api.getUploadStatus) {
+        var prior = await _waitForUploadResult(requestId, signal, 10);
+        if (prior && prior.status === 'completed' && prior.result) result = prior.result;
+        else if (prior && prior.status === 'processing') {
+          var processingError = new Error('上传仍在服务器处理中，请稍后检查状态');
+          processingError.code = 'UPLOAD_PROCESSING';
+          throw processingError;
+        } else if (prior && (prior.status === 'unsupported' || prior.status === 'unavailable')) {
+          var recoveryUnavailable = new Error('当前服务无法安全核对上传状态，请先检查图层列表');
+          recoveryUnavailable.code = 'UPLOAD_RECOVERY_UNAVAILABLE';
+          throw recoveryUnavailable;
+        }
+      }
+      if (!result) {
+        try {
+          result = await GIS.api.upload(file, signal, requestId);
+        } catch (uploadError) {
+          if (uploadError.code !== 'UPLOAD_NETWORK_ERROR' || !GIS.api.getUploadStatus) throw uploadError;
+          var recovered = await _waitForUploadResult(requestId, signal, 5);
+          if (recovered && recovered.status === 'completed' && recovered.result) result = recovered.result;
+          else {
+            uploadError.uploadRequestId = requestId;
+            uploadError.uploadStillProcessing = !!(recovered && recovered.status === 'processing');
+            uploadError.uploadRecoveryUnavailable = !!(recovered && (recovered.status === 'unsupported' || recovered.status === 'unavailable'));
+            throw uploadError;
+          }
+        }
+      }
       if (signal.aborted) {
         if (result && result.name && result.registration_token && GIS.api.unregisterLayer) {
           try { await GIS.api.unregisterLayer(result.name, result.registration_token); }
@@ -414,13 +443,74 @@ window.GIS = window.GIS || {};
           }
         }
       }
-      var errorMessage = err.code === 'UPLOAD_NETWORK_ERROR'
-        ? tr('upload.connection-unknown', '上传连接中断，服务器可能已收到文件。请先检查图层列表，再决定是否重试，避免重复导入。')
-        : (err.message || '上传失败');
+      var errorMessage = err.code === 'UPLOAD_RECOVERY_UNAVAILABLE' || err.uploadRecoveryUnavailable
+        ? tr('upload.recovery-unavailable', '无法安全核对上传状态。请先检查图层列表；当前服务不支持安全恢复，因此不会重传。')
+        : (err.code === 'UPLOAD_NETWORK_ERROR'
+          ? tr('upload.connection-unknown', '上传连接中断，服务器可能已收到文件。请先检查图层列表，再决定是否重试，避免重复导入。')
+        : (err.code === 'UPLOAD_PROCESSING'
+          ? tr('upload.still-processing', '服务器仍在处理此上传，请稍后再次检查。')
+          : (err.message || '上传失败')));
       showUploadToast('error', file.name + ': ' + errorMessage, uploadId);
+      if (err.code === 'UPLOAD_PROCESSING'
+          || (err.code === 'UPLOAD_NETWORK_ERROR' && !err.uploadRecoveryUnavailable)) {
+        _addUploadRecoveryAction(uploadId, file, requestId);
+      }
     } finally {
       _uploadAbortControllers.delete(uploadId);
     }
+  }
+
+  function _newUploadRequestId() {
+    var cryptoApi = window.crypto;
+    if (cryptoApi && typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID();
+    if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+      var bytes = new Uint8Array(16);
+      cryptoApi.getRandomValues(bytes);
+      return Array.from(bytes, function(value) { return value.toString(16).padStart(2, '0'); }).join('');
+    }
+    return 'upload-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  }
+
+  async function _waitForUploadResult(requestId, signal, attempts) {
+    for (var attempt = 0; attempt < attempts; attempt++) {
+      if (signal && signal.aborted) return { status: 'unavailable' };
+      try {
+        var status = await GIS.api.getUploadStatus(requestId, signal);
+        if (status && status.status === 'completed' && status.result) return status;
+        if (status && status.status === 'unknown') return status;
+        if (!status || status.status !== 'processing') return { status: 'unavailable' };
+      } catch (error) {
+        return { status: error && (error.status === 404 || error.status === 405) ? 'unsupported' : 'unavailable' };
+      }
+      if (attempt + 1 < attempts) await new Promise(function(resolve) { setTimeout(resolve, 300); });
+    }
+    return { status: 'processing' };
+  }
+
+  function _addUploadRecoveryAction(uploadId, file, requestId) {
+    var row = _uploadRows.get(uploadId);
+    if (!row) return;
+    var timer = _uploadStatusTimers.get(uploadId);
+    if (timer) clearTimeout(timer);
+    _uploadStatusTimers.delete(uploadId);
+    var bubble = row.querySelector('.system-pill');
+    if (!bubble) return;
+    var button = document.createElement('button');
+    button.className = 'upload-recovery-btn';
+    button.textContent = tr('upload.check-recover', '检查并恢复');
+    button.style.cssText = 'margin-left:8px;padding:2px 8px;border:1px solid var(--outline-variant);border-radius:10px;background:var(--surface);color:var(--on-surface);cursor:pointer;font-size:11px;';
+    button.addEventListener('click', function() {
+      button.disabled = true;
+      var statusTimer = _uploadStatusTimers.get(uploadId);
+      if (statusTimer) clearTimeout(statusTimer);
+      var parent = row.parentNode;
+      if (parent) parent.removeChild(row);
+      _uploadRows.delete(uploadId);
+      _uploadStatusTimers.delete(uploadId);
+      return startUpload(file, requestId, true);
+    });
+    bubble.appendChild(button);
+    _scheduleUploadRowRemoval(uploadId, 10 * 60 * 1000);
   }
 
   // The vector upload path may return the shared GIS state record while deletion

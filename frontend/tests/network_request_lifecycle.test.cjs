@@ -111,6 +111,17 @@ async function setClosestFacilityInputs(harness) {
   harness.getElement('networkSolveBtn').listeners.click();
 }
 
+async function setServiceAreaInputs(harness) {
+  harness.window.GIS.network.activate();
+  const serviceAreaTab = new Element('service-area-tab');
+  serviceAreaTab.dataset.type = 'service_area';
+  harness.getElement('networkTabs').listeners.click({ target: { closest: () => serviceAreaTab } });
+  harness.getElement('btnFacility').onclick();
+  harness.map.clickHandler({ latlng: { lng: -73, lat: 40 } });
+  await new Promise(resolve => setImmediate(resolve));
+  harness.getElement('networkSolveBtn').listeners.click();
+}
+
 test('network solve results are ignored after the user switches analysis modes', async () => {
   const harness = createHarness();
   await setRoutePoints(harness);
@@ -188,6 +199,26 @@ test('closest-facility total failures retain backend snap and reachability diagn
   assert.match(harness.getElement('networkStatus').textContent, /所有设施均无法连通/);
   assert.match(harness.getElement('networkStatus').textContent, /吸附范围的设施序号（从 1 开始）：1/);
   assert.match(harness.getElement('networkStatus').textContent, /路网不可达的设施序号（从 1 开始）：2/);
+});
+
+test('service-area results disclose the convex-hull approximation', async () => {
+  const harness = createHarness();
+  await setServiceAreaInputs(harness);
+
+  harness.finishSolve()({
+    ok: true,
+    json: () => Promise.resolve({
+      polygons: { type: 'FeatureCollection', features: [
+        { type: 'Feature', properties: { approximate: true, boundary_method: 'reachable_node_convex_hull' },
+          geometry: { type: 'Polygon', coordinates: [[[-73, 40], [-72.99, 40], [-72.99, 40.01], [-73, 40]]] } },
+      ] },
+      areas: [{ break: 1000, area_km2: 0.2 }],
+    }),
+  });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.match(harness.getElement('networkResultBody').innerHTML, /可达路网节点凸包估算/);
+  assert.match(harness.getElement('networkResultBody').innerHTML, /不代表精确等时圈/);
 });
 
 test('late point snap cannot become an input for a newly selected network mode', async () => {

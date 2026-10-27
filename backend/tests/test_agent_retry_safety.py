@@ -69,6 +69,31 @@ def test_nonstream_still_retries_transient_error_before_any_tool(monkeypatch):
     assert result["response"] == "恢复成功"
 
 
+def test_nonstream_provider_error_redacts_key_and_url_credentials(monkeypatch, capsys):
+    key = "provider-key-sentinel"
+
+    class FakeAgent:
+        def invoke(self, payload, config=None):
+            raise RuntimeError(
+                f"provider echoed {key}; https://user:{key}@api.example.test/v1?api_key={key}"
+            )
+
+    _patch_agent_run(monkeypatch, FakeAgent())
+    user_text = "加载并导出分析结果"
+    result = graph.run_agent(
+        [SystemMessage(content="test"), HumanMessage(content=user_text)],
+        cfg=LLMConfig(api_key=key, base_url="https://api.example.test/v1", model="mock"),
+        original_message=user_text,
+        session_id="provider-error-redaction",
+    )
+    captured = capsys.readouterr()
+
+    assert key not in result["response"]
+    assert key not in captured.out
+    assert key not in captured.err
+    assert "AI 服务调用失败" in result["response"]
+
+
 def test_budget_timeout_reports_background_work_and_holds_workspace_locks(monkeypatch):
     started = threading.Event()
     allow_finish = threading.Event()

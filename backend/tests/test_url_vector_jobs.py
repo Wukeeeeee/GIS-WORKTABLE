@@ -59,3 +59,43 @@ def test_url_vector_inspection_sanitizes_query_credentials(monkeypatch):
     assert seen == ["https://example.test/FeatureServer/12?token=private"]
     assert response.json()["url"] == "https://example.test/FeatureServer/12"
     assert "private" not in response.text
+
+
+def test_url_vector_inspection_error_redacts_source_credentials(monkeypatch):
+    from backend import main
+    from backend.services import url_gis_service as ugs
+
+    source = "https://user:PASS_SENTINEL@example.test/roads?token=TOKEN_SENTINEL"
+    monkeypatch.setattr(ugs, "inspect_gis_url", lambda _url: (_ for _ in ()).throw(
+        RuntimeError(f"read failed for {source}")
+    ))
+    with TestClient(main.app) as client:
+        response = client.post("/api/url-data/inspect", json={"url": source})
+
+    assert response.status_code == 400
+    assert "PASS_SENTINEL" not in response.text
+    assert "TOKEN_SENTINEL" not in response.text
+    assert "https://example.test/roads" in response.text
+
+
+def test_url_vector_job_error_redacts_source_credentials(monkeypatch):
+    import threading
+    from backend import main
+    from backend.services import url_gis_service as ugs
+
+    source = "https://user:PASS_SENTINEL@example.test/roads?token=TOKEN_SENTINEL"
+    monkeypatch.setattr(ugs, "fetch_gis_data_url", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError(f"download failed for {source}")
+    ))
+    job_id = "credential-redaction-test"
+    main._url_fetch_jobs[job_id] = {"status": "running"}
+    try:
+        main._run_url_vector_fetch(
+            job_id, main.UrlVectorFetchRequest(url=source), threading.Event()
+        )
+        error = main._url_fetch_jobs[job_id]["error"]
+        assert "PASS_SENTINEL" not in error
+        assert "TOKEN_SENTINEL" not in error
+        assert "https://example.test/roads" in error
+    finally:
+        main._url_fetch_jobs.pop(job_id, None)

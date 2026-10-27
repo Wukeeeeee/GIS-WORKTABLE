@@ -15,8 +15,42 @@ var _linkRenderer = null;
 if (typeof marked !== 'undefined') {
   _linkRenderer = new marked.Renderer();
   _linkRenderer.link = function(token) {
-    return '<a href="' + token.href + '" target="_blank" rel="noopener noreferrer" class="chat-markdown-link">' + token.text + '</a>';
+    var href = _safeMarkdownUrl(token.href);
+    if (!href) return _escapeMarkdownHtml(token.text || '');
+    return '<a href="' + _escapeMarkdownHtml(href) + '" target="_blank" rel="noopener noreferrer" class="chat-markdown-link">' +
+      _escapeMarkdownHtml(token.text || '') + '</a>';
   };
+  _linkRenderer.html = function(token) {
+    return _escapeMarkdownHtml(typeof token === 'string' ? token : (token.text || token.raw || ''));
+  };
+  _linkRenderer.image = function(token) {
+    var src = _safeMarkdownUrl(token.href);
+    if (!src || /^(?:https?:|mailto:)/i.test(src)) return _escapeMarkdownHtml(token.text || '');
+    return '<img src="' + _escapeMarkdownHtml(src) + '" alt="' + _escapeMarkdownHtml(token.text || '') + '"' +
+      (token.title ? ' title="' + _escapeMarkdownHtml(token.title) + '"' : '') + '>';
+  };
+}
+
+function _escapeMarkdownHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char];
+  });
+}
+
+function _safeMarkdownUrl(value) {
+  var url = String(value || '').trim();
+  if (!url || url.startsWith('//')) return '';
+  if (/^(?:https?:|mailto:)/i.test(url)) return url;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return '';
+  return url;
+}
+
+function _renderChatMarkdown(text, inline) {
+  if (typeof marked === 'undefined') {
+    return _escapeMarkdownHtml(text).replace(/\n/g, inline ? ' ' : '<br/>');
+  }
+  var options = { breaks: true, gfm: true, renderer: _linkRenderer };
+  return inline ? marked.parseInline(text, options) : marked.parse(text, options);
 }
 
 //将GIS命名空间赋值给常量GIS，相当于全局变量
@@ -91,7 +125,7 @@ function scrollMessages() {
 
   const SLASH_COMMANDS = [
     { name: 'help', label: '操作手册', desc: '打开系统操作手册', prompt: '' },
-    { name: 'geosource', label: '全球数据源', desc: '全球 2198+ 空间服务与图层检索', prompt: '帮我检索全球 GIS 空间服务：', direct: function () { if (window.GIS.geosource) GIS.geosource.show(); } },
+    { name: 'geosource', label: '全球数据源', desc: 'GeoSource 服务与图层目录检索', prompt: '帮我检索全球 GIS 空间服务：', direct: function () { if (window.GIS.geosource) GIS.geosource.show(); } },
     { name: 'buffer', label: '缓冲区分析', desc: '为图层创建指定距离的缓冲区', prompt: '为图层 {图层名} 创建 {距离} 米的缓冲区，结果加载到地图上', direct: function () { GIS.spatial.openTab('buffer') },},
     { name: 'intersection', label: '空间相交', desc: '两个图层的相交分析', prompt: '对 {图层A} 和 {图层B} 做空间相交分析，结果加载到地图上', direct: function () { GIS.spatial.openTab('overlay') },},
     { name: 'union', label: '空间合并', desc: '合并两个图层的几何', prompt: '合并 {图层A} 和 {图层B}，结果加载到地图上', direct: function () { GIS.spatial.openTab('overlay') },},
@@ -883,7 +917,6 @@ function scrollMessages() {
             message: text,
             session_id: currentSessionId,
             mode: window.GIS.chat.getMode(),
-            api_key: sendProv.api_key || undefined,
             provider: sendProv.id || provider,
             llm_config: sendProv,
             force_skills: forceSkills,
@@ -900,7 +933,14 @@ function scrollMessages() {
             read_only_location_analysis: readOnlyLocationAnalysis,
           }),
         });
-        if (!streamRes.ok) throw new Error('Stream API error: ' + streamRes.status);
+        if (!streamRes.ok) {
+          var streamError = 'Stream API error: ' + streamRes.status;
+          try {
+            var errorBody = await streamRes.json();
+            streamError = errorBody.detail || errorBody.message || streamError;
+          } catch (_) {}
+          throw new Error(streamError);
+        }
 
         var reader = streamRes.body.getReader();
         var decoder = new TextDecoder();
@@ -1279,6 +1319,7 @@ function scrollMessages() {
               const iframe = document.createElement('iframe');
               iframe.style.cssText = 'width:100%;height:420px;border:none;display:block;';
               iframe.title = '交互式地图';
+              iframe.setAttribute('sandbox', 'allow-scripts');
               // 优先用 srcdoc（内联 HTML，不落磁盘），其次用 src
               if (htmlContent) {
                 iframe.srcdoc = htmlContent;
@@ -2113,19 +2154,11 @@ function scrollMessages() {
       if (isRichCard) {
         bubble.className = 'system-card';
         bubble.style.cssText = 'max-width:92%;font-size:12px;color:var(--on-surface-variant);background:var(--surface-container-low);border:1px solid var(--outline-variant);border-radius:8px;padding:10px 14px;line-height:1.6;word-break:break-word;text-align:left;white-space:normal;margin:4px auto;box-sizing:border-box;box-shadow:0 1px 3px rgba(0,0,0,0.05);';
-        if (typeof marked !== 'undefined' && text.indexOf('<') === -1) {
-          bubble.innerHTML = marked.parse(text, { breaks: true, gfm: true, renderer: _linkRenderer });
-        } else {
-          bubble.innerHTML = text.replace(/\n/g, '<br/>');
-        }
+        bubble.innerHTML = _renderChatMarkdown(text, false);
       } else {
         bubble.className = 'system-pill';
         bubble.style.cssText = 'font-size:11.5px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:4px 14px;text-align:center;line-height:1.45;max-width:90%;white-space:normal;word-break:break-word;margin:0 auto;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;';
-        if (typeof marked !== 'undefined') {
-          bubble.innerHTML = typeof marked.parseInline === 'function' ? marked.parseInline(text) : marked.parse(text);
-        } else {
-          bubble.innerHTML = text;
-        }
+        bubble.innerHTML = _renderChatMarkdown(text, true);
       }
       if (type === 'ai' && !options.noMarkdown) bubble.appendChild(footer);
     row.appendChild(bubble);
@@ -2152,10 +2185,10 @@ function scrollMessages() {
 
     const content = document.createElement('div');
     // AI 消息渲染 Markdown（跳过加载气泡，避免 <p> 包裹破坏流光动画）
-    if (type === 'ai' && !options.noMarkdown && typeof marked !== 'undefined') {
-      content.innerHTML = marked.parse(text, { breaks: true, gfm: true, renderer: _linkRenderer });
+    if (type === 'ai' && !options.noMarkdown) {
+      content.innerHTML = _renderChatMarkdown(text, false);
     } else {
-      content.innerHTML = text;
+      content.textContent = String(text == null ? '' : text);
     }
     // AI 消息：自动为输出文件路径添加「打开 / 下载」跳转按钮
     if (type === 'ai') _attachOutputButtons(content);

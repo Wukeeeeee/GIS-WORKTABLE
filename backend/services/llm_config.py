@@ -85,6 +85,27 @@ class LLMConfig(BaseModel):
         return normalize_base_url(v)
 
 
+def model_endpoint_transport_error(cfg: LLMConfig) -> Optional[str]:
+    """Require TLS for public or unclassified HTTP model endpoints.
+
+    Local and explicitly private HTTP services remain available for self-hosted
+    models; public prompts and API keys must not travel over cleartext HTTP.
+    """
+    try:
+        parts = urlsplit(cfg.base_url or "")
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "http" or not parts.hostname:
+        return None
+    from backend.services.url_security import is_public_http_target
+    if is_public_http_target(cfg.base_url) is False:
+        return None
+    return (
+        "公网或无法确认地址的模型服务必须使用 HTTPS，避免聊天内容和 API Key 以明文传输。"
+        "本机或明确解析为内网地址的 HTTP 模型服务仍可使用。"
+    )
+
+
 # reasoning 存进消息元数据的键（不进最终回复正文，供前端 thinking 展示）
 _REASONING_KEY = "reasoning_content"
 

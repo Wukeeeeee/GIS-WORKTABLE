@@ -7,10 +7,16 @@
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+import socket
 import json
 import gzip
 import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -21,10 +27,196 @@ os.environ.pop("PROJ_DATA", None)
 from backend.services import tools as T
 from backend.services.tools import tools as TOOL_LIST, reset_state, get_pending_state, _registered_layers
 from backend.services import cloud_native as cn
+from backend.services import url_security
 
 
 def _registry():
     return {t.name: t for t in TOOL_LIST}
+
+
+@pytest.fixture
+def range_test_server():
+    body = b"0123456789abcdefghijklmnopqrstuvwxyz"
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            return
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+
+        def do_GET(self):
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/private")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            range_header = self.headers.get("Range")
+            if range_header:
+                start, end = range_header.removeprefix("bytes=").split("-", 1)
+                first = int(start)
+                last = min(int(end), len(body) - 1)
+                payload = body[first:last + 1]
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {first}-{last}/{len(body)}")
+            else:
+                payload = body
+                self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Accept-Ranges", "bytes")
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_guarded_vsi_source_relays_range_requests_with_or_without_query(range_test_server, monkeypatch):
+    original_opener = cn.safe_redirect_opener
+    observed_timeouts = []
+
+    def tracked_opener(*args, **kwargs):
+        opener = original_opener(*args, **kwargs)
+
+        class TrackedOpener:
+            def open(self, request, timeout):
+                observed_timeouts.append(timeout)
+                return opener.open(request, timeout=timeout)
+
+        return TrackedOpener()
+
+    monkeypatch.setattr(cn, "safe_redirect_opener", tracked_opener)
+    source = range_test_server + "/data"
+    with cn.guarded_vsi_source(source) as vsi_path:
+        local_url = vsi_path.removeprefix("/vsicurl/")
+        for suffix in ("", "?cache=1", "/?cache=1"):
+            request = urllib.request.Request(local_url + suffix, headers={"Range": "bytes=2-5"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert response.status == 206
+                assert response.headers["Content-Range"] == "bytes 2-5/36"
+                assert response.read() == b"2345"
+    assert observed_timeouts == [cn._REMOTE_HTTP_TIMEOUT_SECONDS] * 3
+
+
+def test_guarded_vsi_suppresses_expected_error_when_client_has_disconnected():
+    class ClosedPipe:
+        def write(self, _body):
+            raise ConnectionAbortedError("client disconnected")
+
+    class Handler(cn._GuardedVsiProxyHandler):
+        def send_response(self, *_args, **_kwargs):
+            return
+
+        def send_header(self, *_args, **_kwargs):
+            return
+
+        def end_headers(self):
+            return
+
+    handler = object.__new__(Handler)
+    handler.command = "GET"
+    handler.close_connection = False
+    handler.wfile = ClosedPipe()
+
+    handler.send_error(404)
+
+    assert handler.close_connection is True
+
+
+def test_guarded_vsi_source_stops_on_a_stalled_upstream(monkeypatch):
+    class SlowHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            return
+
+        def do_GET(self):
+            threading.Event().wait(0.2)
+            self.send_response(206)
+            self.send_header("Content-Range", "bytes 0-3/36")
+            self.send_header("Content-Length", "4")
+            self.end_headers()
+            self.wfile.write(b"0123")
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setattr(cn, "_REMOTE_HTTP_TIMEOUT_SECONDS", 0.05)
+    source = f"http://127.0.0.1:{server.server_port}/data"
+    try:
+        with cn.guarded_vsi_source(source) as vsi_path:
+            request = urllib.request.Request(
+                vsi_path.removeprefix("/vsicurl/"), headers={"Range": "bytes=0-3"}
+            )
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request, timeout=3)
+            assert error.value.code == 502
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_guarded_vsi_source_blocks_public_redirect_to_private(range_test_server, monkeypatch):
+    def classify_target(url):
+        return "/redirect" in url
+
+    monkeypatch.setattr(url_security, "is_public_http_target", classify_target)
+    source = range_test_server + "/redirect"
+    port = urllib.parse.urlsplit(source).port
+    original_getaddrinfo = socket.getaddrinfo
+    original_create_connection = socket.create_connection
+
+    def resolve_as_public(_url):
+        return True, tuple(original_getaddrinfo("8.8.8.8", port, type=socket.SOCK_STREAM))
+
+    def route_public_fixture_to_loopback(address, *args, **kwargs):
+        if address[0] == "8.8.8.8":
+            address = ("127.0.0.1", port)
+        return original_create_connection(address, *args, **kwargs)
+
+    monkeypatch.setattr(url_security, "resolve_http_target", resolve_as_public)
+    monkeypatch.setattr(socket, "create_connection", route_public_fixture_to_loopback)
+    with cn.guarded_vsi_source(source) as vsi_path:
+        request = urllib.request.Request(vsi_path.removeprefix("/vsicurl/"), headers={"Range": "bytes=0-3"})
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request, timeout=5)
+        assert error.value.code == 403
+
+
+@pytest.mark.parametrize("reader", ["download", "pmtiles"])
+def test_cloud_native_explains_auth_failure_after_cross_origin_redirect(monkeypatch, reader):
+    from types import SimpleNamespace
+
+    source = "https://provider.example/data?token=KEY_SENTINEL"
+    redirect_guard = SimpleNamespace(credentials_stripped=True)
+
+    class Opener:
+        handlers = [redirect_guard]
+
+        def open(self, _request, timeout):
+            raise urllib.error.HTTPError(source, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(cn, "get_effective_proxies", lambda: {})
+    monkeypatch.setattr(cn, "safe_redirect_opener", lambda *_args, **_kwargs: Opener())
+
+    with pytest.raises(cn.CloudNativeError, match="没有把认证参数转发过去") as exc:
+        if reader == "download":
+            cn.http_download_to_temp(source, "tif")
+        else:
+            cn._HttpRangeSource(source).get_bytes(0, 4)
+
+    assert "KEY_SENTINEL" not in str(exc.value)
 
 
 # ============================================================
@@ -141,6 +333,79 @@ def test_read_cog_preview(local_tif):
     assert r["meta"]["count"] == 3
 
 
+def test_remote_cog_uses_guarded_source_context(local_tif, monkeypatch):
+    from contextlib import contextmanager
+    opened = []
+
+    @contextmanager
+    def guarded_source(source):
+        opened.append(source)
+        yield local_tif
+
+    monkeypatch.setattr(cn, "guarded_vsi_source", guarded_source)
+    result = cn.read_cog("https://public.example/data.tif")
+    assert result["meta"]["width"] == 64
+    assert opened == ["https://public.example/data.tif"]
+
+
+@pytest.mark.parametrize("reader_name", ["read_cog", "cog_info"])
+def test_remote_cog_uses_bounded_gdal_http_options(monkeypatch, reader_name):
+    import rasterio
+    from contextlib import contextmanager
+
+    source = "https://public.example/data.tif"
+    observed = {}
+    previous_timeout = rasterio.env.get_gdal_config("GDAL_HTTP_TIMEOUT")
+
+    @contextmanager
+    def guarded_source(_source):
+        yield "/vsicurl/http://127.0.0.1:12345/data"
+
+    def inspect_options(_source, *args, **kwargs):
+        assert kwargs["fallback_url"] == source
+        observed.update({
+            key: rasterio.env.get_gdal_config(key)
+            for key in (
+                "GDAL_HTTP_TIMEOUT", "GDAL_HTTP_CONNECTTIMEOUT", "GDAL_HTTP_MAX_RETRY",
+                "GDAL_HTTP_LOW_SPEED_LIMIT", "GDAL_HTTP_LOW_SPEED_TIME",
+            )
+        })
+        return {"ok": True}
+
+    monkeypatch.setattr(cn, "guarded_vsi_source", guarded_source)
+    implementation_name = "_read_cog_impl" if reader_name == "read_cog" else "_cog_info_impl"
+    monkeypatch.setattr(cn, implementation_name, inspect_options)
+
+    assert getattr(cn, reader_name)(source) == {"ok": True}
+    assert observed == {
+        "GDAL_HTTP_TIMEOUT": 20,
+        "GDAL_HTTP_CONNECTTIMEOUT": 5,
+        "GDAL_HTTP_MAX_RETRY": 0,
+        "GDAL_HTTP_LOW_SPEED_LIMIT": 1,
+        "GDAL_HTTP_LOW_SPEED_TIME": 20,
+    }
+    assert rasterio.env.get_gdal_config("GDAL_HTTP_TIMEOUT") == previous_timeout
+
+
+@pytest.mark.parametrize("reader_name", ["read_cog", "cog_info"])
+def test_remote_cog_502_error_includes_proxy_connect_hint(monkeypatch, reader_name):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def guarded_source(_source):
+        yield "/vsicurl/http://127.0.0.1:12345/data"
+
+    def fail_with_502(*_args, **_kwargs):
+        raise cn.CloudNativeError("COG 读取失败: HTTP response code: 502")
+
+    monkeypatch.setattr(cn, "guarded_vsi_source", guarded_source)
+    implementation_name = "_read_cog_impl" if reader_name == "read_cog" else "_cog_info_impl"
+    monkeypatch.setattr(cn, implementation_name, fail_with_502)
+
+    with pytest.raises(cn.CloudNativeError, match="HTTPS CONNECT"):
+        getattr(cn, reader_name)("https://public.example/data.tif")
+
+
 @pytest.mark.parametrize('reader', [cn.read_cog, cn.cog_info], ids=['preview', 'metadata'])
 @pytest.mark.parametrize('fail_local', [False, True], ids=['success', 'local-failure'])
 def test_remote_cog_decode_failure_uses_bounded_download_and_cleans_it(local_tif, tmp_path, monkeypatch, reader, fail_local):
@@ -185,6 +450,44 @@ def test_load_cog_tool_registers_layer_and_overlay(local_tif):
     # 范围框图层已注册且上图
     assert "测试影像" in _registered_layers
     assert any(l["name"] == "测试影像" for l in pending["layers"])
+
+
+def test_load_cog_does_not_store_credentials_in_registered_layer(tmp_path, monkeypatch):
+    reset_state()
+    monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+    monkeypatch.setattr(T, "init_temp_dir", lambda: None)
+    source = "https://user:PASS_SENTINEL@example.test/data.tif?token=TOKEN_SENTINEL"
+    monkeypatch.setattr(cn, "read_cog", lambda *_args, **_kwargs: {
+        "png_bytes": b"png",
+        "bounds": [0, 0, 1, 1],
+        "meta": {
+            "width": 1, "height": 1, "count": 1, "crs": "EPSG:4326",
+            "bounds_wgs84": [0, 0, 1, 1], "resampled": [1, 1],
+        },
+    })
+
+    result = _registry()["load_cog"].invoke({"url": source})
+    pending_text = json.dumps(get_pending_state(), ensure_ascii=False)
+
+    assert "已加载" in result
+    assert "PASS_SENTINEL" not in pending_text
+    assert "TOKEN_SENTINEL" not in pending_text
+    assert "https://example.test/data.tif" in pending_text
+
+
+def test_get_cog_info_redacts_credentials_from_error(monkeypatch):
+    source = "https://user:PASS_SENTINEL@example.test/data.tif?token=TOKEN_SENTINEL"
+    monkeypatch.setattr(
+        cn, "cog_info", lambda _source: (_ for _ in ()).throw(
+            cn.CloudNativeError(f"COG failed to read {source}")
+        ),
+    )
+
+    result = _registry()["get_cog_info"].invoke({"url": source})
+
+    assert "PASS_SENTINEL" not in result
+    assert "TOKEN_SENTINEL" not in result
+    assert "https://example.test/data.tif" in result
 
 
 def test_get_cog_info_tool(local_tif):
@@ -248,6 +551,21 @@ def test_flatgeobuf_to_geojson(local_fgb):
     gj, meta = cn.cloud_vector_to_geojson(local_fgb, "FlatGeobuf")
     assert meta["loaded_features"] == 15
     assert gj["features"][0]["geometry"]["type"] == "Point"
+
+
+def test_remote_flatgeobuf_uses_guarded_source_context(local_fgb, monkeypatch):
+    from contextlib import contextmanager
+    opened = []
+
+    @contextmanager
+    def guarded_source(source):
+        opened.append(source)
+        yield local_fgb
+
+    monkeypatch.setattr(cn, "guarded_vsi_source", guarded_source)
+    geojson, meta = cn.cloud_vector_to_geojson("https://public.example/data.fgb", "FlatGeobuf")
+    assert meta["loaded_features"] == 15
+    assert opened == ["https://public.example/data.fgb"]
 
 
 def test_flatgeobuf_bbox_filter(local_fgb):

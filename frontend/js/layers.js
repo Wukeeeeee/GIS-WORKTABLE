@@ -210,33 +210,38 @@ window.GIS = window.GIS || {};
       typeText = String(rawType).split(',').map(t => (english ? geometryNamesEn : geometryNames)[t.trim()] || t.trim()).join(' / ');
     }
 
-    const op = Math.round((layer.opacity !== undefined ? layer.opacity : 1) * 100);
+    var opacityValue = Number(layer.opacity !== undefined ? layer.opacity : 1);
+    if (!Number.isFinite(opacityValue)) opacityValue = 1;
+    opacityValue = Math.min(1, Math.max(0, opacityValue));
+    const op = Math.round(opacityValue * 100);
+    const layerId = escapeHtml(layer.layer_id || '');
+    const color = escapeHtml(_safeLayerColor(layer.color || '#1c1b1b', '#1c1b1b'));
     const sourceName = layer.filename || (english ? 'Untitled' : '未命名');
     const displayName = GIS.i18n && GIS.i18n.layerLabel ? GIS.i18n.layerLabel(sourceName) : sourceName;
     var rowClass = layer.visible === false ? 'layer-hidden' : '';
     if (layer.groupId) rowClass += (rowClass ? ' ' : '') + 'group-layer-row' + (groupCollapsed ? ' is-collapsed' : '');
-    return '<tr class="' + rowClass + '"' + (groupCollapsed ? ' aria-hidden="true" inert' : '') + ' draggable="true" data-index="' + index + '" data-id="' + escapeHtml(layer.layer_id || '') + '"' +
+    return '<tr class="' + rowClass + '"' + (groupCollapsed ? ' aria-hidden="true" inert' : '') + ' draggable="true" data-index="' + index + '" data-id="' + layerId + '"' +
       (layer.groupId ? ' data-group="' + escapeHtml(layer.groupId) + '"' : '') + hiddenStyle + '>' +
       "<td class=\"col-drag\"><span class=\"drag-handle\" draggable=\"true\"><span class=\"ui-icon\" aria-hidden=\"true\" style=\";--ui-icon-image:url('/assets/ui-icons/icon-102a87898985.png')\"></span></span></td>" +
-      '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + (layer.layer_id || '') + '" aria-pressed="' + String(layer.visible !== false) + '" aria-label="' + (english ? (layer.visible !== false ? 'Hide layer' : 'Show layer') : (layer.visible !== false ? '隐藏图层' : '显示图层')) + '" title="' + (english ? (layer.visible !== false ? 'Hide layer' : 'Show layer') : (layer.visible !== false ? '隐藏图层' : '显示图层')) + '">' +
+      '<td class="col-vis"><button class="layer-action-btn layer-vis-check" data-action="visibility" data-id="' + layerId + '" aria-pressed="' + String(layer.visible !== false) + '" aria-label="' + (english ? (layer.visible !== false ? 'Hide layer' : 'Show layer') : (layer.visible !== false ? '隐藏图层' : '显示图层')) + '" title="' + (english ? (layer.visible !== false ? 'Hide layer' : 'Show layer') : (layer.visible !== false ? '隐藏图层' : '显示图层')) + '">' +
       '<span class="ui-visibility-check' + (layer.visible !== false ? ' checked' : '') + '" aria-hidden="true"></span></button></td>' +
       '<td class="col-name">' +
         '<div class="layer-title-line">' +
-          '<span class="layer-color-dot" style="background:' + (layer.color || '#1c1b1b') + ';opacity:' + (layer.opacity !== undefined ? layer.opacity : 1) + '" data-color="' + (layer.color || '#1c1b1b') + '" data-id="' + (layer.layer_id || '') + '" title="' + (english ? 'Change color · Opacity ' : '修改颜色 · 不透明度 ') + op + '%"></span>' +
-          '<span class="layer-name" data-id="' + (layer.layer_id || '') + '" title="' + escapeHtml(displayName) + (english ? ' · Double-click to rename' : ' · 双击重命名') + '">' + escapeHtml(displayName) + '</span>' +
+          '<span class="layer-color-dot" style="background:' + color + ';opacity:' + opacityValue + '" data-color="' + color + '" data-id="' + layerId + '" title="' + (english ? 'Change color · Opacity ' : '修改颜色 · 不透明度 ') + op + '%"></span>' +
+          '<span class="layer-name" data-id="' + layerId + '" title="' + escapeHtml(displayName) + (english ? ' · Double-click to rename' : ' · 双击重命名') + '">' + escapeHtml(displayName) + '</span>' +
         '</div>' +
         '<div class="layer-meta-line">' +
           '<span class="layer-type">' + escapeHtml(typeText) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">' + (GIS.i18n ? GIS.i18n.featureCount(features) : '· ' + features + ' 个要素') + '</span>' : '') +
         '</div>' +
         '<div class="layer-op-row" title="' + (english ? 'Adjust opacity with the slider' : '透明度：拖动调整') + '">' +
           '<span class="layer-op-label">' + (english ? 'Opacity' : '不透明度') + '</span>' +
-          '<input type="range" class="layer-row-opacity" min="0" max="100" value="' + op + '" data-id="' + (layer.layer_id || '') + '">' +
-          '<span class="layer-op-val" id="opval_' + (layer.layer_id || '') + '">' + op + '%</span>' +
+          '<input type="range" class="layer-row-opacity" min="0" max="100" value="' + op + '" data-id="' + layerId + '">' +
+          '<span class="layer-op-val" id="opval_' + layerId + '">' + op + '%</span>' +
         '</div>' +
       '</td>' +
       '<td class="col-actions"><div class="layer-actions">' +
-      '<button class="layer-action-btn" data-action="inspect" data-id="' + (layer.layer_id || '') + '" title="' + (english ? 'Inspect layer' : '检查图层') + '"><span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url(\'/assets/ui-icons/icon-658e8e14699f.png\')"></span></button>' +
-      '<button class="layer-action-btn layer-more-btn" data-action="more" data-id="' + (layer.layer_id || '') + '" title="' + (english ? 'More layer actions' : '更多图层操作') + '" aria-label="' + (english ? 'More layer actions' : '更多图层操作') + '" aria-haspopup="menu">⋯</button>' +
+      '<button class="layer-action-btn" data-action="inspect" data-id="' + layerId + '" title="' + (english ? 'Inspect layer' : '检查图层') + '"><span class="ui-icon" aria-hidden="true" style=";width:14px;height:14px;--ui-icon-image:url(\'/assets/ui-icons/icon-658e8e14699f.png\')"></span></button>' +
+      '<button class="layer-action-btn layer-more-btn" data-action="more" data-id="' + layerId + '" title="' + (english ? 'More layer actions' : '更多图层操作') + '" aria-label="' + (english ? 'More layer actions' : '更多图层操作') + '" aria-haspopup="menu">⋯</button>' +
       '</div></td></tr>';
   }
 
@@ -403,6 +408,9 @@ window.GIS = window.GIS || {};
   }
 
   function addLayer(layer, skipRegister) {
+    const colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
+    const fallbackColor = colors[layerData.length % colors.length];
+    const color = _safeLayerColor(layer.color || fallbackColor, fallbackColor);
     // —— 桥接：手动路径（上传/绘制/工程/网络等）的图层统一入共享状态 ——
     // state 会回调本函数（带 _panelSync）走下面的正常入库，并跳过 2D 重复渲染；
     // 这样显隐/透明度/3D 拉伸等手动控件对所有图层生效（2D/3D 同步）。
@@ -414,9 +422,9 @@ window.GIS = window.GIS || {};
         name: layer.filename || bridgeMapName,
         _mapName: bridgeMapName,   // 2D 已按此名渲染，地图操作沿用
         geojson: layer.geojson,
-        style: layer.style || { color: layer.color || nextColor() },
+        style: layer.style || { color: color },
         opacity: layer.opacity,
-        color: layer.color || nextColor(),
+        color: color,
         source: layer.source || 'upload',
         provenance: layer.provenance || null,
         visible: layer.visible !== false,
@@ -433,8 +441,6 @@ window.GIS = window.GIS || {};
       }
       return bridged;
     }
-    const colors = ['#1c1b1b','#e74c3c','#2ecc71','#3498db','#f39c12','#9b59b6','#1abc9c','#e67e22'];
-    const color = layer.color || colors[layerData.length % colors.length];
     // 重名自动加 (1) (2)
     var name = layer.filename || '未命名';
     var _rawName = layer._rawName || layer.filename || layer.layer_id || '未命名'; // 保留原始名称用于地图模块查找（工程加载时传入带 _loaded 后缀的注册名）
@@ -479,7 +485,13 @@ window.GIS = window.GIS || {};
       try { _clearSymbology(layerId); } catch(_) {}
     }
     if (mapName && GIS.map && GIS.map.removeLayer) {
-      GIS.map.removeLayer(mapName);
+      try { GIS.map.removeLayer(mapName); }
+      catch(error) {
+        console.warn('[GIS Layers] 地图显示清理失败，继续注销图层数据', mapName, error);
+        if (GIS.toast && typeof GIS.toast.warn === 'function') {
+          GIS.toast.warn('图层已从列表移除，但地图显示清理失败；请刷新地图检查残留显示。');
+        }
+      }
     }
     if (target) {
       if (!silent && window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
@@ -1362,6 +1374,16 @@ window.GIS = window.GIS || {};
     });
   }
 
+  function _safeLayerColor(value, fallback) {
+    var color = String(value || fallback || '#1c1b1b').trim();
+    if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(color) ||
+        /^[a-z]{1,24}$/i.test(color) ||
+        /^(?:rgb|hsl)a?\([\d.%\s,\/+\-]+\)$/i.test(color)) {
+      return color;
+    }
+    return fallback || '#1c1b1b';
+  }
+
   // ---- 几何坐标辅助函数 ----
 
   /** 递归统计几何图形的顶点数 */
@@ -1613,31 +1635,32 @@ window.GIS = window.GIS || {};
 
     // 构建可编辑属性数据表
     var dataHtml = '';
+    var layerIdAttr = escapeHtml(layerId);
     if (features.length > 0 && displayKeys.length > 0) {
       dataHtml += '<div class="attr-toolbar">' +
         '<span class="inspector-section-title" style="margin-bottom:0;border:none;">属性数据 (' + features.length + ' 条)</span>' +
         '<div class="attr-toolbar-btns">' +
-          '<button class="attr-btn" data-action="save-attrs" data-layer="' + layerId + '" title="保存修改">' +
+          '<button class="attr-btn" data-action="save-attrs" data-layer="' + layerIdAttr + '" title="保存修改">' +
             "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-d6c0572e9989.png')\"></span>" +
             '保存' +
           '</button>' +
-          '<button class="attr-btn" data-action="add-row" data-layer="' + layerId + '" title="添加行">' +
+          '<button class="attr-btn" data-action="add-row" data-layer="' + layerIdAttr + '" title="添加行">' +
             "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-493d1c3ed7c4.png')\"></span>" +
             '+ 行' +
           '</button>' +
-          '<button class="attr-btn" data-action="add-col" data-layer="' + layerId + '" title="添加字段 (加列)">' +
+          '<button class="attr-btn" data-action="add-col" data-layer="' + layerIdAttr + '" title="添加字段 (加列)">' +
             '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>' +
             '+ 列' +
           '</button>' +
-          '<button class="attr-btn" data-action="calc-field" data-layer="' + layerId + '" title="字段计算器 (类似ArcMap)">' +
+          '<button class="attr-btn" data-action="calc-field" data-layer="' + layerIdAttr + '" title="字段计算器 (类似ArcMap)">' +
             '<svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="4" y="2" width="16" height="20" rx="2"></rect><line x1="8" y1="6" x2="16" y2="6"></line><line x1="16" y1="14" x2="16" y2="14.01"></line><line x1="12" y1="14" x2="12" y2="14.01"></line><line x1="8" y1="14" x2="8" y2="14.01"></line><line x1="16" y1="18" x2="16" y2="18.01"></line><line x1="12" y1="18" x2="12" y2="18.01"></line><line x1="8" y1="18" x2="8" y2="18.01"></line></svg>' +
             '计算器' +
           '</button>' +
-          '<button class="attr-btn" data-action="toggle-filter" data-layer="' + layerId + '" title="筛选">' +
+          '<button class="attr-btn" data-action="toggle-filter" data-layer="' + layerIdAttr + '" title="筛选">' +
             "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-9cd115a22f65.png')\"></span>" +
             '筛选' +
           '</button>' +
-          '<button class="attr-btn" data-action="export-csv" data-layer="' + layerId + '" title="导出 CSV">' +
+          '<button class="attr-btn" data-action="export-csv" data-layer="' + layerIdAttr + '" title="导出 CSV">' +
             "<span class=\"ui-icon\" aria-hidden=\"true\" style=\";width:14px;height:14px;--ui-icon-image:url('/assets/ui-icons/icon-e41ef486154e.png')\"></span>" +
           '</button>' +
         '</div>' +
@@ -2009,7 +2032,7 @@ window.GIS = window.GIS || {};
         layer.opacity = o;
 
         // 同步列表左侧对应图层卡片的滑块与数值
-        var cardSlider = tbody ? tbody.querySelector('.layer-row-opacity[data-id="' + layerId + '"]') : null;
+        var cardSlider = tbody ? tbody.querySelector('.layer-row-opacity[data-id="' + CSS.escape(layerId) + '"]') : null;
         if (cardSlider) cardSlider.value = opSlider.value;
         var cardVal = document.getElementById('opval_' + layerId);
         if (cardVal) cardVal.textContent = opSlider.value + '%';
@@ -4239,7 +4262,7 @@ window.GIS = window.GIS || {};
 
   /** 触发颜色选择器（复用已有逻辑） */
   function _triggerColorPicker(layerId) {
-    var dot = document.querySelector('.layer-color-dot[data-id="' + layerId + '"]');
+    var dot = document.querySelector('.layer-color-dot[data-id="' + CSS.escape(layerId) + '"]');
     if (dot) {
       var input = document.createElement('input');
       input.type = 'color';
@@ -4263,7 +4286,7 @@ window.GIS = window.GIS || {};
 
   /** 触发重命名（复用已有逻辑） */
   function _triggerRename(layerId) {
-    var nameEl = document.querySelector('.layer-name[data-id="' + layerId + '"]');
+    var nameEl = document.querySelector('.layer-name[data-id="' + CSS.escape(layerId) + '"]');
     if (!nameEl) return;
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (!layer) return;

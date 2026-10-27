@@ -209,11 +209,14 @@ window.GIS = window.GIS || {};
   }
 
   function renderTaskCard(t) {
-    var statusLabel = {
+    var statusLabels = {
       pending: '等待', planning: '规划中', executing: '执行中',
       success: '成功', partial: '部分完成', failed: '失败', cancelled: '已取消',
       interrupted: '执行中断，结果待核对',
-    }[t.status] || t.status;
+    };
+    var knownStatus = Object.prototype.hasOwnProperty.call(statusLabels, t.status);
+    var statusLabel = knownStatus ? statusLabels[t.status] : '未知状态';
+    var statusClass = knownStatus ? t.status : 'unknown';
 
     var resultLayerHtml = '';
     if (t.resultLayers && t.resultLayers.length > 0) {
@@ -233,8 +236,9 @@ window.GIS = window.GIS || {};
       '</div>';
     }
 
+    var safeTaskId = escapeHtml(t.id);
     var codeHtml = t.code
-      ? '<div class="task-code-wrapper"><button class="task-code-toggle" data-task-id="' + t.id + '">查看代码</button><pre class="task-code-block" style="display:none;">' + escapeHtml(t.code) + '</pre></div>'
+      ? '<div class="task-code-wrapper"><button class="task-code-toggle" data-task-id="' + safeTaskId + '">查看代码</button><pre class="task-code-block" style="display:none;">' + escapeHtml(t.code) + '</pre></div>'
       : '';
 
     var errorHtml = t.error
@@ -244,10 +248,10 @@ window.GIS = window.GIS || {};
     var canRerun = t.status === 'success' || t.status === 'partial' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'interrupted';
     var isRunning = t.status === 'planning' || t.status === 'executing';
 
-    return '<div class="task-card task-status-' + t.status + '" data-task-id="' + t.id + '">' +
+    return '<div class="task-card task-status-' + statusClass + '" data-task-id="' + safeTaskId + '">' +
       '<div class="task-card-header">' +
         '<div class="task-card-title-row">' +
-          '<span class="task-status-badge task-badge-' + t.status + '">' + statusLabel + '</span>' +
+          '<span class="task-status-badge task-badge-' + statusClass + '">' + statusLabel + '</span>' +
           '<span class="task-goal-text">' + escapeHtml(truncate(t.goal, 80)) + '</span>' +
         '</div>' +
         '<div class="task-card-actions">' +
@@ -315,7 +319,12 @@ window.GIS = window.GIS || {};
   // ===== 工具函数 =====
 
   function escapeHtml(str) {
-    return window.GIS.utils ? window.GIS.utils.escapeHtml(str) : ('' + (str || ''));
+    if (window.GIS.utils && typeof window.GIS.utils.escapeHtml === 'function') {
+      return window.GIS.utils.escapeHtml(str);
+    }
+    return String(str == null ? '' : str).replace(/[&<>"']/g, function(ch) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+    });
   }
 
   function truncate(str, maxLen) {

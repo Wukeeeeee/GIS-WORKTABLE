@@ -102,6 +102,49 @@ def test_failed_atomic_project_write_keeps_old_file_and_releases_new_blob(tmp_pa
     assert not assets_dir.exists() or list(assets_dir.iterdir()) == []
 
 
+def test_project_index_write_failure_reports_saved_project_and_list_recovers(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    monkeypatch.setattr(project_service, "_MAX_PROJECTS", 1)
+    first = project_service.save_project(
+        project_id=None, name="旧工程", session_id="old-project", provider="test",
+        map_state={}, messages=[], layers=[],
+    )
+
+    def fail_index_write(_index):
+        raise OSError("simulated index write failure")
+
+    monkeypatch.setattr(project_service, "_save_index", fail_index_write)
+    saved = project_service.save_project(
+        project_id=None, name="索引异常工程", session_id="index-write-failure", provider="test",
+        map_state={}, messages=[], layers=[],
+    )
+
+    assert saved["id"]
+    assert "warning" in saved
+    assert project_service._load_project_data(first["id"]) is None
+    assert project_service._load_project_data(saved["id"])["name"] == "索引异常工程"
+    assert [project["id"] for project in project_service.list_projects()] == [saved["id"]]
+
+
+def test_project_rename_survives_index_write_failure_and_list_recovers(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="旧名称", session_id="rename-index-failure", provider="test",
+        map_state={}, messages=[], layers=[],
+    )
+
+    def fail_index_write(_index):
+        raise OSError("simulated index write failure")
+
+    monkeypatch.setattr(project_service, "_save_index", fail_index_write)
+    renamed = project_service.rename_project(saved["id"], "新名称")
+
+    assert renamed["name"] == "新名称"
+    assert "warning" in renamed
+    assert project_service._load_project_data(saved["id"])["name"] == "新名称"
+    assert project_service.list_projects()[0]["name"] == "新名称"
+
+
 def test_raster_assets_survive_project_save_export_import_and_restore(tmp_path, monkeypatch):
     source = _use_temp_projects(tmp_path, monkeypatch)
     raster = {
@@ -142,6 +185,23 @@ def test_raster_assets_survive_project_save_export_import_and_restore(tmp_path, 
         imported_asset = client.get(imported_layer["raster"]["url"])
     assert imported_asset.status_code == 200
     assert imported_asset.content == source.read_bytes()
+
+
+def test_project_asset_responses_sandbox_active_content(tmp_path, monkeypatch):
+    asset = tmp_path / "untrusted.svg"
+    asset.write_text("<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>", encoding="utf-8")
+    monkeypatch.setattr(
+        project_service,
+        "get_project_raster_asset",
+        lambda project_id, filename: str(asset) if (project_id, filename) == ("test", "untrusted.svg") else None,
+    )
+
+    response = TestClient(main.app).get("/api/projects/test/assets/untrusted.svg")
+
+    assert response.status_code == 200
+    assert "sandbox" in response.headers["content-security-policy"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "<script>" in response.text
 
 
 def test_interpolation_raster_survives_project_save_load_and_reanalysis(tmp_path, monkeypatch):
@@ -327,19 +387,18 @@ def test_failed_raster_replacement_preserves_original_assets(tmp_path, monkeypat
     assert project_service.load_project(saved['id'])['layers'][0]['name'] == '自定义高程'
 
 
-def test_activation_failure_keeps_the_previous_registry_and_history(tmp_path, monkeypatch):
+def test_activation_warns_and_skips_raster_when_original_asset_is_missing(tmp_path, monkeypatch):
     _, _, saved, _ = _upload_real_raster(tmp_path, monkeypatch)
     loaded = project_service.load_project(saved['id'])
     raw = project_service._project_raster_path(saved['id'], loaded['layers'][0]['raster']['source_asset'])
     Path(raw).unlink()
-    before = dict(tools._registered_layers)
     tools._active_project_id = 'previous-project'
     monkeypatch.setitem(ai_service.conversation_history, 'raw-session', [{'role': 'user', 'content': 'previous'}])
-    with pytest.raises(ValueError, match='原始数据资源不存在'):
-        project_service.activate_project(saved['id'])
-    assert tools._registered_layers == before
-    assert tools._active_project_id == 'previous-project'
-    assert ai_service.conversation_history['raw-session'][0]['content'] == 'previous'
+    activated = project_service.activate_project(saved['id'])
+    assert activated['registration_warnings'] == ['自定义高程']
+    assert '自定义高程' not in tools._registered_layers
+    assert tools._active_project_id == saved['id']
+    assert ai_service.conversation_history['raw-session'] == []
 
 
 def test_renamed_raster_autosaves_once_and_keeps_raw_data(tmp_path, monkeypatch):

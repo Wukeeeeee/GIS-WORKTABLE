@@ -116,6 +116,11 @@ window.GIS.api = (() => {
   const MODEL_STORAGE_KEY = 'gis_selected_model';     // 历史 key，保留读写做兼容
   const MODEL_STATUS_KEY = 'gis_model_status';
   const PROVIDERS_STORAGE_KEY = 'gis_llm_providers';
+  var _providerMemoryCache = null;
+  var _providerStoragePersistent = true;
+  var _selectedProviderMemory = null;
+  var _selectedProviderMemoryExplicit = false;
+  var _selectedProviderPersistent = true;
 
   function _lsGet(key) { try { return localStorage.getItem(key); } catch(e) { return null; } }
   function _lsSet(key, val) { try { localStorage.setItem(key, val); } catch(e) {} }
@@ -162,7 +167,13 @@ window.GIS.api = (() => {
   }
 
   function _saveProviders(list) {
-    _lsSet(PROVIDERS_STORAGE_KEY, JSON.stringify(list));
+    _providerMemoryCache = list;
+    try {
+      localStorage.setItem(PROVIDERS_STORAGE_KEY, JSON.stringify(list));
+      _providerStoragePersistent = true;
+    } catch(e) {
+      _providerStoragePersistent = false;
+    }
     try {
       var backendProviders = list.map(function(provider) {
         var copy = Object.assign({}, provider);
@@ -179,7 +190,20 @@ window.GIS.api = (() => {
 
   /** 读取 Provider 列表（首次自动种子 + 迁移旧 key） */
   function getProviders() {
-    var raw = _lsGet(PROVIDERS_STORAGE_KEY);
+    var raw;
+    try {
+      raw = localStorage.getItem(PROVIDERS_STORAGE_KEY);
+    } catch(e) {
+      _providerStoragePersistent = false;
+      if (_providerMemoryCache) return _providerMemoryCache;
+      _providerMemoryCache = _seedProviders();
+      return _providerMemoryCache;
+    }
+    if (!_providerStoragePersistent && _providerMemoryCache) {
+      _saveProviders(_providerMemoryCache);
+      return _providerMemoryCache;
+    }
+    _providerStoragePersistent = true;
     if (!raw) {
       var migrated = _migrateLegacyKeys();
       _saveProviders(migrated.list);
@@ -202,12 +226,17 @@ window.GIS.api = (() => {
           if (p.router === undefined) p.router = false;
           if (p.reasoning === undefined) p.reasoning = false;
         });
+        _providerMemoryCache = arr;
         return arr;
       }
     } catch (e) { /* 损坏则重建 */ }
     var seed = _seedProviders();
     _saveProviders(seed);
     return seed;
+  }
+
+  function areProviderSettingsPersistent() {
+    return _providerStoragePersistent && _selectedProviderPersistent;
   }
 
   /** 整体保存 Provider 列表 */
@@ -250,7 +279,9 @@ window.GIS.api = (() => {
     var list = getProviders();
     setProviders(list.filter(function(p) { return p.id !== id; }));
     // 若删的是当前选中项，回退到第一条
-    if (_lsGet(MODEL_STORAGE_KEY) === id) setSelectedModel(list.length ? list[0].id : 'glm-routed');
+    if ((_lsGet(MODEL_STORAGE_KEY) || _selectedProviderMemory) === id) {
+      setSelectedModel(list.length ? list[0].id : 'glm-routed');
+    }
   }
 
   /** 复制一个 Provider（新 id） */
@@ -272,13 +303,17 @@ window.GIS.api = (() => {
   }
   function setAmapKey(key) {
     if (key) { _lsSet(AMAP_STORAGE_KEY, key); } else { _lsRemove(AMAP_STORAGE_KEY); }
-    try {
-      fetch(BASE_URL + '/api/user-settings', {
+    return fetch(BASE_URL + '/api/user-settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ amap_key: key || '' }),
-      }).catch(function() {});
-    } catch(e) {}
+      }).then(async function(response) {
+        var data = await response.json().catch(function() { return null; });
+        if (!response.ok || !data || data.status !== 'ok') {
+          throw new Error((data && (data.detail || data.message)) || ('HTTP ' + response.status));
+        }
+        return data;
+      });
   }
 
   /** 读取数据下载服务账号凭据（Copernicus / USGS / GSCloud），不存在返回空对象 */
@@ -305,14 +340,42 @@ window.GIS.api = (() => {
   // ===== 当前选中 Provider =====
   /** 读取当前选中 Provider 的 id（默认 glm-routed） */
   function getSelectedModel() {
-    var id = _lsGet(MODEL_STORAGE_KEY) || 'glm-routed';
-    return getProvider(id) ? id : 'glm-routed';
+    var storedId = null;
+    try {
+      storedId = localStorage.getItem(MODEL_STORAGE_KEY);
+    } catch(e) {
+      _selectedProviderPersistent = false;
+    }
+    if ((!_providerStoragePersistent || !_selectedProviderPersistent) && _selectedProviderMemory) {
+      try {
+        localStorage.setItem(MODEL_STORAGE_KEY, _selectedProviderMemory);
+        _selectedProviderPersistent = true;
+      } catch(e) {
+        _selectedProviderPersistent = false;
+      }
+      return getProvider(_selectedProviderMemory) ? _selectedProviderMemory : 'glm-routed';
+    }
+    var id = storedId || _selectedProviderMemory || 'glm-routed';
+    if (getProvider(id)) {
+      _selectedProviderMemory = id;
+      return id;
+    }
+    var fallback = getProvider(_selectedProviderMemory) ? _selectedProviderMemory : 'glm-routed';
+    _selectedProviderMemory = fallback;
+    return fallback;
   }
 
   /** 保存当前选中的 Provider id */
   function setSelectedModel(model) {
     if (model && getProvider(model)) {
-      _lsSet(MODEL_STORAGE_KEY, model);
+      _selectedProviderMemory = model;
+      _selectedProviderMemoryExplicit = true;
+      try {
+        localStorage.setItem(MODEL_STORAGE_KEY, model);
+        _selectedProviderPersistent = true;
+      } catch(e) {
+        _selectedProviderPersistent = false;
+      }
       try {
         fetch(BASE_URL + '/api/user-settings', {
           method: 'POST',
@@ -361,7 +424,13 @@ window.GIS.api = (() => {
         if (hasLocalKeys) _saveProviders(localList);
 
         if (updated) {
-          _lsSet(PROVIDERS_STORAGE_KEY, JSON.stringify(localList));
+          _providerMemoryCache = localList;
+          try {
+            localStorage.setItem(PROVIDERS_STORAGE_KEY, JSON.stringify(localList));
+            _providerStoragePersistent = true;
+          } catch(e) {
+            _providerStoragePersistent = false;
+          }
         }
       } else {
         var curList = getProviders();
@@ -379,14 +448,21 @@ window.GIS.api = (() => {
         }
       } else {
         var curAmap = _lsGet(AMAP_STORAGE_KEY);
-        if (curAmap) setAmapKey(curAmap);
+        if (curAmap) await setAmapKey(curAmap);
       }
 
       // 3. 同步选中模型
       if (data.selected_provider) {
         var localSel = _lsGet(MODEL_STORAGE_KEY);
-        if (!localSel && getProvider(data.selected_provider)) {
-          _lsSet(MODEL_STORAGE_KEY, data.selected_provider);
+        if (!localSel && !_selectedProviderMemoryExplicit && getProvider(data.selected_provider)) {
+          _selectedProviderMemory = data.selected_provider;
+          _selectedProviderMemoryExplicit = false;
+          try {
+            localStorage.setItem(MODEL_STORAGE_KEY, data.selected_provider);
+            _selectedProviderPersistent = true;
+          } catch(e) {
+            _selectedProviderPersistent = false;
+          }
           updated = true;
         }
       }
@@ -486,14 +562,15 @@ window.GIS.api = (() => {
   }
 
   // ===== 文件上传 =====
-  /** @param {File} file @param {AbortSignal} [signal] */
-  async function upload(file, signal) {
+  /** @param {File} file @param {AbortSignal} [signal] @param {string} [requestId] */
+  async function upload(file, signal, requestId) {
     const formData = new FormData();
     formData.append('file', file);
 
     let res;
     try {
-      res = await fetch(`${BASE_URL}/api/upload`, {
+      const query = requestId ? `?request_id=${encodeURIComponent(requestId)}` : '';
+      res = await fetch(`${BASE_URL}/api/upload${query}`, {
         method: 'POST',
         body: formData,
         signal: signal || null,
@@ -505,9 +582,35 @@ window.GIS.api = (() => {
       throw networkError;
     }
     
-    if (!res.ok) throw new Error(`Upload API error: ${res.status}`);
+    if (!res.ok) {
+      let message = '';
+      try {
+        const body = await res.json();
+        message = typeof body.detail === 'string' ? body.detail
+          : (typeof body.error === 'string' ? body.error : '');
+      } catch (_) {}
+      const error = new Error(message || `Upload API error: ${res.status}`);
+      error.status = res.status;
+      if (res.status === 409) error.code = 'UPLOAD_PROCESSING';
+      throw error;
+    }
     const data = await res.json();
     return data;
+  }
+
+  async function getUploadStatus(requestId, signal) {
+    const res = await fetch(`${BASE_URL}/api/upload/status/${encodeURIComponent(requestId)}`, {
+      method: 'GET',
+      signal: signal || null,
+    });
+    if (!res.ok) {
+      let message = `HTTP ${res.status}`;
+      try { message = (await res.json()).detail || message; } catch (_) {}
+      const error = new Error(message);
+      error.status = res.status;
+      throw error;
+    }
+    return res.json();
   }
 
   // ===== 聊天 / AI =====
@@ -533,8 +636,7 @@ window.GIS.api = (() => {
           message,
           session_id: sessionId,
           provider: prov.id || 'deepseek',
-          api_key: prov.api_key || undefined,   // 迁移兼容
-          llm_config: prov,                      // 主数据源
+          llm_config: prov,                     // 含 Key 的唯一配置来源
           force_skills: forceSkills,
           amap_key: getAmapKey() || undefined,
           mode: mode
@@ -543,7 +645,11 @@ window.GIS.api = (() => {
     } finally {
       clearTimeout(timeoutId);
     }
-    if (!res.ok) throw new Error(`Chat API error: ${res.status}`);
+    if (!res.ok) {
+      let detail = '';
+      try { const body = await res.json(); detail = body.detail || body.message || ''; } catch (_) {}
+      throw new Error(detail || `Chat API error: ${res.status}`);
+    }
     const data = await res.json();
     return data;
   }
@@ -557,8 +663,6 @@ window.GIS.api = (() => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         llm_config: resolved,
-        provider: resolved.id || '',
-        api_key: resolved.api_key || '',
       }),
     });
     if (!res.ok) throw new Error(`测试连接失败: ${res.status}`);
@@ -793,14 +897,14 @@ window.GIS.api = (() => {
   }
 
   return {
-    request, upload, chat, clearMemory, healthCheck,
+    request, upload, getUploadStatus, chat, clearMemory, healthCheck,
     saveProject, loadProject, listProjects,
     deleteProject, deleteAllProjects, renameProject, exportProject, importProject, autoSaveProject,
     testProvider,
     getAmapKey, setAmapKey,
     getGeoCredentials, setGeoCredentials, setGeoCredential,
     getSelectedModel, setSelectedModel,
-    getProviders, setProviders, getProvider,
+    getProviders, setProviders, getProvider, areProviderSettingsPersistent,
     addProvider, upsertProvider, removeProvider, duplicateProvider,
     currentProvider, resolveProvider,
     getModelStatus, setModelStatus,

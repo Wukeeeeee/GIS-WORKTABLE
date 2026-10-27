@@ -1,4 +1,6 @@
 import os
+import errno
+import logging
 # 启用 Windows 控制台 ANSI 颜色转义序列支持，防止乱码 [32m 显示
 if os.name == 'nt':
     os.system('')
@@ -12,8 +14,8 @@ os.environ.pop("PROJ_DATA", None)
 # 关闭 langchain-openai 的底层 TCP Keepalive 注入，恢复标准 httpx 代理自动检测，避免终端弹出代理警告
 os.environ.setdefault("LANGCHAIN_OPENAI_TCP_KEEPALIVE", "0")
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Response, Query
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, UploadFile, File, HTTPException, Response, Query, Request
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -23,15 +25,43 @@ import io
 from io import BytesIO
 import json
 import urllib.parse
+import urllib.request
+import urllib.error
 import subprocess, datetime, asyncio, functools
 import threading, uuid, time
+import tempfile
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from backend.services.ai_service import chat_with_ai, clear_memory, test_key, request_cancel, _TEMP_OUTPUT_DIR
-from backend.services.llm_config import LLMConfig, resolve_llm_config
+from backend.services.llm_config import LLMConfig, resolve_llm_config, model_endpoint_transport_error
 from backend.services.tools import _register_layer, _unregister_layer
 from backend.services.layer_service import inspect_geojson
 from backend.services import project_service
+from backend.services.url_security import (
+    SafeHTTPRedirectHandler as _GeoSourceRedirectHandler,
+    is_public_http_target as _is_public_http_target,
+    sensitive_query_parameter_names as _sensitive_query_parameter_names,
+    safe_redirect_opener,
+    sanitize_error_text,
+)
 from backend.launcher import health_identity
+
+
+class _GeoSourceProxyAccessLogRedactor(logging.Filter):
+    """Hide the upstream target carried by legacy proxy GET query strings."""
+
+    def filter(self, record):
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            path = args[2]
+            if isinstance(path, str) and path.split("?", 1)[0] == "/api/geosource/proxy":
+                record.args = (*args[:2], "/api/geosource/proxy", *args[3:])
+        return True
+
+
+_access_logger = logging.getLogger("uvicorn.access")
+if not any(isinstance(f, _GeoSourceProxyAccessLogRedactor) for f in _access_logger.filters):
+    _access_logger.addFilter(_GeoSourceProxyAccessLogRedactor())
 
 
 # ===== 版本信息（服务器启动时自动生成） =====
@@ -59,21 +89,102 @@ _GIT_COMMIT, _GIT_DIRTY = _read_git_version()
 
 app = FastAPI()
 
+_UPLOAD_REQUEST_CACHE_TTL_SECONDS = 15 * 60
+_UPLOAD_REQUEST_CACHE_LIMIT = 64
+_upload_request_lock = threading.RLock()
+_upload_request_active = set()
+_upload_request_cache = OrderedDict()
+
+
+def _valid_upload_request_id(request_id):
+    return (isinstance(request_id, str) and 1 <= len(request_id) <= 80
+            and all(char.isascii() and (char.isalnum() or char in "._-") for char in request_id))
+
+
+def _prune_upload_request_cache(now=None):
+    now = time.monotonic() if now is None else now
+    expired = [key for key, item in _upload_request_cache.items()
+               if now - item["created_at"] > _UPLOAD_REQUEST_CACHE_TTL_SECONDS]
+    for key in expired:
+        _upload_request_cache.pop(key, None)
+    while len(_upload_request_cache) > _UPLOAD_REQUEST_CACHE_LIMIT:
+        _upload_request_cache.popitem(last=False)
+
+
+def _remember_upload_request(request_id, result):
+    if not request_id or not isinstance(result, dict) or result.get("error"):
+        return
+    if isinstance(result.get("csv_info"), dict):
+        record = {"kind": "result", "result": result}
+    elif (isinstance(result.get("name"), str) and result.get("registration_token")
+          and isinstance(result.get("geojson"), dict)):
+        record = {
+            "kind": "vector", "name": result["name"],
+            "registration_token": result["registration_token"],
+            "extra": {key: value for key, value in result.items()
+                      if key not in {"name", "geojson", "registration_token"}},
+        }
+    elif (isinstance(result.get("name"), str) and result.get("registration_token")
+          and isinstance(result.get("raster_info"), dict)):
+        record = {
+            "kind": "raster", "name": result["name"],
+            "registration_token": result["registration_token"],
+            "extra": {key: value for key, value in result.items()
+                      if key not in {"name", "raster_info", "registration_token"}},
+        }
+    else:
+        return
+    record["created_at"] = time.monotonic()
+    with _upload_request_lock:
+        _upload_request_cache[request_id] = record
+        _upload_request_cache.move_to_end(request_id)
+        _prune_upload_request_cache()
+
+
+def _resolve_upload_request(request_id):
+    with _upload_request_lock:
+        _prune_upload_request_cache()
+        record = _upload_request_cache.get(request_id)
+        if record is None:
+            return None
+        _upload_request_cache.move_to_end(request_id)
+        if record["kind"] == "result":
+            return dict(record["result"])
+        name = record["name"]
+        registration_token = record["registration_token"]
+        kind = record["kind"]
+        extra = dict(record.get("extra") or {})
+
+    from backend.services import tools as registry_tools
+    with registry_tools._state_lock:
+        layer = registry_tools._registered_layers.get(name)
+        if not layer or layer.get("registration_token") != registration_token:
+            return None
+        if kind == "vector" and isinstance(layer.get("geojson"), dict):
+            return {"name": name, "geojson": layer["geojson"],
+                    "registration_token": registration_token, **extra}
+        if kind == "raster" and isinstance(layer.get("raster"), dict):
+            return {"name": name, "raster_info": dict(layer["raster"]),
+                    "registration_token": registration_token, **extra}
+    return None
+
 
 class _ProjectImportBodyLimitExceeded(Exception):
     pass
 
 
 class ProjectImportBodyLimitMiddleware:
-    """Bound multipart bytes before Starlette spools a project upload."""
+    """Bound selected multipart requests before Starlette spools file uploads."""
 
-    def __init__(self, app, max_body_bytes: int):
+    def __init__(self, app, max_body_bytes: int, path="/api/projects/import", error_detail=None):
         self.app = app
         self.max_body_bytes = max_body_bytes
+        self.path = path
+        self.error_detail = error_detail or "工程导入请求体超出允许大小（工程包上限为 1 GiB）"
 
     async def __call__(self, scope, receive, send):
         if (scope.get("type") != "http" or scope.get("method") != "POST"
-                or scope.get("path") != "/api/projects/import"):
+                or scope.get("path") != self.path):
             await self.app(scope, receive, send)
             return
 
@@ -107,7 +218,7 @@ class ProjectImportBodyLimitMiddleware:
     async def _send_too_large(self, scope, receive, send):
         response = Response(
             content=json.dumps({
-                "detail": "工程导入请求体超出允许大小（工程包上限为 1 GiB）",
+                "detail": self.error_detail,
             }, ensure_ascii=False),
             status_code=413,
             media_type="application/json",
@@ -118,6 +229,12 @@ class ProjectImportBodyLimitMiddleware:
 app.add_middleware(
     ProjectImportBodyLimitMiddleware,
     max_body_bytes=project_service._MAX_PROJECT_ARCHIVE_COMPRESSED_BYTES + 1024 * 1024,
+)
+app.add_middleware(
+    ProjectImportBodyLimitMiddleware,
+    max_body_bytes=300 * 1024 * 1024 + 1024 * 1024,
+    path="/api/upload",
+    error_detail="上传请求体超出允许大小（单文件上限为 300 MiB）",
 )
 
 # URL vector acquisition jobs are local process tasks: progress is polled by the UI,
@@ -147,29 +264,89 @@ print("    AI Agent + GIS Knowledge + Spatial Analysis + Automation")
 print("  ========================================================")
 print("")
 
+
+def _is_loopback_web_origin(origin: str) -> bool:
+    try:
+        parts = urllib.parse.urlsplit(origin)
+        host = (parts.hostname or "").lower()
+        port = parts.port
+        return (
+            parts.scheme in {"http", "https"}
+            and host in {"localhost", "127.0.0.1", "::1"}
+            and (port is None or 1 <= port <= 65535)
+            and not parts.path
+            and not parts.query
+            and not parts.fragment
+            and not parts.username
+            and not parts.password
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+@app.middleware("http")
+async def reject_cross_site_api_requests(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        origin = request.headers.get("origin")
+        fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+        local_origin = _is_loopback_web_origin(origin) if origin else False
+        if (origin and not local_origin) or (fetch_site == "cross-site" and not local_origin):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "不允许跨站访问本机工作台 API"},
+            )
+    return await call_next(request)
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[],
+    allow_origin_regex=r"^https?://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=10000)  # 10KB 以上自动 gzip 压缩
 
 # 动态支持 /output 产物文件访问（支持时间戳前缀自动解析与子目录查找，防止 404）
+def _output_path_is_within_root(path: str) -> bool:
+    root = os.path.realpath(_TEMP_OUTPUT_DIR)
+    resolved = os.path.realpath(path)
+    try:
+        return os.path.normcase(os.path.commonpath((root, resolved))) == os.path.normcase(root)
+    except ValueError:
+        return False
+
+
+def _output_file_response(path: str, download: bool = False):
+    filename = os.path.basename(path) if download else None
+    headers = {}
+    if os.path.splitext(path)[1].lower() in {".html", ".htm", ".xhtml", ".svg", ".xml", ".xsl", ".xslt"}:
+        # Keep active generated content in an opaque browser origin, including
+        # when opened as a top-level page instead of inside the chat iframe.
+        headers["Content-Security-Policy"] = "sandbox allow-scripts"
+        headers["X-Content-Type-Options"] = "nosniff"
+    return FileResponse(path, filename=filename, headers=headers)
+
+
 @app.get("/output/{filename:path}")
 async def serve_output_file(filename: str, download: bool = False):
     import glob
-    # 路径穿越防护：解析后必须仍在 _TEMP_OUTPUT_DIR 内
+    # 路径穿越防护：解析符号链接后仍必须位于 _TEMP_OUTPUT_DIR 内
     _norm_base = os.path.normpath(_TEMP_OUTPUT_DIR)
     direct_path = os.path.normpath(os.path.join(_TEMP_OUTPUT_DIR, filename))
     try:
         _in_base = os.path.commonpath([_norm_base, direct_path]) == _norm_base
     except ValueError:
         _in_base = False  # 跨盘符
-    if not _in_base or filename.startswith('\\\\') or ':' in filename.split(os.sep)[0]:
+    if (
+        not _in_base
+        or not _output_path_is_within_root(direct_path)
+        or filename.startswith('\\\\')
+        or ':' in filename.split(os.sep)[0]
+    ):
         raise HTTPException(status_code=403, detail="非法路径")
     if os.path.isfile(direct_path):
-        return FileResponse(direct_path, filename=os.path.basename(direct_path) if download else None)
+        return _output_file_response(direct_path, download)
     
     base_name = os.path.basename(filename)
     matches = glob.glob(os.path.join(_TEMP_OUTPUT_DIR, f"*_{base_name}"))
@@ -178,9 +355,10 @@ async def serve_output_file(filename: str, download: bool = False):
             for f in files:
                 if f == base_name or f.endswith(f"_{base_name}"):
                     matches.append(os.path.join(root, f))
+    matches = [path for path in matches if _output_path_is_within_root(path)]
     if matches:
         matches.sort(key=os.path.getmtime, reverse=True)
-        return FileResponse(matches[0], filename=os.path.basename(matches[0]) if download else None)
+        return _output_file_response(matches[0], download)
     
     raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
 
@@ -254,6 +432,9 @@ async def chat(request: ChatRequest):
             f"[当前问题]\n"
         ) + msg
     cfg = resolve_llm_config(request.llm_config, request.provider or "", request.api_key or "")
+    transport_error = model_endpoint_transport_error(cfg)
+    if transport_error:
+        raise HTTPException(status_code=400, detail=transport_error)
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, functools.partial(
         chat_with_ai,
@@ -371,6 +552,9 @@ async def chat_stream(request: ChatRequest):
     from backend.services import pending_action as _pa
 
     cfg = resolve_llm_config(request.llm_config, request.provider or "", request.api_key or "")
+    transport_error = model_endpoint_transport_error(cfg)
+    if transport_error:
+        raise HTTPException(status_code=400, detail=transport_error)
     amap_key = request.amap_key or ""
     session_id = request.session_id or "default"
 
@@ -578,11 +762,13 @@ async def save_proxy_config(req: dict):
 
 
 _USER_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cache", "user_settings.json")
+_USER_SETTINGS_LOCK = threading.RLock()
 
 
 def _sanitize_user_settings(data: dict) -> dict:
-    """Persist Provider metadata only; model API keys belong to browser localStorage."""
+    """Persist non-secret settings and Provider metadata only."""
     sanitized = dict(data)
+    sanitized.pop("amap_key", None)
     providers = sanitized.get("providers")
     if isinstance(providers, list):
         sanitized["providers"] = [
@@ -593,44 +779,100 @@ def _sanitize_user_settings(data: dict) -> dict:
     return sanitized
 
 
+def _save_amap_key(key: str) -> bool:
+    from backend.services.credential_store import save_credential
+    return save_credential("amap", "api_key", str(key))
+
+
+def _load_amap_key() -> str:
+    from backend.services.credential_store import get_credential
+    credential = get_credential("amap") or {}
+    return str(credential.get("password") or "")
+
+
+def _delete_amap_key() -> bool:
+    from backend.services.credential_store import delete_credential, has_credential
+    return not has_credential("amap") or delete_credential("amap")
+
+
 def _load_user_settings() -> dict:
     if os.path.exists(_USER_SETTINGS_PATH):
         try:
             with open(_USER_SETTINGS_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                sanitized = _sanitize_user_settings(data)
-                if sanitized != data:
-                    _save_user_settings(sanitized)
-                return sanitized
         except Exception:
-            pass
+            raise HTTPException(
+                status_code=500,
+                detail="用户配置文件无法读取；为避免覆盖现有配置，请检查文件格式和权限后重试。",
+            )
+        if not isinstance(data, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="用户配置文件格式无效；为避免覆盖现有配置，请检查文件内容后重试。",
+            )
+        sanitized = _sanitize_user_settings(data)
+        legacy_amap_key = data.get("amap_key")
+        if legacy_amap_key:
+            if not _save_amap_key(str(legacy_amap_key)):
+                raise HTTPException(
+                    status_code=500,
+                    detail="旧高德密钥未能迁移到加密凭据库，设置文件中的密钥仍可能以明文保存；请检查磁盘空间和文件权限后重试。",
+                )
+        if sanitized != data and not _save_user_settings(sanitized):
+            raise HTTPException(
+                status_code=500,
+                detail="旧设置中的敏感字段未能从设置文件清理，文件中仍可能有明文密钥；请检查磁盘空间和文件权限后重试。",
+            )
+        return sanitized
     return {}
 
 
 def _save_user_settings(data: dict) -> bool:
-    os.makedirs(os.path.dirname(_USER_SETTINGS_PATH), exist_ok=True)
+    parent = os.path.dirname(_USER_SETTINGS_PATH)
+    os.makedirs(parent, exist_ok=True)
+    temp_path = None
     try:
-        with open(_USER_SETTINGS_PATH, "w", encoding="utf-8") as f:
+        fd, temp_path = tempfile.mkstemp(prefix=".user_settings_", suffix=".tmp", dir=parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(_sanitize_user_settings(data), f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, _USER_SETTINGS_PATH)
+        temp_path = None
         return True
     except Exception as e:
         print(f"[GIS] 保存 user_settings 失败: {e}", flush=True)
         return False
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except FileNotFoundError:
+                pass
 
 
 @app.get("/api/user-settings")
 async def get_user_settings():
-    """获取用户持久化设置；Provider 仅同步元数据，API Key 保留在浏览器。"""
-    return _load_user_settings()
+    """获取 Provider 元数据与加密存储的高德 Key；模型服务 Key 保留在浏览器。"""
+    settings = _load_user_settings()
+    amap_key = _load_amap_key()
+    if amap_key:
+        settings["amap_key"] = amap_key
+    return settings
 
 
 @app.post("/api/user-settings")
 async def save_user_settings(req: dict):
     """保存用户持久化配置（增量合并更新）"""
-    current = _load_user_settings()
-    current.update(_sanitize_user_settings(req))
-    ok = _save_user_settings(current)
+    with _USER_SETTINGS_LOCK:
+        current = _load_user_settings()
+        if "amap_key" in req:
+            amap_key = str(req.get("amap_key") or "").strip()
+            stored = _save_amap_key(amap_key) if amap_key else _delete_amap_key()
+            if not stored:
+                return {"status": "error", "message": "高德密钥加密存储失败"}
+        current.update(_sanitize_user_settings(req))
+        ok = _save_user_settings(current)
     return {"status": "ok" if ok else "error"}
 
 
@@ -788,6 +1030,9 @@ async def clear_chat_memory(session_id: str = "default"):
 async def test_key_endpoint(request: TestKeyRequest):
     # 兼容旧前端：只带 provider + api_key 时翻译成内置默认 cfg
     cfg = resolve_llm_config(request.llm_config, request.provider or "", request.api_key or "")
+    transport_error = model_endpoint_transport_error(cfg)
+    if transport_error:
+        return {"success": False, "message": transport_error}
     success, message = await asyncio.to_thread(test_key, cfg)
     return {"success": success, "message": message}
 
@@ -870,8 +1115,47 @@ def _register_uploaded_vector(name, geojson, provenance=None):
     return _register_layer(name, geojson, provenance=provenance)
 
 
+@app.get('/api/upload/status/{request_id}')
+async def upload_status(request_id: str):
+    if not _valid_upload_request_id(request_id):
+        raise HTTPException(status_code=400, detail="无效的上传请求编号")
+    result = _resolve_upload_request(request_id)
+    if result is not None:
+        return {"status": "completed", "result": result}
+    with _upload_request_lock:
+        active = request_id in _upload_request_active
+    return {"status": "processing" if active else "unknown"}
+
+
 @app.post('/api/upload')
-async def upload(file: UploadFile = File(...)):
+async def upload(file: UploadFile = File(...), request_id: Optional[str] = None):
+    if request_id is None:
+        return await _process_uploaded_file(file)
+    if not _valid_upload_request_id(request_id):
+        raise HTTPException(status_code=400, detail="无效的上传请求编号")
+
+    result = _resolve_upload_request(request_id)
+    if result is not None:
+        return result
+    with _upload_request_lock:
+        if request_id in _upload_request_active:
+            raise HTTPException(status_code=409, detail="同一上传请求仍在处理中，请稍后检查上传状态")
+        # Recheck while holding the lock in case another request completed just
+        # after the first cache lookup.
+        result = _resolve_upload_request(request_id)
+        if result is not None:
+            return result
+        _upload_request_active.add(request_id)
+    try:
+        result = await _process_uploaded_file(file)
+        _remember_upload_request(request_id, result)
+        return result
+    finally:
+        with _upload_request_lock:
+            _upload_request_active.discard(request_id)
+
+
+async def _process_uploaded_file(file: UploadFile):
     import os, tempfile, zipfile, orjson
     from urllib.parse import quote
     loop = asyncio.get_event_loop()
@@ -965,6 +1249,14 @@ async def upload(file: UploadFile = File(...)):
                 if file_size > max_bytes:
                     break
                 f.write(chunk)
+    except OSError as exc:
+        _discard_saved_upload()
+        if exc.errno == errno.ENOSPC or getattr(exc, 'winerror', None) == 112:
+            raise HTTPException(
+                status_code=507,
+                detail="服务器磁盘空间不足，上传未完成。请释放空间后重试。",
+            ) from exc
+        raise
     except BaseException:
         _discard_saved_upload()
         raise
@@ -1439,7 +1731,14 @@ async def get_project_asset(project_id: str, filename: str):
     if path is None:
         raise HTTPException(status_code=404, detail="工程资源不存在")
     import mimetypes
-    return FileResponse(path, media_type=mimetypes.guess_type(path)[0] or "application/octet-stream")
+    return FileResponse(
+        path,
+        media_type=mimetypes.guess_type(path)[0] or "application/octet-stream",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
+        },
+    )
 
 @app.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str):
@@ -1450,6 +1749,17 @@ async def delete_project(project_id: str):
 async def delete_all_projects():
     await asyncio.to_thread(project_service.delete_all_projects)
     return {"success": True}
+
+
+def _attachment_content_disposition(filename: str) -> str:
+    value = str(filename or "download")
+    fallback = "".join(
+        char if char.isascii() and (char.isalnum() or char in ".-_") else "_"
+        for char in value
+    ).strip("._") or "download"
+    encoded = urllib.parse.quote(value, safe="-._~")
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+
 
 @app.post("/api/projects/{project_id}/rename")
 async def rename_project(project_id: str, req: ProjectRenameRequest):
@@ -1469,7 +1779,7 @@ async def export_project(project_id: str):
     return StreamingResponse(
         io.BytesIO(data),
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename=project_{project_id}.giswork"},
+        headers={"Content-Disposition": _attachment_content_disposition(f"project_{project_id}.giswork")},
     )
 
 @app.post("/api/projects/import")
@@ -1666,11 +1976,10 @@ async def export_shp(request: ExportShpRequest):
         _export_shp_sync, request.geojson, request.crs, request.name)
     if err:
         return {"error": err}
-    safe_name = request.name.replace(" ", "_").replace("/", "_").replace("\\", "_")
     return StreamingResponse(
         zip_buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={safe_name}.zip"},
+        headers={"Content-Disposition": _attachment_content_disposition(f"{request.name}.zip")},
     )
 
 
@@ -1814,44 +2123,184 @@ async def api_geosource_detail(service_id: str):
     return res
 
 
+_GEOSOURCE_PROXY_MAX_BYTES = 64 * 1024 * 1024
+_GEOSOURCE_TILE_MAX_BYTES = 16 * 1024 * 1024
+
+
 @app.get('/api/geosource/proxy')
 @app.post('/api/geosource/proxy')
-async def api_geosource_proxy(url: str = Query(..., description="远程目标 URL")):
+async def api_geosource_proxy(request: Request, url: Optional[str] = Query(None, description="远程目标 URL")):
     """代理获取远程 GIS 服务端点、GeoJSON 或元数据，避免浏览器端跨域（CORS）与网络限制。"""
     from backend.services.model_transport import effective_model_proxy
     import urllib.request
     import urllib.error
 
-    url_str = (url or "").strip()
+    origin = request.headers.get("origin")
+    fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+    if fetch_site == "cross-site":
+        raise HTTPException(status_code=403, detail="不允许跨站访问 GeoSource 代理")
+    if origin:
+        loopback_hosts = {"localhost", "127.0.0.1", "::1"}
+        try:
+            origin_parts = urllib.parse.urlsplit(origin)
+            request_host = (request.url.hostname or "").lower()
+            origin_host = (origin_parts.hostname or "").lower()
+            origin_port = origin_parts.port
+            trusted_local_origin = (
+                origin_parts.scheme in {"http", "https"}
+                and origin_parts.scheme == request.url.scheme
+                and origin_host in loopback_hosts
+                and request_host in loopback_hosts
+                and (origin_port is None or 1 <= origin_port <= 65535)
+                and not origin_parts.path
+                and not origin_parts.query
+                and not origin_parts.fragment
+                and not origin_parts.username
+                and not origin_parts.password
+            )
+        except (TypeError, ValueError):
+            trusted_local_origin = False
+            request_host = ""
+        if not trusted_local_origin:
+            raise HTTPException(status_code=403, detail="不允许跨站访问 GeoSource 代理")
+
+    url_value = url
+    auth_parameter = request.query_params.get("_geosource_auth_parameter")
+    if request.method == "POST":
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+        url_value = payload.get("url") if isinstance(payload, dict) else None
+        auth_parameter = payload.get("auth_parameter") if isinstance(payload, dict) else None
+
+    if not (
+        isinstance(auth_parameter, str)
+        and 1 <= len(auth_parameter) <= 64
+        and all(char.isascii() and (char.isalnum() or char in "_.-") for char in auth_parameter)
+    ):
+        auth_parameter = None
+
+    url_str = (url_value or "").strip()
     if not url_str.startswith(('http://', 'https://')):
         raise HTTPException(status_code=400, detail="非法 URL 地址")
+
+    try:
+        parsed_url = urllib.parse.urlsplit(url_str)
+        credential_parameters = set(_sensitive_query_parameter_names(url_str))
+        if auth_parameter:
+            credential_parameters.add(auth_parameter)
+        credential_names = {name.casefold() for name in credential_parameters}
+        has_query_credential = any(
+            key.casefold() in credential_names and bool(value)
+            for key, value in urllib.parse.parse_qsl(parsed_url.query, keep_blank_values=True)
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="非法 URL 地址")
+    if parsed_url.username is not None or parsed_url.password is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="GeoSource 仅支持 URL 查询参数形式的 API Key，不支持地址中嵌入用户名或密码。",
+        )
+    if (
+        parsed_url.scheme.lower() == "http"
+        and has_query_credential
+        and _is_public_http_target(url_str) is not False
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="为保护 API Key，公网或无法确认的服务地址必须使用 HTTPS；明确的本机/内网服务仍可使用 HTTP。",
+        )
+
+    tile_mode = request.query_params.get("_geosource_tile") == "1"
+    forwarded_params = [
+        (key, value) for key, value in request.query_params.multi_items()
+        if key.lower() not in {"url", "_geosource_tile", "_geosource_auth_parameter"}
+    ]
+    if forwarded_params:
+        parts = urllib.parse.urlsplit(url_str)
+        override_names = {key.casefold() for key, _ in forwarded_params}
+        target_params = [
+            (key, value)
+            for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+            if key.casefold() not in override_names
+        ]
+        url_str = urllib.parse.urlunsplit((
+            parts.scheme, parts.netloc, parts.path,
+            urllib.parse.urlencode(target_params + forwarded_params), parts.fragment,
+        ))
+
+    max_bytes = _GEOSOURCE_TILE_MAX_BYTES if tile_mode else _GEOSOURCE_PROXY_MAX_BYTES
+    max_bytes_label = "16 MiB" if tile_mode else "64 MiB"
 
     loop = asyncio.get_event_loop()
 
     def _fetch():
         proxy = effective_model_proxy(url_str)
         proxy_dict = {"http": proxy, "https": proxy} if proxy else {}
-        handler = urllib.request.ProxyHandler(proxy_dict) if proxy_dict else urllib.request.ProxyHandler({})
-        opener = urllib.request.build_opener(handler)
+        proxy_handler = urllib.request.ProxyHandler(proxy_dict) if proxy_dict else urllib.request.ProxyHandler({})
+        opener = safe_redirect_opener(
+            proxy_handler,
+            url_str,
+            credential_parameters=list(credential_parameters),
+            strip_sensitive_query=True,
+            require_https_for_credentials=credential_parameters,
+            reject_authenticated_cross_origin=True,
+        )
+        redirect_guard = next(
+            (handler for handler in getattr(opener, "handlers", [])
+             if isinstance(handler, _GeoSourceRedirectHandler)),
+            None,
+        )
         req = urllib.request.Request(
             url_str,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 GIS-WorkTable",
-                "Accept": "application/json, text/plain, */*"
+                "Accept": "*/*" if tile_mode else "application/json, text/plain, */*"
             }
         )
         try:
             with opener.open(req, timeout=12) as resp:
-                content = resp.read()
+                content_length = resp.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        if int(content_length) > max_bytes:
+                            raise HTTPException(status_code=413, detail=f"远程 GIS 服务响应超过 {max_bytes_label} 上限")
+                    except ValueError:
+                        pass
+                content = resp.read(max_bytes + 1)
+                if len(content) > max_bytes:
+                    raise HTTPException(status_code=413, detail=f"远程 GIS 服务响应超过 {max_bytes_label} 上限")
                 raw_type = resp.headers.get("Content-Type", "application/json")
                 return content, raw_type.split(";")[0]
         except urllib.error.HTTPError as e:
+            if redirect_guard and redirect_guard.authenticated_redirect_blocked:
+                raise HTTPException(
+                    status_code=502,
+                    detail="服务要求跳转到另一主机；为保护 API Key，代理已停止请求。请使用服务方提供的原始直连地址。",
+                )
+            if redirect_guard and redirect_guard.credentials_stripped and e.code in {401, 403}:
+                raise HTTPException(
+                    status_code=502,
+                    detail="服务跳转到另一主机后拒绝了请求；为保护 API Key，代理没有把认证参数转发到新主机。请尝试服务方提供的原始直连地址。",
+                )
             raise HTTPException(status_code=e.code, detail=f"远程 GIS 服务返回 HTTP {e.code}")
+        except HTTPException:
+            raise
         except Exception:
             raise HTTPException(status_code=502, detail="代理请求失败，请检查目标服务连接；请求细节已隐藏。")
 
     content, media_type = await loop.run_in_executor(None, _fetch)
-    return Response(content=content, media_type=media_type)
+    # The proxy returns provider-controlled bytes and Content-Type on the
+    # workbench's own origin. If a user opens the proxy URL as a document,
+    # sandbox the response so upstream HTML/SVG cannot act as a local page.
+    response_headers = {
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
+    }
+    if tile_mode:
+        response_headers["Cache-Control"] = "no-store"
+    return Response(content=content, media_type=media_type, headers=response_headers)
 
 
 @app.post('/api/geosource/query-sql')
@@ -2135,8 +2584,8 @@ async def api_inspect_url_vector(request: UrlInspectRequest):
         raise HTTPException(status_code=400, detail="请输入 ArcGIS REST 图层 URL")
     from backend.services import url_gis_service as _ugs
     loop = asyncio.get_event_loop()
+    inspect_url = (request.url or "").strip()
     try:
-        inspect_url = request.url.strip()
         if request.layer_id:
             clean = inspect_url.split("?")[0].rstrip("/")
             parsed = urllib.parse.urlsplit(inspect_url)
@@ -2144,7 +2593,7 @@ async def api_inspect_url_vector(request: UrlInspectRequest):
                 inspect_url = clean + "/" + str(request.layer_id) + (("?" + parsed.query) if parsed.query else "")
         result = await loop.run_in_executor(None, _ugs.inspect_gis_url, inspect_url)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)[:400])
+        raise HTTPException(status_code=400, detail=sanitize_error_text(exc, inspect_url)[:400])
     result["url"] = _ugs._sanitize_source_url(inspect_url)
     return result
 
@@ -2187,11 +2636,15 @@ def _run_url_vector_fetch(job_id: str, request: UrlVectorFetchRequest, cancel_ev
                        error="获取已由用户取消" if state == "cancelled" else "",
                        duration_ms=int((time.time() - started) * 1000), file_artifacts=artifacts)
         except Exception as history_error:
-            print(f"[URL Fetch] history record failed: {history_error}", flush=True)
+            print(
+                f"[URL Fetch] history record failed: {sanitize_error_text(history_error, request.url)}",
+                flush=True,
+            )
     except Exception as exc:
-        state = "cancelled" if cancel_event.is_set() else "unknown" if "完整性未知" in str(exc) else "failed"
+        error_text = sanitize_error_text(exc, request.url)
+        state = "cancelled" if cancel_event.is_set() else "unknown" if "完整性未知" in error_text else "failed"
         with _url_fetch_jobs_lock:
-            _url_fetch_jobs[job_id].update({"status": state, "error": str(exc)[:500], "finished_at": time.time()})
+            _url_fetch_jobs[job_id].update({"status": state, "error": error_text[:500], "finished_at": time.time()})
 
 
 @app.post('/api/url-data/jobs')

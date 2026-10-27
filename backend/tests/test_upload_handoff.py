@@ -1,6 +1,7 @@
 """Upload handoff checks use real CSV/GeoTIFF files and controlled oversized reads."""
 import asyncio
 import json
+import os
 from io import BytesIO
 
 import numpy as np
@@ -19,6 +20,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(tools, '_temp_output_dir', str(tmp_path))
     monkeypatch.setattr(tools, '_registered_layers', {})
     monkeypatch.setattr(tools, '_pending_layer_ops', [])
+    with main._upload_request_lock:
+        main._upload_request_active.clear()
+        main._upload_request_cache.clear()
     return TestClient(main.app)
 
 
@@ -37,6 +41,72 @@ def test_invalid_csv_does_not_leave_a_failed_upload(client, tmp_path):
     response = client.post('/api/upload', files={'file': ('invalid.csv', b'\xff', 'text/csv')})
     assert 'error' in response.json()
     assert not (tmp_path / 'uploads' / 'invalid.csv').exists()
+
+
+def test_lost_vector_upload_response_can_be_recovered_without_duplicate_file_or_layer(client, tmp_path):
+    content = json.dumps({'type': 'Feature', 'properties': {'value': 1},
+                          'geometry': {'type': 'Point', 'coordinates': [-122.3, 47.6]}})
+    request_id = 'recover-vector-123'
+    first = client.post(f'/api/upload?request_id={request_id}', files={'file': ('points.geojson', content, 'application/geo+json')})
+    assert first.status_code == 200
+    original = first.json()
+
+    retry = client.post(f'/api/upload?request_id={request_id}', files={'file': ('points.geojson', b'{"type":"FeatureCollection","features":[]}', 'application/geo+json')})
+    assert retry.status_code == 200
+    recovered = retry.json()
+    assert recovered['name'] == original['name']
+    assert recovered['registration_token'] == original['registration_token']
+    assert recovered['geojson']['type'] == 'FeatureCollection'
+    assert recovered['geojson']['features'][0]['geometry']['coordinates'] == [-122.3, 47.6]
+    assert list((tmp_path / 'uploads').iterdir()) == [tmp_path / 'uploads' / 'points.geojson']
+    assert list(tools._registered_layers) == ['points.geojson']
+
+    status = client.get(f'/api/upload/status/{request_id}')
+    assert status.json()['status'] == 'completed'
+    assert status.json()['result']['registration_token'] == original['registration_token']
+    assert client.get('/api/upload/status/unknown-request').json() == {'status': 'unknown'}
+
+
+def test_lost_raster_upload_response_can_be_recovered_without_duplicate_assets(client, tmp_path):
+    data = BytesIO()
+    with rasterio.open(data, 'w', driver='GTiff', width=4, height=4, count=1,
+                       dtype='uint8', crs='EPSG:4326', transform=from_bounds(10, 20, 11, 21, 4, 4)) as dataset:
+        dataset.write(np.arange(1, 17, dtype=np.uint8).reshape(4, 4), 1)
+    request_id = 'recover-raster-123'
+    first = client.post(f'/api/upload?request_id={request_id}', files={'file': ('elevation.tif', data.getvalue(), 'image/tiff')})
+    assert first.status_code == 200
+    original = first.json()
+
+    retry = client.post(f'/api/upload?request_id={request_id}', files={'file': ('elevation.tif', data.getvalue(), 'image/tiff')})
+    assert retry.status_code == 200
+    assert retry.json() == original
+    assert list(tools._registered_layers) == ['elevation']
+    assert {path.name for path in (tmp_path / 'uploads').iterdir()} == {'elevation.tif', 'elevation.png'}
+
+
+def test_disk_full_during_upload_returns_actionable_error_and_removes_partial_file(client, tmp_path, monkeypatch):
+    class DiskFullWriter:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.wrapped.close()
+
+        def write(self, data):
+            self.wrapped.write(data[:1])
+            raise OSError(28, 'No space left on device')
+
+    real_fdopen = os.fdopen
+    monkeypatch.setattr(main.os, 'fdopen', lambda fd, mode: DiskFullWriter(real_fdopen(fd, mode)))
+
+    response = client.post('/api/upload', files={'file': ('disk-full.csv', b'lon,lat\n1,2', 'text/csv')})
+
+    assert response.status_code == 507
+    assert '磁盘空间不足' in response.json()['detail']
+    assert not (tmp_path / 'uploads' / 'disk-full.csv').exists()
 
 
 def test_separate_archives_with_the_same_internal_shapefile_keep_distinct_layers(client, tmp_path):

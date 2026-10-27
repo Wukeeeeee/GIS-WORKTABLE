@@ -1868,7 +1868,7 @@ var _undoSkip = false;
       }
       if (typeof leaf.bindTooltip !== 'function') return;
       var isPt = leaf && (typeof leaf.getRadius === 'function' || leaf instanceof L.CircleMarker);
-      leaf.bindTooltip(txt, {
+      leaf.bindTooltip(escapeHtml(txt), {
         permanent: true,
         direction: isPt ? 'top' : 'center',
         offset: isPt ? [0, -8] : [0, 0],
@@ -1954,7 +1954,7 @@ var _undoSkip = false;
     var imageBounds = L.latLngBounds(southWest, northEast);
     var overlay = L.imageOverlay(url, imageBounds, {
       opacity: 1.0,
-      attribution: name
+      attribution: escapeHtml(name)
     }).addTo(mapInstance);
     _rasterLayers[name] = overlay;
     _rasterLayers[layerId] = overlay;
@@ -1977,7 +1977,7 @@ var _undoSkip = false;
     options = options || {};
     var tile = L.tileLayer(url, {
       maxZoom: options.maxZoom || 19,
-      attribution: options.attribution || name,
+      attribution: escapeHtml(options.attribution || name),
       opacity: options.opacity !== undefined ? options.opacity : 1.0,
       crossOrigin: true
     }).addTo(mapInstance);
@@ -1993,7 +1993,7 @@ var _undoSkip = false;
       layers: layerName || '',
       format: options.format || 'image/png',
       transparent: true,
-      attribution: options.attribution || name,
+      attribution: escapeHtml(options.attribution || name),
       opacity: options.opacity !== undefined ? options.opacity : 1.0,
     }).addTo(mapInstance);
     layers[name] = wms;
@@ -2987,7 +2987,7 @@ var _undoSkip = false;
         if (!l.feature || !l.feature.properties) return;
         var v = l.feature.properties[chartField];
         if (v !== undefined && v !== null) {
-          l.bindTooltip(String(v), {permanent: false, direction: 'top'});
+          l.bindTooltip(escapeHtml(String(v)), {permanent: false, direction: 'top'});
         }
       });
       if (window.GIS.chat) {

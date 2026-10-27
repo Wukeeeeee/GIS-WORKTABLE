@@ -10,35 +10,58 @@ class Element {
   fire(name) { (this.listeners[name] || []).forEach(callback => callback.call(this, { target: this })); }
 }
 
-function createHarness(initialCredentials = {}) {
+function createHarness(initialCredentials = {}, providers = [], initialStatuses = {}, amapSave = () => Promise.resolve(), isEnglish = false) {
   const saveButton = new Element();
   saveButton.dataset.cred = 'copernicus';
   const username = new Element();
   const password = new Element();
   const status = new Element();
   const message = new Element();
+  const amapInput = new Element();
+  const amapSaveButton = new Element();
+  const amapStatus = new Element();
+  const amapMessage = new Element();
   const queryElements = new Map([
     ['.geo-cred-user[data-cred="copernicus"]', username],
     ['.geo-cred-pass[data-cred="copernicus"]', password],
     ['.geo-cred-msg[data-cred="copernicus"]', message],
     ['[data-cred-status="copernicus"]', status],
   ]);
+  const idElements = new Map([
+    ['amapApiKeyInput', amapInput], ['saveAmapKeyBtn', amapSaveButton],
+    ['amapKeyStatus', amapStatus], ['amapTestResult', amapMessage],
+  ]);
   const requests = [];
+  const providerStatuses = Object.assign({}, initialStatuses);
+  const providerChecks = [];
+  const amapSaveCalls = [];
   let credentials = structuredClone(initialCredentials);
+  let amapKey = '';
   const document = {
     readyState: 'loading',
     documentElement: { classList: { toggle() {} }, style: { setProperty() {} } },
-    getElementById() { return null; },
+    getElementById(id) { return idElements.get(id) || null; },
     querySelector(selector) { return queryElements.get(selector) || null; },
     querySelectorAll(selector) { return selector === '.geo-cred-save' ? [saveButton] : []; },
     addEventListener() {},
   };
-  const window = { GIS: { api: {
+  const amapTranslations = {
+    'settings.amap-saving': 'Encrypting and saving…',
+    'settings.amap-saved': 'Saved to browser and encrypted credential store',
+  };
+  const window = { GIS: {
+    i18n: { t(key, fallback) { return isEnglish ? (amapTranslations[key] || fallback) : fallback; }, isEnglish() { return isEnglish; } },
+    api: {
     BASE_URL: '',
     getGeoCredentials() { return credentials; },
     setGeoCredentials(next) { credentials = next; },
     setGeoCredential(service, credential) { credentials[service] = credential; },
-    getProviders() { return []; },
+    getProviders() { return providers; },
+    setModelStatus(id, status) { providerStatuses[id] = status; },
+    getModelStatus(id) { return providerStatuses[id] || 'untested'; },
+    testProvider(provider) { providerChecks.push(provider.id); return Promise.resolve({ success: true }); },
+    getAmapKey() { return amapKey; },
+    setAmapKey(key) { amapKey = key; amapSaveCalls.push(key); return amapSave(key); },
   } } };
   const fetch = (url, options) => new Promise(resolve => requests.push({ url, options, resolve }));
   const sourcePath = path.resolve(__dirname, '../js/settings.js');
@@ -47,7 +70,11 @@ function createHarness(initialCredentials = {}) {
     JSON, encodeURIComponent, console: { warn() {}, log() {} }, setTimeout() { return 1; },
   }, { filename: sourcePath });
   window.GIS.settings.init();
-  return { saveButton, username, password, status, message, requests, get credentials() { return credentials; } };
+  return {
+    saveButton, username, password, status, message, requests, providerStatuses, providerChecks,
+    amapInput, amapSaveButton, amapStatus, amapMessage, amapSaveCalls,
+    get credentials() { return credentials; },
+  };
 }
 
 async function settleRequest(request, response) {
@@ -67,6 +94,51 @@ test('clearing a credential removes the local value and calls backend delete', a
   assert.equal(h.requests[0].options.method, 'DELETE');
   await settleRequest(h.requests[0], { ok: true, status: 200, json: () => Promise.resolve({ status: 'ok', deleted: true }) });
   assert.equal(h.message.textContent, '已从本地与后端清除');
+});
+
+test('startup clears stale model badges without sending provider test requests', () => {
+  const providers = [
+    { id: 'provider-a', api_key: 'user-key-a' },
+    { id: 'provider-b', api_key: 'user-key-b' },
+  ];
+  const h = createHarness({}, providers, { 'provider-a': 'online', 'provider-b': 'offline' });
+
+  assert.deepEqual(h.providerStatuses, { 'provider-a': 'untested', 'provider-b': 'untested' });
+  assert.deepEqual(h.providerChecks, []);
+});
+
+test('Amap key is saved only on button click and UI reports backend confirmation', async () => {
+  const h = createHarness();
+  h.amapInput.value = 'amap-test-key';
+  h.amapInput.fire('change');
+  assert.deepEqual(h.amapSaveCalls, []);
+
+  h.amapSaveButton.fire('click');
+  assert.equal(h.amapSaveButton.disabled, true);
+  assert.equal(h.amapMessage.textContent, '正在加密保存…');
+  assert.deepEqual(h.amapSaveCalls, ['amap-test-key']);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.amapStatus.textContent, '已配置');
+  assert.equal(h.amapMessage.textContent, '已保存到浏览器与本机加密凭据库');
+  assert.equal(h.amapSaveButton.disabled, false);
+});
+
+test('Amap encrypted-sync failure is not shown as a successful save', async () => {
+  const h = createHarness({}, [], {}, () => Promise.reject(new Error('storage unavailable')));
+  h.amapInput.value = 'amap-test-key';
+  h.amapSaveButton.fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.amapMessage.textContent, '当前浏览器已保存，但后端加密同步失败：storage unavailable');
+  assert.equal(h.amapSaveButton.disabled, false);
+});
+
+test('Amap save progress and confirmation use the active language', async () => {
+  const h = createHarness({}, [], {}, () => Promise.resolve(), true);
+  h.amapInput.value = 'amap-test-key';
+  h.amapSaveButton.fire('click');
+  assert.equal(h.amapMessage.textContent, 'Encrypting and saving…');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.amapMessage.textContent, 'Saved to browser and encrypted credential store');
 });
 
 test('partial account credentials are rejected without replacing saved credentials', () => {

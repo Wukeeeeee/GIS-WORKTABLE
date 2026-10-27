@@ -62,6 +62,7 @@ import backend.services.tools as _tools_mod
 import backend.services.ai_service as _ai_svc
 from backend.services import task_manager
 from backend.services.token_usage_service import extract_and_record_token_usage
+from backend.services.url_security import sanitize_error_text
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 
@@ -72,6 +73,15 @@ _READ_ONLY_LOCATION_TOOL_NAMES = frozenset({
     "search_web",
     "fetch_weather_data",
 })
+
+
+def _safe_model_error(error, cfg) -> str:
+    """Hide the configured model key and access-bearing URLs in provider errors."""
+    message = str(error)
+    api_key = getattr(cfg, "api_key", "")
+    if api_key:
+        message = message.replace(str(api_key), "[已隐藏]")
+    return sanitize_error_text(message)
 
 
 def _tools_for_request(read_only_location_analysis: bool = False):
@@ -832,7 +842,8 @@ def run_agent(
             raise _inv
         except Exception as e:
             import traceback
-            traceback.print_exc()
+            traceback.print_tb(e.__traceback__)
+            print(f"[GIS] Agent 请求异常: {_safe_model_error(e, cfg)[:300]}", flush=True)
             if _budget_hit:
                 _record_run_finish(_run_id, "任务执行时长已达上限", "timeout")
                 return {
@@ -850,7 +861,7 @@ def run_agent(
                 try:
                     _recovery_text = _recover_tool_dispatch_text(cfg, messages)
                 except Exception as _recovery_error:
-                    print(f"[GIS] 工具调度异常后的文本收尾失败: {_recovery_error}", flush=True)
+                    print(f"[GIS] 工具调度异常后的文本收尾失败: {_safe_model_error(_recovery_error, cfg)}", flush=True)
                     _recovery_text = ""
                 if _recovery_text:
                     result = {"messages": list(messages) + [AIMessage(content=_recovery_text)]}
@@ -872,7 +883,7 @@ def run_agent(
             _tool_may_have_run = _tool_tracker.started.is_set()
             if _attempt == 0 and _is_temp and not _tool_may_have_run:
                 _run_retry_count = 1
-                print("[GIS] 网络临时异常，自动重试一次: " + str(e)[:100], flush=True)
+                print("[GIS] 网络临时异常，自动重试一次: " + _safe_model_error(e, cfg)[:100], flush=True)
                 import time as _time; _time.sleep(1)
                 continue
             if _tool_may_have_run:
@@ -890,7 +901,7 @@ def run_agent(
                     "pending_suggestions": (partial["aoi_suggestions"] or {}).get("suggestions"),
                     "qa_warnings": partial["qa_warnings"],
                 }
-            error_msg = str(e)
+            error_msg = _safe_model_error(e, cfg)
             if "recursion_limit" in error_msg or "RecursionError" in error_msg:
                 friendly = "AI 在处理复杂任务时超限。已优化限制，请重试。如仍有问题，请简化请求描述。"
                 print(f"[GIS] 递归超限: {error_msg}", flush=True)
@@ -1591,7 +1602,9 @@ def _run_agent_stream_impl(
 
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        traceback.print_tb(e.__traceback__)
+        _safe_err_str = _safe_model_error(e, cfg)
+        print(f"[GIS] 流式模型请求异常: {_safe_err_str[:300]}", flush=True)
         _budget_timeout = isinstance(e, TimeoutError) and "budget exceeded" in str(e).lower()
         if _budget_timeout:
             _run_finish_status = "timeout"
@@ -1607,10 +1620,10 @@ def _run_agent_stream_impl(
                 msgs.append(AIMessage(content=_fb_text))
             else:
                 _run_finish_status = "error"
-                event = json.dumps({"type": "error", "message": str(e)})
+                event = json.dumps({"type": "error", "message": _safe_err_str}, ensure_ascii=False)
                 yield f"data: {event}\n\n"
         else:
-            _err_str = str(e)
+            _err_str = _safe_err_str
             # --- 服务端临时故障兜底：流式路径对 5xx/断连等整轮重试一次 ---
             # 背景：非流式 path 有 _is_temp 重试，流式没有；服务端（如 DeepSeek）
             # 间歇性崩溃时，第一次 stream 中途断流，重试往往即可恢复。
@@ -1645,8 +1658,9 @@ def _run_agent_stream_impl(
                             event = json.dumps({"type": "note", "message": "服务端临时故障已自动重试成功。"}, ensure_ascii=False)
                             yield f"data: {event}\n\n"
                 except Exception as _re:
-                    print("[GIS] 流式重试仍失败: " + str(_re)[:100], flush=True)
-                    _err_str = str(_re)
+                    _safe_retry_error = _safe_model_error(_re, cfg)
+                    print("[GIS] 流式重试仍失败: " + _safe_retry_error[:100], flush=True)
+                    _err_str = _safe_retry_error
                 if _retry_ok:
                     # 跳过错误上报，走正常收尾（msgs 已是重跑结果）
                     _final2, _r2 = "", None

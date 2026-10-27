@@ -17,11 +17,17 @@ import io
 import json
 import math
 import os
+import re
+import secrets
 import threading
 from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.error
+import urllib.parse
 import urllib.request
 
 from backend.services.data_providers.errors import DataProviderError  # noqa: F401 (保持包初始化一致)
+from backend.services.url_security import safe_redirect_opener
 
 
 def get_effective_proxies() -> dict:
@@ -40,16 +46,41 @@ class CloudNativeError(Exception):
     """云原生加载失败（消息可直接展示给用户）"""
 
 
+_REDIRECT_AUTH_REQUIRED_MESSAGE = (
+    "服务跳转到另一主机后要求认证。为保护 Key，WorkTable 没有把认证参数转发过去；"
+    "请尝试服务方提供的原始直连地址。"
+)
+
+
+def _redirect_requires_auth(opener, response) -> bool:
+    return (
+        getattr(response, "code", None) in {401, 403}
+        and any(
+            getattr(handler, "credentials_stripped", False)
+            for handler in getattr(opener, "handlers", ())
+        )
+    )
+
+
 def _as_vsi_path(source: str) -> str:
     """http(s) URL → GDAL /vsicurl/ 流式路径；本地路径原样返回"""
     s = str(source).strip()
+    if s.lower().startswith("/vsicurl/http://") or s.lower().startswith("/vsicurl/https://"):
+        return "/vsicurl/" + _http_url(s)
     if s.lower().startswith(("http://", "https://")) and not s.lower().startswith("/vsi"):
         return "/vsicurl/" + s
     return s
 
 
+def _http_url(source: str) -> str:
+    s = str(source).strip()
+    if s.lower().startswith("/vsicurl/http://") or s.lower().startswith("/vsicurl/https://"):
+        return s[len("/vsicurl/"):]
+    return s
+
+
 def _is_http(source: str) -> bool:
-    return str(source).strip().lower().startswith(("http://", "https://"))
+    return _http_url(source).lower().startswith(("http://", "https://"))
 
 
 def parse_bbox(bbox: str):
@@ -83,8 +114,165 @@ def parse_bbox(bbox: str):
 # ============================================================
 
 _DOWNLOAD_CAP_BYTES = 300 * 1024 * 1024
+_VSI_RANGE_CAP_BYTES = 64 * 1024 * 1024
+_REMOTE_HTTP_TIMEOUT_SECONDS = 20
 _OWNED_TEMP_DOWNLOADS = set()
 _OWNED_TEMP_DOWNLOADS_LOCK = threading.Lock()
+
+
+class _GuardedVsiProxyHandler(BaseHTTPRequestHandler):
+    """Serve one remote file to GDAL while validating every upstream redirect."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, _format, *_args):
+        # The opaque local endpoint and remote URL must not enter application logs.
+        return
+
+    def send_error(self, code, message=None, explain=None):
+        try:
+            super().send_error(code, message, explain)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True
+
+    def do_HEAD(self):
+        self._relay()
+
+    def do_GET(self):
+        self._relay()
+
+    def _relay(self):
+        server = self.server
+        request_path = urllib.parse.urlsplit(self.path).path
+        if request_path.removesuffix("/") != server.access_path:
+            self.send_error(404)
+            return
+
+        range_header = self.headers.get("Range", "")
+        requested_range = None
+        if range_header:
+            match = re.fullmatch(r"bytes=(\d+)-(\d*)", range_header.strip(), re.IGNORECASE)
+            if not match:
+                self.send_error(416)
+                return
+            start = int(match.group(1))
+            end = int(match.group(2)) if match.group(2) else start + _VSI_RANGE_CAP_BYTES - 1
+            if end < start or end - start + 1 > _VSI_RANGE_CAP_BYTES:
+                self.send_error(416)
+                return
+            requested_range = (start, end)
+
+        headers = {"User-Agent": "Gis-WorkTable/1.0", "Accept-Encoding": "identity"}
+        if range_header:
+            headers["Range"] = range_header
+        req = urllib.request.Request(server.source_url, headers=headers, method=self.command)
+        proxies = get_effective_proxies()
+        proxy_handler = urllib.request.ProxyHandler(proxies) if proxies else urllib.request.ProxyHandler({})
+        opener = safe_redirect_opener(proxy_handler, server.source_url)
+        try:
+            upstream = opener.open(req, timeout=_REMOTE_HTTP_TIMEOUT_SECONDS)
+        except urllib.error.HTTPError as response:
+            if _redirect_requires_auth(opener, response):
+                self.send_error(502, _REDIRECT_AUTH_REQUIRED_MESSAGE)
+                return
+            upstream = response
+        except Exception:
+            self.send_error(502, "Remote source request failed")
+            return
+
+        with upstream:
+            status = getattr(upstream, "status", None) or upstream.getcode()
+            content_length = upstream.headers.get("Content-Length")
+            response_limit = _VSI_RANGE_CAP_BYTES
+            if status == 206:
+                content_range = upstream.headers.get("Content-Range", "")
+                parsed_range = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", content_range, re.IGNORECASE)
+                if not parsed_range:
+                    self.send_error(502, "Invalid range response from remote source")
+                    return
+                first, last = int(parsed_range.group(1)), int(parsed_range.group(2))
+                if (last < first or last - first + 1 > _VSI_RANGE_CAP_BYTES
+                        or (requested_range and (first != requested_range[0] or last > requested_range[1]))):
+                    self.send_error(502, "Unexpected range response from remote source")
+                    return
+                response_limit = last - first + 1
+            if content_length:
+                try:
+                    declared_length = int(content_length)
+                    if ((self.command != "HEAD" and declared_length > _VSI_RANGE_CAP_BYTES)
+                            or (status == 206 and declared_length != response_limit)):
+                        self.send_error(413, "Remote response exceeds the guarded range limit")
+                        return
+                except ValueError:
+                    content_length = None
+
+            self.send_response(status)
+            for name in ("Content-Type", "Content-Length", "Content-Range", "Content-Encoding", "Accept-Ranges", "ETag", "Last-Modified"):
+                value = upstream.headers.get(name)
+                if value:
+                    self.send_header(name, value)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if self.command == "HEAD" or status in (204, 304):
+                return
+
+            remaining = response_limit
+            while remaining > 0:
+                chunk = upstream.read(min(256 * 1024, remaining))
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                remaining -= len(chunk)
+            self.close_connection = True
+
+
+@contextmanager
+def guarded_vsi_source(source: str):
+    """Expose a remote URL to GDAL through a loopback range relay.
+
+    GDAL/libcurl follows redirects internally and cannot apply this project's
+    public-to-private redirect policy. The relay handles each HEAD/Range request
+    with urllib's checked redirect handler, while preserving on-demand reads.
+    Explicitly supplied private URLs remain allowed by the shared policy.
+    """
+    if not _is_http(source):
+        yield _as_vsi_path(source)
+        return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _GuardedVsiProxyHandler)
+    server.daemon_threads = True
+    server.source_url = _http_url(source)
+    server.access_path = "/" + secrets.token_urlsafe(24) + "/data"
+    thread = threading.Thread(target=server.serve_forever, name="gis-vsi-redirect-guard", daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}{server.access_path}"
+        yield _as_vsi_path(url)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@contextmanager
+def _cog_remote_http_environment(source: str):
+    """Bound each GDAL HTTP operation while a remote COG is being read."""
+    if not _is_http(source):
+        yield
+        return
+    try:
+        import rasterio
+    except ImportError:
+        yield
+        return
+    with rasterio.Env(
+        GDAL_HTTP_TIMEOUT=_REMOTE_HTTP_TIMEOUT_SECONDS,
+        GDAL_HTTP_CONNECTTIMEOUT=5,
+        GDAL_HTTP_MAX_RETRY=0,
+        GDAL_HTTP_LOW_SPEED_LIMIT=1,
+        GDAL_HTTP_LOW_SPEED_TIME=_REMOTE_HTTP_TIMEOUT_SECONDS,
+    ):
+        yield
 
 
 def _needs_gdal_download_fallback(err: Exception) -> bool:
@@ -121,16 +309,16 @@ def http_download_to_temp(url: str, fmt: str = "") -> str:
     """urllib 下载远程文件到临时目录（上限 300MB），返回本地路径"""
     import tempfile
     from urllib.parse import urlparse
-    u = str(url).strip()
+    u = _http_url(str(url).strip())
     ext = os.path.splitext(urlparse(u).path)[1].lower() or (f".{fmt}" if fmt else ".bin")
     req = urllib.request.Request(u, headers={"User-Agent": "Gis-WorkTable/1.0"})
     proxies = get_effective_proxies()
     handler = urllib.request.ProxyHandler(proxies) if proxies else urllib.request.ProxyHandler({})
-    opener = urllib.request.build_opener(handler)
+    opener = safe_redirect_opener(handler, u)
     path = None
     downloaded = False
     try:
-        with opener.open(req, timeout=60) as resp:
+        with opener.open(req, timeout=_REMOTE_HTTP_TIMEOUT_SECONDS) as resp:
             length = int(resp.headers.get("Content-Length") or 0)
             if length > _DOWNLOAD_CAP_BYTES:
                 raise CloudNativeError(
@@ -151,6 +339,10 @@ def http_download_to_temp(url: str, fmt: str = "") -> str:
         return path
     except CloudNativeError:
         raise
+    except urllib.error.HTTPError as e:
+        if _redirect_requires_auth(opener, e):
+            raise CloudNativeError(_REDIRECT_AUTH_REQUIRED_MESSAGE) from e
+        raise CloudNativeError(f"下载回退失败: HTTP {e.code}") from e
     except Exception as e:
         raise CloudNativeError(f"下载回退失败: {str(e)[:200]}")
     finally:
@@ -161,38 +353,64 @@ def http_download_to_temp(url: str, fmt: str = "") -> str:
                 pass
 
 
-def resolve_vector_source(source: str, fmt: str = "矢量") -> str:
-    """矢量数据源解析：优先 /vsicurl/ 流式（元信息探测成功即用），证书受限时回退下载"""
+@contextmanager
+def resolve_vector_source(source: str, fmt: str = "矢量"):
+    """Safely resolve a vector source, keeping the redirect-checked relay alive."""
     s_raw = str(source).strip()
-    is_remote = _is_http(s_raw) or s_raw.lower().startswith(("/vsicurl/http://", "/vsicurl/https://"))
-    src = _as_vsi_path(source)
-    if not is_remote:
+    if not _is_http(s_raw):
+        src = _as_vsi_path(s_raw)
         if not os.path.exists(src):
             raise CloudNativeError(f"文件不存在: {src}")
-        return src
+        yield src
+        return
     try:
         import pyogrio
-        pyogrio.read_info(src)  # 轻量探测：能读元信息 = 流式通道可用
-        return src
     except CloudNativeError:
         raise
     except Exception as e:
-        # GDAL 网络错误表现不稳定（schannel 证书链 / 间歇性 open 失败），
-        # http 源统一尝试 urllib 下载回退；下载也失败则报下载错误
-        http_url = s_raw[len("/vsicurl/"):] if s_raw.lower().startswith("/vsicurl/") else s_raw
-        if _needs_gdal_download_fallback(e):
-            return http_download_to_temp(http_url, fmt)
+        raise CloudNativeError(f"缺少依赖: {e}，请安装 pyogrio")
+
+    with guarded_vsi_source(s_raw) as src:
         try:
-            return http_download_to_temp(http_url, fmt)
-        except CloudNativeError:
-            raise CloudNativeError(f"{fmt} 元信息读取失败: {str(e)[:300]}")
+            pyogrio.read_info(src)  # 流式轻量探测，所有远程请求经过安全转发
+        except Exception as probe_error:
+            http_url = _http_url(s_raw)
+            try:
+                downloaded = http_download_to_temp(http_url, fmt)
+            except CloudNativeError:
+                raise CloudNativeError(f"{fmt} 元信息读取失败: {str(probe_error)[:300]}")
+        else:
+            yield src
+            return
+
+    with _managed_temp_download(downloaded):
+        yield downloaded
 
 
 # ============================================================
 # COG（Cloud Optimized GeoTIFF）
 # ============================================================
 
+def _raise_cog_error_with_proxy_hint(error: CloudNativeError):
+    if "HTTP response code: 502" in str(error):
+        raise CloudNativeError(
+            "远程 COG 请求返回 HTTP 502。请检查数据源可用性；若使用网络代理，也请确认其允许对安全校验通过的公网 IP 建立 HTTPS CONNECT。"
+        ) from None
+    raise error
+
+
 def read_cog(source: str, max_size: int = 2048) -> dict:
+    """Read a COG through a redirect-checked local range relay when remote."""
+    with guarded_vsi_source(source) as guarded_source:
+        fallback_url = _http_url(source) if _is_http(source) else None
+        try:
+            with _cog_remote_http_environment(source):
+                return _read_cog_impl(guarded_source, max_size, fallback_url=fallback_url)
+        except CloudNativeError as exc:
+            _raise_cog_error_with_proxy_hint(exc)
+
+
+def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None = None) -> dict:
     """降采样读取 COG 预览。返回 {png_bytes, bounds(w,s,e,n), meta}"""
     try:
         import numpy as np
@@ -209,8 +427,8 @@ def read_cog(source: str, max_size: int = 2048) -> dict:
         try:
             ds = rasterio.open(src_path)
         except Exception as e:
-            if _is_http(source) and _needs_gdal_download_fallback(e):
-                downloaded_path = http_download_to_temp(str(source).strip(), "tif")
+            if fallback_url and _needs_gdal_download_fallback(e):
+                downloaded_path = http_download_to_temp(fallback_url, "tif")
                 src_path = downloaded_path
                 ds = rasterio.open(src_path)
             else:
@@ -280,6 +498,17 @@ def read_cog(source: str, max_size: int = 2048) -> dict:
 
 
 def cog_info(source: str) -> dict:
+    """Read COG metadata through a redirect-checked local range relay."""
+    with guarded_vsi_source(source) as guarded_source:
+        fallback_url = _http_url(source) if _is_http(source) else None
+        try:
+            with _cog_remote_http_environment(source):
+                return _cog_info_impl(guarded_source, fallback_url=fallback_url)
+        except CloudNativeError as exc:
+            _raise_cog_error_with_proxy_hint(exc)
+
+
+def _cog_info_impl(source: str, fallback_url: str | None = None) -> dict:
     """COG/GeoTIFF 元信息：CRS/范围/波段/统计（统计基于降采样，避免全量下载）"""
     try:
         import numpy as np
@@ -295,8 +524,8 @@ def cog_info(source: str) -> dict:
         try:
             ds = rasterio.open(src_path)
         except Exception as e:
-            if _is_http(source) and _needs_gdal_download_fallback(e):
-                downloaded_path = http_download_to_temp(str(source).strip(), "tif")
+            if fallback_url and _needs_gdal_download_fallback(e):
+                downloaded_path = http_download_to_temp(fallback_url, "tif")
                 src_path = downloaded_path
                 ds = rasterio.open(src_path)
             else:
@@ -366,7 +595,7 @@ class _HttpRangeSource:
         )
         proxies = get_effective_proxies()
         handler = urllib.request.ProxyHandler(proxies) if proxies else urllib.request.ProxyHandler({})
-        opener = urllib.request.build_opener(handler)
+        opener = safe_redirect_opener(handler, self.url)
         try:
             with opener.open(req, timeout=30) as resp:
                 if getattr(resp, "status", None) != 206:
@@ -386,6 +615,10 @@ class _HttpRangeSource:
                 return data
         except CloudNativeError:
             raise
+        except urllib.error.HTTPError as e:
+            if _redirect_requires_auth(opener, e):
+                raise CloudNativeError(_REDIRECT_AUTH_REQUIRED_MESSAGE) from e
+            raise CloudNativeError(f"PMTiles 远程读取失败（HTTP {e.code}）") from e
         except Exception as e:
             raise CloudNativeError(f"PMTiles 远程读取失败（Range 请求）: {str(e)[:200]}")
 
@@ -721,8 +954,7 @@ def cloud_vector_metadata(source: str, fmt: str) -> dict:
         import pyogrio
     except ImportError as e:
         raise CloudNativeError(f"缺少依赖: {e}，请安装 pyogrio")
-    src_path = resolve_vector_source(source, fmt)
-    with _managed_temp_download(src_path):
+    with resolve_vector_source(source, fmt) as src_path:
         return _cloud_vector_metadata_from_path(src_path, fmt, pyogrio)
 
 
@@ -798,8 +1030,7 @@ def cloud_vector_to_geojson(source: str, fmt: str, bbox=None, limit: int = 0) ->
         import pyogrio
     except ImportError as e:
         raise CloudNativeError(f"缺少依赖: {e}，请安装 pyogrio")
-    src_path = resolve_vector_source(source, fmt)
-    with _managed_temp_download(src_path):
+    with resolve_vector_source(source, fmt) as src_path:
         return _cloud_vector_to_geojson_from_path(src_path, fmt, bbox, limit, pyogrio)
 
 

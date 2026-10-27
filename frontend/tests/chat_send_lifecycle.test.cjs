@@ -4,17 +4,17 @@ const vm = require('node:vm');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-function createChatHarness(streamResponse, withExecutionCards = false, layerListResponse = { layers: [] }) {
+function createChatHarness(streamResponse, withExecutionCards = false, layerListResponse = { layers: [] }, markedMock) {
   const elements = new Map();
   const getElement = id => {
     if (!elements.has(id)) {
       const listeners = {};
       elements.set(id, {
-        id, style: {}, dataset: {}, listeners, value: '', selectionStart: 0, selectionEnd: 0,
+        id, style: {}, dataset: {}, listeners, children: [], value: '', selectionStart: 0, selectionEnd: 0,
         classList: { add() {}, remove() {}, toggle() {} },
         addEventListener(name, callback) { (listeners[name] ||= []).push(callback); },
         dispatch(name, event) { (listeners[name] || []).forEach(callback => callback(event)); },
-        appendChild() {}, remove() {}, focus() {},
+        appendChild(child) { this.children.push(child); }, remove() {}, focus() {},
         setAttribute() {}, querySelector() { return null; }, querySelectorAll() { return []; }, closest() { return null; },
       });
     }
@@ -81,6 +81,7 @@ function createChatHarness(streamResponse, withExecutionCards = false, layerList
   const context = vm.createContext({
     window, document, fetch, AbortController, TextDecoder, Promise, Map, Set, Array,
     Object, String, Number, Math, Date, JSON, RegExp, URL, console: { log() {}, warn() {}, error() {} },
+    marked: markedMock,
     sessionStorage: { getItem() { return '0'; } },
     requestAnimationFrame(callback) { callback(); },
     setTimeout() { return 1; }, clearTimeout() {}, setInterval() { return 1; }, clearInterval() {},
@@ -88,11 +89,54 @@ function createChatHarness(streamResponse, withExecutionCards = false, layerList
   if (withExecutionCards) vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../js/execution_cards.js'), 'utf8'), context);
   const chatSource = fs.readFileSync(sourcePath, 'utf8').replace(
     'GIS.chat = { init, send,',
-    'GIS.chat = { _attachOutputButtons: _attachOutputButtons, _downloadFile: downloadFile, init, send,',
+    'GIS.chat = { _renderChatMarkdown: _renderChatMarkdown, _linkRenderer: _linkRenderer, _attachOutputButtons: _attachOutputButtons, _downloadFile: downloadFile, addMessage, init, send,',
   );
   vm.runInContext(chatSource, context, { filename: sourcePath });
   return { window, context, tasks, streamCalls, exportCalls, elements, getElement, executionRows, createdElements };
 }
+
+test('plain user chat messages render as text instead of executable HTML', () => {
+  const h = createChatHarness();
+  h.window.GIS.chat.init();
+  const rawHtml = '<img src=x onerror=alert(1)>';
+  h.window.GIS.chat.addMessage(rawHtml, 'user');
+
+  const row = h.elements.get('chatMessages').children[0];
+  const bubble = row.children[1];
+  const content = bubble.children[0];
+  assert.equal(content.textContent, rawHtml);
+  assert.equal(content.innerHTML, undefined);
+});
+
+test('chat markdown escapes raw HTML and blocks executable link schemes', () => {
+  class Renderer {}
+  const parsed = [];
+  const marked = {
+    Renderer,
+    parse(text, options) { parsed.push({ text, options }); return '<p>safe</p>'; },
+    parseInline(text, options) { parsed.push({ text, options }); return '<span>safe</span>'; },
+  };
+  const h = createChatHarness(null, false, { layers: [] }, marked);
+  const rawHtml = '<img src=x onerror=alert(1)>';
+  h.window.GIS.chat._renderChatMarkdown(rawHtml, false);
+  const renderer = parsed[0].options.renderer;
+
+  assert.equal(renderer.html({ text: rawHtml }), '&lt;img src=x onerror=alert(1)&gt;');
+  assert.equal(renderer.link({ href: 'javascript:alert(2)', text: 'run code' }), 'run code');
+  assert.equal(renderer.link({ href: 'https://safe.test/" onclick="alert(3)', text: 'safe link' }),
+    '<a href="https://safe.test/&quot; onclick=&quot;alert(3)" target="_blank" rel="noopener noreferrer" class="chat-markdown-link">safe link</a>');
+  assert.match(renderer.link({ href: 'https://example.test/path', text: 'safe link' }),
+    /href="https:\/\/example\.test\/path"/);
+  assert.equal(renderer.image({ href: 'https://tracker.example/pixel.png', text: 'external image' }), 'external image');
+  assert.match(renderer.image({ href: '/output/chart.png', text: 'local chart' }), /src="\/output\/chart\.png"/);
+  assert.equal(parsed[0].options.renderer, h.window.GIS.chat._linkRenderer);
+});
+
+test('HTML artifact iframes run in an opaque sandboxed origin', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../js/chat.js'), 'utf8');
+
+  assert.match(source, /iframe\.setAttribute\(['"]sandbox['"],\s*['"]allow-scripts['"]\)/);
+});
 
 test('chat file download checks HTTP failure responses instead of saving their bodies', async () => {
   const h = createChatHarness();
@@ -177,6 +221,36 @@ test('replacing a chat request cancels its task without letting stale cleanup un
   await second;
   assert.equal(harness.tasks[1].status, 'cancelled');
   assert.equal(harness.window._aiRunning, false);
+});
+
+test('streaming chat sends the provider key only inside llm_config', async () => {
+  const payload = 'data: ' + JSON.stringify({ type: 'done', response: '完成', layers: [] }) + '\n\n';
+  const bytes = new TextEncoder().encode(payload);
+  let reads = 0;
+  const harness = createChatHarness({
+    ok: true,
+    body: { getReader() { return { read() {
+      return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+    } }; } },
+  });
+
+  await harness.window.GIS.chat.send('你好');
+
+  const body = harness.streamCalls[0].body;
+  assert.equal(body.llm_config.api_key, 'test-key');
+  assert.equal(Object.hasOwn(body, 'api_key'), false);
+});
+
+test('streaming chat keeps the backend transport-security explanation', async () => {
+  const detail = '公网模型地址必须使用 HTTPS';
+  const harness = createChatHarness({
+    ok: false, status: 400, json: async () => ({ detail }),
+  });
+  harness.window.GIS.api.chat = async () => { throw new Error(detail); };
+
+  await harness.window.GIS.chat.send('你好');
+
+  assert.match(harness.tasks[0].error, /公网模型地址必须使用 HTTPS/);
 });
 
 test('chat stops before calling the AI when a current layer cannot sync to backend analysis state', async () => {

@@ -19,6 +19,7 @@ window.GIS = window.GIS || {};
 
   function init() {
     // 各块互相隔离：任何一块报错都不影响顶栏模型名同步等其余功能
+    try { resetProviderStatuses(); } catch (e) {}
     try { bindSettingsModal(); } catch (e) { console.warn('[GIS settings] bindSettingsModal', e); }
     try { bindAmap(); } catch (e) { console.warn('[GIS settings] bindAmap', e); }
     try { bindProxy(); } catch (e) { console.warn('[GIS settings] bindProxy', e); }
@@ -27,7 +28,6 @@ window.GIS = window.GIS || {};
     try { initTheme(); } catch (e) {}
     try { initFontSize(); } catch (e) {}
     try { initModelSelector(); } catch (e) { console.warn('[GIS settings] model selector', e); }
-    try { autoDetectModelStatus(); } catch (e) {}
     try { bindButtonFeedback(); } catch (e) {}
     try {
       if (window.GIS.api && window.GIS.api.syncUserSettingsFromBackend) {
@@ -217,6 +217,8 @@ window.GIS = window.GIS || {};
     host.innerHTML = '';
     var providers = GIS.api.getProviders();
     if (!providers || !providers.length) return;
+    GIS.api.getSelectedModel();
+    syncProviderStorageWarning(host);
 
     var container = host;
 
@@ -229,10 +231,11 @@ window.GIS = window.GIS || {};
 
       var header = document.createElement('div');
       header.className = 'model-config-header';
+      var nameInputId = 'gis-provider-' + idx + '-name';
       var curTag = (p.id === GIS.api.getSelectedModel())
         ? '<span class="model-config-free" style="color:var(--accent,#6366f1);">● 当前使用</span>' : '';
       header.innerHTML =
-        '<input type="text" class="modal-input prov-name" value="' + GIS.utils.escapeHtml(p.name || '') + '" style="flex:1;padding:6px 8px;" title="显示名称(顶栏/列表/任务卡都用它)" />' +
+        '<input type="text" id="' + nameInputId + '" class="modal-input prov-name" value="' + GIS.utils.escapeHtml(p.name || '') + '" style="flex:1;padding:6px 8px;" aria-label="Provider 显示名称" title="显示名称(顶栏/列表/任务卡都用它)" />' +
         curTag +
         '<span class="' + badge.cls + '">' + badge.text + '</span>';
       // name 输入框失去焦点即改名（回车也触发）
@@ -246,9 +249,9 @@ window.GIS = window.GIS || {};
       var fieldBlock = document.createElement('div');
       fieldBlock.style.cssText = 'margin-top:8px;display:grid;gap:6px;';
       fieldBlock.innerHTML =
-        _fieldRow('base_url', '接口地址', p.base_url, 'https://.../v1', 'text') +
-        _fieldRow('model', '模型名', p.model, 'model-name', 'text') +
-        _fieldRow('api_key', 'API Key', p.api_key, 'sk-...', 'password');
+        _fieldRow('base_url', '接口地址', p.base_url, 'https://.../v1', 'text', 'gis-provider-' + idx + '-base-url') +
+        _fieldRow('model', '模型名', p.model, 'model-name', 'text', 'gis-provider-' + idx + '-model') +
+        _fieldRow('api_key', 'API Key', p.api_key, 'sk-...', 'password', 'gis-provider-' + idx + '-api-key');
       card.appendChild(fieldBlock);
 
       // 开关：glm 提示词 / 技能路由 / reasoning
@@ -328,12 +331,12 @@ window.GIS = window.GIS || {};
     });
   }
 
-  function _fieldRow(field, label, value, placeholder, type) {
+  function _fieldRow(field, label, value, placeholder, type, inputId) {
     var show = field === 'api_key';
     return '<div style="display:flex;gap:6px;align-items:center;">' +
-      '<span style="width:64px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">' + label + '</span>' +
+      '<label for="' + inputId + '" style="width:64px;font-size:11px;color:var(--ui-gray-500,#888);flex:none;">' + label + '</label>' +
       '<div class="modal-input-wrapper" style="flex:1;">' +
-      '<input type="' + (show ? 'password' : type) + '" class="modal-input" data-field="' + field + '" value="' +
+      '<input id="' + inputId + '" type="' + (show ? 'password' : type) + '" class="modal-input" data-field="' + field + '" value="' +
       GIS.utils.escapeHtml(value || '') + '" placeholder="' + placeholder + '" autocomplete="off" />' +
       (show ? "<button class=\"modal-toggle-vis\" type=\"button\" title=\"显示/隐藏密钥\"><span class=\"ui-icon prov-eye\" aria-hidden=\"true\" style=\";width:18px;height:18px;--ui-icon-image:url('/assets/ui-icons/icon-6a87bac01dca.png')\"></span></button>" : '') +
       '</div></div>';
@@ -358,11 +361,31 @@ window.GIS = window.GIS || {};
       p[field] = value;
     }
     GIS.api.upsertProvider(p);
+    syncProviderStorageWarning(document.getElementById('providerList'));
     if (field === 'name') {
       if (GIS.api.getSelectedModel() === id) syncModelUI();
       return;
     }
     invalidateProviderStatus(id);
+  }
+
+  function syncProviderStorageWarning(host) {
+    if (!host || !GIS.api.areProviderSettingsPersistent) return;
+    var warning = host.querySelector('.provider-storage-warning');
+    if (GIS.api.areProviderSettingsPersistent()) {
+      if (warning) warning.remove();
+      return;
+    }
+    if (warning) return;
+    warning = document.createElement('div');
+    warning.className = 'modal-note provider-storage-warning';
+    warning.setAttribute('role', 'alert');
+    warning.setAttribute('data-i18n', 'settings.provider-storage-warning');
+    warning.setAttribute('data-i18n-zh', '此浏览器暂时无法保存模型设置；当前配置和 API Key 会在刷新或关闭页面后丢失。启用网站本地存储后才能保留。');
+    warning.textContent = GIS.i18n && GIS.i18n.t
+      ? GIS.i18n.t('settings.provider-storage-warning', warning.getAttribute('data-i18n-zh'))
+      : warning.getAttribute('data-i18n-zh');
+    host.insertBefore(warning, host.firstChild);
   }
 
   async function testProviderRow(id, btn) {
@@ -530,17 +553,47 @@ window.GIS = window.GIS || {};
   }
 
   function bindAmap() {
+    function amapText(key, fallback) {
+      return GIS.i18n && GIS.i18n.t ? GIS.i18n.t(key, fallback) : fallback;
+    }
     var input = document.getElementById('amapApiKeyInput');
-    if (input) input.addEventListener('change', function() { GIS.api.setAmapKey(this.value.trim()); });
     var saveBtn = document.getElementById('saveAmapKeyBtn');
     if (saveBtn) {
       saveBtn.addEventListener('click', function() {
         var key = (document.getElementById('amapApiKeyInput') || {}).value || '';
-        GIS.api.setAmapKey(key.trim());
+        var clearingKey = !key.trim();
+        saveBtn.disabled = true;
         var msg = document.getElementById('amapTestResult');
-        if (msg) { msg.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align:-2px;"><path d="M20 6L9 17l-5-5"/></svg> 已保存'; msg.className = 'modal-test-result modal-test-success'; }
-        setTimeout(function() { if (msg) { msg.textContent = ''; msg.className = 'modal-test-result'; } }, 2000);
-        updateAmapStatus();
+        if (msg) {
+          msg.textContent = clearingKey
+            ? amapText('settings.amap-clearing', '正在清除密钥…')
+            : amapText('settings.amap-saving', '正在加密保存…');
+          msg.className = 'modal-test-result';
+        }
+        GIS.api.setAmapKey(key.trim()).then(function() {
+          if (msg) {
+            msg.textContent = clearingKey
+              ? amapText('settings.amap-removed', '已从浏览器与本机凭据库删除')
+              : amapText('settings.amap-saved', '已保存到浏览器与本机加密凭据库');
+            msg.className = 'modal-test-result modal-test-success';
+          }
+          updateAmapStatus();
+        }).catch(function(error) {
+          if (msg) {
+            var failureMessage = clearingKey
+              ? amapText('settings.amap-remove-failed', '浏览器已清除，但后端凭据删除失败')
+              : amapText('settings.amap-sync-failed', '当前浏览器已保存，但后端加密同步失败');
+            var detail = error && error.message && error.message !== 'Failed to fetch'
+              ? String(error.message).trim()
+              : '';
+            msg.textContent = detail ? failureMessage + '：' + detail : failureMessage;
+            msg.className = 'modal-test-result modal-test-error';
+          }
+          updateAmapStatus();
+        }).finally(function() {
+          saveBtn.disabled = false;
+          setTimeout(function() { if (msg) { msg.textContent = ''; msg.className = 'modal-test-result'; } }, 3000);
+        });
       });
     }
     var toggleBtn = document.getElementById('toggleAmapKeyVis');
@@ -684,6 +737,7 @@ window.GIS = window.GIS || {};
     var picker = document.getElementById('modelPicker');
     if (!id) return;
     GIS.api.setSelectedModel(id);
+    syncProviderStorageWarning(document.getElementById('providerList'));
     // 同步隐藏 select（map.js/task.js 等仍读它的 value）
     syncModelOptions(id);
     var p = GIS.api.getProvider(id);
@@ -849,27 +903,11 @@ window.GIS = window.GIS || {};
     slider.addEventListener('input', function() { applyFontScale(parseInt(this.value, 10)); });
   }
 
-  // ============================================================
-  // 自动检测已配置 Provider 的连通性（静默，不打断）
-  // ============================================================
-
-  function autoDetectModelStatus() {
-    if (!GIS.api || !GIS.api.getProviders) {
-      setTimeout(autoDetectModelStatus, 1000);
-      return;
-    }
-    var providers = GIS.api.getProviders().filter(function(p) { return !!p.api_key; });
-    if (!providers.length) {
-      updateModelStatusDot();
-      return;
-    }
-    providers.forEach(function(p) {
-      var checkGeneration = beginProviderStatusCheck(p.id);
-      GIS.api.testProvider(p).then(function(res) {
-        finishProviderStatusCheck(p.id, checkGeneration, res.success ? 'online' : 'offline');
-      }).catch(function() {
-        finishProviderStatusCheck(p.id, checkGeneration, 'offline');
-      });
+  // 连通状态来自本次页面会话内的手动测速；重开页面后旧状态作废，不自动产生模型请求。
+  function resetProviderStatuses() {
+    if (!GIS.api || !GIS.api.getProviders || !GIS.api.setModelStatus) return;
+    GIS.api.getProviders().forEach(function(provider) {
+      GIS.api.setModelStatus(provider.id, 'untested');
     });
   }
 
