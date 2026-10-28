@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import os
+import json
+import math
 import sqlite3
 import time
 from contextlib import closing
@@ -19,6 +21,14 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 _DEFAULT_DB_PATH = os.path.join(_REPO_ROOT, "data", "gis_services.db")
 _SQL_QUERY_MAX_LENGTH = 10_000
 _SQL_QUERY_TIMEOUT_SECONDS = 5.0
+_SQL_QUERY_MAX_VALUE_BYTES = 1024 * 1024
+_SQL_QUERY_MAX_RESULT_BYTES = 8 * 1024 * 1024
+
+
+def _literal_contains_pattern(value: str) -> str:
+    """Build a SQLite LIKE pattern that treats user input literally."""
+    escaped = value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return f"%{escaped}%"
 
 
 def get_db_path() -> str:
@@ -104,23 +114,25 @@ def search_services(
     params = []
 
     if keyword:
-        kw = f"%{keyword.strip()}%"
+        kw = _literal_contains_pattern(keyword)
         conditions.append(
-            "(service_name LIKE ? OR data_description LIKE ? OR provider LIKE ? OR notes LIKE ? OR category LIKE ?)"
+            "(service_name LIKE ? ESCAPE '!' OR data_description LIKE ? ESCAPE '!' "
+            "OR provider LIKE ? ESCAPE '!' OR notes LIKE ? ESCAPE '!' OR category LIKE ? ESCAPE '!')"
         )
         params.extend([kw, kw, kw, kw, kw])
 
     if country:
-        conditions.append("(country LIKE ? OR region LIKE ?)")
-        params.extend([f"%{country.strip()}%", f"%{country.strip()}%"])
+        conditions.append("(country LIKE ? ESCAPE '!' OR region LIKE ? ESCAPE '!')")
+        country_pattern = _literal_contains_pattern(country)
+        params.extend([country_pattern, country_pattern])
 
     if protocol:
-        conditions.append("protocol LIKE ?")
-        params.append(f"%{protocol.strip()}%")
+        conditions.append("protocol LIKE ? ESCAPE '!'")
+        params.append(_literal_contains_pattern(protocol))
 
     if category:
-        conditions.append("category LIKE ?")
-        params.append(f"%{category.strip()}%")
+        conditions.append("category LIKE ? ESCAPE '!'")
+        params.append(_literal_contains_pattern(category))
 
     if is_free is not None:
         val = "是" if is_free else "否"
@@ -304,14 +316,38 @@ def query_sql(query: str) -> Dict[str, Any]:
     conn.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10_000)
     cur = conn.cursor()
     try:
+        conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _SQL_QUERY_MAX_VALUE_BYTES)
         cur.execute(clean_query)
-        rows = cur.fetchmany(101)
         columns = [desc[0] for desc in cur.description] if cur.description else []
-        results = [dict(zip(columns, r)) for r in rows[:100]]
+        results = []
+        result_bytes = 0
+        truncated = False
+        while len(results) < 101:
+            row = cur.fetchone()
+            if row is None:
+                break
+            if len(results) == 100:
+                truncated = True
+                break
+            item = {}
+            for column, value in zip(columns, row):
+                if isinstance(value, bytes):
+                    value = {"type": "blob", "bytes": len(value)}
+                elif isinstance(value, float) and not math.isfinite(value):
+                    value = "Infinity" if value > 0 else "-Infinity" if value < 0 else "NaN"
+                item[column] = value
+            row_bytes = len(json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            if result_bytes + row_bytes > _SQL_QUERY_MAX_RESULT_BYTES:
+                if not results:
+                    return {"error": "查询结果超过允许大小，请减少字段或缩小查询范围。"}
+                truncated = True
+                break
+            results.append(item)
+            result_bytes += row_bytes
         return {
             "row_count": len(results),
             "rows": results,
-            "truncated": len(rows) > 100,
+            "truncated": truncated,
         }
     except sqlite3.OperationalError as e:
         if "interrupt" in str(e).lower():

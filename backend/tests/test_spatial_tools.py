@@ -185,6 +185,9 @@ class TestSpatialBuffer:
     @pytest.mark.parametrize("coordinates,expected", [
         ([[179.9, 10.0], [-179.9, 10.0]], "跨越日期变更线"),
         ([[0.0, 85.0]], "超出 UTM 投影适用纬度"),
+        ([[-20.0, 0.0], [20.0, 0.0]], "超过 6° 经度"),
+        ([[999.0, 30.0]], "超出 WGS84 经纬度范围"),
+        ([[0.0, -91.0]], "超出 WGS84 经纬度范围"),
     ])
     def test_buffer_rejects_extents_outside_local_utm_domain(self, coordinates, expected):
         points = {"type": "FeatureCollection", "features": [
@@ -193,10 +196,14 @@ class TestSpatialBuffer:
             for index, coordinate in enumerate(coordinates)
         ]}
         _setup("edge_points", points)
+        _setup("edge_points_缓冲区", _SQUARE_A)
+        previous = _registered_layers["edge_points_缓冲区"]["geojson"]
 
         result = spatial_buffer.invoke({"layer_name": "edge_points", "distance": 1000, "unit": "m"})
 
+        assert result.startswith("缓冲区分析失败:")
         assert expected in result
+        assert _registered_layers["edge_points_缓冲区"]["geojson"] == previous
         assert not _pending_layers
 
 
@@ -766,6 +773,21 @@ class TestSpatialCluster:
         assert "仅支持 Point 点图层" in result
         assert _pending_layers == []
 
+    def test_metric_cluster_rejects_extents_outside_local_utm_domain(self):
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for index, coordinate in enumerate([[-20.0, 0.0], [20.0, 0.0]])
+        ]}
+        _setup("wide_points", points)
+
+        result = spatial_cluster.invoke({
+            "layer_name": "wide_points", "eps": 100, "min_samples": 2, "distance_unit": "m",
+        })
+
+        assert "超过 6° 经度" in result
+        assert _pending_layers == []
+
     @pytest.mark.parametrize("eps,min_samples", [
         (0, 2), (-0.1, 2), (float("nan"), 2), (float("inf"), 2), (0.01, 0),
     ])
@@ -1065,6 +1087,32 @@ _MULTI_RING = {
 }
 
 class TestMultiRingBuffer:
+    @pytest.mark.parametrize("coordinates,expected", [
+        ([[179.9, 10.0], [-179.9, 10.0]], "跨越日期变更线"),
+        ([[0.0, 85.0]], "超出 UTM 投影适用纬度"),
+        ([[-20.0, 0.0], [20.0, 0.0]], "超过 6° 经度"),
+        ([[999.0, 30.0]], "超出 WGS84 经纬度范围"),
+        ([[0.0, -91.0]], "超出 WGS84 经纬度范围"),
+    ])
+    def test_multi_ring_rejects_extents_outside_local_utm_domain(self, coordinates, expected):
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for index, coordinate in enumerate(coordinates)
+        ]}
+        _setup("edge_points", points)
+        _setup("edge_points_多环m", _SQUARE_A)
+        previous = _registered_layers["edge_points_多环m"]["geojson"]
+
+        result = spatial_multi_ring_buffer.invoke({
+            "layer_name": "edge_points", "distances": "100,200", "unit": "m",
+        })
+
+        assert result.startswith("多环缓冲区失败:")
+        assert expected in result
+        assert _registered_layers["edge_points_多环m"]["geojson"] == previous
+        assert not _pending_layers
+
     @pytest.mark.parametrize("unit", ["feet", "ft", "光年", ""])
     def test_unsupported_unit_creates_no_output(self, unit):
         _setup("pt", _MULTI_RING)
@@ -1151,12 +1199,50 @@ class TestMultiRingBuffer:
 
 
 class TestMoveFeatures:
+    @pytest.mark.parametrize("coordinates,expected", [
+        ([[179.9, 10.0], [-179.9, 10.0]], "跨越日期变更线"),
+        ([[0.0, 85.0]], "超出 UTM 投影适用纬度"),
+        ([[-20.0, 0.0], [20.0, 0.0]], "超过 6° 经度"),
+        ([[999.0, 30.0]], "超出 WGS84 经纬度范围"),
+        ([[0.0, -91.0]], "超出 WGS84 经纬度范围"),
+    ])
+    def test_move_rejects_extents_outside_local_utm_domain_without_mutating(self, coordinates, expected):
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for index, coordinate in enumerate(coordinates)
+        ]}
+        _setup("edge_points", points)
+        before = json.loads(json.dumps(_registered_layers["edge_points"]["geojson"]))
+
+        result = move_features.invoke({"layer_name": "edge_points", "dx": 100, "dy": 0, "unit": "m"})
+
+        assert result.startswith("移动要素失败:")
+        assert expected in result
+        assert _registered_layers["edge_points"]["geojson"] == before
+        assert not _pending_layers
+
     def test_move_basic_m(self):
         _setup("pts", _POINTS)
         r = move_features.invoke({"layer_name": "pts", "dx": 100, "dy": 100, "unit": "m"})
         assert "已移动" in r
         assert "pts" in r
         assert "3" in r
+
+    def test_move_km_result_reports_requested_distance_not_internal_meters(self):
+        _setup("km_point", {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Point", "coordinates": [116.4, 39.9]},
+        }]})
+
+        result = move_features.invoke({"layer_name": "km_point", "dx": 1, "dy": 0, "unit": "km"})
+        coordinates = _registered_layers["km_point"]["geojson"]["features"][0]["geometry"]["coordinates"]
+        from pyproj import Geod
+        distance_m = Geod(ellps="WGS84").inv(116.4, 39.9, *coordinates)[2]
+
+        assert "（1.0km, 0.0km）" in result
+        assert "1000km" not in result
+        assert distance_m == pytest.approx(1000, abs=1)
 
 
 
@@ -1665,7 +1751,7 @@ class TestHydrology:
         assert flowdir_name in _registered_layers
         raster_info = _registered_layers[flowdir_name]["raster"]
         assert raster_info["source_layer"] == source_name
-        assert "D8 direction code" in raster_info["value_units"]
+        assert "D8 raster-neighbor code" in raster_info["value_units"]
         assert raster_info["crs"] == "EPSG:4326"
         assert "未经外部水文基准验证" in " ".join(raster_info["quality_warnings"])
         assert len(T._pending_layer_ops) == 1

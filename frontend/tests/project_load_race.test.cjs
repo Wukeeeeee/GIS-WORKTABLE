@@ -13,6 +13,8 @@ function deferred() {
 
 test('a late response from an older project load cannot replace the most recently requested project', async () => {
   const requests = new Map();
+  let serverGeneration = 0;
+  let backendActiveProject = null;
   const restoredMessages = [];
   const mapViews = [];
   const capsule = { textContent: '' };
@@ -28,7 +30,16 @@ test('a late response from an older project load cannot replace the most recentl
     },
   };
   const window = { GIS: {
-    api: { loadProject(id) { const req = deferred(); requests.set(id, req); return req.promise; } },
+    api: { loadProject(id) {
+      const generation = ++serverGeneration;
+      const req = deferred();
+      requests.set(id, req);
+      return req.promise.then(payload => {
+        if (generation !== serverGeneration) throw new Error('superseded project load');
+        backendActiveProject = id;
+        return payload;
+      });
+    } },
     chat: {
       clear() { restoredMessages.length = 0; },
       addMessage(message) { restoredMessages.push(message); },
@@ -43,12 +54,14 @@ test('a late response from an older project load cannot replace the most recentl
 
   const oldLoad = window.GIS.project.loadProject('old-project');
   const latestLoad = window.GIS.project.loadProject('latest-project');
+  await new Promise(resolve => setImmediate(resolve));
   requests.get('latest-project').resolve({ id: 'latest-project', name: '最新工程', messages: [], layers: [], mapState: { lat: 40, lng: -74, zoom: 8 } });
   assert.equal(await latestLoad, true);
   requests.get('old-project').resolve({ id: 'old-project', name: '旧工程', messages: [], layers: [], mapState: { lat: 10, lng: 20, zoom: 4 } });
   assert.equal(await oldLoad, false);
 
   assert.equal(window.GIS.project.getCurrentProjectId(), 'latest-project');
+  assert.equal(backendActiveProject, 'latest-project');
   assert.match(window.GIS.project.getCurrentSessionId(), /latest-project/);
   assert.equal(capsule.textContent, '最新工程');
   assert.equal(mapViews.length, 1);
@@ -57,6 +70,170 @@ test('a late response from an older project load cannot replace the most recentl
   assert.equal(mapViews[0].zoom, 8);
   assert.ok(restoredMessages.some(message => message.includes('最新工程')));
   assert.equal(restoredMessages.some(message => message.includes('旧工程')), false);
+});
+
+test('requesting a project switch cancels the active chat before loading its state', async () => {
+  const pending = deferred();
+  const events = [];
+  const window = { GIS: {
+    api: { loadProject() { events.push('load'); return pending.promise; } },
+    chat: {
+      cancelActiveRequest() { events.push('cancel'); },
+      clear() {},
+      addMessage() {},
+    },
+    map: { clearAll() {} },
+    workspace: { renderRecentProjects() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  const loading = window.GIS.project.loadProject('next-project');
+  assert.equal(events.join(','), 'cancel,load');
+  pending.resolve({ id: 'next-project', name: '新工程', messages: [], layers: [], mapState: {} });
+  assert.equal(await loading, true);
+});
+
+test('a newer project request supersedes an older load waiting for chat cancellation', async () => {
+  const cancellation = deferred();
+  const loads = [];
+  let firstCancel = true;
+  const window = { GIS: {
+    api: { loadProject(id) {
+      loads.push(id);
+      return Promise.resolve({ id, name: id, messages: [], layers: [], mapState: {} });
+    } },
+    chat: {
+      cancelActiveRequest() {
+        if (firstCancel) {
+          firstCancel = false;
+          return cancellation.promise;
+        }
+        return Promise.resolve(true);
+      },
+      clear() {},
+      addMessage() {},
+    },
+    map: { clearAll() {} },
+    workspace: { renderRecentProjects() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  const oldLoad = window.GIS.project.loadProject('old-project');
+  const latestLoad = window.GIS.project.loadProject('latest-project');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(loads.join(','), 'latest-project');
+  assert.equal(await latestLoad, true);
+  cancellation.resolve(true);
+  assert.equal(await oldLoad, false);
+  assert.equal(loads.join(','), 'latest-project');
+});
+
+test('a project is not opened when the active chat cancellation cannot be confirmed', async () => {
+  let loadCalls = 0;
+  const messages = [];
+  const window = { GIS: {
+    api: { loadProject() { loadCalls++; return Promise.resolve({ id: 'unsafe' }); } },
+    chat: {
+      cancelActiveRequest() { return Promise.resolve(false); },
+      clear() {},
+      addMessage(message) { messages.push(message); },
+    },
+    map: { clearAll() {} },
+    workspace: { renderRecentProjects() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  assert.equal(await window.GIS.project.loadProject('unsafe'), false);
+  assert.equal(loadCalls, 0);
+  assert.equal(window.GIS.project.getCurrentProjectId(), null);
+  assert.ok(messages.some(message => message.includes('未切换工程')));
+  assert.equal(messages.length, 1);
+});
+
+test('deleting the current project waits for active chat cancellation', async () => {
+  const cancellation = deferred();
+  const events = [];
+  const messages = [];
+  let active = true;
+  const window = { GIS: {
+    api: {
+      deleteProject() { events.push('delete'); return Promise.resolve({}); },
+      listProjects() { return Promise.resolve({ projects: [] }); },
+    },
+    chat: {
+      cancelActiveRequest() {
+        if (!active) return false;
+        active = false;
+        events.push('cancel');
+        return cancellation.promise;
+      },
+      clear() {},
+      addMessage(message) { messages.push(message); },
+    },
+    map: { clearAll() {} },
+    workspace: { renderRecentProjects() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  const source = fs.readFileSync(sourcePath, 'utf8').replace(
+    'loadProject: _loadProject,', 'loadProject: _loadProject, _deleteProject: _deleteProject,',
+  );
+  vm.runInNewContext(source, {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  window.GIS.project.setCurrentProjectId('active-project');
+  window.GIS.project._deleteProject('active-project', null);
+  assert.equal(events.join(','), 'cancel');
+  cancellation.resolve(true);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(events.join(','), 'cancel,delete');
+  assert.equal(window.GIS.project.getCurrentProjectId(), null);
+  assert.equal(messages.length, 0);
+});
+
+test('current project deletion is blocked when active chat cancellation fails', async () => {
+  let deleteCalls = 0;
+  const messages = [];
+  const window = { GIS: {
+    api: { deleteProject() { deleteCalls++; return Promise.resolve({}); } },
+    chat: {
+      cancelActiveRequest() { return Promise.resolve(false); },
+      clear() {},
+      addMessage(message) { messages.push(message); },
+    },
+    map: { clearAll() {} },
+    workspace: { renderRecentProjects() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  const source = fs.readFileSync(sourcePath, 'utf8').replace(
+    'loadProject: _loadProject,', 'loadProject: _loadProject, _deleteProject: _deleteProject,',
+  );
+  vm.runInNewContext(source, {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  window.GIS.project.setCurrentProjectId('active-project');
+  window.GIS.project._deleteProject('active-project', null);
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(deleteCalls, 0);
+  assert.equal(window.GIS.project.getCurrentProjectId(), 'active-project');
+  assert.ok(messages.some(message => message.includes('无法确认当前任务已停止')));
 });
 
 test('loading a project renders project names and saved user messages as text', async () => {
@@ -141,6 +318,38 @@ test('project restore skips malformed saved messages and layer rows while restor
   assert.equal(restoredLayers[0].filename, '可恢复图层');
   assert.ok(messages.some(item => item.type === 'system' && item.message.includes('4 条格式异常')));
   assert.ok(messages.some(item => item.type === 'system' && item.message.includes('1 个图层未能注册到分析工具')));
+});
+
+test('project restore does not render vector layers rejected by backend registration', async () => {
+  const restoredLayers = [];
+  const renderedNames = [];
+  const messages = [];
+  const payload = {
+    id: 'invalid-coordinate-project', name: '坐标异常工程', messages: [], mapState: {},
+    registration_warnings: ['坏坐标'],
+    layers: [
+      { name: '坏坐标', geojson: { type: 'FeatureCollection', features: [
+        { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [0, 100] } },
+      ] } },
+      { name: '正常图层', geojson: { type: 'FeatureCollection', features: [] } },
+    ],
+  };
+  const window = { GIS: {
+    api: { loadProject() { return Promise.resolve(payload); } },
+    chat: { clear() {}, addMessage(message, type) { messages.push({ message, type }); } },
+    map: { clearAll() {}, loadGeoJSON(_geojson, name) { renderedNames.push(name); return {}; } },
+    layers: { clearAll() {}, setGroupState() {}, addLayer(layer) { restoredLayers.push(layer); }, syncLayerOrder() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON, Set,
+  }, { filename: sourcePath });
+
+  assert.equal(await window.GIS.project.loadProject(payload.id), true);
+  assert.deepEqual(renderedNames, ['project_invalid-coordinate-project_layer_1']);
+  assert.deepEqual(restoredLayers.map(layer => layer.filename), ['正常图层']);
+  assert.ok(messages.some(item => item.type === 'system' && item.message.includes('坏坐标')));
 });
 
 test('restoring legacy same-name layers without IDs delegates unique ID creation to the layer registry', async () => {
@@ -258,7 +467,7 @@ test('autosave sends stable layer IDs alongside names and display state', async 
     names: ['registered', 'raw', 'display'],
     groupId: 'group_2', visible: false,
     symbology: null,
-    name: 'display', raster: null,
+    name: 'display', raster: null, labels: null, order: 0,
   }]);
 });
 
@@ -316,6 +525,30 @@ test('project restore forwards saved layer style and provenance to the layer reg
   assert.deepEqual({ ...addedLayers[0].provenance }, { provider_name: 'OpenStreetMap', crs: 'EPSG:4326' });
   assert.equal(addedLayers[0].opacity, 0.6);
   assert.deepEqual(opacities, [['project_styled-project_layer_0', 0.6]]);
+});
+
+test('project restore reapplies a saved vector label configuration', async () => {
+  const labels = [];
+  const payload = {
+    id: 'labeled-project', name: '标注工程', messages: [], mapState: {},
+    layers: [{ layer_id: 'labeled-layer', name: '行政区',
+      labels: { field: 'district', fontSize: 14, color: '#223344' },
+      geojson: { type: 'FeatureCollection', features: [] } }],
+  };
+  const window = { GIS: {
+    api: { loadProject() { return Promise.resolve(payload); } },
+    chat: { clear() {}, addMessage() {} },
+    map: { clearAll() {}, loadGeoJSON() {}, setLabels(...args) { labels.push(args); return true; } },
+    layers: { setGroupState() {}, clearAll() {}, addLayer() {}, syncLayerOrder() {} },
+  } };
+  const document = { getElementById() { return null; } };
+  const sourcePath = path.resolve(__dirname, '../js/project.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+  }, { filename: sourcePath });
+
+  assert.equal(await window.GIS.project.loadProject('labeled-project'), true);
+  assert.deepEqual(labels, [['project_labeled-project_layer_0', 'district', 14, '#223344']]);
 });
 
 test('project restore recreates saved raster overlays and their layer-panel visibility', async () => {

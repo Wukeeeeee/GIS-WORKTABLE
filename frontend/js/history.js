@@ -265,19 +265,51 @@
         if (l.layer_id) GIS.layers.removeLayer(l.layer_id);
       });
     }
+    var hasVectorLayerChanges = false;
     (result.layers || []).forEach(function (layer, idx) {
       if (!window.GIS.state) return;
+      var layerName = layer.name || '图层';
+      var registryName = layer.registry_name || layerName;
+      var geojson = layer.geojson || layer;
+      var existingLayer = GIS.layers && GIS.layers.getLayers
+        ? GIS.layers.getLayers().find(function (item) {
+          return item._registeredName === registryName || item._rawName === layerName || item.filename === layerName;
+        }) : null;
+      if (existingLayer && GIS.layers.syncLayerData) {
+        existingLayer._registeredName = registryName;
+        if (layer.registration_token) {
+          var tokens = existingLayer._registrationTokens || (existingLayer._registrationTokens = Object.create(null));
+          tokens[registryName] = layer.registration_token;
+        }
+        var mapName = existingLayer._rawName || existingLayer.layer_id;
+        if (GIS.map && GIS.map.loadGeoJSON) {
+          GIS.map.loadGeoJSON(geojson, mapName, existingLayer.style || layer.style || {}, { fitBounds: false });
+        }
+        GIS.layers.syncLayerData(existingLayer.layer_id, geojson);
+        hasVectorLayerChanges = true;
+        return;
+      }
       window.GIS.state.addLayer({
         layer_id: 'rerun_' + Date.now() + '_' + idx,
-        name: (layer.name || '图层') + '_' + Date.now() + '_' + idx,
-        geojson: layer.geojson || layer,
+        name: layerName + '_' + Date.now() + '_' + idx,
+        geojson: geojson,
         style: layer.style || null,
         source: 'ai',
+        registry_name: layer.registry_name || null,
+        registration_token: layer.registration_token || null,
       });
+      hasVectorLayerChanges = true;
     });
     (result.layer_ops || []).forEach(function (op) {
       if (!GIS.map) return;
       switch (op.action) {
+        case 'dem_result':
+          // Keep raster rendering, registry-token updates, and project autosave
+          // aligned with the normal chat result path.
+          if (GIS.chat && typeof GIS.chat.applyToolResult === 'function') {
+            GIS.chat.applyToolResult({ layer_ops: [op] });
+          }
+          break;
         case 'swipe':
           if (GIS.map.startSwipe) GIS.map.startSwipe(op.left, op.right, op.orientation);
           break;
@@ -298,6 +330,9 @@
           break;
       }
     });
+    if (hasVectorLayerChanges && GIS.project && typeof GIS.project.autoSave === 'function') {
+      GIS.project.autoSave();
+    }
     if (GIS.chat && GIS.chat.addMessage) {
       GIS.chat.addMessage(result.response || '重跑完成', 'system');
     }

@@ -112,6 +112,18 @@ def test_push_layer_clean_no_warnings():
     assert get_pending_state()["qa_warnings"] == []
 
 
+def test_replacing_pending_layer_replaces_its_quality_warnings():
+    reset_state()
+    _push_layer("同名层", _fc(_point(88.0, 116.4)))
+    _push_layer("同名层", _fc(_point(116.4, 39.9)))
+
+    state = get_pending_state()
+
+    assert len(state["layers"]) == 1
+    assert state["layers"][0]["geojson"]["features"][0]["geometry"]["coordinates"] == [116.4, 39.9]
+    assert state["qa_warnings"] == []
+
+
 def test_qa_never_raises():
     """质量自检永不阻塞出图：各种畸形输入都不抛异常"""
     assert qa_check(None) == []

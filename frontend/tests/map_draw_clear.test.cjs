@@ -60,16 +60,18 @@ function createHarness() {
     eachLayer(callback) { this.layers.slice().forEach(callback); }
     getLayers() { return this.layers.slice(); }
     addLayer(layer) { this.layers.push(layer); }
+    removeLayer(layer) { this.layers = this.layers.filter(current => current !== layer); }
   }
   const drawState = { enabled: 0, disabled: 0 };
   function DrawTool() {}
   DrawTool.prototype.enable = function() { drawState.enabled++; };
   DrawTool.prototype.disable = function() { drawState.disabled++; };
   class TileLayer { addTo(target) { target.addLayer(this); return this; } }
+  class Marker {}
   class Canvas {}
   Canvas.extend = function() { return class extends Canvas {}; };
   const L = {
-    Canvas, TileLayer, FeatureGroup,
+    Canvas, TileLayer, FeatureGroup, Marker,
     Draw: { Event: { CREATED: 'draw:created', DELETED: 'draw:deleted' }, Polygon: DrawTool,
       Rectangle: DrawTool, Circle: DrawTool, Polyline: DrawTool, Marker: DrawTool },
     map() { return map; },
@@ -93,7 +95,8 @@ function createHarness() {
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   window.GIS.map.init(mapElement);
   const clickTool = button => toolbar.listeners.click[0]({ target: { closest(selector) { return selector === '.map-draw-btn' ? button : null; } } });
-  return { mapApi: window.GIS.map, map, mapElement, toolbar, drawButtons, drawnItems: mapLayers.find(layer => layer instanceof FeatureGroup), drawState, clickTool };
+  return { window, mapApi: window.GIS.map, map, mapElement, toolbar, drawButtons,
+    drawnItems: mapLayers.find(layer => layer instanceof FeatureGroup), drawState, clickTool };
 }
 
 test('clear map exits delete mode and cancels an active drawing handler', () => {
@@ -124,6 +127,67 @@ test('clear map exits feature-info mode so the next drawn feature is not interce
   assert.equal(h.drawnItems.handlers.click, undefined);
   assert.equal(h.mapElement.style.cursor, '');
   assert.equal(h.drawButtons[2].classList.contains('active'), false);
+});
+
+test('newly drawn layers use the panel registration path exactly once', () => {
+  const h = createHarness();
+  let registrations = 0;
+  h.window.GIS.layers = { addLayer() { registrations++; } };
+  h.window.GIS.api = { BASE_URL: '/api', registerLayer() { registrations++; } };
+  h.map.handlers['draw:created']({ layer: { toGeoJSON() {
+    return { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [120, 30] } };
+  } } });
+
+  assert.equal(registrations, 1);
+});
+
+test('drawing into an existing layer uses versioned layer synchronization', () => {
+  const h = createHarness();
+  let syncCalls = 0;
+  let directRegistrations = 0;
+  const target = { layer_id: 'target', filename: 'Target', _rawName: 'Target',
+    geojson: { type: 'FeatureCollection', features: [] }, color: '#123456' };
+  h.window._drawingTargetLayerId = 'target';
+  h.window.GIS.map.loadGeoJSON = () => {};
+  h.window.GIS.layers = {
+    getLayers() { return [target]; },
+    renderList() {},
+    syncLayerData(layerId, geojson) {
+      assert.equal(layerId, 'target');
+      assert.equal(geojson, target.geojson);
+      syncCalls++;
+      return Promise.resolve(true);
+    },
+  };
+  h.window.GIS.api = { registerLayer() { directRegistrations++; } };
+  h.map.handlers['draw:created']({ layer: { toGeoJSON() {
+    return { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [120, 30] } };
+  } } });
+
+  assert.equal(target.geojson.features.length, 1);
+  assert.equal(syncCalls, 1);
+  assert.equal(directRegistrations, 0);
+});
+
+test('deleting a layer removes features drawn into it from the Leaflet draw group', () => {
+  const h = createHarness();
+  const target = { layer_id: 'target', filename: 'Target', _rawName: 'Target',
+    geojson: { type: 'FeatureCollection', features: [] }, color: '#123456' };
+  h.window._drawingTargetLayerId = 'target';
+  h.window.GIS.map.loadGeoJSON = () => {};
+  h.window.GIS.layers = {
+    getLayers() { return [target]; },
+    renderList() {},
+    syncLayerData() { return Promise.resolve(true); },
+  };
+  h.map.handlers['draw:created']({ layer: { toGeoJSON() {
+    return { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [120, 30] } };
+  } } });
+
+  assert.equal(h.drawnItems.getLayers().length, 1);
+  h.mapApi.removeLayer('Target');
+
+  assert.equal(h.drawnItems.getLayers().length, 0);
 });
 
 test('coordinate readout accepts Tahiti coordinates and distinguishes the Mercator edge', () => {

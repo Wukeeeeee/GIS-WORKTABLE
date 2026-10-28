@@ -246,6 +246,9 @@ var _undoSkip = false;
         if (window._drawingTargetLayerId && window.GIS && window.GIS.layers) {
           var targetLayerObj = window.GIS.layers.getLayers().find(function(l) { return l.layer_id === window._drawingTargetLayerId; });
           if (targetLayerObj && targetLayerObj.geojson) {
+            // removeLayer uses this identity to remove the drawn copy together
+            // with the rendered collection when the owning layer is deleted.
+            layer._name = targetLayerObj._rawName || targetLayerObj.layer_id;
             var targetGj = targetLayerObj.geojson;
             if (targetGj.type !== 'FeatureCollection') {
               targetGj = { type: 'FeatureCollection', features: [targetGj] };
@@ -262,8 +265,8 @@ var _undoSkip = false;
               GIS.map.loadGeoJSON(targetGj, layerName, { color: targetLayerObj.color });
             }
             window.GIS.layers.renderList();
-            if (window.GIS.api && window.GIS.api.registerLayer) {
-              window.GIS.api.registerLayer(targetLayerObj.filename || layerName, targetGj);
+            if (window.GIS.layers && typeof window.GIS.layers.syncLayerData === 'function') {
+              window.GIS.layers.syncLayerData(targetLayerObj.layer_id, targetGj);
             }
             if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
               window.GIS.chat.addMessage('已向图层「' + (targetLayerObj.filename || '集合') + '」添加第 ' + targetGj.features.length + ' 个要素', 'system', { pill: true });
@@ -277,13 +280,6 @@ var _undoSkip = false;
               layer_id: name, name: name, filename: name, checked: true,
               geojson: geojson, source: '绘制'
             });
-          }
-          if (window.GIS && window.GIS.api && window.GIS.api.BASE_URL) {
-            fetch(window.GIS.api.BASE_URL + '/api/layer/register', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: name, geojson: geojson }),
-            }).catch(function(e) { console.warn('图层注册到后端失败:', e); });
           }
         }
         // 连续绘制：如果绘制按钮仍高亮，自动重新启用同款工具
@@ -531,118 +527,134 @@ var _undoSkip = false;
     style = style || {};
     options = options || {};
 
-    if (layers[name]) mapInstance.removeLayer(layers[name]);
+    var previousLayer = layers[name];
+    var previousFeatureMap = _featureMap;
+    // Stage the feature index so a renderer failure cannot discard the working layer's entries.
+    _featureMap = Object.assign({}, previousFeatureMap);
 
-    var defaultStyle = { color: '#1c1b1b', weight: 2, fillColor: '#1c1b1b', fillOpacity: 0.1 };
-    var mergedStyle = Object.assign({}, defaultStyle, style);
-    if (style.color && !style.fillColor) mergedStyle.fillColor = style.color;
-
-    // 调试：检查 GeoJSON 是否有效
-    var featCount = geojson.type === 'FeatureCollection' ? (geojson.features || []).length : 1;
-    var firstCoord = null;
-    try {
-      if (geojson.type === 'FeatureCollection' && geojson.features && geojson.features[0] && geojson.features[0].geometry) {
-        firstCoord = JSON.stringify(geojson.features[0].geometry.coordinates);
-      } else if (geojson.geometry) {
-        firstCoord = JSON.stringify(geojson.geometry.coordinates);
-      }
-    } catch(e) {}
-    console.log('[GIS Map] 加载图层:', name, '要素:', featCount, '首坐标:', firstCoord);
-
-    // 要素映射：清除该图层旧的映射
-    Object.keys(_featureMap).forEach(function(k) {
-      if (k.startsWith(name + ':')) delete _featureMap[k];
-    });
-
-    var features = (geojson.type === 'FeatureCollection' ? geojson.features : [geojson]);
-    for (var fi = 0; fi < features.length; fi++) {
-      features[fi]._featureIndex = fi;
-    }
-
-    var isLarge = featCount > 5000;
-
-    // 大数据使用 VectorGrid 瓦片渲染（Canvas + 按需加载，不生成 DOM 节点）
     var layer;
-    if (isLarge && typeof L.vectorGrid !== 'undefined') {
-      layer = L.vectorGrid.slicer(geojson, {
-        rendererFactory: L.canvas.tile,
-        vectorTileLayerStyles: {
-          sliced: function(properties, zoom, geometryDimension) {
-            if (geometryDimension === 1) return _pointStyle(style);
-            var w = zoom > 15 ? 3 : (zoom > 12 ? 2 : 1);
-            return { color: mergedStyle.color, weight: w, opacity: 0.8 };
-          },
-        },
-        maxZoom: 18,
-        minZoom: 4,
-        interactive: false,
+    try {
+      var defaultStyle = { color: '#1c1b1b', weight: 2, fillColor: '#1c1b1b', fillOpacity: 0.1 };
+      var mergedStyle = Object.assign({}, defaultStyle, style);
+      if (style.color && !style.fillColor) mergedStyle.fillColor = style.color;
+
+      // 调试：检查 GeoJSON 是否有效
+      var featCount = geojson.type === 'FeatureCollection' ? (geojson.features || []).length : 1;
+      var firstCoord = null;
+      try {
+        if (geojson.type === 'FeatureCollection' && geojson.features && geojson.features[0] && geojson.features[0].geometry) {
+          firstCoord = JSON.stringify(geojson.features[0].geometry.coordinates);
+        } else if (geojson.geometry) {
+          firstCoord = JSON.stringify(geojson.geometry.coordinates);
+        }
+      } catch(e) {}
+      console.log('[GIS Map] 加载图层:', name, '要素:', featCount, '首坐标:', firstCoord);
+
+      // 要素映射：在暂存索引中清除该图层旧的映射
+      Object.keys(_featureMap).forEach(function(k) {
+        if (k.startsWith(name + ':')) delete _featureMap[k];
       });
-      console.log('[GIS Map] 大数据模式(VectorGrid):', name, featCount, '个要素');
-    } else {
-      var useCanvasRenderer = featCount >= 1000 && typeof L.canvas === 'function';
-      var canvasRenderer = useCanvasRenderer ? L.canvas({ padding: 0.5 }) : undefined;
-      layer = L.geoJSON(geojson, {
-        renderer: canvasRenderer,
-        smoothFactor: 1.0,
-        style: function(feature) {
-          // 要素自带 color（如地铁官方线色）优先于图层级样式，保证同一图层内也能分色
-          var fc = feature && feature.properties && feature.properties.color;
-          if (_isPointFeature(feature)) {
-            return _pointStyle(fc ? Object.assign({}, style, { color: fc, fillColor: fc }) : style);
-          }
-          return fc ? Object.assign({}, mergedStyle, { color: fc, fillColor: fc }) : mergedStyle;
-        },
-        pointToLayer: function(feature, latlng) {
-          var fc = feature && feature.properties && feature.properties.color;
-          return L.circleMarker(latlng, _pointStyle(fc ? Object.assign({}, style, { color: fc, fillColor: fc }) : style));
-        },
-        coordsToLatLng: function(coords) {
-          var lng = coords[0], lat = coords[1];
-          if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) {
-            return L.latLng(lng, lat);
-          }
-          return L.latLng(lat, lng);
-        },
-        onEachFeature: featCount > 5000 ? null : function(feature, leafletLayer) {
-        var idx = typeof feature._featureIndex === 'number' ? feature._featureIndex : features.indexOf(feature);
-        if (idx === -1) return;
-        var key = name + ':' + idx;
-        _featureMap[key] = leafletLayer;
 
-        leafletLayer.on('click', function(e) {
-          // 选中回写共享状态（2D→3D 同步；_fid 由 gis_state 注入）
-          if (window.GIS && window.GIS.state) {
-            window.GIS.state.selectFeature(name, feature, '2d', idx);
-          }
-          // 选择要素工具未激活时不弹 popup（只保留高亮供检查器定位用）
-          if (!_featureInfoActive) return;
+      var features = (geojson.type === 'FeatureCollection' ? geojson.features : [geojson]);
+      var featureIndexes = new WeakMap();
+      for (var fi = 0; fi < features.length; fi++) {
+        if (features[fi] && typeof features[fi] === 'object') {
+          featureIndexes.set(features[fi], fi);
+        }
+      }
 
-          clearHighlight();
-          _highlightFeature(leafletLayer);
+      var isLarge = featCount > 5000;
 
-          var props = feature.properties || {};
-          var title = props.name || props.id || props.NAME || '要素 #' + (idx + 1);
-          var html = '<div class="feat-popup">';
-          html += '<strong>' + escapeHtml(String(title)) + '</strong>';
-          var count = 0;
-          for (var k in props) {
-            if (count++ >= 5) break;
-            var v = props[k];
-            html += '<div class="feat-popup-row">';
-            html += '<span>' + escapeHtml(k) + '</span>';
-            html += '<span>' + (v === null || v === undefined ? '' : escapeHtml(String(v))) + '</span>';
-            html += '</div>';
-          }
-          html += '<div class="feat-popup-footer">';
-          html += '<span class="feat-popup-idx">#' + (idx + 1) + ' / ' + features.length + '</span>';
-          html += '<span style="color:var(--ui-gray-300);font-size:10px;">' + escapeHtml(name) + '</span>';
-          html += '</div></div>';
-          leafletLayer.bindPopup(html, { className: 'feat-popup-wrap', closeButton: true, maxWidth: 300, offset: L.point(0, -8) }).openPopup();
+      // 大数据使用 VectorGrid 瓦片渲染（Canvas + 按需加载，不生成 DOM 节点）
+      if (isLarge && typeof L.vectorGrid !== 'undefined') {
+        layer = L.vectorGrid.slicer(geojson, {
+          rendererFactory: L.canvas.tile,
+          vectorTileLayerStyles: {
+            sliced: function(properties, zoom, geometryDimension) {
+              if (geometryDimension === 1) return _pointStyle(style);
+              var w = zoom > 15 ? 3 : (zoom > 12 ? 2 : 1);
+              return { color: mergedStyle.color, weight: w, opacity: 0.8 };
+            },
+          },
+          maxZoom: 18,
+          minZoom: 4,
+          interactive: false,
         });
-      },
-    });
-  }
-  layer.addTo(mapInstance);
+        console.log('[GIS Map] 大数据模式(VectorGrid):', name, featCount, '个要素');
+      } else {
+        var useCanvasRenderer = featCount >= 1000 && typeof L.canvas === 'function';
+        var canvasRenderer = useCanvasRenderer ? L.canvas({ padding: 0.5 }) : undefined;
+        layer = L.geoJSON(geojson, {
+          renderer: canvasRenderer,
+          smoothFactor: 1.0,
+          style: function(feature) {
+            // 要素自带 color（如地铁官方线色）优先于图层级样式，保证同一图层内也能分色
+            var fc = feature && feature.properties && feature.properties.color;
+            if (_isPointFeature(feature)) {
+              return _pointStyle(fc ? Object.assign({}, style, { color: fc, fillColor: fc }) : style);
+            }
+            return fc ? Object.assign({}, mergedStyle, { color: fc, fillColor: fc }) : mergedStyle;
+          },
+          pointToLayer: function(feature, latlng) {
+            var fc = feature && feature.properties && feature.properties.color;
+            return L.circleMarker(latlng, _pointStyle(fc ? Object.assign({}, style, { color: fc, fillColor: fc }) : style));
+          },
+          coordsToLatLng: function(coords) {
+            var lng = coords[0], lat = coords[1];
+            if (Math.abs(lat) > 90 && Math.abs(lng) <= 90) {
+              return L.latLng(lng, lat);
+            }
+            return L.latLng(lat, lng);
+          },
+          onEachFeature: featCount > 5000 ? null : function(feature, leafletLayer) {
+          var idx = feature && typeof feature === 'object' && featureIndexes.has(feature)
+            ? featureIndexes.get(feature) : features.indexOf(feature);
+          if (idx === -1) return;
+          var key = name + ':' + idx;
+          _featureMap[key] = leafletLayer;
+
+          leafletLayer.on('click', function(e) {
+            // 选中回写共享状态（2D→3D 同步；_fid 由 gis_state 注入）
+            if (window.GIS && window.GIS.state) {
+              window.GIS.state.selectFeature(name, feature, '2d', idx);
+            }
+            // 选择要素工具未激活时不弹 popup（只保留高亮供检查器定位用）
+            if (!_featureInfoActive) return;
+
+            clearHighlight();
+            _highlightFeature(leafletLayer);
+
+            var props = feature.properties || {};
+            var title = props.name || props.id || props.NAME || '要素 #' + (idx + 1);
+            var html = '<div class="feat-popup">';
+            html += '<strong>' + escapeHtml(String(title)) + '</strong>';
+            var count = 0;
+            for (var k in props) {
+              if (count++ >= 5) break;
+              var v = props[k];
+              html += '<div class="feat-popup-row">';
+              html += '<span>' + escapeHtml(k) + '</span>';
+              html += '<span>' + (v === null || v === undefined ? '' : escapeHtml(String(v))) + '</span>';
+              html += '</div>';
+            }
+            html += '<div class="feat-popup-footer">';
+            html += '<span class="feat-popup-idx">#' + (idx + 1) + ' / ' + features.length + '</span>';
+            html += '<span style="color:var(--ui-gray-300);font-size:10px;">' + escapeHtml(name) + '</span>';
+            html += '</div></div>';
+            leafletLayer.bindPopup(html, { className: 'feat-popup-wrap', closeButton: true, maxWidth: 300, offset: L.point(0, -8) }).openPopup();
+          });
+        },
+      });
+    }
+    layer.addTo(mapInstance);
+    if (previousLayer) _removeMapLayerObject(previousLayer);
+    } catch (error) {
+      _featureMap = previousFeatureMap;
+      if (layer) {
+        try { mapInstance.removeLayer(layer); } catch (_cleanupError) {}
+      }
+      throw error;
+    }
   layers[name] = layer;
   geoStore[name] = { geojson: geojson, style: style };
   // 自动缩放到图层范围
@@ -652,6 +664,29 @@ var _undoSkip = false;
     } catch(e) {}
   }
   return layer;
+  }
+
+  function _removeMapLayerObject(layer) {
+    if (!layer) return;
+    mapInstance.removeLayer(layer);
+    var aliases = Object.keys(layers).filter(function(key) { return layers[key] === layer; });
+    Object.keys(_rasterLayers).forEach(function(key) {
+      if (_rasterLayers[key] === layer) delete _rasterLayers[key];
+    });
+    aliases.forEach(function(key) {
+      delete layers[key];
+      delete geoStore[key];
+    });
+    Object.keys(_featureMap).forEach(function(key) {
+      if (aliases.some(function(name) { return key.startsWith(name + ':'); })) delete _featureMap[key];
+    });
+  }
+
+  function _removeRasterOverlay(name) {
+    var rasterLayer = _rasterLayers[name];
+    if (!rasterLayer) return false;
+    _removeMapLayerObject(rasterLayer);
+    return true;
   }
 
   function removeLayer(name) {
@@ -665,9 +700,7 @@ var _undoSkip = false;
       mapInstance.off('zoomend', layers[name]._zoomHandler);
       delete layers[name]._zoomHandler;
     }
-    if (_rasterLayers[name]) {
-      mapInstance.removeLayer(_rasterLayers[name]);
-      delete _rasterLayers[name];
+    if (_removeRasterOverlay(name)) {
       delete layers[name];
       return;
     }
@@ -1461,10 +1494,8 @@ var _undoSkip = false;
       GIS.map.loadGeoJSON(layer.geojson, layer._rawName || layer.name, layer.style || {}, { fitBounds: false });
       if (GIS.layers && GIS.layers.renderList) GIS.layers.renderList();
     }
-    if (layer && GIS.api && GIS.api.registerLayer) {
-      Promise.resolve(GIS.api.registerLayer(layer.name, layer.geojson)).catch(function(error) {
-        console.warn('地图右键点图层注册失败:', error);
-      });
+    if (layer && GIS.layers && typeof GIS.layers.syncLayerData === 'function') {
+      GIS.layers.syncLayerData(layer.layer_id, layer.geojson);
     }
   }
 
@@ -1939,16 +1970,9 @@ var _undoSkip = false;
   function addImageOverlay(url, bounds, name, layerId) {
     if (!mapInstance) return;
     // Prefer the stable layer id when a project restore or rerun uses a new display name.
-    var previous = _rasterLayers[name] || (layerId && _rasterLayers[layerId]);
-    if (previous) {
-      mapInstance.removeLayer(previous);
-      Object.keys(_rasterLayers).forEach(function(key) {
-        if (_rasterLayers[key] === previous) delete _rasterLayers[key];
-      });
-      Object.keys(layers).forEach(function(key) {
-        if (layers[key] === previous) delete layers[key];
-      });
-    }
+    var previous = _rasterLayers[name] || (layerId && _rasterLayers[layerId]) ||
+      layers[name] || (layerId && layers[layerId]);
+    if (previous) _removeMapLayerObject(previous);
     var southWest = L.latLng(bounds[1], bounds[0]);
     var northEast = L.latLng(bounds[3], bounds[2]);
     var imageBounds = L.latLngBounds(southWest, northEast);
@@ -1964,11 +1988,7 @@ var _undoSkip = false;
   }
 
   function removeRasterLayer(name) {
-    if (_rasterLayers[name]) {
-      mapInstance.removeLayer(_rasterLayers[name]);
-      delete _rasterLayers[name];
-      delete layers[name];
-    }
+    _removeRasterOverlay(name);
   }
 
   /** 在线 XYZ 瓦片图层 */

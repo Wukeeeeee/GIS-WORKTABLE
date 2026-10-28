@@ -225,6 +225,48 @@ def test_projected_dem_slope_normalizes_feet_elevation_to_metres(tmp_path):
     assert measured_slopes[1] == pytest.approx(measured_slopes[0], abs=0.15)
 
 
+def test_projected_dem_slope_uses_rotated_affine_basis(tmp_path):
+    """A known east-rising plane must retain its slope under affine rotation."""
+    import rasterio
+    from affine import Affine
+
+    n = 41
+    pixel = 30.0
+    angle = np.radians(30.0)
+    a = pixel * np.cos(angle)
+    b = pixel * np.sin(angle)
+    d = pixel * np.sin(angle)
+    e = -pixel * np.cos(angle)
+    center_easting, center_northing = 500_000.0, 4_180_000.0
+    transform = Affine(
+        a, b, center_easting - (a + b) * n / 2,
+        d, e, center_northing - (d + e) * n / 2,
+    )
+    rows, cols = np.mgrid[0:n, 0:n]
+    eastings = transform.c + a * (cols + 0.5) + b * (rows + 0.5)
+    values = ((eastings - center_easting) * np.tan(np.radians(10))).astype(np.float32)
+    path = os.path.join(str(tmp_path), "uploads", "rotated_plane.tif")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with rasterio.open(path, "w", driver="GTiff", height=n, width=n, count=1,
+                       dtype="float32", crs="EPSG:32611", transform=transform) as dst:
+        dst.write(values, 1)
+        dst.update_tags(VALUE_UNITS="m")
+
+    result = dem_analysis.invoke({"layer_name": "rotated_plane", "analysis": "slope"})
+
+    assert "坡度" in result, result
+    op = next(op for op in _pending_layer_ops if op.get("action") == "dem_result")
+    assert op["raster"]["pixel_size"] == pytest.approx([pixel, pixel])
+    with rasterio.open(T._find_uploaded_tif(op["layer_name"])) as slope:
+        measured = float(slope.read(1)[n // 2, n // 2])
+    assert measured == pytest.approx(10.0, abs=0.15)
+    from PIL import Image
+    with Image.open(os.path.join(str(tmp_path), "uploads", op["raster"]["filename"])) as preview:
+        rgba = np.asarray(preview.convert("RGBA"))
+    assert rgba[0, 0, 3] == 0, "rotated raster preview must leave outside-coverage pixels transparent"
+    assert rgba[:, :, 3].max() == 255
+
+
 def test_analysis_output_is_registered_as_reusable_geotiff(tmp_path):
     _make_cone(tmp_path)
     result = dem_analysis.invoke({"layer_name": "cone", "analysis": "slope"})

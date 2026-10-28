@@ -135,7 +135,7 @@ def test_inspect_gis_url_geojson(mock_geojson_data):
 
 
 def test_http_get_blocks_public_redirect_to_private_target(monkeypatch):
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda url: True)
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda url, timeout=None: True)
     redirect = _make_mock_response(headers={"Location": "http://127.0.0.1/admin"}, status_code=302)
     request = MagicMock(return_value=redirect)
     with patch("backend.services.url_gis_service.requests.Session.get", request):
@@ -146,7 +146,7 @@ def test_http_get_blocks_public_redirect_to_private_target(monkeypatch):
 
 
 def test_http_get_bypasses_configured_proxy_for_direct_private_source(monkeypatch):
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url: False)
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url, timeout=None: False)
     monkeypatch.setattr(ugs, "get_effective_proxies", lambda: {
         "http": "http://proxy.example:8080", "https": "http://proxy.example:8080",
     })
@@ -176,7 +176,7 @@ def test_url_gis_blocks_public_http_query_credentials_before_connect(monkeypatch
 
 
 def test_http_get_allows_user_direct_private_url_and_private_redirect(monkeypatch):
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url: False)
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url, timeout=None: False)
     redirect = _make_mock_response(headers={"Location": "http://10.0.0.8/data"}, status_code=302)
     final = _make_mock_response(json_data={"ok": True})
     request = MagicMock(side_effect=[redirect, final])
@@ -194,7 +194,7 @@ def test_http_get_blocks_private_redirect_chain_returning_from_public(monkeypatc
         "https://public.example/data": True,
         "http://10.0.0.8/admin": False,
     }
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda url: classifications[url])
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda url, timeout=None: classifications[url])
     monkeypatch.setattr(url_security, "is_public_http_target", lambda url: classifications[url])
     to_public = _make_mock_response(
         headers={"Location": "https://public.example/data"}, status_code=302
@@ -212,7 +212,7 @@ def test_http_get_blocks_private_redirect_chain_returning_from_public(monkeypatc
 
 def test_http_get_allows_public_redirect_to_public_target(monkeypatch):
     from backend.services import url_security
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url: True)
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url, timeout=None: True)
     monkeypatch.setattr(url_security, "is_public_http_target", lambda _url: True)
     redirect = _make_mock_response(headers={"Location": "/data.geojson"}, status_code=302)
     final = _make_mock_response(json_data={"type": "FeatureCollection", "features": []})
@@ -225,7 +225,7 @@ def test_http_get_allows_public_redirect_to_public_target(monkeypatch):
 def test_http_get_strips_sensitive_query_credentials_on_cross_origin_redirect(monkeypatch):
     from backend.services import url_security
 
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url: True)
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url, timeout=None: True)
     monkeypatch.setattr(url_security, "is_public_http_target", lambda _url: True)
     redirect = _make_mock_response(
         headers={
@@ -248,7 +248,7 @@ def test_http_get_strips_sensitive_query_credentials_on_cross_origin_redirect(mo
 def test_http_get_strips_sensitive_params_on_cross_origin_redirect(monkeypatch):
     from backend.services import url_security
 
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url: True)
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url, timeout=None: True)
     monkeypatch.setattr(url_security, "is_public_http_target", lambda _url: True)
     redirect = _make_mock_response(
         headers={"Location": "https://cdn.example/query?token=TOKEN_SENTINEL&f=json"},
@@ -268,7 +268,7 @@ def test_http_get_strips_sensitive_params_on_cross_origin_redirect(monkeypatch):
 def test_http_get_explains_auth_failure_after_stripping_cross_origin_credentials(monkeypatch):
     from backend.services import url_security
 
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url: True)
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url, timeout=None: True)
     monkeypatch.setattr(url_security, "is_public_http_target", lambda _url: True)
     redirect = _make_mock_response(
         headers={"Location": "https://cdn.example/data?token=TOKEN_SENTINEL"},
@@ -289,7 +289,7 @@ def test_http_get_explains_auth_failure_after_stripping_cross_origin_credentials
 def test_http_get_preserves_sensitive_query_credentials_on_same_origin_redirect(monkeypatch):
     from backend.services import url_security
 
-    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url: True)
+    monkeypatch.setattr(ugs, "is_public_http_target", lambda _url, timeout=None: True)
     monkeypatch.setattr(url_security, "is_public_http_target", lambda _url: True)
     redirect = _make_mock_response(
         headers={"Location": "/next?token=TOKEN_SENTINEL&format=geojson"},
@@ -334,6 +334,25 @@ def test_http_get_rejects_oversized_content_length_without_reading(monkeypatch):
         with pytest.raises(ugs.UrlGisError, match="远程 GIS 响应超过"):
             ugs._http_get("https://public.example/large.geojson")
     response.close.assert_called_once()
+
+
+def test_http_get_bounds_dns_checks_by_request_timeout(monkeypatch):
+    import socket
+    import time
+    from backend.services import url_security
+
+    def stalled_lookup(_host, port, type):
+        time.sleep(0.2)
+        raise socket.gaierror("simulated stalled DNS failure")
+
+    monkeypatch.setattr(url_security.socket, "getaddrinfo", stalled_lookup)
+    monkeypatch.setattr(ugs, "get_effective_proxies", lambda: {})
+    started = time.monotonic()
+    with pytest.raises(ugs.UrlGisError):
+        ugs._http_get("https://slow-dns.example/data", timeout=0.05)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.25
 
 
 def test_http_get_keeps_bounded_response_readable_after_closing_stream():
@@ -1031,6 +1050,47 @@ def test_arcgis_empty_full_query_creates_a_valid_empty_delivery(tmp_path, monkey
     assert result["completeness"] == "complete"
     assert result["bbox"] is None
     assert json.loads(open(result["file_path"], encoding="utf-8").read())["features"] == []
+
+
+def test_arcgis_full_fetch_honors_cancel_during_final_integrity_check(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(ugs, "_get_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(ugs, "inspect_gis_url", lambda _url: {
+        "service_type": "ArcGIS_REST_Layer", "layer_id": 0,
+    })
+    cancelled = threading.Event()
+    count_calls = 0
+
+    def response_for(_url, params=None, **_kwargs):
+        nonlocal count_calls
+        params = params or {}
+        if params.get("f") == "pjson":
+            return _make_mock_response(json_data={
+                "objectIdField": "OID", "maxRecordCount": 10,
+                "fields": [{"name": "OID", "type": "esriFieldTypeOID"}],
+                "spatialReference": {"wkid": 4326},
+            })
+        if params.get("returnCountOnly"):
+            count_calls += 1
+            if count_calls == 2:
+                cancelled.set()
+            return _make_mock_response(json_data={"count": 1})
+        if params.get("returnIdsOnly"):
+            return _make_mock_response(json_data={"objectIds": [1]})
+        return _make_mock_response(json_data={"features": [{
+            "type": "Feature", "geometry": {"type": "Point", "coordinates": [1, 1]},
+            "properties": {"OID": 1},
+        }]})
+
+    with patch("backend.services.url_gis_service._http_get", side_effect=response_for):
+        with pytest.raises(ugs.UrlGisError, match="用户取消"):
+            ugs.fetch_gis_data_url(
+                "https://example.test/FeatureServer/0", mode="full",
+                cancel_check=cancelled.is_set,
+            )
+
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_arcgis_batch_failure_keeps_partial_file_after_bounded_retry(tmp_path, monkeypatch):

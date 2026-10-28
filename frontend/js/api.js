@@ -567,50 +567,128 @@ window.GIS.api = (() => {
     const formData = new FormData();
     formData.append('file', file);
 
-    let res;
+    const controller = new AbortController();
+    const timeoutMs = 10 * 60 * 1000;
+    let timedOut = false;
+    const abortFromCaller = function() { controller.abort(); };
+    if (signal) {
+      if (signal.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+      signal.addEventListener('abort', abortFromCaller, { once: true });
+    }
+    const timeoutId = setTimeout(function() {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
     try {
       const query = requestId ? `?request_id=${encodeURIComponent(requestId)}` : '';
-      res = await fetch(`${BASE_URL}/api/upload${query}`, {
-        method: 'POST',
-        body: formData,
-        signal: signal || null,
-      });
-    } catch (error) {
-      if (error && error.name === 'AbortError') throw error;
-      const networkError = new Error(error && error.message || 'Upload connection failed');
-      networkError.code = 'UPLOAD_NETWORK_ERROR';
-      throw networkError;
-    }
-    
-    if (!res.ok) {
-      let message = '';
+      let res;
       try {
-        const body = await res.json();
-        message = typeof body.detail === 'string' ? body.detail
-          : (typeof body.error === 'string' ? body.error : '');
-      } catch (_) {}
-      const error = new Error(message || `Upload API error: ${res.status}`);
-      error.status = res.status;
-      if (res.status === 409) error.code = 'UPLOAD_PROCESSING';
-      throw error;
+        res = await fetch(`${BASE_URL}/api/upload${query}`, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          let message = '';
+          try {
+            const body = await res.json();
+            message = typeof body.detail === 'string' ? body.detail
+              : (typeof body.error === 'string' ? body.error : '');
+          } catch (_) {}
+          const error = new Error(message || `Upload API error: ${res.status}`);
+          error.status = res.status;
+          if (res.status === 409) error.code = 'UPLOAD_PROCESSING';
+          throw error;
+        }
+        return await res.json();
+      } catch (error) {
+        if (error && ((typeof error.code === 'string' && error.code) || Number.isFinite(error.status))) throw error;
+        if (signal && signal.aborted) throw error;
+          if (error && error.name === 'AbortError' && !timedOut) throw error;
+        const uploadError = new Error(timedOut ? 'Upload timed out' : (error && error.message || 'Upload connection failed'));
+        uploadError.code = timedOut ? 'UPLOAD_TIMEOUT' : 'UPLOAD_NETWORK_ERROR';
+        throw uploadError;
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener('abort', abortFromCaller);
     }
-    const data = await res.json();
-    return data;
   }
 
   async function getUploadStatus(requestId, signal) {
-    const res = await fetch(`${BASE_URL}/api/upload/status/${encodeURIComponent(requestId)}`, {
-      method: 'GET',
-      signal: signal || null,
-    });
-    if (!res.ok) {
-      let message = `HTTP ${res.status}`;
-      try { message = (await res.json()).detail || message; } catch (_) {}
-      const error = new Error(message);
-      error.status = res.status;
-      throw error;
+    const controller = new AbortController();
+    const timeoutMs = 5000;
+    let timedOut = false;
+    const abortFromCaller = function() { controller.abort(); };
+    if (signal) {
+      if (signal.aborted) throw new DOMException('Status check cancelled', 'AbortError');
+      signal.addEventListener('abort', abortFromCaller, { once: true });
     }
-    return res.json();
+    const timeoutId = setTimeout(function() {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      try {
+        const res = await fetch(`${BASE_URL}/api/upload/status/${encodeURIComponent(requestId)}`, {
+          method: 'GET',
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          let message = `HTTP ${res.status}`;
+          try { message = (await res.json()).detail || message; } catch (_) {}
+          const error = new Error(message);
+          error.status = res.status;
+          throw error;
+        }
+        return await res.json();
+      } catch (error) {
+        if (error && ((typeof error.code === 'string' && error.code) || Number.isFinite(error.status))) throw error;
+        if (signal && signal.aborted) throw error;
+        if (timedOut) {
+          const timeoutError = new Error('Upload status check timed out');
+          timeoutError.code = 'UPLOAD_STATUS_TIMEOUT';
+          throw timeoutError;
+        }
+        throw error;
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (signal) signal.removeEventListener('abort', abortFromCaller);
+    }
+  }
+
+  async function cancelUpload(requestId) {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = setTimeout(function() {
+      timedOut = true;
+      controller.abort();
+    }, 5000);
+    try {
+      const res = await fetch(`${BASE_URL}/api/upload/cancel/${encodeURIComponent(requestId)}`, {
+        method: 'POST',
+        keepalive: true,
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        let message = `HTTP ${res.status}`;
+        try { message = (await res.json()).detail || message; } catch (_) {}
+        const error = new Error(message);
+        error.status = res.status;
+        throw error;
+      }
+      return await res.json();
+    } catch (error) {
+      if (timedOut) {
+        const timeoutError = new Error('Upload cancellation request timed out');
+        timeoutError.code = 'UPLOAD_CANCEL_TIMEOUT';
+        throw timeoutError;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   // ===== 聊天 / AI =====
@@ -621,11 +699,16 @@ window.GIS.api = (() => {
    * @param {ProviderItem|string} [provider] Provider 对象或 id；缺省用当前选中项
    * @param {string[]} [forceSkills=[]]
    */
-  async function chat(message, sessionId = 'default', provider = null, forceSkills = [], mode = 'full') {
+  async function chat(message, sessionId = 'default', provider = null, forceSkills = [], mode = 'full', requestId = null, callerSignal = null) {
     // 解析出完整 Provider 条目作为唯一配置来源
     const prov = resolveProvider(provider);
     const controller = new AbortController();
     const timeoutId = setTimeout(function() { controller.abort(); }, 600000);
+    const abortFromCaller = function() { controller.abort(callerSignal && callerSignal.reason); };
+    if (callerSignal) {
+      if (callerSignal.aborted) abortFromCaller();
+      else callerSignal.addEventListener('abort', abortFromCaller, { once: true });
+    }
     let res;
     try {
       res = await fetch(`${BASE_URL}/api/chat`, {
@@ -637,6 +720,7 @@ window.GIS.api = (() => {
           session_id: sessionId,
           provider: prov.id || 'deepseek',
           llm_config: prov,                     // 含 Key 的唯一配置来源
+          request_id: requestId || undefined,
           force_skills: forceSkills,
           amap_key: getAmapKey() || undefined,
           mode: mode
@@ -644,6 +728,7 @@ window.GIS.api = (() => {
       });
     } finally {
       clearTimeout(timeoutId);
+      if (callerSignal) callerSignal.removeEventListener('abort', abortFromCaller);
     }
     if (!res.ok) {
       let detail = '';
@@ -702,8 +787,20 @@ window.GIS.api = (() => {
   }
 
   /** 通知后端注册新加载的图层（名字 + GeoJSON）。 */
-  async function registerLayer(name, geojson, raster) {
-    return _layerRegistryRequest('register', { name, geojson, raster }, 60000);
+  async function registerLayer(name, geojson, raster, expectedProjectId) {
+    const project = GIS.project;
+    const payload = { name, geojson, raster };
+    if (arguments.length >= 4) {
+      payload.project_context = true;
+      payload.expected_project_id = expectedProjectId == null ? null : expectedProjectId;
+    } else if (project && typeof project.getActiveRegistryProjectId === 'function') {
+      payload.project_context = true;
+      payload.expected_project_id = project.getActiveRegistryProjectId();
+    } else if (project && typeof project.getCurrentProjectId === 'function') {
+      payload.project_context = true;
+      payload.expected_project_id = project.getCurrentProjectId();
+    }
+    return _layerRegistryRequest('register', payload, 60000);
   }
 
   /** 检查图层元数据（前端可先算基础信息，后端补充 CRS 等） */
@@ -806,6 +903,17 @@ window.GIS.api = (() => {
     return res.json();
   }
 
+  async function resetActiveProjectContext(expectedProjectId) {
+    return request('/api/projects/active/reset', {
+      method: 'POST',
+      body: JSON.stringify({ expected_project_id: expectedProjectId == null ? null : expectedProjectId }),
+    });
+  }
+
+  async function getActiveProjectContext() {
+    return request('/api/projects/active/context');
+  }
+
   // ===== 系统 =====
   async function healthCheck() {
     try {
@@ -897,7 +1005,8 @@ window.GIS.api = (() => {
   }
 
   return {
-    request, upload, getUploadStatus, chat, clearMemory, healthCheck,
+    request, upload, getUploadStatus, cancelUpload, chat, clearMemory, getActiveProjectContext,
+    resetActiveProjectContext, healthCheck,
     saveProject, loadProject, listProjects,
     deleteProject, deleteAllProjects, renameProject, exportProject, importProject, autoSaveProject,
     testProvider,

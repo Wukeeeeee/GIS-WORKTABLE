@@ -1,17 +1,76 @@
 import os, json, hashlib, gzip, shutil, uuid, datetime, zipfile, io, re, stat, math, threading
 from functools import wraps
+from contextlib import contextmanager
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from backend.services.url_security import sanitize_http_url
 
 _PROJECT_LOCK = threading.RLock()
+_PROJECT_LOCK_STATE = threading.local()
+
+
+@contextmanager
+def _cross_process_project_lock():
+    """Serialize project-store operations across app instances sharing a store."""
+    import tempfile
+    import time
+
+    lock_key = hashlib.sha256(os.path.normcase(os.path.abspath(_PROJECT_DIR)).encode("utf-8")).hexdigest()
+    lock_path = os.path.join(tempfile.gettempdir(), f"gis-worktable-project-{lock_key}.lock")
+    with open(lock_path, "a+b") as lock_file:
+        if os.path.getsize(lock_path) == 0:
+            lock_file.write(b"0")
+            lock_file.flush()
+
+        try:
+            import msvcrt
+        except ImportError:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        else:
+            while True:
+                lock_file.seek(0)
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+class ProjectOpenSuperseded(Exception):
+    """Raised when a newer project-open request supersedes this one."""
+
+
+class ProjectActivationBusy(Exception):
+    """Raised when the shared GIS operation lock cannot be acquired."""
 
 
 def _with_project_lock(func):
     @wraps(func)
     def wrapped(*args, **kwargs):
         with _PROJECT_LOCK:
-            return func(*args, **kwargs)
+            depth = getattr(_PROJECT_LOCK_STATE, "depth", 0)
+            if depth:
+                _PROJECT_LOCK_STATE.depth = depth + 1
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    _PROJECT_LOCK_STATE.depth = depth
+            with _cross_process_project_lock():
+                _PROJECT_LOCK_STATE.depth = 1
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    _PROJECT_LOCK_STATE.depth = 0
     return wrapped
 
 
@@ -118,6 +177,18 @@ _MAX_PROJECTS = 30
 _MAX_PROJECT_ARCHIVE_ENTRIES = 10000
 _MAX_PROJECT_ARCHIVE_COMPRESSED_BYTES = 1024 * 1024 * 1024
 _MAX_PROJECT_ARCHIVE_EXPANDED_BYTES = 1024 * 1024 * 1024
+_MAX_PROJECT_BLOB_EXPANDED_BYTES = 1024 * 1024 * 1024
+_WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)}
+    | {f"{prefix}{digit}" for prefix in ("com", "lpt") for digit in ("¹", "²", "³")}
+)
+
+
+def _is_windows_reserved_path_component(component: str) -> bool:
+    """Whether a portable path component aliases a Windows device, extension or not."""
+    stem = component.split(".", 1)[0].rstrip(" .").casefold()
+    return stem in _WINDOWS_RESERVED_DEVICE_NAMES
 
 # 内存引用计数（启动时从 index.json 重建）
 _blob_refcount = {}
@@ -130,6 +201,21 @@ def _valid_opacity(value) -> bool:
         return math.isfinite(value) and 0 <= value <= 1
     except (OverflowError, TypeError):
         return False
+
+
+def _sanitize_label_config(value):
+    if not isinstance(value, dict):
+        return None
+    field = value.get("field")
+    font_size = value.get("fontSize", 12)
+    color = value.get("color", "#333333")
+    if not isinstance(field, str) or not field or len(field) > 256:
+        return None
+    if isinstance(font_size, bool) or not isinstance(font_size, (int, float)) or not math.isfinite(font_size) or not 6 <= font_size <= 48:
+        return None
+    if not isinstance(color, str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
+        return None
+    return {"field": field, "fontSize": font_size, "color": color}
 
 # ============================================================
 # 路径辅助
@@ -156,6 +242,18 @@ def _project_dir(pid: str) -> str:
 def _project_path(pid: str) -> str:
     return os.path.join(_project_dir(pid), "project.json")
 
+def _project_assets_dir(pid: str) -> str | None:
+    try:
+        project_dir = _project_dir(pid)
+    except ValueError:
+        return None
+    expected = os.path.abspath(os.path.join(project_dir, "assets"))
+    assets_dir = os.path.realpath(expected)
+    # The managed assets directory is a normal child directory. Reject a
+    # symlink/junction replacement even when its target is another in-project
+    # path, so reads and cleanup remain anchored to this project's directory.
+    return assets_dir if os.path.normcase(assets_dir) == os.path.normcase(expected) else None
+
 def _blob_path(sha: str) -> str:
     if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{12}", sha) is None:
         raise ValueError("无效 blob 标识")
@@ -166,15 +264,13 @@ def _project_raster_path(pid: str, filename: str) -> str | None:
         return None
     if not isinstance(filename, str) or not filename or os.path.basename(filename) != filename:
         return None
-    project_root = os.path.realpath(_PROJECT_DIR)
     try:
-        project_dir = os.path.realpath(_project_dir(pid))
-        project_common = os.path.commonpath([project_root, project_dir])
+        project_dir = _project_dir(pid)
     except ValueError:
         return None
-    if os.path.normcase(project_common) != os.path.normcase(project_root):
+    assets_dir = _project_assets_dir(pid)
+    if assets_dir is None:
         return None
-    assets_dir = os.path.realpath(os.path.join(project_dir, "assets"))
     path = os.path.realpath(os.path.join(assets_dir, filename))
     try:
         assets_common = os.path.commonpath([assets_dir, path])
@@ -225,6 +321,8 @@ def _store_raster_asset(pid: str, source: str, allowed_extensions: set[str]) -> 
             digest.update(chunk)
     filename = digest.hexdigest()[:20] + extension
     target = _project_raster_path(pid, filename)
+    if target is None:
+        raise ValueError("工程栅格资源路径无效")
     os.makedirs(os.path.dirname(target), exist_ok=True)
     if not os.path.exists(target):
         import tempfile
@@ -249,6 +347,7 @@ def _store_project_raster(pid: str, raster: dict) -> dict:
     # units, processing label and quality warnings in the layer inspector.
     metadata_fields = (
         "bounds", "width", "height", "crs", "source_width", "source_height",
+        "preview_width", "preview_height", "preview_only", "source_name",
         "preview_downsampled", "bands", "nodata", "pixel_size", "pixel_units",
         "value_units", "vertical_datum", "source_layer", "source_label",
         "source_reference", "processing", "valid_pixel_ratio", "quality_warnings",
@@ -279,8 +378,8 @@ def get_project_raster_asset(pid: str, filename: str) -> str | None:
     return path if path and os.path.isfile(path) else None
 
 def _cleanup_project_raster_assets(pid: str, keep_assets: set[str]):
-    assets_dir = os.path.join(_project_dir(pid), "assets")
-    if not os.path.isdir(assets_dir):
+    assets_dir = _project_assets_dir(pid)
+    if assets_dir is None or not os.path.isdir(assets_dir):
         return
     for filename in os.listdir(assets_dir):
         if filename in keep_assets:
@@ -291,6 +390,8 @@ def _cleanup_project_raster_assets(pid: str, keep_assets: set[str]):
             pass
 
 def _extract_project_archive(zf: zipfile.ZipFile, target_dir: str):
+    import unicodedata
+
     root = os.path.realpath(target_dir)
     members = zf.infolist()
     if len(members) > _MAX_PROJECT_ARCHIVE_ENTRIES:
@@ -300,6 +401,10 @@ def _extract_project_archive(zf: zipfile.ZipFile, target_dir: str):
         limit_mb = _MAX_PROJECT_ARCHIVE_EXPANDED_BYTES // (1024 * 1024)
         raise ValueError(f"导入的工程解压后超过 {limit_mb} MB 限制")
 
+    normalized_members = set()
+    file_marker = object()
+    path_tree = {}
+    windows_name_translation = str.maketrans(':<>|"?*', '_' * 7)
     for member in members:
         name = member.filename
         normalized = name.replace("\\", "/")
@@ -312,6 +417,30 @@ def _extract_project_archive(zf: zipfile.ZipFile, target_dir: str):
                 or not parts or any(part in {"", ".", ".."} for part in parts)
                 or stat.S_ISLNK(mode)):
             raise ValueError("导入的工程文件包含不安全路径")
+        # ZipFile applies these transformations when extracting on Windows.
+        # Reject aliases consistently on every host so later entries cannot
+        # silently replace project.json or an asset from an earlier entry.
+        safe_parts = [part.translate(windows_name_translation).rstrip(" .") for part in parts]
+        if any(_is_windows_reserved_path_component(part) for part in safe_parts):
+            raise ValueError("导入的工程文件包含 Windows 保留设备名")
+        normalized_name = unicodedata.normalize(
+            "NFC", "/".join(part for part in safe_parts if part)
+        ).casefold()
+        if not normalized_name:
+            raise ValueError("导入的工程文件包含无法安全解压的路径")
+        if normalized_name in normalized_members:
+            raise ValueError("导入的工程文件包含重复的文件路径")
+        normalized_parts = normalized_name.split("/")
+        node = path_tree
+        for part in normalized_parts:
+            if node.get(file_marker):
+                raise ValueError("导入的工程文件包含文件与目录路径冲突")
+            node = node.setdefault(part, {})
+        if not member.is_dir() and node:
+            raise ValueError("导入的工程文件包含文件与目录路径冲突")
+        normalized_members.add(normalized_name)
+        if not member.is_dir():
+            node[file_marker] = True
         destination = os.path.realpath(os.path.join(root, *parts))
         try:
             common_root = os.path.commonpath([root, destination])
@@ -321,6 +450,10 @@ def _extract_project_archive(zf: zipfile.ZipFile, target_dir: str):
             raise ValueError("导入的工程文件包含不安全路径")
     zf.extractall(root)
 
+
+class _ProjectArchiveLimitError(ValueError):
+    """An imported project exceeds a decompression limit."""
+
 # ============================================================
 # CAS Blob 存储
 # ============================================================
@@ -329,9 +462,22 @@ def _blob_put(geojson: dict) -> str:
     raw = json.dumps(geojson, ensure_ascii=False, sort_keys=True)
     sha = hashlib.sha256(raw.encode()).hexdigest()[:12]
     path = _blob_path(sha)
-    if not os.path.exists(path):
-        with gzip.open(path, "wt", encoding="utf-8") as f:
+    if os.path.isfile(path) and _blob_file_matches_digest(path, sha):
+        _blob_refcount[sha] = _blob_refcount.get(sha, 0) + 1
+        return sha
+
+    import tempfile
+    fd, staging = tempfile.mkstemp(prefix=f".{sha}.", suffix=".tmp", dir=_BLOB_DIR)
+    os.close(fd)
+    try:
+        with gzip.open(staging, "wt", encoding="utf-8") as f:
             f.write(raw)
+        # A failed or interrupted write must never leave a partial blob at its
+        # content-addressed path. Replace a corrupt leftover atomically on retry.
+        os.replace(staging, path)
+    finally:
+        if os.path.exists(staging):
+            os.unlink(staging)
     _blob_refcount[sha] = _blob_refcount.get(sha, 0) + 1
     return sha
 
@@ -345,19 +491,82 @@ def _blob_get(sha: str) -> dict | None:
     with gzip.open(path, "rt", encoding="utf-8") as f:
         return json.load(f)
 
+
+def _blob_reference_count_on_disk(sha: str) -> int | None:
+    """Return an authoritative count, or None when a project cannot be inspected safely."""
+    try:
+        _blob_path(sha)
+    except ValueError:
+        return 0
+    count = 0
+    if not os.path.exists(_PROJECT_DIR):
+        return 0
+    try:
+        entries = os.listdir(_PROJECT_DIR)
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.startswith("proj_"):
+            continue
+        pid = entry[len("proj_"):]
+        try:
+            project_dir = _project_dir(pid)
+        except ValueError:
+            continue
+        if not os.path.isdir(project_dir):
+            continue
+        project = _load_project_data(pid)
+        if project is None:
+            return None
+        layers = project.get("layers")
+        if layers is None:
+            continue
+        if not isinstance(layers, list):
+            return None
+        count += sum(1 for layer in layers if isinstance(layer, dict) and layer.get("blob") == sha)
+    return count
+
+
+def _blob_file_matches_digest(path: str, sha: str) -> bool:
+    try:
+        digest = hashlib.sha256()
+        with gzip.open(path, "rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()[:12] == sha
+    except Exception:
+        return False
+
 def _blob_remove(sha: str):
     if not isinstance(sha, str):
-        return
+        return True
     _blob_refcount[sha] = _blob_refcount.get(sha, 0) - 1
-    if _blob_refcount[sha] <= 0:
-        try:
-            path = _blob_path(sha)
-        except ValueError:
-            _blob_refcount.pop(sha, None)
-            return
+    if _blob_refcount[sha] > 0:
+        return True
+    disk_refcount = _blob_reference_count_on_disk(sha)
+    if disk_refcount is None:
+        # A project with an unreadable file may still reference this Blob.
+        # Preserve it until the project can be inspected safely.
+        _blob_refcount[sha] = 1
+        return True
+    if disk_refcount > 0:
+        _blob_refcount[sha] = disk_refcount
+        return True
+    try:
+        path = _blob_path(sha)
+    except ValueError:
+        _blob_refcount.pop(sha, None)
+        return True
+    try:
         if os.path.exists(path):
             os.remove(path)
+    except OSError:
+        # The referring project is already gone; keep the cache orphaned but do
+        # not leave a negative in-memory reference count behind.
         _blob_refcount.pop(sha, None)
+        return False
+    _blob_refcount.pop(sha, None)
+    return True
 
 # ============================================================
 # Index 管理
@@ -481,6 +690,18 @@ def _rebuild_refcount():
 def _generate_id() -> str:
     return uuid.uuid4().hex[:8]
 
+
+def _allocate_project_id() -> str:
+    """Choose an unused project directory while holding the project lock."""
+    for _ in range(128):
+        pid = _generate_id()
+        candidate = os.path.join(_PROJECT_DIR, f"proj_{pid}")
+        if os.path.lexists(candidate):
+            continue
+        _project_dir(pid)  # Validate the ID before the caller creates its directory.
+        return pid
+    raise RuntimeError("无法分配唯一工程 ID")
+
 def _now_str() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -527,7 +748,7 @@ def save_project(
     existing = None
 
     if is_new:
-        pid = _generate_id()
+        pid = _allocate_project_id()
         created = now
     else:
         pid = project_id
@@ -552,6 +773,7 @@ def save_project(
         for idx, layer in enumerate(layers):
             geojson = None if isinstance(layer.get('raster'), dict) else layer.get("geojson") or layer.get("geojson_data")
             if geojson:
+                _validate_project_vector_coordinates(geojson)
                 blob = _blob_put(geojson)
                 new_blob_refs.append(blob)
             else:
@@ -561,6 +783,8 @@ def save_project(
                 raster = _store_project_raster(pid, raster)
                 raster_assets.update(_raster_asset_names(raster))
             service_metadata = _project_service_metadata(layer)
+            if blob is None and raster is None and not service_metadata["url"]:
+                raise ValueError("工程图层缺少矢量、栅格或服务数据")
             layer_refs.append({
                 "layer_id": layer.get("layer_id") if isinstance(layer.get("layer_id"), str) and layer.get("layer_id").strip() else None,
                 "name": layer.get("filename") or layer.get("name", "未命名"),
@@ -569,6 +793,7 @@ def save_project(
                 "style": layer.get("style") if isinstance(layer.get("style"), dict) else {},
                 "opacity": layer.get("opacity") if _valid_opacity(layer.get("opacity")) else 1,
                 "symbology": layer.get("symbology") if isinstance(layer.get("symbology"), dict) else None,
+                "labels": _sanitize_label_config(layer.get("labels")) if isinstance(layer.get("labels"), dict) else None,
                 "visible": layer.get("visible", True) if layer.get("visible") is not False else False,
                 "geometry_type": layer.get("geometry_type", "未知"),
                 "source": layer.get("source", "ai"),
@@ -625,8 +850,8 @@ def save_project(
     for blob in old_blob_refs:
         _blob_remove(blob)
 
-    assets_dir = os.path.join(_project_dir(pid), "assets")
-    if os.path.isdir(assets_dir):
+    assets_dir = _project_assets_dir(pid)
+    if assets_dir and os.path.isdir(assets_dir):
         for filename in os.listdir(assets_dir):
             if filename not in raster_assets:
                 try:
@@ -679,30 +904,77 @@ def _project_exists(pid: str) -> bool:
     except ValueError:
         return False
 
+
+def _validate_project_vector_coordinates(geojson: dict) -> None:
+    """Reject vector layers whose coordinates cannot be interpreted as WGS-84."""
+    try:
+        from backend.services.tools import _validate_wgs84_geojson
+        _validate_wgs84_geojson(geojson)
+    except (AttributeError, IndexError, TypeError, ValueError, OverflowError):
+        raise ValueError("工程矢量图层坐标超出 WGS-84 范围或格式无效")
+
 def _delete_project_data(pid: str, index: dict = None, persist_index: bool = True):
     """删除工程数据，释放 blob 引用"""
     proj = _load_project_data(pid)
-    if proj:
-        for layer in proj.get("layers", []):
-            blob = layer.get("blob")
-            if blob:
-                _blob_remove(blob)
     try:
         d = _project_dir(pid)
     except ValueError:
+        # _project_dir intentionally rejects links that resolve outside the
+        # project root. A direct delete should still remove the link itself,
+        # without following it or touching anything in its target.
+        if (isinstance(pid, str) and pid and os.path.basename(pid) == pid
+                and "/" not in pid and "\\" not in pid and "\0" not in pid):
+            link_path = os.path.join(_PROJECT_DIR, f"proj_{pid}")
+            if os.path.islink(link_path):
+                os.unlink(link_path)
         if index is None:
             index = _load_index()
         index["projects"].pop(pid, None)
         if persist_index:
-            _save_index(index)
-        return
+            try:
+                _save_index(index)
+            except OSError:
+                return "工程已删除，但最近工程列表索引暂未更新；刷新列表会从工程文件恢复。"
+        return None
     if os.path.exists(d):
         shutil.rmtree(d)
+    # Keep referenced blobs intact until the project directory is gone. If
+    # removing the directory fails, the project remains readable and retains
+    # its vector data. A failed blob unlink after this point only leaves an
+    # orphaned blob, which is safer than a project pointing at missing data.
+    blob_cleanup_failed = False
+    if proj:
+        layers = proj.get("layers")
+        for layer in layers if isinstance(layers, list) else []:
+            if not isinstance(layer, dict):
+                continue
+            blob = layer.get("blob")
+            if blob:
+                if not _blob_remove(blob):
+                    blob_cleanup_failed = True
     if index is None:
         index = _load_index()
     index["projects"].pop(pid, None)
+    warnings = []
+    if blob_cleanup_failed:
+        warnings.append("工程已删除，但未能清理无引用的矢量 Blob 缓存。")
     if persist_index:
-        _save_index(index)
+        try:
+            _save_index(index)
+        except OSError:
+            # The project directory is the source of truth. Listing projects
+            # detects the stale summary and reconstructs the index from disk.
+            warnings.append("最近工程列表索引暂未更新；刷新列表会从工程文件恢复。")
+    return "；".join(warnings) if warnings else None
+
+
+def _deactivate_deleted_project(pid: str):
+    """Drop in-memory GIS state when its owning project has been removed."""
+    from backend.services import tools as registry
+
+    with registry._state_lock:
+        if registry._active_project_id == pid:
+            registry.reset_registered_layers([])
 
 @_with_project_lock
 def load_project(pid: str) -> dict | None:
@@ -743,24 +1015,30 @@ def _restorable_project_messages(messages):
         and isinstance(message.get("content"), str)
     ]
 
-@_with_project_lock
-def activate_project(pid: str, session_id: str = None) -> dict | None:
-    """激活指定工程：加载工程并将其历史消息和图层恢复到后端，实现工程隔离与上下文精准记忆"""
-    data = load_project(pid)
-    if not data:
-        return None
+def _activate_project_data(pid: str, data: dict, session_id: str = None) -> dict:
+    """Activate an already loaded snapshot without resolving its resources again."""
     sid = session_id or data.get("sessionId") or f"proj_{pid}"
     from backend.services.ai_service import conversation_history
     from backend.services import tools as registry
     layers = data.get("layers", [])
     skipped_layers = []
+    restorable_layers = []
+    for layer in layers:
+        geojson = layer.get("geojson") or layer.get("geojson_data") if isinstance(layer, dict) else None
+        if geojson:
+            try:
+                _validate_project_vector_coordinates(geojson)
+            except ValueError:
+                skipped_layers.append(layer.get("name") or layer.get("filename") or "图层")
+                continue
+        restorable_layers.append(layer)
     with registry._state_lock:
         old = dict(registry._registered_layers)
         old_project = registry._active_project_id
         old_pending = list(registry._pending_layers)
         old_ops = list(registry._pending_layer_ops)
         try:
-            skipped_layers = registry.reset_registered_layers(layers, tolerate_invalid=True)
+            skipped_layers.extend(registry.reset_registered_layers(restorable_layers, tolerate_invalid=True))
             registry._active_project_id = pid
             tokens = {name: info.get('registration_token') for name, info in registry._registered_layers.items()}
         except Exception:
@@ -774,13 +1052,65 @@ def activate_project(pid: str, session_id: str = None) -> dict | None:
     return {"sessionId": sid, "layerCount": len(data.get("layers", [])),
             "registration_tokens": tokens, "registration_warnings": skipped_layers}
 
+
 @_with_project_lock
-def open_project(pid: str) -> dict | None:
-    """Return the same project snapshot whose resources were activated."""
+def activate_project(pid: str, session_id: str = None) -> dict | None:
+    """激活指定工程：加载工程并将其历史消息和图层恢复到后端，实现工程隔离与上下文精准记忆"""
+    data = load_project(pid)
+    if not data:
+        return None
+    from backend.services import tools as registry
+    if not registry.acquire_shared_state_lock():
+        raise ProjectActivationBusy(pid)
+    try:
+        return _activate_project_data(pid, data, session_id)
+    finally:
+        registry.release_shared_state_lock()
+
+
+@_with_project_lock
+def open_project(pid: str, should_activate=None) -> dict | None:
+    """Return and activate one project snapshot, resolving resources only once."""
     data = load_project(pid)
     if data is None:
         return None
-    activated = activate_project(pid)
+    if should_activate is not None and not should_activate():
+        raise ProjectOpenSuperseded(pid)
+    from backend.services import tools as registry
+    if not registry.acquire_shared_state_lock():
+        raise ProjectActivationBusy(pid)
+    try:
+        # Direct panel tools do not use chat cancellation. Serialize activation
+        # with their shared-state transaction and recheck after waiting so a
+        # superseded open cannot activate over a newer request.
+        if should_activate is not None and not should_activate():
+            raise ProjectOpenSuperseded(pid)
+        if should_activate is None:
+            activated = _activate_project_data(pid, data)
+        else:
+            from backend.services.ai_service import conversation_history
+            sid = data.get("sessionId") or f"proj_{pid}"
+            with registry._state_lock:
+                old_layers = dict(registry._registered_layers)
+                old_project = registry._active_project_id
+                old_pending = list(registry._pending_layers)
+                old_ops = list(registry._pending_layer_ops)
+                had_history = sid in conversation_history
+                old_history = conversation_history.get(sid)
+                activated = _activate_project_data(pid, data)
+                if not should_activate():
+                    registry._registered_layers.clear()
+                    registry._registered_layers.update(old_layers)
+                    registry._active_project_id = old_project
+                    registry._pending_layers[:] = old_pending
+                    registry._pending_layer_ops[:] = old_ops
+                    if had_history:
+                        conversation_history[sid] = old_history
+                    else:
+                        conversation_history.pop(sid, None)
+                    raise ProjectOpenSuperseded(pid)
+    finally:
+        registry.release_shared_state_lock()
     tokens = activated['registration_tokens']
     data['registration_warnings'] = activated.get('registration_warnings', [])
     for layer in data.get('layers', []):
@@ -798,21 +1128,83 @@ def list_projects() -> list:
 @_with_project_lock
 def delete_project(pid: str):
     index = _load_index()
-    _delete_project_data(pid, index)
+    warning = _delete_project_data(pid, index)
+    _deactivate_deleted_project(pid)
+    return {"warning": warning} if warning else {}
 
 @_with_project_lock
 def delete_all_projects():
     index = _load_index()
+    failed_ids = set()
+    cleanup_warnings = []
     for pid in list(index.get("projects", {}).keys()):
-        _delete_project_data(pid, index)
-    # 清理残留文件夹
+        try:
+            warning = _delete_project_data(pid, index, persist_index=False)
+            if warning:
+                cleanup_warnings.append(warning)
+        except OSError:
+            failed_ids.add(pid)
+    # 清理索引外的工程目录。目录删除失败时保留数据并报告部分失败。
     if os.path.isdir(_PROJECT_DIR):
         for d in os.listdir(_PROJECT_DIR):
             full = os.path.join(_PROJECT_DIR, d)
-            if d.startswith("proj_") and os.path.isdir(full):
-                shutil.rmtree(full, ignore_errors=True)
-    global _blob_refcount
+            if not d.startswith("proj_"):
+                continue
+            pid = d[len("proj_"):]
+            if os.path.islink(full):
+                # Remove only the project-root link itself; never traverse its target.
+                try:
+                    os.unlink(full)
+                except OSError:
+                    failed_ids.add(pid)
+                continue
+            if os.path.isdir(full):
+                try:
+                    shutil.rmtree(full)
+                except OSError:
+                    failed_ids.add(pid)
+
+    def _project_directory_remains(pid):
+        try:
+            return os.path.isdir(_project_dir(pid))
+        except ValueError:
+            # Invalid or escaped project entries must not crash the bulk delete.
+            return True
+
+    failed_ids = {pid for pid in failed_ids if _project_directory_remains(pid)}
+    from backend.services import tools as registry
+    if registry._active_project_id and not _project_exists(registry._active_project_id):
+        _deactivate_deleted_project(registry._active_project_id)
+
+    remaining_projects = {}
+    if os.path.isdir(_PROJECT_DIR):
+        for d in os.listdir(_PROJECT_DIR):
+            if not d.startswith("proj_"):
+                continue
+            pid = d[len("proj_"):]
+            proj = _load_project_data(pid)
+            if proj:
+                remaining_projects[pid] = _project_index_summary(pid, proj)
+    try:
+        _save_index({"projects": remaining_projects})
+    except OSError:
+        if not failed_ids:
+            _blob_refcount.clear()
+            cleanup_warnings.append("工程已删除，但最近工程列表索引暂未更新；刷新列表会从工程文件恢复。")
+        else:
+            cleanup_warnings.append("最近工程列表索引暂未更新；刷新列表会从工程文件恢复。")
+    if failed_ids:
+        # Recount from project files so blobs referenced by undeleted projects stay alive.
+        _rebuild_refcount()
+        return {
+            "success": False,
+            "warning": "；".join([
+                f"有 {len(failed_ids)} 个工程未能删除；其余工程已删除，请稍后重试。",
+                *cleanup_warnings,
+            ]),
+        }
     _blob_refcount.clear()
+    return {"warning": "；".join(cleanup_warnings)} if cleanup_warnings else {}
 
 @_with_project_lock
 def rename_project(pid: str, new_name: str):
@@ -842,10 +1234,11 @@ def export_project(pid: str) -> bytes:
         # 工程数据
         zf.writestr("project.json", json.dumps(proj, ensure_ascii=False, indent=2))
         archived_raster_assets = set()
+        archived_vector_blobs = set()
         # 包含图层 blob
         for layer in proj.get("layers", []):
             blob = layer.get("blob")
-            if blob is not None:
+            if blob is not None and blob not in archived_vector_blobs:
                 try:
                     blob_path = _blob_path(blob)
                 except ValueError as exc:
@@ -862,6 +1255,7 @@ def export_project(pid: str) -> bytes:
                 if digest.hexdigest()[:12] != blob:
                     raise ValueError("工程矢量图层数据校验失败，无法导出完整工程")
                 zf.write(blob_path, f"blobs/{blob}.geojson.gz")
+                archived_vector_blobs.add(blob)
             raster = layer.get("raster")
             for asset in _raster_asset_names(raster) if isinstance(raster, dict) else []:
                 if asset in archived_raster_assets:
@@ -877,7 +1271,9 @@ def export_project(pid: str) -> bytes:
 @_with_project_lock
 def import_project(zip_bytes) -> dict:
     _ensure_dirs()
-    pid = _generate_id()
+    if len(_load_index().get("projects", {})) >= _MAX_PROJECTS:
+        raise ValueError(f"工程数量已达到上限（最多 {_MAX_PROJECTS} 个）；请先删除不需要的工程后再导入")
+    pid = _allocate_project_id()
     target_dir = _project_dir(pid)
     os.makedirs(target_dir, exist_ok=True)
 
@@ -923,12 +1319,19 @@ def import_project(zip_bytes) -> dict:
     if not isinstance(proj_data.get("name"), str):
         proj_data["name"] = f"导入工程 {pid[:4]}"
     proj_data = _sanitize_project_service_layers(proj_data)
+    verified_blobs = set()
+    expanded_blob_bytes = 0
     for layer in proj_data.get("layers", []):
         blob = layer.get("blob")
+        raster = layer.get("raster")
+        service_url = layer.get("url") or layer.get("service_url")
+        if blob is None and raster is None and not service_url:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise ValueError("导入的工程文件缺少矢量图层数据")
         if blob is not None and (not isinstance(blob, str) or re.fullmatch(r"[0-9a-f]{12}", blob) is None):
             shutil.rmtree(target_dir, ignore_errors=True)
             raise ValueError("导入的工程文件包含无效 blob 标识")
-        if blob:
+        if blob and blob not in verified_blobs:
             blob_path = os.path.join(target_dir, "blobs", blob + ".geojson.gz")
             if not os.path.isfile(blob_path):
                 shutil.rmtree(target_dir, ignore_errors=True)
@@ -936,15 +1339,35 @@ def import_project(zip_bytes) -> dict:
             try:
                 digest = hashlib.sha256()
                 with gzip.open(blob_path, "rb") as source:
-                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    while True:
+                        remaining = _MAX_PROJECT_BLOB_EXPANDED_BYTES - expanded_blob_bytes
+                        chunk = source.read(min(1024 * 1024, remaining + 1))
+                        if not chunk:
+                            break
+                        expanded_blob_bytes += len(chunk)
+                        if expanded_blob_bytes > _MAX_PROJECT_BLOB_EXPANDED_BYTES:
+                            raise _ProjectArchiveLimitError(
+                                "导入的工程矢量数据解压后超过 1024 MB 限制"
+                            )
                         digest.update(chunk)
+            except _ProjectArchiveLimitError:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise
             except Exception as exc:
                 shutil.rmtree(target_dir, ignore_errors=True)
                 raise ValueError("导入的工程文件包含无效矢量图层数据") from exc
             if digest.hexdigest()[:12] != blob:
                 shutil.rmtree(target_dir, ignore_errors=True)
                 raise ValueError("导入的工程文件包含不匹配的矢量图层数据")
-        raster = layer.get("raster")
+            try:
+                with gzip.open(blob_path, "rt", encoding="utf-8") as source:
+                    parsed_blob = json.load(source)
+                if not isinstance(parsed_blob, dict):
+                    raise ValueError("矢量 Blob 根节点必须是对象")
+            except Exception as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise ValueError("导入的工程文件包含无效矢量图层数据") from exc
+            verified_blobs.add(blob)
         if raster is not None and not isinstance(raster, dict):
             shutil.rmtree(target_dir, ignore_errors=True)
             raise ValueError("导入的工程文件包含无效栅格资源")
@@ -963,20 +1386,59 @@ def import_project(zip_bytes) -> dict:
 
     # 迁移 blob 到全局 blob 目录
     imported_blobs = os.path.join(target_dir, "blobs")
-    if os.path.exists(imported_blobs):
-        for fname in os.listdir(imported_blobs):
-            src = os.path.join(imported_blobs, fname)
-            if os.path.isfile(src):
+    newly_migrated_blobs = []
+    try:
+        if os.path.exists(imported_blobs):
+            for blob_name in sorted(verified_blobs):
+                fname = f"{blob_name}.geojson.gz"
+                src = os.path.join(imported_blobs, fname)
                 dst = os.path.join(_BLOB_DIR, fname)
-                if not os.path.exists(dst):
-                    shutil.copy2(src, dst)
-        shutil.rmtree(imported_blobs)
+                if os.path.exists(dst) and not _blob_file_matches_digest(dst, blob_name):
+                    temp_path = dst + f".{uuid.uuid4().hex}.tmp"
+                    try:
+                        shutil.copy2(src, temp_path)
+                        os.replace(temp_path, dst)
+                    finally:
+                        try:
+                            os.unlink(temp_path)
+                        except OSError:
+                            pass
+                elif not os.path.exists(dst):
+                    try:
+                        shutil.copy2(src, dst)
+                    except Exception:
+                        try:
+                            os.unlink(dst)
+                        except OSError:
+                            pass
+                        raise
+                    newly_migrated_blobs.append(dst)
+            shutil.rmtree(imported_blobs)
 
-    proj_data["id"] = pid
-    now = _now_str()
-    proj_data["createdAt"] = now
-    proj_data["updatedAt"] = now
-    _save_project_data(pid, proj_data)
+        proj_data["id"] = pid
+        now = _now_str()
+        proj_data["createdAt"] = now
+        proj_data["updatedAt"] = now
+        _save_project_data(pid, proj_data)
+    except Exception:
+        # If the project JSON did not become durable, remove its staging tree
+        # and only the global blobs this import created. Keep pre-existing or
+        # currently referenced blobs intact.
+        if _load_project_data(pid) != proj_data:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            for path in newly_migrated_blobs:
+                blob_name = os.path.basename(path).split(".", 1)[0]
+                disk_refcount = _blob_reference_count_on_disk(blob_name)
+                if disk_refcount is None or disk_refcount > 0:
+                    if disk_refcount is not None:
+                        _blob_refcount[blob_name] = disk_refcount
+                    continue
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                _blob_refcount.pop(blob_name, None)
+        raise
 
     index = _load_index()
     index["projects"][pid] = {
@@ -989,9 +1451,17 @@ def import_project(zip_bytes) -> dict:
         "messageCount": len(proj_data.get("messages", [])),
         "provider": proj_data.get("provider", ""),
     }
-    _save_index(index)
+    warning = None
+    try:
+        _save_index(index)
+    except OSError:
+        # The project file is already durable; listing can rebuild this summary from it.
+        warning = "工程已导入，但最近工程列表索引暂未更新；刷新列表会从工程文件恢复。"
     _rebuild_refcount()
-    return {"id": pid, "name": proj_data.get("name", "导入工程")}
+    result = {"id": pid, "name": proj_data.get("name", "导入工程")}
+    if warning:
+        result["warning"] = warning
+    return result
 
 @_with_project_lock
 def auto_save(
@@ -1029,6 +1499,8 @@ def auto_save(
                 allowed_names.update(aliases)
             if not canonical and not aliases and not isinstance(assignment.get("raster"), dict):
                 raise ValueError("图层缺少注册名称，未自动保存")
+            if "labels" in assignment and assignment["labels"] is not None and _sanitize_label_config(assignment["labels"]) is None:
+                raise ValueError("图层标注配置无效，未自动保存")
     with _state_lock:
         registry = dict(_registered_layers)
     for assignment in layer_assignments or []:
@@ -1065,6 +1537,27 @@ def auto_save(
         existing_proj = _load_project_data(existing_pid)
         if session_id not in conversation_history and existing_proj:
             messages = existing_proj.get("messages", [])
+    if layer_assignments is None and existing_proj:
+        # A caller that omits panel assignments has not declared that the
+        # current layer set is empty. Merge stored layers absent from the live
+        # registry so older clients and backend-only autosaves cannot erase
+        # project data merely because their registry snapshot is unavailable.
+        live_names = {layer.get("name") for layer in layers if layer.get("name")}
+        for stored_layer in existing_proj.get("layers", []):
+            if not isinstance(stored_layer, dict):
+                continue
+            name = stored_layer.get("name")
+            if not isinstance(name, str) or not name or name in live_names:
+                continue
+            preserved = dict(stored_layer)
+            blob = preserved.get("blob")
+            if blob:
+                geojson = _blob_get(blob)
+                if geojson is None:
+                    raise ValueError("已有工程图层数据缺失，已跳过自动保存以避免数据丢失")
+                preserved["geojson"] = geojson
+            layers.append(preserved)
+            live_names.add(name)
     existing_layers_by_name = {
         layer.get("name"): layer for layer in (existing_proj or {}).get("layers", []) if layer.get("name")
     }
@@ -1072,7 +1565,11 @@ def auto_save(
     for assignment in layer_assignments or []:
         if not isinstance(assignment, dict):
             continue
-        for alias in assignment.get("names", []):
+        aliases = list(assignment.get("names", []))
+        canonical = assignment.get("registry_name")
+        if isinstance(canonical, str) and canonical and canonical not in aliases:
+            aliases.append(canonical)
+        for alias in aliases:
             if isinstance(alias, str) and alias:
                 assignments_by_name[alias] = {
                     "groupId": assignment.get("groupId") or None,
@@ -1082,6 +1579,8 @@ def auto_save(
                     "opacity": assignment.get("opacity") if _valid_opacity(assignment.get("opacity")) else None,
                     "symbology": assignment.get("symbology") if isinstance(assignment.get("symbology"), dict) else None,
                     "has_symbology": "symbology" in assignment,
+                    "labels": _sanitize_label_config(assignment.get("labels")) if isinstance(assignment.get("labels"), dict) else None,
+                    "has_labels": "labels" in assignment,
                     "raster": assignment.get("raster") if isinstance(assignment.get("raster"), dict) else None,
                     "name": assignment.get("name"),
                 }
@@ -1103,6 +1602,13 @@ def auto_save(
                 layer["symbology"] = assignment["symbology"]
             elif previous and previous.get("symbology"):
                 layer["symbology"] = previous["symbology"]
+            if assignment["has_labels"]:
+                if assignment["labels"] is None:
+                    layer.pop("labels", None)
+                else:
+                    layer["labels"] = assignment["labels"]
+            elif previous and previous.get("labels"):
+                layer["labels"] = previous["labels"]
             if assignment["raster"]:
                 layer["raster"] = assignment["raster"]
                 layer['name'] = assignment['name'] or layer_name
@@ -1114,11 +1620,13 @@ def auto_save(
                 layer["style"] = previous.get("style", {})
                 layer["opacity"] = previous.get("opacity", 1)
                 layer["symbology"] = previous.get("symbology")
+                if previous.get("labels"):
+                    layer["labels"] = previous["labels"]
 
     for assignment in layer_assignments or []:
         if not isinstance(assignment, dict) or not isinstance(assignment.get("raster"), dict):
             continue
-        layer_name = assignment.get("name") or next(
+        layer_name = assignment.get("name") or assignment.get("registry_name") or next(
             (name for name in assignment.get("names", []) if isinstance(name, str) and name), None
         )
         if not layer_name:
@@ -1138,6 +1646,24 @@ def auto_save(
             "visible": assignment.get("visible") is not False,
             "groupId": assignment.get("groupId") or None,
         })
+
+    # Auto-save receives the user's current panel order with each assignment.
+    # Preserve registry order for older callers that do not send a full order.
+    assignment_order = {}
+    for assignment in layer_assignments or []:
+        if not isinstance(assignment, dict) or type(assignment.get("order")) is not int or assignment["order"] < 0:
+            continue
+        aliases = assignment.get("names", [])
+        for alias in aliases if isinstance(aliases, list) else []:
+            if isinstance(alias, str) and alias:
+                assignment_order[alias] = assignment["order"]
+        canonical = assignment.get("registry_name")
+        if isinstance(canonical, str) and canonical:
+            assignment_order[canonical] = assignment["order"]
+        if isinstance(assignment.get("name"), str) and assignment["name"]:
+            assignment_order[assignment["name"]] = assignment["order"]
+    if layers and all(layer.get("name") in assignment_order for layer in layers):
+        layers.sort(key=lambda layer: assignment_order[layer["name"]])
 
     # 取工程名：如果已有工程名则保留已有名称；否则用第一条用户消息的真实提问文本
     name = "未命名工程"

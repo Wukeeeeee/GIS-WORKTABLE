@@ -25,8 +25,10 @@ function createHarness() {
     addTo(map) { map.addLayer(this); return this; },
   });
   const L = { geoJSON(geojson, options = {}) {
+    if (geojson && geojson.failRender) throw new Error('simulated renderer failure');
     const features = geojson.type === 'FeatureCollection' ? (geojson.features || []) : [geojson];
     features.forEach(feature => {
+      if (!feature || typeof feature !== 'object') throw new TypeError('invalid GeoJSON feature');
       const leafletLayer = {
         tooltip: null,
         feature,
@@ -140,6 +142,38 @@ test('loadGeoJSON can render a newly shown layer without changing the current ma
   assert.equal(fitBoundsCalls.length, 1, 'existing callers still fit the view by default');
 });
 
+test('failed GeoJSON replacement keeps the previous map layer and source data intact', () => {
+  const { map, mapInstance, activeLayers } = createHarness();
+  const original = { type: 'FeatureCollection', features: [] };
+  const rendered = map.loadGeoJSON(original, 'replace-safely');
+
+  assert.throws(() => map.loadGeoJSON({ failRender: true }, 'replace-safely'), /simulated renderer failure/);
+
+  assert.equal(activeLayers.has(rendered), true, 'old visible layer must remain attached after replacement fails');
+  assert.equal(map.getLayer('replace-safely'), rendered);
+  assert.equal(map.getGeoJSON('replace-safely'), original);
+  assert.equal(mapInstance.hasLayer(rendered), true);
+
+  assert.throws(() => map.loadGeoJSON({ type: 'FeatureCollection', features: [null] }, 'replace-safely'));
+  assert.equal(map.getLayer('replace-safely'), rendered);
+  assert.equal(map.getGeoJSON('replace-safely'), original);
+  assert.equal(mapInstance.hasLayer(rendered), true, 'pre-render validation failures must also preserve the working layer');
+});
+
+test('rendering a layer does not add renderer-only fields to the source GeoJSON', () => {
+  const { map, renderedFeatures } = createHarness();
+  const geojson = { type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { label: 'first' }, geometry: { type: 'Point', coordinates: [0, 0] } },
+    { type: 'Feature', properties: { label: 'second' }, geometry: { type: 'Point', coordinates: [1, 1] } },
+  ] };
+
+  map.loadGeoJSON(geojson, 'source-geojson');
+
+  assert.equal(geojson.features.some(feature => Object.hasOwn(feature, '_featureIndex')), false);
+  assert.equal(map.setLabels('source-geojson', 'label'), true);
+  assert.deepEqual(renderedFeatures.map(feature => feature.tooltip.text), ['first', 'second']);
+});
+
 test('raster overlays replace a restored overlay by stable layer id after rerun', () => {
   const { map, activeLayers } = createHarness();
   const bounds = [0, 0, 1, 1];
@@ -151,6 +185,56 @@ test('raster overlays replace a restored overlay by stable layer id after rerun'
   assert.equal(activeLayers.size, 1, 'rerunning a raster should not leave a duplicate map overlay');
   assert.equal(activeLayers.has(restoredOverlay), false);
   assert.equal(map.getLayer('dem_slope.png').url, '/new.png');
+});
+
+test('removing a raster overlay by stable id clears its display-name alias', () => {
+  const { map, activeLayers } = createHarness();
+  map.addImageOverlay('/preview.png', [0, 0, 1, 1], 'elevation.tif', 'raster_123');
+  const overlay = map.getLayer('raster_123');
+
+  map.removeLayer('raster_123');
+
+  assert.equal(activeLayers.has(overlay), false);
+  assert.equal(map.getLayer('raster_123'), null);
+  assert.equal(map.getLayer('elevation.tif'), null);
+
+  map.addImageOverlay('/preview-2.png', [0, 0, 1, 1], 'second-elevation.tif', 'raster_456');
+  map.removeRasterLayer('raster_456');
+  assert.equal(map.getLayer('second-elevation.tif'), null);
+});
+
+test('replacing a raster with a vector under the same display name removes raster aliases', () => {
+  const { map, activeLayers } = createHarness();
+  map.addImageOverlay('/preview.png', [0, 0, 1, 1], 'shared-name', 'raster_789');
+  const raster = map.getLayer('raster_789');
+  const geojson = { type: 'FeatureCollection', features: [] };
+
+  map.loadGeoJSON(geojson, 'shared-name');
+  const vector = map.getLayer('shared-name');
+
+  assert.equal(activeLayers.has(raster), false);
+  assert.equal(activeLayers.size, 1);
+  assert.equal(map.getLayer('raster_789'), null);
+  assert.notEqual(vector, raster);
+  assert.equal(activeLayers.has(vector), true);
+  assert.equal(map.getGeoJSON('shared-name'), geojson);
+  map.removeLayer('shared-name');
+  assert.equal(activeLayers.has(vector), false);
+});
+
+test('replacing a vector with a raster under the same display name removes vector source data', () => {
+  const { map, activeLayers } = createHarness();
+  const geojson = { type: 'FeatureCollection', features: [] };
+  const vector = map.loadGeoJSON(geojson, 'shared-name');
+
+  map.addImageOverlay('/preview.png', [0, 0, 1, 1], 'shared-name', 'raster_790');
+  const raster = map.getLayer('raster_790');
+
+  assert.equal(activeLayers.has(vector), false);
+  assert.equal(activeLayers.size, 1);
+  assert.equal(activeLayers.has(raster), true);
+  assert.equal(map.getLayer('shared-name'), raster);
+  assert.equal(map.getGeoJSON('shared-name'), null);
 });
 
 test('raster, XYZ, and WMS layer attributions escape provider-controlled names as text', () => {

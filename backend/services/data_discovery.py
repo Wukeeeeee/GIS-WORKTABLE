@@ -348,60 +348,63 @@ def _import_vector(req, provider, raw, cap, layer_name) -> DownloadedAsset:
     asset_name = sanitize_name(layer_name) if (layer_name or "").strip() else auto_name
     dirpath = req.out_dir or storage.asset_dir(provider.provider_id)
 
-    path = storage.write_vector(
-        fc, out_format=req.file_format, name=asset_name, dirpath=dirpath,
-        crs=crs, crs_known=crs_known,
-    )
-    size = storage.file_size(path)
-    geom_types = raw.get("geometry_types") or storage.geom_types_of(fc)
-    bbox = raw.get("bbox") or storage.compute_bbox(fc)
+    with storage.vector_import_transaction(
+        out_format=req.file_format, name=asset_name, dirpath=dirpath,
+    ):
+        path = storage.write_vector(
+            fc, out_format=req.file_format, name=asset_name, dirpath=dirpath,
+            crs=crs, crs_known=crs_known,
+        )
+        size = storage.file_size(path)
+        geom_types = raw.get("geometry_types") or storage.geom_types_of(fc)
+        bbox = raw.get("bbox") or storage.compute_bbox(fc)
 
-    import_notes = []
-    if raw.get("truncated_by_limit"):
-        import_notes.append("超过单次要素上限，结果已截断")
-    if raw.get("source_remark"):
-        import_notes.append(f"数据源提示：{str(raw['source_remark'])[:200]}")
-    skipped = raw.get("skipped", 0)
-    if isinstance(skipped, int) and skipped > 0:
-        import_notes.append(f"跳过 {skipped} 个无法转换的要素")
-    if not import_notes and raw.get("truncated"):
-        import_notes.append("数据源返回结果可能不完整")
-    metadata_note = "；".join([*import_notes, cap.note] if cap.note else import_notes)
+        import_notes = []
+        if raw.get("truncated_by_limit"):
+            import_notes.append("超过单次要素上限，结果已截断")
+        if raw.get("source_remark"):
+            import_notes.append(f"数据源提示：{str(raw['source_remark'])[:200]}")
+        skipped = raw.get("skipped", 0)
+        if isinstance(skipped, int) and skipped > 0:
+            import_notes.append(f"跳过 {skipped} 个无法转换的要素")
+        if not import_notes and raw.get("truncated"):
+            import_notes.append("数据源返回结果可能不完整")
+        metadata_note = "；".join([*import_notes, cap.note] if cap.note else import_notes)
 
-    meta = storage.build_metadata(
-        provider=provider.provider_id, provider_name=cap.name, kind=req.kind,
-        area=area, source_url=cap.homepage, file_path=path,
-        file_format=req.file_format, crs=crs, crs_known=crs_known,
-        size_bytes=size, feature_count=len(fc.get("features", [])),
-        geometry_types=geom_types, bbox=bbox, query=req.query, auth=cap.auth,
-        note=metadata_note,
-    )
-    meta_path = storage.save_metadata(meta, dirpath=dirpath, name=asset_name)
-    meta["metadata_file"] = os.path.basename(meta_path)
+        meta = storage.build_metadata(
+            provider=provider.provider_id, provider_name=cap.name, kind=req.kind,
+            area=area, source_url=cap.homepage, file_path=path,
+            file_format=req.file_format, crs=crs, crs_known=crs_known,
+            size_bytes=size, feature_count=len(fc.get("features", [])),
+            geometry_types=geom_types, bbox=bbox, query=req.query, auth=cap.auth,
+            note=metadata_note,
+        )
+        meta_path = storage.save_metadata(meta, dirpath=dirpath, name=asset_name)
+        meta["metadata_file"] = os.path.basename(meta_path)
 
-    note = "（" + "；".join(import_notes) + "）" if import_notes else ""
-    return DownloadedAsset(
-        provider=provider.provider_id,
-        provider_name=cap.name,
-        kind=req.kind,
-        kind_label=ALL_KINDS.get(req.kind, req.kind),
-        data_type=DataType.VECTOR,
-        layer_name=asset_name,
-        title=f"{area}-{ALL_KINDS.get(req.kind, req.kind)}",
-        area=area,
-        file_path=path,
-        url=storage.to_download_url(path),
-        file_format=req.file_format,
-        crs=crs,
-        crs_known=crs_known,
-        size_bytes=size,
-        feature_count=len(fc.get("features", [])),
-        geometry_types=geom_types,
-        bbox=bbox,
-        geojson=fc,
-        metadata=meta,
-        note=note,
-    )
+        note = "（" + "；".join(import_notes) + "）" if import_notes else ""
+        return DownloadedAsset(
+            provider=provider.provider_id,
+            provider_name=cap.name,
+            kind=req.kind,
+            kind_label=ALL_KINDS.get(req.kind, req.kind),
+            data_type=DataType.VECTOR,
+            layer_name=asset_name,
+            title=f"{area}-{ALL_KINDS.get(req.kind, req.kind)}",
+            area=area,
+            file_path=path,
+            url=storage.to_download_url(path),
+            file_format=req.file_format,
+            crs=crs,
+            crs_known=crs_known,
+            size_bytes=size,
+            feature_count=len(fc.get("features", [])),
+            geometry_types=geom_types,
+            bbox=bbox,
+            geojson=fc,
+            metadata=meta,
+            note=note,
+        )
 
 
 def _import_raster(req, provider, raw, cap, layer_name) -> DownloadedAsset:

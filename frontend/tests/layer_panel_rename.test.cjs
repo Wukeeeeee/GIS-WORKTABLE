@@ -18,12 +18,14 @@ function makeElement() {
     setAttribute() {}, focus() {}, select() {},
     blur() { (listeners.blur || []).forEach(callback => callback()); },
     fire(name, event) { (listeners[name] || []).forEach(callback => callback(event)); },
+    click() { return this.fire('click'); },
     set textContent(value) { this._textContent = value; children.splice(0); },
     get textContent() { return this._textContent || ''; },
   };
 }
 
 function loadLayerPanel() {
+  let projectId = 'project-a';
   const tbody = makeElement();
   const nameElement = makeElement();
   nameElement.dataset.id = 'layer-1';
@@ -43,6 +45,7 @@ function loadLayerPanel() {
   const toastErrors = [];
   const toastWarnings = [];
   const stateRenames = [];
+  const createdElements = [];
   const stateLayer = { fidIndex: {} };
   let failRegistration = false;
   const backend = {
@@ -66,9 +69,11 @@ function loadLayerPanel() {
     getElementById(id) { return elements[id] || null; },
     querySelector(selector) { return selector === '.layer-name[data-id="layer-1"]' ? nameElement : null; },
     querySelectorAll() { return []; },
-    createElement(tag) { return makeElement(tag); },
+    createElement(tag) { const element = makeElement(tag); createdElements.push(element); return element; },
   };
-  const window = { GIS: { map, state, api: backend, toast: {
+  const window = { GIS: { map, state, api: backend, project: {
+    getCurrentProjectId() { return projectId; }, getActiveRegistryProjectId() { return projectId; },
+  }, toast: {
     error(message) { toastErrors.push(message); },
     warn(message) { toastWarnings.push(message); },
     success() {},
@@ -83,7 +88,8 @@ function loadLayerPanel() {
   });
   state.getLayer = id => id === 'layer-1' ? stateLayer : null;
   return { window, layers: window.GIS.layers, tbody, nameElement, registered, mapRenames, stateRenames, stateLayer,
-    state, backend, elements, mapLoads, toastErrors, toastWarnings, failRegistration(value) { failRegistration = value; } };
+    state, backend, elements, mapLoads, toastErrors, toastWarnings, createdElements,
+    setProjectId(id) { projectId = id; }, failRegistration(value) { failRegistration = value; } };
 }
 
 test('restored layer IDs, colors, and opacity cannot inject table markup', () => {
@@ -200,6 +206,20 @@ test('same display names get distinct backend registration names instead of over
   ]);
 });
 
+test('layer panel suffixes Unicode normalization aliases when shared state is unavailable', () => {
+  const harness = loadLayerPanel();
+  harness.state.getLayer = undefined;
+  harness.layers.addLayer({ layer_id: 'composed-name', filename: 'é',
+    geojson: { type: 'FeatureCollection', features: [] } }, true);
+  harness.layers.addLayer({ layer_id: 'decomposed-name', filename: 'e\u0301',
+    geojson: { type: 'FeatureCollection', features: [] } }, true);
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.layers.getLayers().map(layer => layer.filename))),
+    ['Original', 'é', 'e\u0301(1)'],
+  );
+});
+
 test('AI layer operations do not resolve partial names to the first similar layer', () => {
   const harness = loadLayerPanel();
   harness.state.getLayer = undefined;
@@ -230,6 +250,116 @@ test('deleting a layer keeps its unregister request visible to project autosave'
   assert.equal(harness.layers.getLayers().length, 0);
 });
 
+test('a user-initiated layer deletion saves the empty layer assignment after backend cleanup', async () => {
+  const harness = loadLayerPanel();
+  harness.window.GIS.state.getLayer = () => null;
+  await harness.layers.waitForRegistrySync();
+  let finishUnregister;
+  harness.backend.unregisterLayer = () => new Promise(resolve => { finishUnregister = resolve; });
+  let savePromise;
+  let savedLayerCount;
+  harness.window.GIS.project = { autoSave() {
+    savePromise = harness.layers.waitForRegistrySync().then(() => {
+      savedLayerCount = harness.layers.getLayers().length;
+    });
+    return savePromise;
+  } };
+
+  harness.layers.removeLayer('layer-1');
+
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof finishUnregister, 'function');
+  assert.equal(savedLayerCount, undefined, 'project save must wait for the pending backend unregister');
+  finishUnregister({ success: true });
+  await savePromise;
+  assert.equal(savedLayerCount, 0);
+});
+
+test('silent project cleanup does not schedule an intermediate autosave', () => {
+  const harness = loadLayerPanel();
+  harness.window.GIS.state.getLayer = () => null;
+  let saves = 0;
+  harness.window.GIS.project = { autoSave() { saves++; return Promise.resolve(); } };
+
+  harness.layers.clearAll(true);
+
+  assert.equal(saves, 0);
+});
+
+test('visibility and committed opacity changes are saved to the project', () => {
+  const harness = loadLayerPanel();
+  let saves = 0;
+  harness.window.GIS.project = { autoSave() { saves++; return Promise.resolve(); } };
+  harness.state.getLayer = () => null;
+
+  harness.layers.toggleVisibility('layer-1');
+  const slider = { dataset: { id: 'layer-1' }, value: '40', closest(selector) {
+    return selector === '.layer-row-opacity' ? this : null;
+  } };
+  harness.tbody.fire('input', { target: slider });
+  harness.tbody.fire('change', { target: slider });
+  harness.layers.showAll();
+
+  assert.equal(harness.layers.getLayers()[0].visible, true);
+  assert.equal(harness.layers.getLayers()[0].opacity, 0.4);
+  assert.equal(saves, 3, 'opacity is saved once on commit, not for every drag input');
+});
+
+test('dragging a layer to a new panel position schedules an autosave', () => {
+  const harness = loadLayerPanel();
+  harness.layers.addLayer({ layer_id: 'layer-2', filename: 'Second' }, true);
+  let saves = 0;
+  harness.window.GIS.project = { autoSave() { saves++; return Promise.resolve(); } };
+  const row = index => ({
+    dataset: { index: String(index), id: index === 0 ? 'layer-1' : 'layer-2' },
+    classList: { add() {}, remove() {}, contains() { return false; } },
+  });
+  const source = row(0);
+  const target = row(1);
+  harness.tbody.fire('dragstart', {
+    target: { closest(selector) { return selector === 'tr[draggable]' ? source : selector === '.drag-handle' ? {} : null; } },
+    dataTransfer: { setData() {}, effectAllowed: '' },
+  });
+  harness.tbody.fire('drop', {
+    preventDefault() {},
+    target: { closest(selector) { return selector === 'tr[draggable]' ? target : null; } },
+  });
+
+  assert.deepEqual(Array.from(harness.layers.getLayers(), layer => layer.layer_id), ['layer-2', 'layer-1']);
+  assert.equal(saves, 1);
+});
+
+test('choosing a layer color schedules an autosave after the picker commits', () => {
+  const harness = loadLayerPanel();
+  let saves = 0;
+  harness.window.GIS.project = { autoSave() { saves++; return Promise.resolve(); } };
+  const dot = { dataset: { id: 'layer-1', color: '#123456' } };
+  harness.tbody.fire('click', { target: { closest(selector) { return selector === '.layer-color-dot' ? dot : null; } } });
+
+  const colorInput = harness.createdElements.find(element => element.type === 'color');
+  assert.ok(colorInput);
+  colorInput.fire('change');
+  assert.equal(saves, 1);
+});
+
+test('adding and clearing layer labels updates the saved layer assignment', () => {
+  const harness = loadLayerPanel();
+  let saves = 0;
+  const labelCalls = [];
+  harness.window.GIS.project = { autoSave() { saves++; return Promise.resolve(); } };
+  harness.window.GIS.map.setLabels = (...args) => { labelCalls.push(['set', ...args]); return true; };
+  harness.window.GIS.map.clearLabels = name => labelCalls.push(['clear', name]);
+
+  assert.equal(harness.layers.addLabels('Original', 'district'), true);
+  assert.deepEqual(Array.from(labelCalls[0]), ['set', 'Original', 'district', 12, '#333333']);
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.layers.getLayers()[0].labels)), {
+    field: 'district', fontSize: 12, color: '#333333',
+  });
+  harness.layers.clearLabels('Original');
+  assert.equal(harness.layers.getLayers()[0].labels, undefined);
+  assert.equal(saves, 2);
+});
+
 test('map cleanup failure does not leave a deleted layer registered for AI tools', async () => {
   const harness = loadLayerPanel();
   harness.state.getLayer = undefined;
@@ -247,6 +377,8 @@ test('map cleanup failure does not leave a deleted layer registered for AI tools
 
 test('double-click rename synchronizes panel, map, shared state, and backend registration', async () => {
   const harness = loadLayerPanel();
+  let saves = 0;
+  harness.window.GIS.project = { autoSave() { saves++; return Promise.resolve(); } };
   harness.tbody.fire('dblclick', { target: { closest: selector => selector === '.layer-name' ? harness.nameElement : null } });
   const input = harness.nameElement.children[0];
   assert.ok(input, 'double-click should open the shared rename editor');
@@ -261,6 +393,7 @@ test('double-click rename synchronizes panel, map, shared state, and backend reg
   assert.deepEqual(harness.stateRenames, [['layer-1', 'Renamed']]);
   assert.deepEqual(JSON.parse(JSON.stringify(harness.registered)),
     [['register', 'Original'], ['register', 'Renamed'], ['unregister', 'Original']]);
+  assert.equal(saves, 1, 'renaming a layer should persist its new project assignment');
 });
 
 test('Escape cancels a rename even if the editor later loses focus', async () => {
@@ -468,6 +601,29 @@ test('tool synchronization waits for an earlier edit and participates in the sav
   assert.equal(saved, false);
   finish({success: true}); await Promise.all([edit, sync, barrier]);
   assert.equal(calls.length, 2); assert.equal(calls[1], data); assert.equal(saved, true);
+});
+
+test('queued layer registration retains its original project context across a switch', async () => {
+  const h = loadLayerPanel(); await h.layers.waitForRegistrySync();
+  let finish;
+  const registrations = [];
+  h.backend.registerLayer = (name, data, _raster, projectId) => {
+    registrations.push([name, data, projectId]);
+    return registrations.length === 1
+      ? new Promise(resolve => { finish = resolve; })
+      : Promise.resolve({success: true});
+  };
+  const data = {type: 'FeatureCollection', features: []};
+  const edit = h.layers.syncLayerData('layer-1', data);
+  const sync = h.layers.syncToolLayer('Original');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(registrations.length, 1);
+  h.setProjectId('project-b');
+  finish({success: true});
+  await Promise.all([edit, sync]);
+
+  assert.equal(registrations.length, 2);
+  assert.deepEqual(registrations.map(row => row[2]), ['project-a', 'project-a']);
 });
 
 test('raster tool synchronization uses the same tracked registration and versioned deletion queue', async () => {

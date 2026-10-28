@@ -1,6 +1,7 @@
 import os
 import errno
 import logging
+import math
 # 启用 Windows 控制台 ANSI 颜色转义序列支持，防止乱码 [32m 显示
 if os.name == 'nt':
     os.system('')
@@ -19,7 +20,7 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import io
 from io import BytesIO
@@ -89,11 +90,16 @@ _GIT_COMMIT, _GIT_DIRTY = _read_git_version()
 
 app = FastAPI()
 
+_project_open_generation = 0
+_project_open_generation_lock = threading.Lock()
 _UPLOAD_REQUEST_CACHE_TTL_SECONDS = 15 * 60
 _UPLOAD_REQUEST_CACHE_LIMIT = 64
 _upload_request_lock = threading.RLock()
 _upload_request_active = set()
+_upload_request_phases = {}
 _upload_request_cache = OrderedDict()
+_upload_request_cancel_events = {}
+_upload_request_files = {}
 
 
 def _valid_upload_request_id(request_id):
@@ -107,14 +113,20 @@ def _prune_upload_request_cache(now=None):
                if now - item["created_at"] > _UPLOAD_REQUEST_CACHE_TTL_SECONDS]
     for key in expired:
         _upload_request_cache.pop(key, None)
+        _upload_request_files.pop(key, None)
     while len(_upload_request_cache) > _UPLOAD_REQUEST_CACHE_LIMIT:
-        _upload_request_cache.popitem(last=False)
+        key, _ = _upload_request_cache.popitem(last=False)
+        _upload_request_files.pop(key, None)
 
 
 def _remember_upload_request(request_id, result):
     if not request_id or not isinstance(result, dict) or result.get("error"):
         return
     if isinstance(result.get("csv_info"), dict):
+        record = {"kind": "result", "result": result}
+    elif isinstance(result.get("raster_info"), dict) and not result.get("registration_token"):
+        # PMTiles raster previews are complete upload results but are not
+        # registered in the in-memory layer registry like GeoTIFF rasters.
         record = {"kind": "result", "result": result}
     elif (isinstance(result.get("name"), str) and result.get("registration_token")
           and isinstance(result.get("geojson"), dict)):
@@ -148,6 +160,8 @@ def _resolve_upload_request(request_id):
         if record is None:
             return None
         _upload_request_cache.move_to_end(request_id)
+        if record["kind"] == "cancelled":
+            return {"error": "上传已取消"}
         if record["kind"] == "result":
             return dict(record["result"])
         name = record["name"]
@@ -167,6 +181,36 @@ def _resolve_upload_request(request_id):
             return {"name": name, "raster_info": dict(layer["raster"]),
                     "registration_token": registration_token, **extra}
     return None
+
+
+def _track_upload_request_file(request_id, path):
+    if request_id and path:
+        with _upload_request_lock:
+            _upload_request_files.setdefault(request_id, set()).add(path)
+
+
+def _remember_cancelled_upload(request_id):
+    with _upload_request_lock:
+        _upload_request_cache[request_id] = {
+            "kind": "cancelled", "created_at": time.monotonic(),
+        }
+        _upload_request_cache.move_to_end(request_id)
+        _prune_upload_request_cache()
+
+
+def _rollback_upload_request(request_id, result):
+    if isinstance(result, dict):
+        name = result.get("name")
+        token = result.get("registration_token")
+        if isinstance(name, str) and token:
+            _unregister_layer(name, token)
+    with _upload_request_lock:
+        paths = _upload_request_files.pop(request_id, set())
+    for path in paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 class _ProjectImportBodyLimitExceeded(Exception):
@@ -305,11 +349,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(GZipMiddleware, minimum_size=10000)  # 10KB 以上自动 gzip 压缩
+class RangeAwareGZipMiddleware:
+    """Keep byte-range offsets tied to the bytes actually returned."""
+
+    def __init__(self, app, minimum_size=500, compresslevel=9):
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=minimum_size, compresslevel=compresslevel)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and any(
+            name.lower() == b"range" for name, _value in scope.get("headers", [])
+        ):
+            await self.app(scope, receive, send)
+            return
+        await self.gzip(scope, receive, send)
+
+
+app.add_middleware(RangeAwareGZipMiddleware, minimum_size=10000)  # 10KB 以上自动 gzip 压缩
 
 # 动态支持 /output 产物文件访问（支持时间戳前缀自动解析与子目录查找，防止 404）
-def _output_path_is_within_root(path: str) -> bool:
-    root = os.path.realpath(_TEMP_OUTPUT_DIR)
+def _path_is_within_root(path: str, root_path: str) -> bool:
+    root = os.path.realpath(root_path)
     resolved = os.path.realpath(path)
     try:
         return os.path.normcase(os.path.commonpath((root, resolved))) == os.path.normcase(root)
@@ -317,19 +377,146 @@ def _output_path_is_within_root(path: str) -> bool:
         return False
 
 
-def _output_file_response(path: str, download: bool = False):
+def _output_path_is_within_root(path: str) -> bool:
+    return _path_is_within_root(path, _TEMP_OUTPUT_DIR)
+
+
+def _output_file_response(
+    path: str, download: bool = False, request: Request = None,
+    allowed_root: str = None, content_security_policy: str = None,
+):
     filename = os.path.basename(path) if download else None
     headers = {}
-    if os.path.splitext(path)[1].lower() in {".html", ".htm", ".xhtml", ".svg", ".xml", ".xsl", ".xslt"}:
+    if content_security_policy:
+        headers["Content-Security-Policy"] = content_security_policy
+        headers["X-Content-Type-Options"] = "nosniff"
+    elif os.path.splitext(path)[1].lower() in {".html", ".htm", ".xhtml", ".svg", ".xml", ".xsl", ".xslt"}:
         # Keep active generated content in an opaque browser origin, including
         # when opened as a top-level page instead of inside the chat iframe.
         headers["Content-Security-Policy"] = "sandbox allow-scripts"
         headers["X-Content-Type-Options"] = "nosniff"
-    return FileResponse(path, filename=filename, headers=headers)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="文件不存在") from exc
+    opened_file = os.fdopen(fd, "rb")
+    try:
+        opened_stat = os.fstat(fd)
+        current_stat = os.stat(path)
+        same_file = (opened_stat.st_dev, opened_stat.st_ino) == (current_stat.st_dev, current_stat.st_ino)
+        if (not same_file or not _path_is_within_root(path, allowed_root or _TEMP_OUTPUT_DIR)
+                or not os.path.isfile(path)):
+            raise HTTPException(status_code=403, detail="非法路径")
+        # FileResponse opens the path later, after route validation. Keep a
+        # descriptor to the verified file so a concurrent symlink swap cannot
+        # redirect the response between checking and reading.
+        metadata = FileResponse(path, filename=filename, headers=headers, stat_result=opened_stat)
+    except Exception:
+        opened_file.close()
+        raise
+
+    response_headers = dict(metadata.headers)
+    response_headers["accept-ranges"] = "bytes"
+    ranges = None
+    boundary = None
+    range_header = request.headers.get("range") if request is not None else None
+    if_range = request.headers.get("if-range") if request is not None else None
+    if if_range and if_range not in (response_headers.get("etag"), response_headers.get("last-modified")):
+        range_header = None
+    if range_header:
+        unit, separator, range_spec = range_header.partition("=")
+        if not separator or unit.strip().lower() != "bytes" or not range_spec.strip():
+            opened_file.close()
+            return Response(status_code=400)
+        range_items = range_spec.split(",")
+        if len(range_items) > 16:
+            opened_file.close()
+            return Response(status_code=400)
+        ranges = []
+        for item in range_items:
+            start_text, dash, end_text = item.strip().partition("-")
+            if not dash or (not start_text and not end_text) or (start_text and not start_text.isdigit()) or (end_text and not end_text.isdigit()):
+                opened_file.close()
+                return Response(status_code=400)
+            try:
+                if not start_text:
+                    suffix_length = int(end_text)
+                    if suffix_length <= 0:
+                        continue
+                    start = max(0, opened_stat.st_size - suffix_length)
+                    end = opened_stat.st_size
+                else:
+                    start = int(start_text)
+                    end = min(int(end_text) + 1, opened_stat.st_size) if end_text else opened_stat.st_size
+            except ValueError:
+                opened_file.close()
+                return Response(status_code=400)
+            if start < opened_stat.st_size and start < end:
+                ranges.append((start, end))
+        if not ranges:
+            opened_file.close()
+            return Response(status_code=416, headers={"content-range": f"bytes */{opened_stat.st_size}"})
+        # Coalesce overlapping or adjacent ranges so a short request cannot
+        # amplify the response by asking for the same bytes repeatedly.
+        ranges.sort()
+        coalesced_ranges = []
+        for start, end in ranges:
+            if coalesced_ranges and start <= coalesced_ranges[-1][1]:
+                previous_start, previous_end = coalesced_ranges[-1]
+                coalesced_ranges[-1] = (previous_start, max(previous_end, end))
+            else:
+                coalesced_ranges.append((start, end))
+        ranges = coalesced_ranges
+        response_headers.pop("content-length", None)
+        if len(ranges) == 1:
+            start, end = ranges[0]
+            response_headers["content-range"] = f"bytes {start}-{end - 1}/{opened_stat.st_size}"
+            response_headers["content-length"] = str(end - start)
+        else:
+            boundary = uuid.uuid4().hex
+            media_type = response_headers.get("content-type", "application/octet-stream")
+            response_headers["content-type"] = f"multipart/byteranges; boundary={boundary}"
+            response_headers.pop("content-range", None)
+
+    async def stream_file():
+        try:
+            if ranges is None:
+                while True:
+                    chunk = opened_file.read(64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            elif len(ranges) == 1:
+                start, end = ranges[0]
+                opened_file.seek(start)
+                while start < end:
+                    chunk = opened_file.read(min(64 * 1024, end - start))
+                    if not chunk:
+                        break
+                    start += len(chunk)
+                    yield chunk
+            else:
+                media_type = metadata.headers.get("content-type", "application/octet-stream")
+                for start, end in ranges:
+                    yield f"--{boundary}\r\nContent-Type: {media_type}\r\nContent-Range: bytes {start}-{end - 1}/{opened_stat.st_size}\r\n\r\n".encode("latin-1")
+                    opened_file.seek(start)
+                    while start < end:
+                        chunk = opened_file.read(min(64 * 1024, end - start))
+                        if not chunk:
+                            break
+                        start += len(chunk)
+                        yield chunk
+                    yield b"\r\n"
+                yield f"--{boundary}--\r\n".encode("latin-1")
+        finally:
+            opened_file.close()
+
+    return StreamingResponse(stream_file(), status_code=206 if ranges else 200,
+                             headers=response_headers, media_type=None)
 
 
 @app.get("/output/{filename:path}")
-async def serve_output_file(filename: str, download: bool = False):
+async def serve_output_file(filename: str, download: bool = False, request: Request = None):
     import glob
     # 路径穿越防护：解析符号链接后仍必须位于 _TEMP_OUTPUT_DIR 内
     _norm_base = os.path.normpath(_TEMP_OUTPUT_DIR)
@@ -346,7 +533,7 @@ async def serve_output_file(filename: str, download: bool = False):
     ):
         raise HTTPException(status_code=403, detail="非法路径")
     if os.path.isfile(direct_path):
-        return _output_file_response(direct_path, download)
+        return _output_file_response(direct_path, download, request)
     
     base_name = os.path.basename(filename)
     matches = glob.glob(os.path.join(_TEMP_OUTPUT_DIR, f"*_{base_name}"))
@@ -358,7 +545,7 @@ async def serve_output_file(filename: str, download: bool = False):
     matches = [path for path in matches if _output_path_is_within_root(path)]
     if matches:
         matches.sort(key=os.path.getmtime, reverse=True)
-        return _output_file_response(matches[0], download)
+        return _output_file_response(matches[0], download, request)
     
     raise HTTPException(status_code=404, detail=f"文件不存在: {filename}")
 
@@ -369,6 +556,7 @@ app.mount("/output", StaticFiles(directory=_TEMP_OUTPUT_DIR), name="output")
 class ChatRequest(BaseModel):
     message: str                          # 用户发送的消息
     session_id: str = "default"           # 会话ID，用来区分不同的聊天会话
+    request_id: Optional[str] = Field(default=None, max_length=128)  # 单次请求 ID
     api_key: Optional[str] = None         # API 密钥（迁移兼容：llm_config 为空时兜底）
     provider: str = "deepseek"            # 旧 provider 名，仅展示/兼容，不参与调用逻辑
     llm_config: Optional[LLMConfig] = None  # 完整 Provider 配置（主数据源，含 base_url/model/api_key/开关）
@@ -443,6 +631,7 @@ async def chat(request: ChatRequest):
         cfg=cfg,
         force_skills=request.force_skills,
         amap_key=request.amap_key,
+        request_id=request.request_id,
         provider=request.provider or "",
         mode=request.mode,
         task_id=request.task_id,
@@ -536,6 +725,7 @@ def _synthetic_done_stream(result: dict):
         "task_id": result.get("task_id"),
         "run_id": result.get("run_id"),
         "execution_status": result.get("execution_status"),
+        "busy": bool(result.get("busy")),
     }
     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -547,7 +737,7 @@ async def chat_stream(request: ChatRequest):
     from backend.services.ai_service import (
         _build_system_content, _build_langgraph_messages, _get_or_create_history,
         _rebase_history_context,
-        _try_handle_confirm_command, commit_assistant_reply,
+        _handle_pending_action_safely, commit_assistant_reply,
     )
     from backend.services import pending_action as _pa
 
@@ -574,15 +764,15 @@ async def chat_stream(request: ChatRequest):
 
     # === 确定性短指令：pending task 的“继续/确认/执行/取消”直接处理，不走 LLM ===
     if not has_attachment:
-        handled = _try_handle_confirm_command(session_id, request.message)
+        handled = await asyncio.to_thread(
+            _handle_pending_action_safely, session_id, request.message,
+        )
         if handled is not None:
             return StreamingResponse(
                 _synthetic_done_stream(handled),
                 media_type="text/event-stream",
                 headers=_SSE_HEADERS,
             )
-        # 正常 Agent 流程：先清掉上一轮遗留 pending（本轮结束时由 auto-promote 重新挂起）
-        _pa.clear_pending_action(session_id)
 
     if _ctx_backfill:
         request.message = _ctx_backfill
@@ -643,6 +833,7 @@ async def chat_stream(request: ChatRequest):
                 skill_text=skill_text,
                 original_message=original_message,
                 session_id=session_id,
+                request_id=request.request_id,
                 mode=request.mode,
                 read_only_location_analysis=request.read_only_location_analysis,
                 task_id=request.task_id,
@@ -677,8 +868,7 @@ async def chat_stream(request: ChatRequest):
             # 客户端断开（用户取消/页面关闭）时，仅标记本会话取消，
             # 不再写全局标志并发中的其他会话不受影响
             import backend.services.ai_service as _ai_svc
-            _ai_svc.clear_session_cancel(session_id)
-            _ai_svc.request_cancel(session_id)
+            _ai_svc.request_cancel(session_id, request.request_id)
         except Exception:
             # 生成器初始化或执行阶段异常也要成为可读的 SSE 事件，
             # 否则浏览器只能看到断流并可能误判为可安全重试。
@@ -696,9 +886,11 @@ async def chat_stream(request: ChatRequest):
     )
 
 @app.post("/api/cancel")
-async def cancel_request(session_id: str = ""):
+async def cancel_request(session_id: str = "", request_id: str = Query(default="", max_length=128)):
     """取消当前 AI 请求（带 session_id 时只取消该会话，兼容不带的全局取消）"""
-    result = request_cancel(session_id)
+    if request_id and not session_id:
+        raise HTTPException(status_code=400, detail="按请求取消时必须提供 session_id")
+    result = request_cancel(session_id, request_id or None)
     return {"status": "ok", "message": result}
 
 @app.get("/favicon.ico")
@@ -1112,19 +1304,99 @@ def _register_uploaded_vector(name, geojson, provenance=None):
     if (not all(isinstance(value, (int, float)) and math.isfinite(value) for value in bounds)
             or not (-180 <= bounds[0] <= bounds[2] <= 180 and -90 <= bounds[1] <= bounds[3] <= 90)):
         raise ValueError("坐标超出 WGS-84 范围；请提供正确 CRS 或转换为 EPSG:4326 后上传")
-    return _register_layer(name, geojson, provenance=provenance)
+    return _register_layer(name, geojson, provenance=provenance, unique_name=True)
+
+
+async def _register_upload_layer_async(register, name, *args):
+    """Keep a worker-thread registration reversible if its upload task is cancelled."""
+    worker = asyncio.create_task(asyncio.to_thread(register, *args))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # Cancelling to_thread does not stop its worker. Wait for the token so
+        # this exact registration can be removed after the worker finishes.
+        try:
+            token = await asyncio.shield(worker)
+        except BaseException:
+            token = None
+        if token:
+            _unregister_layer(name, token)
+        raise
+
+
+async def _register_uploaded_vector_async(name, geojson, provenance=None):
+    from backend.services import tools
+
+    def register_and_resolve_name():
+        token = _register_uploaded_vector(name, geojson, provenance)
+        with tools._state_lock:
+            registered_name = next(
+                (layer_name for layer_name, info in tools._registered_layers.items()
+                 if info.get("registration_token") == token),
+                name,
+            )
+        return registered_name, token
+
+    worker = asyncio.create_task(asyncio.to_thread(register_and_resolve_name))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            registered_name, token = await asyncio.shield(worker)
+        except BaseException:
+            registered_name, token = name, None
+        if token:
+            _unregister_layer(registered_name, token)
+        raise
 
 
 @app.get('/api/upload/status/{request_id}')
 async def upload_status(request_id: str):
     if not _valid_upload_request_id(request_id):
         raise HTTPException(status_code=400, detail="无效的上传请求编号")
+    with _upload_request_lock:
+        _prune_upload_request_cache()
+        record = _upload_request_cache.get(request_id)
+        if record and record.get("kind") == "cancelled":
+            return {"status": "cancelled"}
     result = _resolve_upload_request(request_id)
+    if result and result.get("error") == "上传已取消":
+        return {"status": "cancelled"}
     if result is not None:
         return {"status": "completed", "result": result}
     with _upload_request_lock:
         active = request_id in _upload_request_active
-    return {"status": "processing" if active else "unknown"}
+        phase = _upload_request_phases.get(request_id)
+    payload = {"status": "processing" if active else "unknown"}
+    if active and phase:
+        payload["phase"] = phase
+    return payload
+
+
+@app.post('/api/upload/cancel/{request_id}')
+async def cancel_upload(request_id: str):
+    if not _valid_upload_request_id(request_id):
+        raise HTTPException(status_code=400, detail="无效的上传请求编号")
+    with _upload_request_lock:
+        _prune_upload_request_cache()
+        event = _upload_request_cancel_events.get(request_id)
+        record = _upload_request_cache.get(request_id)
+        if event is not None:
+            event.set()
+            _upload_request_phases[request_id] = "cancelling"
+            return {"status": "cancelling"}
+    if record and record.get("kind") == "cancelled":
+        return {"status": "cancelled"}
+    if record is not None:
+        result = _resolve_upload_request(request_id)
+        if result is not None and not result.get("error"):
+            _rollback_upload_request(request_id, result)
+            _remember_cancelled_upload(request_id)
+            return {"status": "cancelled"}
+        return {"status": "completed"}
+    # Cancellation can arrive before the multipart parser dispatches the upload route.
+    _remember_cancelled_upload(request_id)
+    return {"status": "cancelled"}
 
 
 @app.post('/api/upload')
@@ -1146,27 +1418,71 @@ async def upload(file: UploadFile = File(...), request_id: Optional[str] = None)
         if result is not None:
             return result
         _upload_request_active.add(request_id)
+        _upload_request_phases[request_id] = "saving"
+        cancel_event = threading.Event()
+        _upload_request_cancel_events[request_id] = cancel_event
+        _upload_request_files[request_id] = set()
     try:
-        result = await _process_uploaded_file(file)
-        _remember_upload_request(request_id, result)
+        result = await _process_uploaded_file(file, request_id)
+        with _upload_request_lock:
+            cancelled = cancel_event.is_set()
+            if not cancelled:
+                _remember_upload_request(request_id, result)
+                _upload_request_active.discard(request_id)
+                _upload_request_phases.pop(request_id, None)
+                _upload_request_cancel_events.pop(request_id, None)
+        if cancelled:
+            _rollback_upload_request(request_id, result)
+            _remember_cancelled_upload(request_id)
+            return {"error": "上传已取消"}
         return result
     finally:
         with _upload_request_lock:
             _upload_request_active.discard(request_id)
+            _upload_request_phases.pop(request_id, None)
+            _upload_request_cancel_events.pop(request_id, None)
+            cached = request_id in _upload_request_cache
+            cancellation_requested = cancel_event.is_set()
+        if not cached:
+            _rollback_upload_request(request_id, None)
+            if cancellation_requested:
+                # Processing can fail after the client received "cancelling".
+                # Keep the terminal receipt so recovery polling does not report
+                # an unknown request after cleanup already succeeded.
+                _remember_cancelled_upload(request_id)
 
 
-async def _process_uploaded_file(file: UploadFile):
-    import os, tempfile, zipfile, orjson
+def _set_upload_request_phase(request_id, phase):
+    if request_id:
+        with _upload_request_lock:
+            if request_id in _upload_request_active:
+                _upload_request_phases[request_id] = phase
+
+
+def _read_uploaded_bytes(path):
+    with open(path, "rb") as source:
+        return source.read()
+
+
+async def _process_uploaded_file(file: UploadFile, request_id=None):
+    import os, tempfile, zipfile, orjson, unicodedata
     from urllib.parse import quote
     loop = asyncio.get_event_loop()
     # UploadFile.filename is client-controlled. Treat both slash styles as
     # separators so Windows paths are safe even when the server runs elsewhere.
     filename = str(file.filename or '').replace('\\', '/').rsplit('/', 1)[-1]
+    try:
+        filename_utf8_bytes = len(filename.encode('utf-8'))
+        filename_utf16_units = len(filename.encode('utf-16-le')) // 2
+    except UnicodeEncodeError:
+        return {"error": "无效的上传文件名"}
     if (filename in ('', '.', '..') or len(filename) > 240
+            or filename_utf8_bytes > 240 or filename_utf16_units > 240
             or any(ord(char) < 32 or char in '<>:"|?*' for char in filename)
             or filename.rstrip(' .') != filename
             or filename.split('.', 1)[0].upper() in {'CON', 'PRN', 'AUX', 'NUL',
-                *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}):
+                *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10)),
+                *(f'{prefix}{digit}' for prefix in ('COM', 'LPT') for digit in ('¹', '²', '³'))}):
         return {"error": "无效的上传文件名"}
     ext = os.path.splitext(filename)[1].lower()
     allowed = {'.geojson', '.json', '.gpkg', '.kml', '.kmz', '.gpx', '.dxf', '.zip',
@@ -1178,6 +1494,13 @@ async def _process_uploaded_file(file: UploadFile):
     upload_fd = None
     from backend.services.tools import get_registered_layers_snapshot
     registered_names = {item.get('filename') or item.get('name') for item in get_registered_layers_snapshot()}
+    registered_name_keys = {
+        unicodedata.normalize('NFC', name) for name in registered_names if isinstance(name, str)
+    }
+
+    def _registered_name_key(name):
+        return unicodedata.normalize('NFC', name)
+
     if ext not in ('.tif', '.tiff'):
         # 所有格式原子预留文件名，避免同名 CSV/数据源覆盖仍在使用的文件。
         stem, file_ext = os.path.splitext(filename)
@@ -1185,7 +1508,8 @@ async def _process_uploaded_file(file: UploadFile):
         while True:
             candidate = filename if suffix == 0 else f"{stem}_{suffix}{file_ext}"
             candidate_path = os.path.join(upload_dir, candidate)
-            if candidate in registered_names or os.path.splitext(candidate)[0] in registered_names:
+            if (_registered_name_key(candidate) in registered_name_keys
+                    or _registered_name_key(os.path.splitext(candidate)[0]) in registered_name_keys):
                 suffix += 1
                 continue
             try:
@@ -1203,7 +1527,8 @@ async def _process_uploaded_file(file: UploadFile):
             candidate = filename if suffix == 0 else f"{stem}_{suffix}{file_ext}"
             candidate_path = os.path.join(upload_dir, candidate)
             candidate_png_path = os.path.join(upload_dir, f"{os.path.splitext(candidate)[0]}.png")
-            if candidate in registered_names or os.path.splitext(candidate)[0] in registered_names:
+            if (_registered_name_key(candidate) in registered_name_keys
+                    or _registered_name_key(os.path.splitext(candidate)[0]) in registered_name_keys):
                 suffix += 1
                 continue
             try:
@@ -1229,6 +1554,8 @@ async def _process_uploaded_file(file: UploadFile):
             break
     saved_path = os.path.join(upload_dir, filename)
     png_path = os.path.join(upload_dir, f"{os.path.splitext(filename)[0]}.png") if ext in ('.tif', '.tiff') else None
+    _track_upload_request_file(request_id, saved_path)
+    _track_upload_request_file(request_id, png_path)
     def _discard_saved_upload():
         for path in (saved_path, png_path):
             if path:
@@ -1238,6 +1565,7 @@ async def _process_uploaded_file(file: UploadFile):
                     pass
 
     max_bytes = (64 if ext in ('.geojson', '.json', '.csv') else 300) * 1024 * 1024
+    _set_upload_request_phase(request_id, "saving")
     file_size = 0
     try:
         with os.fdopen(upload_fd, 'wb') as f:
@@ -1263,10 +1591,13 @@ async def _process_uploaded_file(file: UploadFile):
     if file_size > max_bytes:
         _discard_saved_upload()
         return {"error": "文件超过 %dMB 读取限制，请拆分后上传" % (max_bytes // (1024 * 1024))}
+    if file_size == 0:
+        _discard_saved_upload()
+        return {"error": "上传文件为空，请选择包含数据的文件"}
+    _set_upload_request_phase(request_id, "parsing")
     content = None
     if ext in ('.geojson', '.json') and file_size <= 64 * 1024 * 1024:
-        with open(saved_path, 'rb') as f:
-            content = f.read()
+        content = await asyncio.to_thread(_read_uploaded_bytes, saved_path)
 
     # ===== GeoJSON =====
     if ext == '.geojson' or ext == '.json':
@@ -1298,7 +1629,7 @@ async def _process_uploaded_file(file: UploadFile):
         if isinstance(geojson_data, dict) and geojson_data.get('type') in ('FeatureCollection', 'Feature'):
             try:
                 provenance = _uploaded_vector_provenance(filename, source_crs)
-                token = await asyncio.to_thread(_register_uploaded_vector, filename, geojson_data, provenance)
+                filename, token = await _register_uploaded_vector_async(filename, geojson_data, provenance)
             except (ValueError, TypeError, AttributeError) as exc:
                 _discard_saved_upload()
                 return {"error": "GeoJSON 格式无效: %s" % exc}
@@ -1313,7 +1644,7 @@ async def _process_uploaded_file(file: UploadFile):
             fc = {"type": "FeatureCollection", "features": features}
             try:
                 provenance = _uploaded_vector_provenance(filename, source_crs)
-                token = await asyncio.to_thread(_register_uploaded_vector, filename, fc, provenance)
+                filename, token = await _register_uploaded_vector_async(filename, fc, provenance)
             except (ValueError, TypeError, AttributeError) as exc:
                 _discard_saved_upload()
                 return {"error": "GeoJSON 格式无效: %s" % exc}
@@ -1330,16 +1661,53 @@ async def _process_uploaded_file(file: UploadFile):
                     _discard_saved_upload()
                     return {"error": message}
 
-                members = zf.namelist()
+                infos = zf.infolist()
+                members = [info.filename for info in infos]
                 if any(not _is_safe_zip_member(member) for member in members):
                     return _reject_zip_upload("ZIP 包包含不安全的文件路径，已拒绝解压")
-                if len(members) > 10000 or sum(info.file_size for info in zf.infolist()) > 512 * 1024 * 1024:
+                from pathlib import PurePosixPath
+                normalized_members = set()
+                windows_name_translation = str.maketrans(':<>|"?*', '_' * 7)
+                for member in members:
+                    # Match the Windows extraction rules on every host: paths
+                    # differing only by case, illegal characters, or trailing
+                    # dots/spaces can otherwise overwrite the same component.
+                    normalized_path = PurePosixPath(member.replace("\\", "/")).as_posix()
+                    parts = [part.translate(windows_name_translation).rstrip(" .")
+                             for part in normalized_path.split("/")]
+                    if any(project_service._is_windows_reserved_path_component(part) for part in parts):
+                        return _reject_zip_upload("ZIP 包包含 Windows 保留设备名，已拒绝解压")
+                    normalized = "/".join(part for part in parts if part).casefold()
+                    if not normalized:
+                        return _reject_zip_upload("ZIP 包包含无法安全解压的文件路径")
+                    if normalized in normalized_members:
+                        return _reject_zip_upload("ZIP 包包含重复的文件路径，可能覆盖 Shapefile 数据，请重新打包")
+                    normalized_members.add(normalized)
+                if len(members) > 10000 or sum(info.file_size for info in infos) > 512 * 1024 * 1024:
                     return _reject_zip_upload("ZIP 解压内容超过 512MB 或 10000 个文件限制，请拆分后上传")
                 shp_files = [n for n in members if n.lower().endswith('.shp')]
                 if not shp_files:
                     return _reject_zip_upload("ZIP 包中没有找到 .shp 文件")
                 if len(shp_files) > 1:
                     return _reject_zip_upload("ZIP 包包含多个 Shapefile 数据集，请拆分后分别上传")
+                import posixpath
+                shp_member = shp_files[0].replace("\\", "/")
+                shp_stem = posixpath.splitext(shp_member)[0].casefold()
+                component_keys = set()
+                for member in members:
+                    normalized = member.replace("\\", "/")
+                    if normalized.endswith("/"):
+                        continue
+                    stem, suffix = posixpath.splitext(normalized)
+                    component_keys.add((stem.casefold(), suffix.lower()))
+                required_components = (".dbf", ".shx", ".prj")
+                missing_components = [suffix for suffix in required_components
+                                      if (shp_stem, suffix) not in component_keys]
+                if missing_components:
+                    missing_label = "、".join(missing_components)
+                    return _reject_zip_upload(
+                        f"Shapefile 缺少必要配套文件：{missing_label}。请补齐后重新打包 ZIP 上传"
+                    )
                 with tempfile.TemporaryDirectory() as tmpdir:
                     await asyncio.to_thread(zf.extractall, tmpdir)
                     shp_path = os.path.join(tmpdir, shp_files[0])
@@ -1355,7 +1723,7 @@ async def _process_uploaded_file(file: UploadFile):
                     # common name such as data.shp would collide across ZIPs.
                     name = os.path.splitext(filename)[0]
                     provenance = _uploaded_vector_provenance(filename, source_crs)
-                    token = await asyncio.to_thread(_register_uploaded_vector, name, geojson_data, provenance)
+                    name, token = await _register_uploaded_vector_async(name, geojson_data, provenance)
                     return {"geojson": geojson_data, "name": name, "registration_token": token, "provenance": provenance}
         except zipfile.BadZipFile:
             _discard_saved_upload()
@@ -1391,7 +1759,7 @@ async def _process_uploaded_file(file: UploadFile):
             geojson_data = await asyncio.to_thread(lambda: gdf.to_crs("EPSG:4326").__geo_interface__)
             name = os.path.splitext(filename)[0]
             provenance = _uploaded_vector_provenance(filename, source_crs)
-            token = await asyncio.to_thread(_register_uploaded_vector, name, geojson_data, provenance)
+            name, token = await _register_uploaded_vector_async(name, geojson_data, provenance)
             return {"geojson": geojson_data, "name": name, "registration_token": token, "provenance": provenance}
         except Exception as e:
             return {"error": f"无法读取 {ext} 文件: {str(e)[:200]}"}
@@ -1404,7 +1772,7 @@ async def _process_uploaded_file(file: UploadFile):
         tif_path = saved_path
         try:
             import rasterio
-            from rasterio.enums import Resampling
+            from rasterio.enums import ColorInterp, Resampling
             from rasterio.transform import Affine, array_bounds
             from rasterio.warp import calculate_default_transform, reproject, transform_bounds
             import numpy as np
@@ -1440,7 +1808,26 @@ async def _process_uploaded_file(file: UploadFile):
                 preview_transform = src.transform * Affine.scale(
                     src.width / preview_width, src.height / preview_height,
                 )
-                if src.count >= 3:
+                rgb_bands = {
+                    interpretation: index
+                    for index, interpretation in enumerate(src.colorinterp, start=1)
+                    if interpretation in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)
+                }
+                if all(channel in rgb_bands for channel in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)):
+                    display_bands = tuple(
+                        rgb_bands[channel]
+                        for channel in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)
+                    )
+                    source_rgb = src.read(
+                        display_bands, out_shape=(3, preview_height, preview_width),
+                        resampling=Resampling.bilinear, masked=True,
+                    )
+                    red, green, blue = [
+                        np.ma.filled(source_rgb[index].astype(np.float32), np.nan)
+                        for index in range(3)
+                    ]
+                    valid = ~np.ma.getmaskarray(source_rgb).any(axis=0)
+                elif src.count >= 3:
                     source_rgb = src.read(
                         (1, 2, 3), out_shape=(3, preview_height, preview_width),
                         resampling=Resampling.bilinear, masked=True,
@@ -1458,6 +1845,25 @@ async def _process_uploaded_file(file: UploadFile):
                     band = np.ma.filled(source_band.astype(np.float32), np.nan)
                     red = green = blue = band
                     valid = ~np.ma.getmaskarray(source_band)
+
+                alpha_band = next(
+                    (index for index, interpretation in enumerate(src.colorinterp, start=1)
+                     if interpretation == ColorInterp.alpha),
+                    None,
+                )
+                source_alpha = None
+                if alpha_band is not None:
+                    alpha_values = src.read(
+                        alpha_band, out_shape=(preview_height, preview_width),
+                        resampling=Resampling.bilinear, masked=True,
+                    )
+                    alpha_dtype = np.dtype(src.dtypes[alpha_band - 1])
+                    alpha_scale = float(np.iinfo(alpha_dtype).max) if np.issubdtype(
+                        alpha_dtype, np.integer
+                    ) else 1.0
+                    source_alpha = np.ma.filled(alpha_values.astype(np.float32), 0.0)
+                    source_alpha = np.clip(source_alpha / alpha_scale, 0.0, 1.0) * 255.0
+                    source_alpha[~np.isfinite(source_alpha)] = 0.0
 
                 valid &= np.isfinite(red) & np.isfinite(green) & np.isfinite(blue)
 
@@ -1512,6 +1918,17 @@ async def _process_uploaded_file(file: UploadFile):
                     src_nodata=0, dst_nodata=0, resampling=Resampling.nearest,
                 )
                 rgba = np.dstack((rgb, destination_valid * 255))
+                if source_alpha is not None:
+                    destination_alpha = np.zeros((dst_height, dst_width), dtype=np.float32)
+                    reproject(
+                        source=source_alpha, destination=destination_alpha,
+                        src_transform=preview_transform, src_crs=source_crs,
+                        dst_transform=dst_transform, dst_crs=dst_crs,
+                        dst_nodata=0, resampling=Resampling.bilinear,
+                    )
+                    # The explicit alpha band must not make RGB NoData pixels opaque.
+                    combined_alpha = np.clip(destination_alpha, 0, 255) * destination_valid
+                    rgba[:, :, 3] = np.rint(combined_alpha).astype(np.uint8)
                 img = Image.fromarray(rgba, mode="RGBA")
                 name = os.path.splitext(filename)[0]
                 png_name = f"{name}.png"
@@ -1531,7 +1948,10 @@ async def _process_uploaded_file(file: UploadFile):
                 "source_width": source_width, "source_height": source_height,
                 "preview_downsampled": preview_downsampled,
                 "bands": source_bands, "nodata": source_nodata if source_nodata is None or np.isfinite(source_nodata) else None,
-                "pixel_size": [abs(source_transform.a), abs(source_transform.e)],
+                "pixel_size": [
+                    math.hypot(source_transform.a, source_transform.d),
+                    math.hypot(source_transform.b, source_transform.e),
+                ],
                 "pixel_units": source_crs.linear_units if source_crs.is_projected else ("degree" if source_is_geographic else "unknown"),
                 "value_units": source_value_units,
                 "vertical_datum": source_tags.get("VERTICAL_DATUM"),
@@ -1543,7 +1963,9 @@ async def _process_uploaded_file(file: UploadFile):
                     + ([source_quality_note] if source_quality_note else [])
                 ),
             }
-            token = await asyncio.to_thread(_register_raster_layer, name, raster_info, saved_path)
+            token = await _register_upload_layer_async(
+                _register_raster_layer, name, name, raster_info, saved_path,
+            )
             return {
                 "name": name,
                 "raster_info": raster_info,
@@ -1573,9 +1995,39 @@ async def _process_uploaded_file(file: UploadFile):
         try:
             def read_csv_preview():
                 import pandas as pd
+                preview = []
+                columns = None
+                preview_frame = None
+                chunk_dtypes = {}
+                rows = 0
                 with open(saved_path, 'r', encoding='utf-8-sig', newline='') as source:
-                    df = pd.read_csv(source)
-                return df.columns.tolist(), orjson.loads(df.head(3).to_json(orient='records')), len(df)
+                    for chunk in pd.read_csv(source, chunksize=10_000):
+                        if columns is None:
+                            columns = chunk.columns.tolist()
+                            chunk_dtypes = {
+                                column: chunk[column].dtype for column in columns
+                            }
+                        else:
+                            for column in columns:
+                                current_dtype = chunk[column].dtype
+                                if current_dtype != chunk_dtypes[column]:
+                                    chunk_dtypes[column] = pd.concat([
+                                        pd.Series(dtype=chunk_dtypes[column]),
+                                        pd.Series(dtype=current_dtype),
+                                    ], ignore_index=True).dtype
+                        if preview_frame is None:
+                            preview_frame = chunk.head(3).copy()
+                        rows += len(chunk)
+                if preview_frame is not None:
+                    for column, common_dtype in chunk_dtypes.items():
+                        if pd.api.types.is_object_dtype(common_dtype):
+                            preview_frame[column] = preview_frame[column].map(
+                                lambda value: value if pd.isna(value) else str(value)
+                            )
+                        else:
+                            preview_frame[column] = preview_frame[column].astype(common_dtype)
+                    preview = orjson.loads(preview_frame.to_json(orient='records'))
+                return columns or [], preview, rows
             columns, preview, rows = await asyncio.to_thread(read_csv_preview)
 
             return {
@@ -1602,7 +2054,7 @@ async def _process_uploaded_file(file: UploadFile):
                     geojson, info = await asyncio.to_thread(cn.pmtiles_vector_to_geojson, saved_path)
                     source_crs = info.get("crs") if isinstance(info, dict) else None
                     provenance = _uploaded_vector_provenance(filename, source_crs)
-                    token = await asyncio.to_thread(_register_uploaded_vector, name, geojson, provenance)
+                    name, token = await _register_uploaded_vector_async(name, geojson, provenance)
                     return {"geojson": geojson, "name": name, "registration_token": token, "pmtiles_info": info, "provenance": provenance}
                 except cn.CloudNativeError:
                     # 栅格 PMTiles：中心瓦片作为影像叠加
@@ -1619,6 +2071,7 @@ async def _process_uploaded_file(file: UploadFile):
                             break
                         except FileExistsError:
                             tile_suffix += 1
+                    _track_upload_request_file(request_id, tile_path)
                     try:
                         with os.fdopen(tile_fd, "wb") as f:
                             f.write(tile_bytes)
@@ -1639,7 +2092,7 @@ async def _process_uploaded_file(file: UploadFile):
             geojson, meta = await asyncio.to_thread(cn.cloud_vector_to_geojson, saved_path, fmt)
             source_crs = meta.get("crs") if isinstance(meta, dict) else None
             provenance = _uploaded_vector_provenance(filename, source_crs, fmt)
-            token = await asyncio.to_thread(_register_uploaded_vector, name, geojson, provenance)
+            name, token = await _register_uploaded_vector_async(name, geojson, provenance)
             return {"geojson": geojson, "name": name, "registration_token": token, "meta": meta, "provenance": provenance}
         except cn.CloudNativeError as e:
             _discard_saved_upload()
@@ -1663,8 +2116,8 @@ class ProjectSaveRequest(BaseModel):
     layer_groups: list = []
 
 class ProjectAutoSaveRequest(BaseModel):
-    layer_groups: list = []
-    layer_assignments: list[dict] = []
+    layer_groups: Optional[list] = None
+    layer_assignments: Optional[list[dict]] = None
 
 class ProjectRenameRequest(BaseModel):
     name: str
@@ -1717,8 +2170,35 @@ async def save_project(req: ProjectSaveRequest):
 async def load_project(project_id: str):
     # activate_project 内部会做图层注册/边界计算等重活（含锁操作），
     # 必须挪出事件循环，否则大工程会卡死健康检查/取消等所有请求
+    global _project_open_generation
+    with _project_open_generation_lock:
+        _project_open_generation += 1
+        request_generation = _project_open_generation
+
+    def is_latest_open():
+        with _project_open_generation_lock:
+            return request_generation == _project_open_generation
+
+    worker = asyncio.create_task(asyncio.to_thread(
+        project_service.open_project, project_id, is_latest_open,
+    ))
     try:
-        result = await asyncio.to_thread(project_service.open_project, project_id)
+        result = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        # A cancelled await does not stop the worker thread. Invalidate this
+        # generation so open_project cannot activate after the caller leaves.
+        with _project_open_generation_lock:
+            if request_generation == _project_open_generation:
+                _project_open_generation += 1
+        try:
+            await asyncio.shield(worker)
+        except BaseException:
+            pass
+        raise
+    except project_service.ProjectOpenSuperseded as exc:
+        raise HTTPException(status_code=409, detail="工程加载已被更新的请求取代") from exc
+    except project_service.ProjectActivationBusy as exc:
+        raise HTTPException(status_code=409, detail="当前 GIS 操作仍在进行，请稍后重试打开工程") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
@@ -1726,29 +2206,30 @@ async def load_project(project_id: str):
     return result
 
 @app.get("/api/projects/{project_id}/assets/{filename}")
-async def get_project_asset(project_id: str, filename: str):
+async def get_project_asset(project_id: str, filename: str, request: Request):
     path = await asyncio.to_thread(project_service.get_project_raster_asset, project_id, filename)
     if path is None:
         raise HTTPException(status_code=404, detail="工程资源不存在")
-    import mimetypes
-    return FileResponse(
+    # Anchor the file response at the canonical project directory. Using the
+    # assets path itself as the allowed root would let an assets-directory
+    # symlink make both the file and its check root resolve outside the project.
+    allowed_root = project_service._project_dir(project_id)
+    return _output_file_response(
         path,
-        media_type=mimetypes.guess_type(path)[0] or "application/octet-stream",
-        headers={
-            "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
-        },
+        request=request,
+        allowed_root=allowed_root,
+        content_security_policy="sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
     )
 
 @app.delete("/api/projects/{project_id}")
 async def delete_project(project_id: str):
-    await asyncio.to_thread(project_service.delete_project, project_id)
-    return {"success": True}
+    result = await asyncio.to_thread(project_service.delete_project, project_id)
+    return {"success": True, **(result or {})}
 
 @app.delete("/api/projects")
 async def delete_all_projects():
-    await asyncio.to_thread(project_service.delete_all_projects)
-    return {"success": True}
+    result = await asyncio.to_thread(project_service.delete_all_projects)
+    return {"success": True, **(result or {})}
 
 
 def _attachment_content_disposition(filename: str) -> str:
@@ -1827,19 +2308,67 @@ class RegisterLayerRequest(BaseModel):
     geojson: Optional[dict] = None
     raster: Optional[dict] = None
     group_name: Optional[str] = None
+    project_context: bool = False
+    expected_project_id: Optional[str] = None
+
+
+class ActiveProjectResetRequest(BaseModel):
+    expected_project_id: Optional[str] = None
+
+
+@app.get("/api/projects/active/context")
+async def get_active_project_context():
+    from backend.services import tools as registry_tools
+    owns_shared_lock = await asyncio.to_thread(registry_tools.acquire_shared_state_lock, 0)
+    if not owns_shared_lock:
+        raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
+    try:
+        return {"active_project_id": registry_tools._active_project_id}
+    finally:
+        registry_tools.release_shared_state_lock()
+
+
+@app.post("/api/projects/active/reset")
+async def reset_active_project_context(request: ActiveProjectResetRequest):
+    from backend.services import tools as registry_tools
+    owns_shared_lock = await asyncio.to_thread(registry_tools.acquire_shared_state_lock, 0)
+    if not owns_shared_lock:
+        raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
+    try:
+        active_project_id = registry_tools._active_project_id
+        if request.expected_project_id != active_project_id:
+            raise HTTPException(status_code=409, detail="活动工程已变化，未重置当前工作区")
+        registry_tools.reset_registered_layers([])
+    finally:
+        registry_tools.release_shared_state_lock()
+    return {"success": True, "active_project_id": None}
 
 @app.post("/api/layer/register")
 async def register_layer(request: RegisterLayerRequest):
+    from backend.services import tools as registry_tools
+    owns_shared_lock = False
     try:
+        if request.project_context:
+            owns_shared_lock = await asyncio.to_thread(registry_tools.acquire_shared_state_lock, 0)
+            if not owns_shared_lock:
+                raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
+            active_project_id = registry_tools._active_project_id
+            if request.expected_project_id != active_project_id:
+                raise HTTPException(status_code=409, detail="工程已切换，请刷新图层后重试")
         if request.raster is not None:
             from backend.services.tools import _register_raster_layer
             token = await asyncio.to_thread(_register_raster_layer, request.name, request.raster)
         elif request.geojson is not None:
+            from backend.services.tools import _validate_wgs84_geojson
+            _validate_wgs84_geojson(request.geojson)
             token = _register_layer(request.name, request.geojson, group_name=request.group_name)
         else:
             raise ValueError("图层缺少矢量或栅格数据")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if owns_shared_lock:
+            registry_tools.release_shared_state_lock()
     return {"success": True, "registration_token": token, "message": f"已注册图层: {request.name}"}
 
 
@@ -2125,6 +2654,37 @@ async def api_geosource_detail(service_id: str):
 
 _GEOSOURCE_PROXY_MAX_BYTES = 64 * 1024 * 1024
 _GEOSOURCE_TILE_MAX_BYTES = 16 * 1024 * 1024
+_GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS = 60
+
+
+def _read_geosource_proxy_response(
+    response, max_bytes: int, max_bytes_label: str, deadline: float, clock=None,
+) -> bytes:
+    """Read a bounded response while enforcing a total body-read deadline."""
+    chunks = []
+    total = 0
+    raw_socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+    now = clock or time.monotonic
+    read_chunk = getattr(response, "read1", None) or response.read
+    while total <= max_bytes:
+        remaining = deadline - now()
+        if remaining <= 0:
+            raise TimeoutError("GeoSource response read deadline exceeded")
+        if raw_socket is not None:
+            raw_socket.settimeout(remaining)
+        # read1 performs at most one underlying socket read, allowing the next
+        # loop iteration to shrink the timeout against the absolute deadline.
+        chunk = read_chunk(min(64 * 1024, max_bytes + 1 - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"远程 GIS 服务响应超过 {max_bytes_label} 上限",
+            )
+    return b"".join(chunks)
 
 
 @app.get('/api/geosource/proxy')
@@ -2190,11 +2750,6 @@ async def api_geosource_proxy(request: Request, url: Optional[str] = Query(None,
         credential_parameters = set(_sensitive_query_parameter_names(url_str))
         if auth_parameter:
             credential_parameters.add(auth_parameter)
-        credential_names = {name.casefold() for name in credential_parameters}
-        has_query_credential = any(
-            key.casefold() in credential_names and bool(value)
-            for key, value in urllib.parse.parse_qsl(parsed_url.query, keep_blank_values=True)
-        )
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="非法 URL 地址")
     if parsed_url.username is not None or parsed_url.password is not None:
@@ -2202,16 +2757,6 @@ async def api_geosource_proxy(request: Request, url: Optional[str] = Query(None,
             status_code=400,
             detail="GeoSource 仅支持 URL 查询参数形式的 API Key，不支持地址中嵌入用户名或密码。",
         )
-    if (
-        parsed_url.scheme.lower() == "http"
-        and has_query_credential
-        and _is_public_http_target(url_str) is not False
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="为保护 API Key，公网或无法确认的服务地址必须使用 HTTPS；明确的本机/内网服务仍可使用 HTTP。",
-        )
-
     tile_mode = request.query_params.get("_geosource_tile") == "1"
     forwarded_params = [
         (key, value) for key, value in request.query_params.multi_items()
@@ -2236,7 +2781,11 @@ async def api_geosource_proxy(request: Request, url: Optional[str] = Query(None,
     loop = asyncio.get_event_loop()
 
     def _fetch():
-        proxy = effective_model_proxy(url_str)
+        deadline = time.monotonic() + _GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS
+        proxy_timeout = min(0.3, deadline - time.monotonic())
+        if proxy_timeout <= 0:
+            raise HTTPException(status_code=504, detail="远程 GIS 服务响应超时，请稍后重试。")
+        proxy = effective_model_proxy(url_str, timeout=proxy_timeout)
         proxy_dict = {"http": proxy, "https": proxy} if proxy else {}
         proxy_handler = urllib.request.ProxyHandler(proxy_dict) if proxy_dict else urllib.request.ProxyHandler({})
         opener = safe_redirect_opener(
@@ -2246,6 +2795,7 @@ async def api_geosource_proxy(request: Request, url: Optional[str] = Query(None,
             strip_sensitive_query=True,
             require_https_for_credentials=credential_parameters,
             reject_authenticated_cross_origin=True,
+            header_deadline=deadline,
         )
         redirect_guard = next(
             (handler for handler in getattr(opener, "handlers", [])
@@ -2260,7 +2810,10 @@ async def api_geosource_proxy(request: Request, url: Optional[str] = Query(None,
             }
         )
         try:
-            with opener.open(req, timeout=12) as resp:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("GeoSource request deadline exceeded")
+            with opener.open(req, timeout=min(12, remaining)) as resp:
                 content_length = resp.headers.get("Content-Length")
                 if content_length:
                     try:
@@ -2268,9 +2821,7 @@ async def api_geosource_proxy(request: Request, url: Optional[str] = Query(None,
                             raise HTTPException(status_code=413, detail=f"远程 GIS 服务响应超过 {max_bytes_label} 上限")
                     except ValueError:
                         pass
-                content = resp.read(max_bytes + 1)
-                if len(content) > max_bytes:
-                    raise HTTPException(status_code=413, detail=f"远程 GIS 服务响应超过 {max_bytes_label} 上限")
+                content = _read_geosource_proxy_response(resp, max_bytes, max_bytes_label, deadline)
                 raw_type = resp.headers.get("Content-Type", "application/json")
                 return content, raw_type.split(";")[0]
         except urllib.error.HTTPError as e:
@@ -2287,7 +2838,20 @@ async def api_geosource_proxy(request: Request, url: Optional[str] = Query(None,
             raise HTTPException(status_code=e.code, detail=f"远程 GIS 服务返回 HTTP {e.code}")
         except HTTPException:
             raise
+        except TimeoutError:
+            raise HTTPException(status_code=504, detail="远程 GIS 服务响应超时，请稍后重试。")
+        except urllib.error.URLError as e:
+            if str(getattr(e, "reason", "")) == "GeoSource credentials over public HTTP require HTTPS":
+                raise HTTPException(
+                    status_code=400,
+                    detail="为保护 API Key，公网或无法确认的服务地址必须使用 HTTPS；明确的本机/内网服务仍可使用 HTTP。",
+                )
+            if time.monotonic() >= deadline:
+                raise HTTPException(status_code=504, detail="远程 GIS 服务响应超时，请稍后重试。")
+            raise HTTPException(status_code=502, detail="代理请求失败，请检查目标服务连接；请求细节已隐藏。")
         except Exception:
+            if time.monotonic() >= deadline:
+                raise HTTPException(status_code=504, detail="远程 GIS 服务响应超时，请稍后重试。")
             raise HTTPException(status_code=502, detail="代理请求失败，请检查目标服务连接；请求细节已隐藏。")
 
     content, media_type = await loop.run_in_executor(None, _fetch)

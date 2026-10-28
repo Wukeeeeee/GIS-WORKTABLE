@@ -97,3 +97,75 @@ class TestHydrologyTool:
         self._make_dem(tmp_path)
         r = hydrology_analysis.invoke({"layer_name": "dem", "analysis": "flowdir"})
         assert "已生成" in r, r
+
+    def test_flowdir_preview_uses_compass_bearing_for_d8_codes(self, tmp_path):
+        import rasterio
+        from rasterio.transform import from_origin
+        from PIL import Image
+
+        n = 24
+        # Elevation increases eastward, so the centre cell drains west (D8 code 4).
+        dem = np.tile(np.arange(n, dtype=np.float32), (n, 1))
+        upload_dir = os.path.join(str(tmp_path), "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        with rasterio.open(
+            os.path.join(upload_dir, "east_rising.tif"), "w", driver="GTiff",
+            height=n, width=n, count=1, dtype="float32", crs="EPSG:32611",
+            transform=from_origin(500000, 4000000, 30, 30),
+        ) as dst:
+            dst.write(dem, 1)
+
+        result = hydrology_analysis.invoke({"layer_name": "east_rising", "analysis": "flowdir"})
+        assert "已生成" in result, result
+        with rasterio.open(os.path.join(upload_dir, "east_rising_flowdir.tif")) as output:
+            assert int(output.read(1)[n // 2, n // 2]) == 4
+        preview = np.asarray(Image.open(os.path.join(upload_dir, "east_rising_flowdir.png")))
+        import matplotlib
+        expected = (np.asarray(matplotlib.colormaps["hsv"](270 / 360)[:3]) * 255).astype(np.uint8)
+        assert np.array_equal(preview[n // 2, n // 2, :3], expected)
+
+    def test_rotated_flowdir_preview_uses_ground_bearing(self, tmp_path):
+        import rasterio
+        from affine import Affine
+        from PIL import Image
+        from pyproj import CRS, Transformer
+
+        n = 24
+        angle = np.radians(30)
+        pixel = 30.0
+        transform = Affine(
+            pixel * np.cos(angle), pixel * np.sin(angle), 500_000,
+            pixel * np.sin(angle), -pixel * np.cos(angle), 4_000_000,
+        )
+        rows, cols = np.mgrid[0:n, 0:n]
+        elevations = (transform.a * cols + transform.b * rows).astype(np.float32)
+        upload_dir = os.path.join(str(tmp_path), "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        with rasterio.open(
+            os.path.join(upload_dir, "rotated_east_rising.tif"), "w", driver="GTiff",
+            height=n, width=n, count=1, dtype="float32", crs="EPSG:32611",
+            transform=transform,
+        ) as dst:
+            dst.write(elevations, 1)
+
+        result = hydrology_analysis.invoke({
+            "layer_name": "rotated_east_rising", "analysis": "flowdir",
+        })
+        assert "已生成" in result, result
+        with rasterio.open(os.path.join(upload_dir, "rotated_east_rising_flowdir.tif")) as output:
+            direction_code = int(output.read(1)[n // 2, n // 2])
+        preview = np.asarray(Image.open(os.path.join(upload_dir, "rotated_east_rising_flowdir.png")))
+        to_wgs84 = Transformer.from_crs("EPSG:32611", "EPSG:4326", always_xy=True)
+        geod = CRS.from_epsg(4326).get_geod()
+        center = transform * (n / 2, n / 2)
+        offset = (
+            -transform.a - transform.b,
+            -transform.d - transform.e,
+        )
+        start = to_wgs84.transform(*center)
+        end = to_wgs84.transform(center[0] + offset[0], center[1] + offset[1])
+        bearing = geod.inv(*start, *end)[0] % 360
+        import matplotlib
+        expected = (np.asarray(matplotlib.colormaps["hsv"](bearing / 360)[:3]) * 255).astype(np.uint8)
+        assert direction_code == 3
+        assert np.array_equal(preview[n // 2, n // 2, :3], expected)

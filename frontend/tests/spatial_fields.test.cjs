@@ -135,3 +135,30 @@ test('sample panel rejects invalid or empty input instead of substituting a coun
   }
   assert.equal(invokeCount, 0);
 });
+
+test('spatial layer selectors disambiguate legacy Unicode aliases and preserve exact values', () => {
+  const select = new SelectElement('');
+  const document = {
+    addEventListener() {},
+    getElementById(id) { return id === 'bufferLayer' ? select : null; },
+    createElement() { return {}; },
+    querySelectorAll() { return []; },
+  };
+  const window = { GIS: { map: { loadGeoJSON() {} } } };
+  const context = { window, document, Promise, Array, Object, String, Number, Math, Date, Set, Map };
+  const statePath = path.resolve(__dirname, '../js/gis_state.js');
+  vm.runInNewContext(fs.readFileSync(statePath, 'utf8'), context, { filename: statePath });
+  const spatialPath = path.resolve(__dirname, '../js/spatial.js');
+  const spatialSource = fs.readFileSync(spatialPath, 'utf8').replace(
+    'GIS.spatial = {', 'GIS.spatial = { _fillLayerSelectsForTest: _fillLayerSelects,',
+  );
+  vm.runInNewContext(spatialSource, context, { filename: spatialPath });
+
+  window.GIS.spatial._fillLayerSelectsForTest(['é.geojson', 'e\u0301.geojson']);
+
+  assert.deepEqual(select.options.map(option => [option.value, option.textContent]), [
+    ['', undefined],
+    ['é.geojson', 'é.geojson (1)'],
+    ['e\u0301.geojson', 'e\u0301.geojson (2)'],
+  ]);
+});

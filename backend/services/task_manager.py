@@ -49,8 +49,8 @@ def _task_dir(task_id: str) -> str:
         raise ValueError("无效 task_id")
     if os.path.basename(task_id) != task_id or "/" in task_id or "\\" in task_id or "\0" in task_id:
         raise ValueError("无效 task_id")
-    base = os.path.abspath(_BASE_DIR)
-    task_dir = os.path.abspath(os.path.join(base, task_id))
+    base = os.path.realpath(_BASE_DIR)
+    task_dir = os.path.realpath(os.path.join(base, task_id))
     try:
         common = os.path.commonpath((base, task_dir))
     except ValueError as exc:
@@ -230,17 +230,38 @@ def _load_exec_log_from_disk(task_id: str) -> list:
 
 def create_task(user_goal: str, session_id: str = "default") -> str:
     """创建新任务，返回 task_id"""
-    task = _new_task(user_goal, session_id)
-    tid = task["task_id"]
+    sid = session_id or "default"
     with _lock:
+        os.makedirs(_BASE_DIR, exist_ok=True)
+        for _ in range(10_000):
+            task = _new_task(user_goal, sid)
+            tid = task["task_id"]
+            task_dir = _task_dir(tid)
+            if tid in _tasks:
+                continue
+            try:
+                # Reserve the new ID before writing anything so a collision can
+                # never replace or clean up an existing task directory.
+                os.mkdir(task_dir)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise RuntimeError("无法分配唯一的任务 ID")
+
+        try:
+            _save_task_to_disk(task)
+            # 创建代码目录
+            os.makedirs(_code_dir(tid), exist_ok=True)
+            # 初始化空列表
+            _save_artifacts_to_disk(tid, [])
+            _save_exec_log_to_disk(tid, [])
+        except Exception:
+            shutil.rmtree(task_dir, ignore_errors=True)
+            raise
+
         _tasks[tid] = task
-        _session_active[session_id or "default"] = tid
-        _save_task_to_disk(task)
-        # 创建代码目录
-        os.makedirs(_code_dir(tid), exist_ok=True)
-        # 初始化空列表
-        _save_artifacts_to_disk(tid, [])
-        _save_exec_log_to_disk(tid, [])
+        _session_active[sid] = tid
     print(f"[TaskManager] 创建任务 {tid}: {user_goal[:60]}", flush=True)
     return tid
 
@@ -282,11 +303,17 @@ def update_task(task_id: str, **kwargs) -> bool:
         task = _tasks.get(task_id)
         if not task:
             return False
+        candidate = dict(task)
         for k, v in kwargs.items():
             if k != "task_id":
-                task[k] = v
-        task["updated_at"] = _now()
-        _save_task_to_disk(task)
+                candidate[k] = v
+        candidate["updated_at"] = _now()
+        try:
+            _save_task_to_disk(candidate)
+        except Exception as e:
+            print(f"[TaskManager] 更新任务 {task_id} 失败: {e}", flush=True)
+            return False
+        task.update(candidate)
     return True
 
 
@@ -303,7 +330,15 @@ def archive_task(task_id: str) -> bool:
 
 def restore_task(task_id: str) -> bool:
     """恢复归档任务"""
-    return update_task(task_id, status="active", archived=False)
+    with _lock:
+        if not update_task(task_id, status="active", archived=False):
+            return False
+        task = _tasks.get(task_id)
+        if not task:
+            return False
+        sid = task.get("session_id") or "default"
+        _session_active[sid] = task_id
+        return True
 
 
 def delete_task(task_id: str) -> bool:
@@ -374,34 +409,57 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
             _tasks[task_id] = task
 
         step = task.get("current_step", 0) + 1
-        task["current_step"] = step
-        task["latest_code_version"] = step
-        task["updated_at"] = _now()
+        candidate = dict(task)
+        candidate["current_step"] = step
+        candidate["latest_code_version"] = step
+        candidate["updated_at"] = _now()
 
         # 写入版本文件
         code_dir = _code_dir(task_id)
         os.makedirs(code_dir, exist_ok=True)
         version_file = os.path.join(code_dir, f"step_{step:03d}.py")
-        _write_text_atomic(version_file, source_code)
-
-        # 更新 latest.py
         latest_file = os.path.join(code_dir, "latest.py")
-        _write_text_atomic(latest_file, source_code)
+        latest_existed = os.path.isfile(latest_file)
+        latest_before = None
+        if latest_existed:
+            with open(latest_file, "r", encoding="utf-8") as f:
+                latest_before = f.read()
 
-        # 如果有 label，保存到 metadata
-        if label:
-            meta_path = os.path.join(code_dir, "metadata.json")
-            meta = {}
-            if os.path.exists(meta_path):
-                try:
-                    with open(meta_path, "r", encoding="utf-8") as f:
-                        meta = json.load(f)
-                except Exception:
-                    pass
-            meta[f"step_{step:03d}"] = {"label": label, "saved_at": _now()}
-            _write_json_atomic(meta_path, meta)
+        try:
+            _write_text_atomic(version_file, source_code)
+            _write_text_atomic(latest_file, source_code)
 
-        _save_task_to_disk(task)
+            # 如果有 label，保存到 metadata
+            if label:
+                meta_path = os.path.join(code_dir, "metadata.json")
+                meta = {}
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                    except Exception:
+                        pass
+                meta[f"step_{step:03d}"] = {"label": label, "saved_at": _now()}
+                _write_json_atomic(meta_path, meta)
+
+            _save_task_to_disk(candidate)
+        except Exception:
+            # The version is not committed until task metadata is durable.
+            try:
+                if os.path.exists(version_file):
+                    os.remove(version_file)
+                if latest_existed:
+                    with open(latest_file, "r", encoding="utf-8") as f:
+                        current_latest = f.read()
+                    if current_latest != latest_before:
+                        _write_text_atomic(latest_file, latest_before)
+                elif os.path.exists(latest_file):
+                    os.remove(latest_file)
+            except OSError:
+                pass
+            raise
+
+        task.update(candidate)
         print(f"[TaskManager] 保存代码 {task_id}/step_{step:03d}.py ({len(source_code)} bytes)", flush=True)
         return step
 

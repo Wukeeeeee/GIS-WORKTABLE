@@ -246,10 +246,14 @@ window.GIS = window.GIS || {};
         var sel = document.getElementById('rtLayer');
         var cur = sel.value;
         sel.innerHTML = '<option value="">-- 请选择图层 --</option>';
-        merged.forEach(function (n) {
+        var entries = GIS.state && GIS.state.layerOptionEntries
+          ? GIS.state.layerOptionEntries(merged)
+          : merged.map(function(n) { return { value: n, suffix: '' }; });
+        entries.forEach(function (entry) {
+          var n = entry.value;
           var opt = document.createElement('option');
           opt.value = n;
-          opt.textContent = n;
+          opt.textContent = n + (entry.suffix || '');
           if (n === cur) opt.selected = true;
           sel.appendChild(opt);
         });
@@ -259,9 +263,13 @@ window.GIS = window.GIS || {};
         var sel = document.getElementById('rtLayer');
         var cur = sel.value;
         sel.innerHTML = '<option value="">-- 请选择图层 --</option>';
-        feNames.forEach(function (n) {
+        var entries = GIS.state && GIS.state.layerOptionEntries
+          ? GIS.state.layerOptionEntries(feNames)
+          : feNames.map(function(n) { return { value: n, suffix: '' }; });
+        entries.forEach(function (entry) {
+          var n = entry.value;
           var opt = document.createElement('option');
-          opt.value = n; opt.textContent = n;
+          opt.value = n; opt.textContent = n + (entry.suffix || '');
           if (n === cur) opt.selected = true;
           sel.appendChild(opt);
         });
@@ -381,6 +389,13 @@ window.GIS = window.GIS || {};
   }
 
   function _invoke(tool, args) {
+    var projectGeneration = GIS.project && typeof GIS.project.getLoadGeneration === 'function'
+      ? GIS.project.getLoadGeneration() : null;
+    function projectChanged() {
+      return projectGeneration !== null && GIS.project &&
+        typeof GIS.project.getLoadGeneration === 'function' &&
+        GIS.project.getLoadGeneration() !== projectGeneration;
+    }
     var resultEl = document.getElementById('rtResult');
     var resultBody = document.getElementById('rtResultBody');
     resultEl.style.display = 'none';
@@ -394,9 +409,11 @@ window.GIS = window.GIS || {};
       ? Promise.all(layerNames.map(function (n) { return GIS.api.syncLayer(n); }))
       : Promise.resolve();
     syncP.then(function () {
+      if (projectChanged()) throw new Error('工程已切换，旧工程工具结果未执行');
       if (!(GIS.api && GIS.api.invokeTool)) throw new Error('GIS.api.invokeTool 不可用');
       return GIS.api.invokeTool(tool, args);
     }).then(function (result) {
+      if (projectChanged()) throw new Error('工程已切换，旧工程工具结果未应用');
       if (GIS.workspace && !GIS.workspace.toolFeedback('rasterToolsPanel', result)) return;
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
       var parameterWarnings = Array.isArray(result.param_warnings) ? result.param_warnings.map(String).filter(Boolean) : [];

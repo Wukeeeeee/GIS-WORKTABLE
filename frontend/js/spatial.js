@@ -572,10 +572,15 @@ window.GIS = window.GIS || {};
       if (!sel) return;
       var current = sel.value;
       sel.innerHTML = SEL;
-      names.forEach(function(n) {
+      var entries = GIS.state && GIS.state.layerOptionEntries
+        ? GIS.state.layerOptionEntries(names)
+        : names.map(function(n) { return { value: n, suffix: '' }; });
+      entries.forEach(function(entry) {
+        var n = entry.value;
         var opt = document.createElement('option');
         opt.value = n;
-        opt.textContent = GIS.i18n && GIS.i18n.layerLabel ? GIS.i18n.layerLabel(n) : n;
+        var label = GIS.i18n && GIS.i18n.layerLabel ? GIS.i18n.layerLabel(n) : n;
+        opt.textContent = label + (entry.suffix || '');
         if (n === current) opt.selected = true;
         sel.appendChild(opt);
       });
@@ -635,6 +640,13 @@ window.GIS = window.GIS || {};
 
   /** 直连执行：先同步图层到后端注册表 → 调后端工具 → 结果上图 + 文本展示 */
   function _invoke(tool, args, btn) {
+    var projectGeneration = GIS.project && typeof GIS.project.getLoadGeneration === 'function'
+      ? GIS.project.getLoadGeneration() : null;
+    function projectChanged() {
+      return projectGeneration !== null && GIS.project &&
+        typeof GIS.project.getLoadGeneration === 'function' &&
+        GIS.project.getLoadGeneration() !== projectGeneration;
+    }
     var resultEl = document.getElementById('spatialResult');
     var resultBody = document.getElementById('spatialResultBody');
     var loader = document.getElementById('spatialLoader');
@@ -654,11 +666,13 @@ window.GIS = window.GIS || {};
       : Promise.resolve();
 
     var p = syncP.then(function() {
+      if (projectChanged()) throw new Error('工程已切换，旧工程工具结果未执行');
       if (!(GIS.api && GIS.api.invokeTool)) throw new Error('GIS.api.invokeTool 不可用');
       return GIS.api.invokeTool(tool, args);
     });
 
     p.then(function(result) {
+      if (projectChanged()) throw new Error('工程已切换，旧工程工具结果未应用');
       loader.style.display = 'none';
       buttons.forEach(function(button) { button.disabled = false; });
       if (GIS.workspace && !GIS.workspace.toolFeedback('spatialPanel', result)) return;

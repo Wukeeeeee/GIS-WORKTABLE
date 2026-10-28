@@ -55,3 +55,32 @@ def test_failed_shapefile_replacement_restores_previous_components(tmp_path, mon
         if name.startswith("roads.")
     }
     assert current_files == original_files
+
+
+def test_incomplete_catalog_backup_does_not_replace_original_on_abort(tmp_path, monkeypatch):
+    data_file = tmp_path / "roads.geojson"
+    metadata_file = tmp_path / "roads.metadata.json"
+    catalog_file = tmp_path / "catalog.json"
+    data_file.write_text('{"version": "old"}', encoding="utf-8")
+    metadata_file.write_text('{"version": "old"}', encoding="utf-8")
+    catalog_file.write_text('[{"version": "old"}]', encoding="utf-8")
+    original_contents = {
+        path.name: path.read_bytes() for path in (data_file, metadata_file, catalog_file)
+    }
+
+    def fail_after_partial_catalog_copy(_source, destination):
+        with open(destination, "wb") as backup:
+            backup.write(b"partial")
+        raise OSError("simulated catalog backup failure")
+
+    monkeypatch.setattr(storage.shutil, "copy2", fail_after_partial_catalog_copy)
+    with pytest.raises(OSError, match="catalog backup failure"):
+        with storage.vector_import_transaction(
+            out_format="geojson", name="roads", dirpath=str(tmp_path),
+        ):
+            pytest.fail("the transaction must not start when catalog backup fails")
+
+    assert {
+        path.name: path.read_bytes() for path in (data_file, metadata_file, catalog_file)
+    } == original_contents
+    assert not list(tmp_path.glob(".vector-import-*"))

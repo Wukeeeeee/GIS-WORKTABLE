@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -28,6 +29,34 @@ from backend.services import tools as T
 from backend.services.tools import tools as TOOL_LIST, reset_state, get_pending_state, _registered_layers
 from backend.services import cloud_native as cn
 from backend.services import url_security
+
+
+def test_pinned_address_retries_share_one_connection_deadline(monkeypatch):
+    clock = [0.0]
+    calls = []
+
+    def monotonic():
+        return clock[0]
+
+    def timeout_connect(address, timeout, source_address=None):
+        calls.append((address, timeout))
+        clock[0] += timeout
+        raise socket.timeout("simulated connect timeout")
+
+    monkeypatch.setattr(url_security.time, "monotonic", monotonic)
+    monkeypatch.setattr(url_security.socket, "create_connection", timeout_connect)
+    store = url_security._PinnedAddressStore()
+    store.set("multi-address.example", 443, [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.35", 443)),
+    ])
+    connection = SimpleNamespace(host="multi-address.example", port=443, timeout=10, source_address=None)
+
+    with pytest.raises(TimeoutError, match="connection deadline"):
+        url_security._connect_pinned_socket(connection, store, deadline=0.15)
+
+    assert len(calls) == 1
+    assert calls[0][1] == pytest.approx(0.15)
 
 
 def _registry():
@@ -177,8 +206,10 @@ def test_guarded_vsi_source_blocks_public_redirect_to_private(range_test_server,
     original_getaddrinfo = socket.getaddrinfo
     original_create_connection = socket.create_connection
 
-    def resolve_as_public(_url):
-        return True, tuple(original_getaddrinfo("8.8.8.8", port, type=socket.SOCK_STREAM))
+    def resolve_as_public(url):
+        if "/redirect" in url:
+            return True, tuple(original_getaddrinfo("8.8.8.8", port, type=socket.SOCK_STREAM))
+        return False, tuple(original_getaddrinfo("127.0.0.1", port, type=socket.SOCK_STREAM))
 
     def route_public_fixture_to_loopback(address, *args, **kwargs):
         if address[0] == "8.8.8.8":
@@ -333,6 +364,69 @@ def test_read_cog_preview(local_tif):
     assert r["meta"]["count"] == 3
 
 
+def test_read_cog_preview_preserves_alpha_band(tmp_path):
+    import io
+    import numpy as np
+    import rasterio
+    from PIL import Image
+    from rasterio.enums import ColorInterp
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "rgba-cog.tif"
+    data = np.zeros((4, 64, 64), dtype=np.uint8)
+    data[0], data[1], data[2], data[3] = 240, 80, 20, 255
+    data[3, :32, :32] = 0
+    data[3, 32:48, 32:48] = 128
+    with rasterio.open(
+        path, "w", driver="GTiff", width=64, height=64, count=4, dtype="uint8",
+        crs="EPSG:4326", transform=from_origin(0, 1, 0.01, 0.01),
+    ) as dataset:
+        dataset.write(data)
+        dataset.colorinterp = (
+            ColorInterp.red, ColorInterp.green, ColorInterp.blue, ColorInterp.alpha,
+        )
+
+    result = cn._read_cog_impl(str(path), max_size=256)
+    with Image.open(io.BytesIO(result["png_bytes"])) as preview:
+        assert preview.mode == "RGBA"
+        assert preview.getpixel((10, 10))[3] == 0
+        assert preview.getpixel((40, 40))[3] == 128
+        assert preview.getpixel((50, 50))[3] == 255
+
+
+def test_read_cog_preview_uses_rgb_color_interpretation_when_alpha_is_first(tmp_path):
+    import io
+    import numpy as np
+    import rasterio
+    from PIL import Image
+    from rasterio.enums import ColorInterp
+    from rasterio.transform import from_origin
+
+    rows, columns = np.indices((64, 64))
+    path = tmp_path / "alpha-first.tif"
+    data = np.stack((
+        np.full((64, 64), 255, dtype=np.uint8),
+        (columns * 4).astype(np.uint8),
+        (rows * 4).astype(np.uint8),
+        (255 - columns * 4).astype(np.uint8),
+    ))
+    with rasterio.open(
+        path, "w", driver="GTiff", width=64, height=64, count=4, dtype="uint8",
+        crs="EPSG:4326", transform=from_origin(0, 1, 0.01, 0.01),
+    ) as dataset:
+        dataset.write(data)
+        dataset.colorinterp = (
+            ColorInterp.alpha, ColorInterp.red, ColorInterp.green, ColorInterp.blue,
+        )
+
+    result = cn._read_cog_impl(str(path), max_size=256)
+    with Image.open(io.BytesIO(result["png_bytes"])) as preview:
+        red, green, blue, alpha = preview.getpixel((50, 10))
+        assert preview.mode == "RGBA"
+        assert red > green and red > blue
+        assert alpha == 255
+
+
 def test_remote_cog_uses_guarded_source_context(local_tif, monkeypatch):
     from contextlib import contextmanager
     opened = []
@@ -447,6 +541,12 @@ def test_load_cog_tool_registers_layer_and_overlay(local_tif):
     overlay = next(op for op in pending["layer_ops"] if op["action"] == "dem_result")
     assert os.path.exists(os.path.join(T._temp_output_dir, "uploads",
                                        os.path.basename(overlay["url"])))
+    assert overlay["raster"]["preview_only"] is True
+    assert overlay["raster"]["url"] == overlay["url"]
+    assert overlay["raster"]["source_reference"] == os.path.basename(local_tif)
+    assert overlay["raster"]["preview_only"] is True
+    assert overlay["raster"]["url"] == overlay["url"]
+    assert overlay["raster"]["source_reference"] == os.path.basename(local_tif)
     # 范围框图层已注册且上图
     assert "测试影像" in _registered_layers
     assert any(l["name"] == "测试影像" for l in pending["layers"])
@@ -473,6 +573,34 @@ def test_load_cog_does_not_store_credentials_in_registered_layer(tmp_path, monke
     assert "PASS_SENTINEL" not in pending_text
     assert "TOKEN_SENTINEL" not in pending_text
     assert "https://example.test/data.tif" in pending_text
+
+
+def test_load_cog_preview_files_do_not_collide_within_one_second(tmp_path, monkeypatch):
+    reset_state()
+    monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+    monkeypatch.setattr(T, "init_temp_dir", lambda: None)
+    monkeypatch.setattr(T.time, "time", lambda: 1234567890)
+    results = iter((b"first preview", b"second preview"))
+    monkeypatch.setattr(cn, "read_cog", lambda *_args, **_kwargs: {
+        "png_bytes": next(results),
+        "bounds": [0, 0, 1, 1],
+        "meta": {
+            "width": 1, "height": 1, "count": 3, "crs": "EPSG:4326",
+            "bounds_wgs84": [0, 0, 1, 1], "resampled": [1, 1],
+        },
+    })
+
+    registry = _registry()["load_cog"]
+    assert "已加载" in registry.invoke({"url": "https://example.test/first.tif", "layer_name": "同名影像"})
+    first_op = next(op for op in get_pending_state()["layer_ops"] if op["action"] == "dem_result")
+    assert "已加载" in registry.invoke({"url": "https://example.test/second.tif", "layer_name": "同名影像"})
+    second_op = next(op for op in get_pending_state()["layer_ops"] if op["action"] == "dem_result")
+
+    first_path = tmp_path / "uploads" / os.path.basename(first_op["url"])
+    second_path = tmp_path / "uploads" / os.path.basename(second_op["url"])
+    assert first_path != second_path
+    assert first_path.read_bytes() == b"first preview"
+    assert second_path.read_bytes() == b"second preview"
 
 
 def test_get_cog_info_redacts_credentials_from_error(monkeypatch):
@@ -505,6 +633,38 @@ def test_pmtiles_info(local_pmtiles):
     assert info["min_zoom"] == 8
 
 
+def test_pmtiles_info_rejects_gzip_metadata_over_limit(monkeypatch):
+    from contextlib import contextmanager
+
+    monkeypatch.setattr(cn, "_MAX_PM_METADATA_BYTES", 64, raising=False)
+
+    class Reader:
+        payload = gzip.compress(b'{"metadata":"' + b'x' * 128 + b'"}')
+        metadata_calls = []
+
+        def get_bytes(self, _start, _length):
+            return self.payload
+
+        def metadata(self):
+            self.metadata_calls.append(True)
+            return json.loads(gzip.decompress(self.payload))
+
+    reader = Reader()
+
+    @contextmanager
+    def fake_reader(_source):
+        yield reader, {
+            "tile_type": 1, "min_zoom": 0, "max_zoom": 0,
+            "metadata_offset": 100, "metadata_length": len(reader.payload),
+            "internal_compression": 2,
+        }
+
+    monkeypatch.setattr(cn, "_pmtiles_reader", fake_reader)
+    with pytest.raises(cn.CloudNativeError, match="元数据超过安全上限"):
+        cn.pmtiles_info("controlled-fixture.pmtiles")
+    assert reader.metadata_calls == []
+
+
 def test_pmtiles_vector_decode(local_pmtiles):
     gj, info = cn.pmtiles_vector_to_geojson(local_pmtiles)
     assert info["feature_count"] == 1
@@ -515,6 +675,150 @@ def test_pmtiles_vector_decode(local_pmtiles):
     # 点位于夹具 bbox（115.9~117.1, 39.4~40.6）内（MVT 点编码在瓦片中心）
     assert 115.9 < lon < 117.1 and 39.4 < lat < 40.6
     assert feat["properties"]["name"] == "Beijing"
+
+
+def test_pmtiles_max_features_limits_mvt_parse_work(tmp_path, monkeypatch):
+    import mapbox_vector_tile
+    from pmtiles.tile import Compression, TileType, zxy_to_tileid
+    from pmtiles.writer import write
+
+    tile = mapbox_vector_tile.encode([{
+        "name": "dense", "extent": 4096, "version": 2,
+        "features": [{
+            "geometry": f"POINT({1000 + index} 2048)", "properties": {"id": index},
+        } for index in range(2000)],
+    }])
+    path = tmp_path / "dense.pmtiles"
+    tx, ty = cn._deg2tile(116.4, 40.0, 8)
+    header = {
+        "tile_compression": Compression.GZIP, "tile_type": TileType.MVT,
+        "min_lon_e7": 1159000000, "min_lat_e7": 394000000,
+        "max_lon_e7": 1171000000, "max_lat_e7": 406000000,
+        "center_lon_e7": 1164000000, "center_lat_e7": 400000000,
+        "center_zoom": 8,
+    }
+    with write(str(path)) as writer:
+        writer.write_tile(zxy_to_tileid(8, tx, ty), gzip.compress(tile))
+        writer.finalize(header, {"vector_layers": [{"id": "dense", "fields": {"id": "Number"}}]})
+
+    original_decode = mapbox_vector_tile.decode
+    parsed_feature_counts = []
+
+    def measure_decode(payload, *args, **kwargs):
+        decoded = original_decode(payload, *args, **kwargs)
+        parsed_feature_counts.append(sum(len(layer["features"]) for layer in decoded.values()))
+        return decoded
+
+    monkeypatch.setattr(mapbox_vector_tile, "decode", measure_decode)
+    result, info = cn.pmtiles_vector_to_geojson(str(path), max_features=5, max_tiles=1)
+
+    assert info["feature_count"] == 5
+    assert len(result["features"]) == 5
+    assert parsed_feature_counts == [5]
+
+
+def test_mvt_decoder_rejects_geometry_vertex_bomb_before_parser(monkeypatch):
+    import mapbox_vector_tile
+
+    line = ",".join(f"{index} {2048 + index % 2}" for index in range(20))
+    tile = mapbox_vector_tile.encode([{
+        "name": "dense", "extent": 4096, "version": 2,
+        "features": [{"geometry": f"LINESTRING({line})", "properties": {}}],
+    }])
+    monkeypatch.setattr(cn, "_MAX_MVT_GEOMETRY_VERTICES", 10)
+    monkeypatch.setattr(
+        mapbox_vector_tile, "decode",
+        lambda *_args, **_kwargs: pytest.fail("oversized geometry reached MVT parser"),
+    )
+
+    with pytest.raises(cn.CloudNativeError, match="单瓦片几何顶点超过安全上限"):
+        cn._mvt_decode_tile(gzip.compress(tile), 2, 8, 128, 96, max_features=1)
+
+
+def test_mvt_vertex_guard_accepts_lines_and_closed_polygons(monkeypatch):
+    import mapbox_vector_tile
+
+    tile = mapbox_vector_tile.encode([{
+        "name": "shapes", "extent": 4096, "version": 2,
+        "features": [
+            {"geometry": "LINESTRING(0 0,10 10,20 20)", "properties": {"kind": "line"}},
+            {"geometry": "POLYGON((30 30,40 30,40 40,30 40,30 30))", "properties": {"kind": "area"}},
+        ],
+    }])
+    monkeypatch.setattr(cn, "_MAX_MVT_GEOMETRY_VERTICES", 16)
+
+    decoded = cn._mvt_decode_tile(tile, 1, 8, 128, 96, max_features=2)
+
+    assert [feature[0].geom_type for feature in decoded] == ["LineString", "Polygon"]
+
+
+@pytest.mark.parametrize(
+    "compression,payload",
+    [(0, b"x" * 65), (2, gzip.compress(b"x" * 65))],
+    ids=["plain", "gzip-expansion"],
+)
+def test_mvt_decoder_rejects_oversized_tile_before_parsing(monkeypatch, compression, payload):
+    monkeypatch.setattr(cn, "_MAX_MVT_TILE_BYTES", 64)
+    monkeypatch.setitem(
+        sys.modules, "mapbox_vector_tile",
+        SimpleNamespace(decode=lambda _payload: pytest.fail("oversized tile reached MVT parser")),
+    )
+
+    with pytest.raises(cn.CloudNativeError, match="超过安全上限"):
+        cn._mvt_decode_tile(payload, compression, 8, 0, 0)
+
+
+def test_pmtiles_range_guard_rejects_oversized_tile_before_source_read(monkeypatch):
+    monkeypatch.setattr(cn, "_MAX_MVT_TILE_BYTES", 64)
+    monkeypatch.setattr(cn, "_MAX_PM_METADATA_BYTES", 64)
+    monkeypatch.setattr(cn, "_MAX_PM_DIRECTORY_BYTES", 64)
+    calls = []
+    guarded = cn._GuardedPMTilesRangeSource(
+        lambda start, length: calls.append((start, length)) or b"x" * length,
+    )
+    guarded.set_header({
+        "tile_data_offset": 100, "tile_data_length": 1000,
+        "metadata_offset": 1200, "metadata_length": 1000,
+        "root_offset": 2300, "root_length": 1000,
+    })
+
+    assert len(guarded.get_bytes(0, 100)) == 100  # a large directory remains readable
+    with pytest.raises(cn.CloudNativeError, match="单块瓦片 Range 超过安全上限"):
+        guarded.get_bytes(100, 65)
+    with pytest.raises(cn.CloudNativeError, match="元数据 Range 超过安全上限"):
+        guarded.get_bytes(1200, 65)
+    with pytest.raises(cn.CloudNativeError, match="目录 Range 超过安全上限"):
+        guarded.get_bytes(2300, 65)
+    assert calls == [(0, 100)]
+
+
+def test_pmtiles_directory_decompression_is_bounded(monkeypatch):
+    monkeypatch.setattr(cn, "_MAX_PM_DIRECTORY_BYTES", 64)
+    compressed_bomb = gzip.compress(b"x" * 65)
+
+    class Reader:
+        def get_bytes(self, _start, _length):
+            return compressed_bomb
+
+    header = {
+        "root_offset": 127, "root_length": len(compressed_bomb),
+        "leaf_directory_offset": 0, "tile_data_offset": 0,
+    }
+    with pytest.raises(cn.CloudNativeError, match="PMTiles 目录超过安全上限"):
+        cn._pmtiles_get_tile_bounded(Reader(), header, 8, 0, 0)
+
+
+def test_bounded_pmtiles_directory_decoder_matches_library_format():
+    from pmtiles.reader import deserialize_directory
+    from pmtiles.tile import Entry, serialize_directory
+
+    original = [Entry(1, 3, 4, 1), Entry(7, 7, 5, 1), Entry(9, 0, 0, 0)]
+    payload = serialize_directory(original)
+
+    def rows(entries):
+        return [(entry.tile_id, entry.offset, entry.length, entry.run_length) for entry in entries]
+
+    assert rows(cn._decode_pmtiles_directory(payload)) == rows(deserialize_directory(payload))
 
 
 def test_load_pmtiles_tool(local_pmtiles):
@@ -575,9 +879,182 @@ def test_flatgeobuf_bbox_filter(local_fgb):
     assert meta["bbox_filtered"] == [110.0, 30.0, 111.0, 31.0]
 
 
+def test_flatgeobuf_bbox_filter_keeps_full_custom_crs(tmp_path):
+    import geopandas as gpd
+    from pyproj import CRS
+    from shapely.geometry import Point
+
+    source_crs = CRS.from_proj4(
+        "+proj=tmerc +lat_0=0 +lon_0=12.5 +k=0.9999 +x_0=400000 +y_0=0 "
+        "+ellps=GRS80 +units=m +no_defs +type=crs"
+    )
+    path = tmp_path / "custom-crs.fgb"
+    gpd.GeoDataFrame(
+        {"name": ["inside", "outside"]},
+        geometry=[Point(400000, 0), Point(1_500_000, 1_000_000)],
+        crs=source_crs,
+    ).to_file(path, driver="FlatGeobuf")
+
+    result, info = cn.cloud_vector_to_geojson(
+        str(path), "FlatGeobuf", bbox=(12.0, -0.5, 13.0, 0.5),
+    )
+    assert info["loaded_features"] == 1
+    assert result["features"][0]["properties"]["name"] == "inside"
+    assert result["features"][0]["geometry"]["coordinates"] == pytest.approx([12.5, 0.0], abs=1e-6)
+
+
+def test_flatgeobuf_bbox_filter_removes_projection_envelope_false_positives(tmp_path):
+    import geopandas as gpd
+    from pyproj import Transformer
+    from shapely.geometry import Point
+
+    bbox = (-10.0, 35.0, 35.0, 60.0)
+    to_source = Transformer.from_crs("EPSG:4326", "EPSG:32633", always_xy=True)
+    points = [Point(*to_source.transform(*xy)) for xy in [(-11.0, 38.05), (5.0, 45.0)]]
+    path = tmp_path / "projection-envelope.fgb"
+    gpd.GeoDataFrame(
+        {"name": ["outside", "inside"]}, geometry=points, crs="EPSG:32633",
+    ).to_file(path, driver="FlatGeobuf")
+
+    result, meta = cn.cloud_vector_to_geojson(str(path), "FlatGeobuf", bbox=bbox)
+
+    assert meta["loaded_features"] == 1
+    assert [feature["properties"]["name"] for feature in result["features"]] == ["inside"]
+
+
+def test_flatgeobuf_bbox_false_positive_does_not_spend_feature_limit(tmp_path):
+    import geopandas as gpd
+    from pyproj import Transformer
+    from shapely.geometry import Point
+
+    bbox = (-85.24787707113161, 11.673219366808326, -60.67317377659995, 28.96127027182708)
+    outside = (-59.67317377659995, 20.317244819317697)
+    inside = (-82.79040674167845, 13.4020244573102)
+    to_source = Transformer.from_crs("EPSG:4326", "EPSG:32631", always_xy=True)
+    path = tmp_path / "projection-envelope-limit.fgb"
+    gpd.GeoDataFrame(
+        {"name": ["outside", "inside"]},
+        geometry=[Point(*to_source.transform(*xy)) for xy in [outside, inside]],
+        crs="EPSG:32631",
+    ).to_file(path, driver="FlatGeobuf")
+
+    result, meta = cn.cloud_vector_to_geojson(str(path), "FlatGeobuf", bbox=bbox, limit=1)
+
+    assert meta["loaded_features"] == 1
+    assert [feature["properties"]["name"] for feature in result["features"]] == ["inside"]
+
+
+def test_geoparquet_bbox_filter_without_covering_metadata(tmp_path, monkeypatch):
+    import geopandas as gpd
+    from pyproj import Transformer
+    from shapely.geometry import Point
+
+    bbox = (-10.0, 35.0, 35.0, 60.0)
+    to_source = Transformer.from_crs("EPSG:4326", "EPSG:32633", always_xy=True)
+    points = [Point(*to_source.transform(*xy)) for xy in [(-11.0, 38.05), (5.0, 45.0)]]
+    path = tmp_path / "projection-envelope.parquet"
+    gpd.GeoDataFrame(
+        {"name": ["outside", "inside"]}, geometry=points, crs="EPSG:32633",
+    ).to_parquet(path)
+    monkeypatch.setattr(cn, "_gdal_has_parquet_driver", lambda: False)
+
+    result, meta = cn.cloud_vector_to_geojson(str(path), "GeoParquet", bbox=bbox)
+
+    assert meta["loaded_features"] == 1
+    assert [feature["properties"]["name"] for feature in result["features"]] == ["inside"]
+
+
+def test_geoparquet_batch_bbox_does_not_spend_limit_on_projection_false_positive(
+    tmp_path, monkeypatch,
+):
+    import geopandas as gpd
+    from pyproj import Transformer
+    from shapely.geometry import Point
+
+    bbox = (-10.0, 35.0, 35.0, 60.0)
+    to_source = Transformer.from_crs("EPSG:4326", "EPSG:32633", always_xy=True)
+    points = [Point(*to_source.transform(*xy)) for xy in [(-11.0, 38.05), (5.0, 45.0)]]
+    path = tmp_path / "projection-envelope-batch.parquet"
+    gpd.GeoDataFrame(
+        {"name": ["outside", "inside"]}, geometry=points, crs="EPSG:32633",
+    ).to_parquet(path)
+    monkeypatch.setattr(cn, "_gdal_has_parquet_driver", lambda: False)
+    monkeypatch.setattr(cn, "_CLOUD_VECTOR_LIMIT_DEFAULT", 1)
+
+    result, meta = cn.cloud_vector_to_geojson(str(path), "GeoParquet", bbox=bbox, limit=1)
+
+    assert meta["loaded_features"] == 1
+    assert [feature["properties"]["name"] for feature in result["features"]] == ["inside"]
+
+
 def test_geoparquet_explicit_limit_truncates(local_parquet, monkeypatch):
     gj, meta = cn.cloud_vector_to_geojson(local_parquet, "GeoParquet", limit=5)
     assert meta["loaded_features"] == 5
+
+
+def test_geoparquet_batched_fallback_preserves_attribute_named_geometry(tmp_path, monkeypatch):
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    rows = 20
+    frame = gpd.GeoDataFrame(
+        {"name": [f"p{index}" for index in range(rows)],
+         "geom": [Point(116 + index * 0.01, 39.5 + index * 0.01) for index in range(rows)]},
+        geometry="geom", crs="EPSG:4326",
+    )
+    frame["geometry"] = [f"attribute-{index}" for index in range(rows)]
+    path = tmp_path / "attribute-geometry.parquet"
+    frame.to_parquet(path)
+
+    monkeypatch.setattr(cn, "_gdal_has_parquet_driver", lambda: False)
+    monkeypatch.setattr(cn, "_CLOUD_VECTOR_LIMIT_DEFAULT", 10)
+    result, info = cn.cloud_vector_to_geojson(str(path), "GeoParquet", limit=10)
+
+    assert info["loaded_features"] == 10
+    assert result["features"][0]["properties"]["geometry"] == "attribute-0"
+
+
+def test_geoparquet_crs_omission_defaults_to_crs84_in_batched_fallback(
+    local_parquet, tmp_path, monkeypatch,
+):
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(local_parquet)
+    metadata = dict(table.schema.metadata or {})
+    geo = json.loads(metadata[b"geo"].decode("utf-8"))
+    primary = geo["primary_column"]
+    geo["columns"][primary].pop("crs", None)
+    metadata[b"geo"] = json.dumps(geo).encode("utf-8")
+    path = tmp_path / "crs-omitted.parquet"
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+
+    monkeypatch.setattr(cn, "_gdal_has_parquet_driver", lambda: False)
+    monkeypatch.setattr(cn, "_CLOUD_VECTOR_LIMIT_DEFAULT", 10)
+    result, info = cn.cloud_vector_to_geojson(str(path), "GeoParquet", limit=10)
+
+    assert info["loaded_features"] == 10
+    assert result["features"][0]["geometry"]["coordinates"] == pytest.approx([116.0, 39.5])
+    assert info["crs"] == "OGC:CRS84"
+
+
+def test_geoparquet_explicit_null_crs_stays_unknown_in_batched_fallback(
+    local_parquet, tmp_path, monkeypatch,
+):
+    import pyarrow.parquet as pq
+
+    table = pq.read_table(local_parquet)
+    metadata = dict(table.schema.metadata or {})
+    geo = json.loads(metadata[b"geo"].decode("utf-8"))
+    primary = geo["primary_column"]
+    geo["columns"][primary]["crs"] = None
+    metadata[b"geo"] = json.dumps(geo).encode("utf-8")
+    path = tmp_path / "crs-null.parquet"
+    pq.write_table(table.replace_schema_metadata(metadata), path)
+
+    monkeypatch.setattr(cn, "_gdal_has_parquet_driver", lambda: False)
+    monkeypatch.setattr(cn, "_CLOUD_VECTOR_LIMIT_DEFAULT", 10)
+    with pytest.raises(cn.CloudNativeError, match="未声明坐标系"):
+        cn.cloud_vector_to_geojson(str(path), "GeoParquet", limit=10)
 
 
 def test_geoparquet_over_limit_refuses_without_bbox(local_parquet, monkeypatch):

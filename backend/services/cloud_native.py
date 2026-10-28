@@ -415,6 +415,7 @@ def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None =
     try:
         import numpy as np
         import rasterio
+        from rasterio.enums import ColorInterp
         from rasterio.warp import transform_bounds
         from PIL import Image
     except ImportError as e:
@@ -439,12 +440,28 @@ def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None =
             out_w = max(1, width // scale)
             out_h = max(1, height // scale)
             count = ds.count
-
-            if count >= 3:
-                bands = [ds.read(i, out_shape=(out_h, out_w)).astype("float64") for i in (1, 2, 3)]
+            alpha_band = next(
+                (index + 1 for index, interpretation in enumerate(ds.colorinterp)
+                 if interpretation == ColorInterp.alpha),
+                None,
+            )
+            color_indexes = {interpretation: index + 1 for index, interpretation in enumerate(ds.colorinterp)}
+            if all(color in color_indexes for color in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)):
+                rgb_indexes = [color_indexes[ColorInterp.red], color_indexes[ColorInterp.green], color_indexes[ColorInterp.blue]]
             else:
-                b = ds.read(1, out_shape=(out_h, out_w)).astype("float64")
-                bands = [b, b, b]
+                non_alpha_indexes = [
+                    index + 1 for index, interpretation in enumerate(ds.colorinterp)
+                    if interpretation != ColorInterp.alpha
+                ]
+                if len(non_alpha_indexes) >= 3:
+                    rgb_indexes = non_alpha_indexes[:3]
+                else:
+                    gray_index = color_indexes.get(ColorInterp.gray) or (non_alpha_indexes[0] if non_alpha_indexes else 1)
+                    rgb_indexes = [gray_index, gray_index, gray_index]
+            bands = [
+                ds.read(index, out_shape=(out_h, out_w)).astype("float64")
+                for index in rgb_indexes
+            ]
 
             nodata = ds.nodata
             if nodata is not None:
@@ -455,6 +472,7 @@ def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None =
                 mask = ~np.isfinite(bands[0])
                 for b in bands[1:]:
                     mask |= ~np.isfinite(b)
+            alpha = ds.dataset_mask(out_shape=(out_h, out_w)) if alpha_band else None
 
             rgb = []
             for b in bands:
@@ -466,7 +484,13 @@ def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None =
                     b = np.clip((b - lo) / (hi - lo), 0, 1)
                 b = np.where(valid, b, 0)
                 rgb.append((b * 255).astype("uint8"))
-            png_image = Image.fromarray(np.stack(rgb, axis=-1))
+            rgb_image = np.stack(rgb, axis=-1)
+            if alpha is not None:
+                alpha = np.asarray(alpha, dtype="uint8")
+                alpha[mask] = 0
+                png_image = Image.fromarray(np.dstack((rgb_image, alpha)))
+            else:
+                png_image = Image.fromarray(rgb_image)
 
             if ds.crs and ds.crs.to_string() != "EPSG:4326":
                 bounds = list(transform_bounds(ds.crs, "EPSG:4326", *ds.bounds))
@@ -575,6 +599,26 @@ def _cog_info_impl(source: str, fallback_url: str | None = None) -> dict:
 # PMTiles
 # ============================================================
 
+_MAX_MVT_TILE_BYTES = 32 * 1024 * 1024
+_MAX_MVT_GEOMETRY_VERTICES = 25_000
+_MAX_PM_METADATA_BYTES = 16 * 1024 * 1024
+_MAX_PM_DIRECTORY_BYTES = 32 * 1024 * 1024
+_MAX_PM_DIRECTORY_ENTRIES = 250_000
+
+
+def _bounded_gzip_decompress(payload: bytes, max_bytes: int, label: str) -> bytes:
+    if len(payload) > max_bytes:
+        raise CloudNativeError(f"{label}压缩数据超过安全上限 {max_bytes // (1024 * 1024)} MiB")
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(payload), mode="rb") as source:
+            result = source.read(max_bytes + 1)
+    except Exception as e:
+        raise CloudNativeError(f"{label} GZIP 解压失败: {str(e)[:200]}") from e
+    if len(result) > max_bytes:
+        raise CloudNativeError(f"{label}超过安全上限 {max_bytes // (1024 * 1024)} MiB")
+    return result
+
+
 class _HttpRangeSource:
     """PMTiles HTTP Range 读取器（按需读块，不整体下载）"""
 
@@ -623,6 +667,138 @@ class _HttpRangeSource:
             raise CloudNativeError(f"PMTiles 远程读取失败（Range 请求）: {str(e)[:200]}")
 
 
+class _GuardedPMTilesRangeSource:
+    """只限制 PMTiles tile-data 区域的单块读取，保留较大目录的兼容性。"""
+
+    def __init__(self, get_bytes):
+        self._get_bytes = get_bytes
+        self._tile_data_offset = None
+        self._tile_data_end = None
+        self._metadata_offset = None
+        self._metadata_end = None
+        self._directory_ranges = []
+
+    def set_header(self, header):
+        try:
+            start = int(header["tile_data_offset"])
+            length = int(header["tile_data_length"])
+            if start >= 0 and length >= 0:
+                self._tile_data_offset = start
+                self._tile_data_end = start + length
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+        self._directory_ranges = []
+        for offset_key, length_key in (
+            ("root_offset", "root_length"), ("leaf_directory_offset", "leaf_directory_length"),
+        ):
+            try:
+                start = int(header[offset_key])
+                length = int(header[length_key])
+                if start >= 0 and length >= 0:
+                    self._directory_ranges.append((start, start + length))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+        try:
+            start = int(header["metadata_offset"])
+            length = int(header["metadata_length"])
+            if start >= 0 and length >= 0:
+                self._metadata_offset = start
+                self._metadata_end = start + length
+        except (KeyError, TypeError, ValueError, OverflowError):
+            pass
+
+    def get_bytes(self, start, length):
+        if (any(range_start <= start < range_end for range_start, range_end in self._directory_ranges)
+                and length > _MAX_PM_DIRECTORY_BYTES):
+            raise CloudNativeError(
+                f"PMTiles 目录 Range 超过安全上限 {_MAX_PM_DIRECTORY_BYTES // (1024 * 1024)} MiB"
+            )
+        if (self._metadata_offset is not None and self._metadata_offset <= start < self._metadata_end
+                and length > _MAX_PM_METADATA_BYTES):
+            raise CloudNativeError(
+                f"PMTiles 元数据 Range 超过安全上限 {_MAX_PM_METADATA_BYTES // (1024 * 1024)} MiB"
+            )
+        if (self._tile_data_offset is not None and self._tile_data_offset <= start < self._tile_data_end
+                and length > _MAX_MVT_TILE_BYTES):
+            raise CloudNativeError(
+                f"PMTiles 单块瓦片 Range 超过安全上限 {_MAX_MVT_TILE_BYTES // (1024 * 1024)} MiB"
+            )
+        return self._get_bytes(start, length)
+
+
+def _decode_pmtiles_directory(payload: bytes):
+    """Bounded counterpart of pmtiles.reader.deserialize_directory."""
+    import io
+    from pmtiles.tile import Entry
+
+    decoded = _bounded_gzip_decompress(payload, _MAX_PM_DIRECTORY_BYTES, "PMTiles 目录")
+    stream = io.BytesIO(decoded)
+
+    def read_varint():
+        value = 0
+        for index in range(10):
+            raw = stream.read(1)
+            if not raw:
+                raise CloudNativeError("PMTiles 目录 varint 数据不完整")
+            byte = raw[0]
+            if index == 9 and byte > 1:
+                raise CloudNativeError("PMTiles 目录 varint 超出 64 位范围")
+            value |= (byte & 0x7F) << (7 * index)
+            if not byte & 0x80:
+                return value
+        raise CloudNativeError("PMTiles 目录 varint 超过 10 字节")
+
+    try:
+        count = read_varint()
+        if count > _MAX_PM_DIRECTORY_ENTRIES:
+            raise CloudNativeError(
+                f"PMTiles 目录条目数超过安全上限 {_MAX_PM_DIRECTORY_ENTRIES}"
+            )
+        entries = []
+        last_id = 0
+        for _ in range(count):
+            last_id += read_varint()
+            entries.append(Entry(last_id, 0, 0, 0))
+        for entry in entries:
+            entry.run_length = read_varint()
+        for entry in entries:
+            entry.length = read_varint()
+        for index, entry in enumerate(entries):
+            offset = read_varint()
+            if index > 0 and offset == 0:
+                previous = entries[index - 1]
+                entry.offset = previous.offset + previous.length
+            else:
+                entry.offset = offset - 1
+        return entries
+    except CloudNativeError:
+        raise
+    except Exception as e:
+        raise CloudNativeError(f"PMTiles 目录解析失败: {str(e)[:200]}") from e
+
+
+def _pmtiles_get_tile_bounded(reader, header, z: int, x: int, y: int):
+    """Read one tile without pmtiles.Reader.get's unbounded directory decompression."""
+    from pmtiles.reader import find_tile
+    from pmtiles.tile import zxy_to_tileid
+
+    tile_id = zxy_to_tileid(z, x, y)
+    directory_offset = header["root_offset"]
+    directory_length = header["root_length"]
+    for _ in range(4):
+        payload = reader.get_bytes(directory_offset, directory_length)
+        entries = _decode_pmtiles_directory(payload)
+        result = find_tile(entries, tile_id)
+        if result is None:
+            return None
+        if result.run_length == 0:
+            directory_offset = header["leaf_directory_offset"] + result.offset
+            directory_length = result.length
+            continue
+        return reader.get_bytes(header["tile_data_offset"] + result.offset, result.length)
+    return None
+
+
 def _pmtiles_open(source: str):
     """打开 PMTiles：本地文件走 mmap，URL 走 HTTP Range。返回 (Reader, header, file_handle)"""
     try:
@@ -635,13 +811,16 @@ def _pmtiles_open(source: str):
     f = None  # URL 分支无文件句柄；本地分支持有 mmap 源的文件句柄
     try:
         if _is_http(s):
-            reader = Reader(_HttpRangeSource(s).get_bytes)
+            source_reader = _HttpRangeSource(s).get_bytes
         else:
             if not os.path.exists(s):
                 raise CloudNativeError(f"文件不存在: {s}")
             f = open(s, "rb")
-            reader = Reader(MmapSource(f))
+            source_reader = MmapSource(f)
+        guarded_source = _GuardedPMTilesRangeSource(source_reader)
+        reader = Reader(guarded_source.get_bytes)
         header = deserialize_header(reader.get_bytes(0, 16384))
+        guarded_source.set_header(header)
     except CloudNativeError:
         if f is not None:
             f.close()
@@ -709,9 +888,19 @@ def pmtiles_info(source: str) -> dict:
     with _pmtiles_reader(source) as (reader, header):
         info = pmtiles_header_summary(header)
         try:
-            raw_meta = reader.metadata()
+            raw_meta = reader.get_bytes(header["metadata_offset"], header["metadata_length"])
             if isinstance(raw_meta, bytes):
-                raw_meta = json.loads(gzip.decompress(raw_meta) if raw_meta[:2] == b"\x1f\x8b" else raw_meta)
+                compression = header.get("internal_compression", 0)
+                compression = int(compression.value) if hasattr(compression, "value") else int(compression)
+                if compression == 2:
+                    if raw_meta[:2] != b"\x1f\x8b":
+                        raise CloudNativeError("PMTiles gzip 元数据缺少有效 GZIP 数据")
+                    raw_meta = _bounded_gzip_decompress(raw_meta, _MAX_PM_METADATA_BYTES, "PMTiles 元数据")
+                elif len(raw_meta) > _MAX_PM_METADATA_BYTES:
+                    raise CloudNativeError(
+                        f"PMTiles 元数据超过安全上限 {_MAX_PM_METADATA_BYTES // (1024 * 1024)} MiB"
+                    )
+                raw_meta = json.loads(raw_meta)
             if isinstance(raw_meta, dict):
                 info["vector_layers"] = [
                     {"name": l.get("id") or l.get("name"), "fields": list((l.get("fields") or {}).keys())[:15]}
@@ -734,7 +923,134 @@ def _deg2tile(lon: float, lat: float, z: int):
     return x, y
 
 
-def _mvt_decode_tile(tile_bytes: bytes, tile_compression, z: int, x: int, y: int) -> list:
+def _protobuf_varint(data: bytes, offset: int):
+    value = 0
+    for index in range(10):
+        if offset >= len(data):
+            raise CloudNativeError("MVT protobuf 数据不完整")
+        byte = data[offset]
+        offset += 1
+        if index == 9 and byte > 1:
+            raise CloudNativeError("MVT protobuf varint 超出 64 位范围")
+        value |= (byte & 0x7F) << (7 * index)
+        if not byte & 0x80:
+            return value, offset
+    raise CloudNativeError("MVT protobuf varint 超过 10 字节")
+
+
+def _protobuf_fields(data: bytes):
+    offset = 0
+    while offset < len(data):
+        start = offset
+        tag, offset = _protobuf_varint(data, offset)
+        field_number, wire_type = tag >> 3, tag & 7
+        if field_number == 0:
+            raise CloudNativeError("MVT protobuf 字段编号无效")
+        tag_end = offset
+        if wire_type == 0:
+            _, offset = _protobuf_varint(data, offset)
+            payload_start = payload_end = offset
+        elif wire_type == 1:
+            payload_start, payload_end = offset, offset + 8
+            offset = payload_end
+        elif wire_type == 2:
+            length, offset = _protobuf_varint(data, offset)
+            payload_start, payload_end = offset, offset + length
+            offset = payload_end
+        elif wire_type == 5:
+            payload_start, payload_end = offset, offset + 4
+            offset = payload_end
+        else:
+            raise CloudNativeError("MVT protobuf wire type 不受支持")
+        if payload_end > len(data):
+            raise CloudNativeError("MVT protobuf 字段长度超出瓦片范围")
+        yield start, tag_end, payload_start, payload_end, field_number, wire_type
+
+
+def _mvt_feature_vertex_count(feature_payload: bytes, max_vertices: int) -> int:
+    vertices = 0
+    coordinate_values_remaining = 0
+
+    def consume(value):
+        nonlocal vertices, coordinate_values_remaining
+        if coordinate_values_remaining:
+            coordinate_values_remaining -= 1
+            return
+        command_id, count = value & 7, value >> 3
+        if command_id in (1, 2):
+            vertices += count
+            if vertices > max_vertices:
+                raise CloudNativeError(
+                    f"MVT 单瓦片几何顶点超过安全上限 {_MAX_MVT_GEOMETRY_VERTICES}"
+                )
+            coordinate_values_remaining = count * 2
+        elif command_id != 7:
+            raise CloudNativeError("MVT 几何命令类型无效")
+
+    for _start, tag_end, payload_start, payload_end, field_number, wire_type in _protobuf_fields(feature_payload):
+        if field_number != 4:
+            continue
+        if wire_type == 0:
+            value, _ = _protobuf_varint(feature_payload, tag_end)
+            consume(value)
+        elif wire_type == 2:
+            geometry = feature_payload[payload_start:payload_end]
+            offset = 0
+            while offset < len(geometry):
+                value, offset = _protobuf_varint(geometry, offset)
+                consume(value)
+        else:
+            raise CloudNativeError("MVT geometry 字段编码无效")
+    if coordinate_values_remaining:
+        raise CloudNativeError("MVT 几何坐标命令不完整")
+    return vertices
+
+
+def _limit_mvt_tile_features(tile_bytes: bytes, max_features: int) -> bytes:
+    """Remove excess MVT features before mapbox-vector-tile builds Python objects."""
+    remaining = max_features
+    remaining_vertices = _MAX_MVT_GEOMETRY_VERTICES
+    output = bytearray()
+    try:
+        for start, tag_end, payload_start, payload_end, field_number, wire_type in _protobuf_fields(tile_bytes):
+            if field_number != 3 or wire_type != 2:
+                output.extend(tile_bytes[start:payload_end])
+                continue
+
+            layer = tile_bytes[payload_start:payload_end]
+            layer_output = bytearray()
+            for (layer_start, _layer_tag_end, layer_payload_start, layer_payload_end,
+                 layer_field, layer_wire) in _protobuf_fields(layer):
+                if layer_field == 2 and layer_wire == 2:
+                    if remaining <= 0:
+                        continue
+                    feature_payload = layer[layer_payload_start:layer_payload_end]
+                    feature_vertices = _mvt_feature_vertex_count(feature_payload, remaining_vertices)
+                    remaining_vertices -= feature_vertices
+                    remaining -= 1
+                layer_output.extend(layer[layer_start:layer_payload_end])
+
+            output.extend(tile_bytes[start:tag_end])
+            output.extend(_encode_protobuf_varint(len(layer_output)))
+            output.extend(layer_output)
+        return bytes(output)
+    except CloudNativeError:
+        raise
+    except Exception as e:
+        raise CloudNativeError(f"MVT 要素限制处理失败: {str(e)[:200]}") from e
+
+
+def _encode_protobuf_varint(value: int) -> bytes:
+    encoded = bytearray()
+    while value > 0x7F:
+        encoded.append((value & 0x7F) | 0x80)
+        value >>= 7
+    encoded.append(value)
+    return bytes(encoded)
+
+
+def _mvt_decode_tile(tile_bytes: bytes, tile_compression, z: int, x: int, y: int,
+                     max_features: int | None = None) -> list:
     """解码一块 MVT → [(shapely geom(WGS84), properties, layer_name)]"""
     try:
         import numpy as np
@@ -746,9 +1062,16 @@ def _mvt_decode_tile(tile_bytes: bytes, tile_compression, z: int, x: int, y: int
     tc = tile_compression
     comp = int(tc.value) if hasattr(tc, "value") else (int(tc) if tc is not None else 0)
     if comp == 2:  # GZIP
-        tile_bytes = gzip.decompress(tile_bytes)
+        tile_bytes = _bounded_gzip_decompress(tile_bytes, _MAX_MVT_TILE_BYTES, "MVT 瓦片")
     elif comp == 3:
         raise CloudNativeError("PMTiles 使用 Brotli 压缩，请先安装 brotli 支持")
+    elif len(tile_bytes) > _MAX_MVT_TILE_BYTES:
+        raise CloudNativeError(f"MVT 瓦片超过安全上限 {_MAX_MVT_TILE_BYTES // (1024 * 1024)} MiB")
+    if max_features is not None and (
+        isinstance(max_features, bool) or not isinstance(max_features, int) or max_features < 0
+    ):
+        raise CloudNativeError("MVT 最大要素数无效")
+    tile_bytes = _limit_mvt_tile_features(tile_bytes, max_features if max_features is not None else 50_000)
     try:
         decoded = mapbox_vector_tile.decode(tile_bytes)
     except Exception as e:
@@ -848,7 +1171,7 @@ def pmtiles_vector_to_geojson(source: str, max_features: int = 5000,
                 continue
             attempted_tiles += 1
             try:
-                tile_bytes = reader.get(z, tx, ty)
+                tile_bytes = _pmtiles_get_tile_bounded(reader, header, z, tx, ty)
             except CloudNativeError:
                 raise
             except Exception:
@@ -856,7 +1179,11 @@ def pmtiles_vector_to_geojson(source: str, max_features: int = 5000,
             if not tile_bytes:
                 continue
             seen_tiles.add((tx, ty))
-            feats = _mvt_decode_tile(tile_bytes, header.get("tile_compression"), z, tx, ty)
+            remaining_features = max_features - len(collected)
+            feats = _mvt_decode_tile(
+                tile_bytes, header.get("tile_compression"), z, tx, ty,
+                max_features=remaining_features,
+            )
             for geom, props, lname in feats:
                 seen_layers.add(lname)
                 collected.append(_geom_to_feature(geom, props))
@@ -887,7 +1214,7 @@ def pmtiles_raster_tile_bounds(source: str):
         lon_c, lat_c = summary["center"][0], summary["center"][1]
         z = _sampling_zoom(summary, 12)
         x, y = _deg2tile(lon_c, lat_c, z)
-        tile_bytes = reader.get(z, x, y)
+        tile_bytes = _pmtiles_get_tile_bounded(reader, header, z, x, y)
         if not tile_bytes:
             raise CloudNativeError("中心瓦片为空")
         fmt = {2: "png", 3: "jpeg", 4: "webp", 5: "avif"}[ttype]
@@ -970,11 +1297,56 @@ def _cloud_vector_metadata_from_path(src_path: str, fmt: str, pyogrio) -> dict:
     bbox = info.get("bbox")
     return {
         "features": int(info.get("features") or 0),
-        "crs": str(info.get("crs") or "未知")[:80],
+        "crs": str(info.get("crs") or "未知"),
         "geometry_type": str(info.get("geometry_type") or "未知"),
         "fields": fields,
         "bbox_native": [round(float(v), 6) for v in bbox] if bbox is not None else None,
     }
+
+
+def _read_flatgeobuf_bbox_limited(src_path: str, bbox, source_crs, limit: int, pyogrio):
+    """Read bbox candidates in chunks; projection-envelope false positives do not spend limit."""
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    source_bbox = _bbox_to_source_crs(bbox, source_crs)
+    query_geometry = box(*bbox)
+    batch_size = min(max(1, limit), 4096)
+    offset = 0
+    loaded = 0
+    frames = []
+    empty = None
+    while loaded < limit:
+        chunk = pyogrio.read_dataframe(
+            src_path, bbox=source_bbox, skip_features=offset, max_features=batch_size,
+        )
+        empty = chunk
+        if chunk is None or chunk.empty:
+            break
+        offset += len(chunk)
+
+        crs = chunk.crs
+        if crs is None:
+            raise CloudNativeError("FlatGeobuf 未声明坐标系，无法安全应用 WGS84 bbox 过滤")
+        exact = chunk.to_crs(4326) if crs.to_epsg() != 4326 else chunk
+        matches = exact.geometry.notna() & exact.geometry.intersects(query_geometry)
+        selected = chunk.loc[matches]
+        remaining = limit - loaded
+        if len(selected) > remaining:
+            selected = selected.head(remaining)
+        if not selected.empty:
+            frames.append(selected)
+            loaded += len(selected)
+        if len(chunk) < batch_size:
+            break
+
+    if not frames:
+        return empty
+    geometry_name = frames[0].geometry.name
+    return gpd.GeoDataFrame(
+        pd.concat(frames, ignore_index=True), geometry=geometry_name, crs=source_crs,
+    )
 
 
 def _geoparquet_metadata_pyarrow(source: str) -> dict:
@@ -989,9 +1361,12 @@ def _geoparquet_metadata_pyarrow(source: str) -> dict:
 
 
 def _geoparquet_metadata_pyarrow_from_path(path: str) -> dict:
+    source = None
+    pf = None
     try:
         import pyarrow.parquet as pq
-        pf = pq.ParquetFile(path)
+        source = open(path, "rb")
+        pf = pq.ParquetFile(source)
         num_rows = int(pf.metadata.num_rows)
         geo = {}
         meta = pf.schema_arrow.metadata or {}
@@ -1000,13 +1375,15 @@ def _geoparquet_metadata_pyarrow_from_path(path: str) -> dict:
             geo = json.loads(raw.decode("utf-8"))
         primary = geo.get("primary_column", "geometry")
         column_meta = geo.get("columns", {}).get(primary, {})
-        crs = column_meta.get("crs")
+        # GeoParquet defaults an omitted CRS key to OGC:CRS84; explicit null
+        # means the CRS is unknown and must remain distinguishable.
+        crs = column_meta["crs"] if "crs" in column_meta else "OGC:CRS84"
         if isinstance(crs, dict):
             crs = json.dumps(crs)
         fields = [f for f in pf.schema_arrow.names if f != primary][:20]
         return {
             "features": num_rows,
-            "crs": str(crs or "未知"),
+            "crs": str(crs) if crs is not None else "未知",
             "geometry_type": str(column_meta.get("geometry_type") or "未知"),
             "fields": fields,
             "bbox_native": column_meta.get("bbox"),
@@ -1016,6 +1393,17 @@ def _geoparquet_metadata_pyarrow_from_path(path: str) -> dict:
         raise
     except Exception as e:
         raise CloudNativeError(f"GeoParquet 元信息读取失败: {str(e)[:300]}")
+    finally:
+        if pf is not None:
+            try:
+                pf.close()
+            except Exception:
+                pass
+        if source is not None:
+            try:
+                source.close()
+            except Exception:
+                pass
 
 
 def cloud_vector_to_geojson(source: str, fmt: str, bbox=None, limit: int = 0) -> tuple:
@@ -1050,13 +1438,18 @@ def _cloud_vector_to_geojson_from_path(src_path: str, fmt: str, bbox, limit: int
             f"该 {fmt} 共 {total} 个要素，超过单次加载上限 {max_features}。"
             "请带 bbox 参数做空间过滤（minx,miny,maxx,maxy），或显式传较小的 limit")
 
-    kwargs = {}
-    if bbox is not None:
-        kwargs["bbox"] = _bbox_to_source_crs(bbox, meta.get("crs"))
-    if max_features:
-        kwargs["max_features"] = max_features
     try:
-        gdf = pyogrio.read_dataframe(src_path, **kwargs)
+        if fmt == "FlatGeobuf" and bbox is not None:
+            gdf = _read_flatgeobuf_bbox_limited(
+                src_path, bbox, meta.get("crs"), max_features, pyogrio,
+            )
+        else:
+            kwargs = {}
+            if bbox is not None:
+                kwargs["bbox"] = _bbox_to_source_crs(bbox, meta.get("crs"))
+            if max_features:
+                kwargs["max_features"] = max_features
+            gdf = pyogrio.read_dataframe(src_path, **kwargs)
     except CloudNativeError:
         raise
     except Exception as e:
@@ -1102,7 +1495,16 @@ def _geoparquet_to_geojson_pyarrow_from_path(path: str, bbox, limit: int, gpd) -
         if bbox is not None:
             kwargs["bbox"] = _bbox_to_source_crs(bbox, meta.get("crs"))
         try:
-            gdf = gpd.read_parquet(path, **kwargs)
+            try:
+                gdf = gpd.read_parquet(path, **kwargs)
+            except ValueError as e:
+                # GeoParquet WKB files without covering-bbox metadata cannot use
+                # GeoPandas' predicate pushdown. The file is already below the
+                # bounded feature limit, so read it and apply the exact filter below.
+                message = str(e).lower()
+                if bbox is None or "bbox" not in message or "not supported" not in message:
+                    raise
+                gdf = gpd.read_parquet(path)
         except CloudNativeError:
             raise
         except Exception as e:
@@ -1112,12 +1514,15 @@ def _geoparquet_to_geojson_pyarrow_from_path(path: str, bbox, limit: int, gpd) -
 
 def _read_geoparquet_batches(path: str, bbox, meta: dict, limit: int, gpd):
     """按批读取 GeoParquet WKB 几何，限制峰值内存和返回要素数。"""
+    source = None
+    parquet = None
     try:
         import pandas as pd
         import pyarrow.parquet as pq
         from shapely.geometry import box
 
-        parquet = pq.ParquetFile(path)
+        source = open(path, "rb")
+        parquet = pq.ParquetFile(source)
         raw_geo = (parquet.schema_arrow.metadata or {}).get(b"geo")
         geo = json.loads(raw_geo.decode("utf-8")) if raw_geo else {}
         primary = geo.get("primary_column", "geometry")
@@ -1126,22 +1531,33 @@ def _read_geoparquet_batches(path: str, bbox, meta: dict, limit: int, gpd):
             raise CloudNativeError("GeoParquet 几何编码不是 WKB，当前无法安全分批读取。")
         if primary not in parquet.schema_arrow.names:
             raise CloudNativeError("GeoParquet 缺少主几何列，无法分批读取。")
+        geometry_name = "__gw_geometry__"
+        while geometry_name in parquet.schema_arrow.names:
+            geometry_name = f"_{geometry_name}"
 
         crs = meta.get("crs")
         if crs == "未知":
             crs = None
         source_bounds = _bbox_to_source_crs(bbox, crs) if bbox is not None else None
         query_geometry = box(*source_bounds) if source_bounds is not None else None
+        query_geometry_wgs84 = box(*bbox) if bbox is not None else None
         frames = []
         remaining = limit
         for batch in parquet.iter_batches(batch_size=min(max(1, limit), 4096)):
             frame = batch.to_pandas()
             geometry_wkb = frame.pop(primary)
-            geometry = gpd.GeoSeries.from_wkb(geometry_wkb, crs=crs).rename("geometry")
-            part = gpd.GeoDataFrame(frame, geometry=geometry, crs=crs)
+            geometry = gpd.GeoSeries.from_wkb(geometry_wkb, crs=crs).rename(geometry_name)
+            frame[geometry_name] = geometry
+            part = gpd.GeoDataFrame(frame, geometry=geometry_name, crs=crs)
             if query_geometry is not None:
                 intersects = part.geometry.notna() & part.geometry.intersects(query_geometry)
                 part = part.loc[intersects]
+                if not part.empty:
+                    exact_geometry = part.to_crs(4326).geometry
+                    exact_intersects = (
+                        exact_geometry.notna() & exact_geometry.intersects(query_geometry_wgs84)
+                    )
+                    part = part.loc[exact_intersects]
             if len(part) > remaining:
                 part = part.head(remaining)
             if not part.empty:
@@ -1152,11 +1568,24 @@ def _read_geoparquet_batches(path: str, bbox, meta: dict, limit: int, gpd):
 
         if not frames:
             return gpd.GeoDataFrame(geometry=gpd.GeoSeries([], crs=crs), crs=crs)
-        return gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry", crs=crs)
+        return gpd.GeoDataFrame(
+            pd.concat(frames, ignore_index=True), geometry=geometry_name, crs=crs,
+        )
     except CloudNativeError:
         raise
     except Exception as e:
         raise CloudNativeError(f"GeoParquet 分批读取失败: {str(e)[:300]}") from e
+    finally:
+        if parquet is not None:
+            try:
+                parquet.close()
+            except Exception:
+                pass
+        if source is not None:
+            try:
+                source.close()
+            except Exception:
+                pass
 
 
 def _gdf_to_geojson_result(gdf, meta: dict, fmt: str, bbox) -> tuple:
@@ -1164,27 +1593,35 @@ def _gdf_to_geojson_result(gdf, meta: dict, fmt: str, bbox) -> tuple:
     if gdf is None or len(gdf) == 0:
         raise CloudNativeError(f"{fmt} 未读出要素（bbox 过滤后可能为空）")
 
-    try:
-        geojson = json.loads(gdf.to_json(na="null", show_bbox=False))
-    except Exception:
-        geojson = json.loads(gdf.to_json())
-
     meta = dict(meta)
-    meta["loaded_features"] = len(gdf)
     meta["bbox_filtered"] = list(bbox) if bbox else None
     meta["geometry_reprojected"] = False
-    # GeoParquet/FGB 可能不是 4326：非 4326 时重投影，保证上图正确
+    # 源 CRS 中的投影 bbox 是 WGS84 bbox 的外接矩形，可能包含 bbox 外要素。
+    # 统一转到 WGS84 后做精确 intersects，确保返回结果满足公开 bbox 语义。
     try:
         crs = gdf.crs
         if crs is None:
             raise CloudNativeError(f"{fmt} 未声明坐标系，无法安全转换为 WGS84")
         if crs.to_epsg() != 4326:
             gdf4326 = gdf.to_crs(4326)
-            geojson = json.loads(gdf4326.to_json(na="null", show_bbox=False))
             meta["geometry_reprojected"] = True
             meta["crs"] = str(crs.to_string())
+        else:
+            gdf4326 = gdf
+        if bbox is not None:
+            from shapely.geometry import box
+            mask = gdf4326.geometry.notna() & gdf4326.geometry.intersects(box(*bbox))
+            gdf4326 = gdf4326.loc[mask]
+            if gdf4326.empty:
+                raise CloudNativeError(f"{fmt} 未读出要素（bbox 过滤后可能为空）")
     except CloudNativeError:
         raise
     except Exception as e:
         raise CloudNativeError(f"{fmt} 坐标系转换到 WGS84 失败: {str(e)[:250]}") from e
+
+    meta["loaded_features"] = len(gdf4326)
+    try:
+        geojson = json.loads(gdf4326.to_json(na="null", show_bbox=False))
+    except Exception:
+        geojson = json.loads(gdf4326.to_json())
     return geojson, meta

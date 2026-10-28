@@ -37,7 +37,14 @@ def test_agent_disambiguation_inherits_previous_turn_context():
     with patch("backend.services.datav_service.fetch_boundary") as mock_get_bound:
         mock_get_bound.return_value = {
             "type": "FeatureCollection",
-            "features": [{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}, "properties": {"name": "鼓楼区"}}]
+            "features": [{
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[118.76, 32.03], [118.78, 32.03], [118.78, 32.05], [118.76, 32.05], [118.76, 32.03]]],
+                },
+                "properties": {"name": "鼓楼区"},
+            }]
         }
         res = datav_boundary.invoke({"name": "鼓楼区"})
 

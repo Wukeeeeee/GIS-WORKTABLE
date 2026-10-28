@@ -258,10 +258,10 @@ window.GIS = window.GIS || {};
     }
   }
 
-  function _saveGroupingChanges() {
+  function _saveProjectChanges() {
     if (GIS.project && typeof GIS.project.autoSave === 'function') {
       Promise.resolve(GIS.project.autoSave()).catch(function(error) {
-        console.warn('[GIS Layers] 分组状态自动保存失败', error);
+        console.warn('[GIS Layers] 图层状态自动保存失败', error);
       });
     }
   }
@@ -272,7 +272,12 @@ window.GIS = window.GIS || {};
     return colors[layerData.length % colors.length];
   }
 
-  function _registerLayerForPanel(name, geojson, layer) {
+  function _layerNameComparisonKey(name) {
+    var value = String(name == null ? '' : name);
+    return typeof value.normalize === 'function' ? value.normalize('NFC') : value;
+  }
+
+  function _registerLayerForPanel(name, geojson, layer, projectContext) {
     if (!window.GIS.api || typeof window.GIS.api.registerLayer !== 'function') return Promise.resolve(false);
     var barriers = _pendingRegistryOps.filter(function(operation) {
       return operation.names.indexOf(name) >= 0 && !(operation.waitsForLayer && operation.ownerId === layer.layer_id);
@@ -281,7 +286,9 @@ window.GIS = window.GIS || {};
       return operation.failed ? _runRegistryOperation(operation) : operation.promise;
     })).then(function(results) {
       if (!results.every(_registryResultOk)) throw new Error('同名旧图层尚未完成清理');
-      return window.GIS.api.registerLayer(name, geojson, layer.raster);
+      return projectContext && projectContext.provided
+        ? window.GIS.api.registerLayer(name, geojson, layer.raster, projectContext.id)
+        : window.GIS.api.registerLayer(name, geojson, layer.raster);
     }).then(function(result) {
       if (!_registryResultOk(result)) throw new Error('后台未确认图层注册成功');
       if (result && typeof result.registration_token === 'string') {
@@ -322,12 +329,16 @@ window.GIS = window.GIS || {};
   function _queueLayerRegistration(layer, name, geojson, keepRegisteredName) {
     var previous = layer._registrationPromise;
     var version = (layer._registrationVersion || 0) + 1;
+    var projectContext = window.GIS.project && typeof window.GIS.project.getActiveRegistryProjectId === 'function'
+      ? { provided: true, id: window.GIS.project.getActiveRegistryProjectId() }
+      : window.GIS.project && typeof window.GIS.project.getCurrentProjectId === 'function'
+        ? { provided: true, id: window.GIS.project.getCurrentProjectId() } : null;
     layer._registrationVersion = version;
     function attempt() {
       layer._registrationFailed = false;
       var promise = Promise.resolve(previous).catch(function() {}).then(function() {
         var desired = typeof name === 'function' ? name() : name;
-        return _registerLayerForPanel(desired, geojson, layer).then(function(ok) {
+        return _registerLayerForPanel(desired, geojson, layer, projectContext).then(function(ok) {
           if (!ok) return false;
           // Tool panels may need a display-name alias. Keep the canonical
           // identity and retain the alias token for versioned deletion.
@@ -444,9 +455,11 @@ window.GIS = window.GIS || {};
     // 重名自动加 (1) (2)
     var name = layer.filename || '未命名';
     var _rawName = layer._rawName || layer.filename || layer.layer_id || '未命名'; // 保留原始名称用于地图模块查找（工程加载时传入带 _loaded 后缀的注册名）
-    if (layerData.some(function(l) { return l.filename === name; })) {
+    if (layerData.some(function(l) { return _layerNameComparisonKey(l.filename) === _layerNameComparisonKey(name); })) {
       var suffix = 1;
-      while (layerData.some(function(l) { return l.filename === name + '(' + suffix + ')'; })) { suffix++; }
+      while (layerData.some(function(l) {
+        return _layerNameComparisonKey(l.filename) === _layerNameComparisonKey(name + '(' + suffix + ')');
+      })) { suffix++; }
       name = name + '(' + suffix + ')';
     }
     // 兜底生成 layer_id：工程恢复等场景可能不带 layer_id，缺失会导致删除按钮 data-id 为空而失效
@@ -519,6 +532,7 @@ window.GIS = window.GIS || {};
           });
         }, '取消注册图层「' + registeredName + '」', reservedNames, target.layer_id, true);
       }
+      if (!silent) _saveProjectChanges();
     }
   }
 
@@ -574,8 +588,10 @@ window.GIS = window.GIS || {};
   // 批量切换图层显隐（全部显示 / 全部隐藏）
   function setAllVisibility(visible) {
     if (!layerData || layerData.length === 0) return;
+    var nextVisibility = !!visible;
+    var changed = layerData.some(function(layer) { return (layer.visible !== false) !== nextVisibility; });
     layerData.forEach(function(layer) {
-      layer.visible = !!visible;
+      layer.visible = nextVisibility;
       if (window.GIS.state && typeof window.GIS.state.getLayer === 'function' &&
           window.GIS.state.getLayer(layer.layer_id)) {
         window.GIS.state.setVisible(layer.layer_id, layer.visible);
@@ -585,6 +601,7 @@ window.GIS = window.GIS || {};
     });
     renderList();
     if (visible) _syncLayerOrder();
+    if (changed) _saveProjectChanges();
   }
 
   function showAll() {
@@ -614,6 +631,7 @@ window.GIS = window.GIS || {};
     layerData.splice(insertIndex, 0, moved);
     renderList();
     _syncLayerOrder();
+    _saveProjectChanges();
     return true;
   }
 
@@ -632,6 +650,7 @@ window.GIS = window.GIS || {};
     }
     // 显示图层后 Leaflet 会把它放到最上层，重新同步叠放顺序
     if (layer.visible) _syncLayerOrder();
+    _saveProjectChanges();
   }
 
   // 下载图层（显示格式选择弹窗）
@@ -916,7 +935,7 @@ window.GIS = window.GIS || {};
           var groupRows = Array.from(tbody.querySelectorAll('.group-layer-row')).filter(function(row) {
             return row.dataset.group === gid;
           });
-          _saveGroupingChanges();
+          _saveProjectChanges();
           if (!groupRows.length) {
             renderList();
             return;
@@ -993,7 +1012,7 @@ window.GIS = window.GIS || {};
       }
       group.name = nextName;
       renderList();
-      _saveGroupingChanges();
+      _saveProjectChanges();
     }
 
     input.addEventListener('blur', commit);
@@ -1017,7 +1036,7 @@ window.GIS = window.GIS || {};
       collapsed: false,
     };
     renderList();
-    _saveGroupingChanges();
+    _saveProjectChanges();
     if (window.GIS.toast && typeof window.GIS.toast.success === 'function') {
       window.GIS.toast.success('已新建分组「' + groupName + '」');
     }
@@ -1049,7 +1068,7 @@ window.GIS = window.GIS || {};
       layer.groupId = groupId;
       renderList();
       _syncLayerOrder();
-      _saveGroupingChanges();
+      _saveProjectChanges();
     }
   }
 
@@ -1061,7 +1080,7 @@ window.GIS = window.GIS || {};
     });
     delete groups[groupId];
     renderList();
-    _saveGroupingChanges();
+    _saveProjectChanges();
   }
 
   /** 弹窗选择/新建分组将图层移动至分组 */
@@ -1243,6 +1262,7 @@ window.GIS = window.GIS || {};
             }
           }
         });
+        input.addEventListener('change', function() { _saveProjectChanges(); });
         input.click();
         return;
       }
@@ -1352,6 +1372,15 @@ window.GIS = window.GIS || {};
         var inspVal = document.getElementById('layerOpacityVal');
         if (inspOp) inspOp.value = slider.value;
         if (inspVal) inspVal.textContent = slider.value + '%';
+      }
+    });
+
+    // Range inputs can emit many `input` events while dragging. Persist once
+    // when the user commits the final opacity value.
+    tbody.addEventListener('change', function(e) {
+      var slider = e.target.closest('.layer-row-opacity');
+      if (slider && layerData.some(function(layer) { return layer.layer_id === slider.dataset.id; })) {
+        _saveProjectChanges();
       }
     });
 
@@ -2045,6 +2074,9 @@ window.GIS = window.GIS || {};
           window.GIS.state.setOpacity(layerId, o);
         }
       });
+      opSlider.addEventListener('change', function() {
+        _saveProjectChanges();
+      });
     }
 
     // ===== 比例尺可见缩放范围（ArcMap 风格：最小与最大缩放级别）=====
@@ -2194,7 +2226,7 @@ window.GIS = window.GIS || {};
       controlsEl.style.opacity = enabled ? '1' : '0.4';
       controlsEl.style.pointerEvents = enabled ? 'auto' : 'none';
       if (!enabled) {
-        _clearSymbology(layerId);
+        _clearSymbologyFromInspector(layerId);
       } else {
         if (!_symbologyConfig[layerId]) _symbologyConfig[layerId] = {};
         _symbologyConfig[layerId].enabled = true;
@@ -2281,7 +2313,7 @@ window.GIS = window.GIS || {};
 
     // 清除符号化
     clearBtn?.addEventListener('click', function() {
-      _clearSymbology(layerId);
+      _clearSymbologyFromInspector(layerId);
       if (enableEl) enableEl.checked = false;
       controlsEl.style.opacity = '0.4';
       controlsEl.style.pointerEvents = 'none';
@@ -2321,10 +2353,12 @@ window.GIS = window.GIS || {};
     clearBtn?.addEventListener('click', function() {
       fieldEl.value = '';
       if (heightRow) heightRow.style.display = 'none';
+      var hadVisualization = !!(_symbologyConfig[layerId] && _symbologyConfig[layerId].viz);
       if (_symbologyConfig[layerId]) delete _symbologyConfig[layerId].viz;
       if (window.GIS.state && window.GIS.state.getLayer(layerId)) {
         window.GIS.state.applyVisualization(layerId, null);
       }
+      if (hadVisualization) _saveProjectChanges();
     });
   }
 
@@ -2342,7 +2376,9 @@ window.GIS = window.GIS || {};
     }
     if (!field) {
       state.applyVisualization(layerId, null);
+      var hadVisualization = !!(_symbologyConfig[layerId] && _symbologyConfig[layerId].viz);
       if (_symbologyConfig[layerId]) delete _symbologyConfig[layerId].viz;
+      if (hadVisualization) _saveProjectChanges();
       return;
     }
     var maxEl = document.getElementById('v3dMax');
@@ -2355,6 +2391,7 @@ window.GIS = window.GIS || {};
     state.applyVisualization(layerId, viz);
     if (!_symbologyConfig[layerId]) _symbologyConfig[layerId] = {};
     _symbologyConfig[layerId].viz = viz;
+    _saveProjectChanges();
   }
 
   /** 唯一值渲染 */
@@ -2374,6 +2411,7 @@ window.GIS = window.GIS || {};
     var scheme = _getColorScheme(colorScheme, classes);
 
     var previousConfig = _symbologyConfig[layerId];
+    var applied = false;
     _symbologyConfig[layerId] = { type: type, field: field, classes: classes, colorScheme: colorScheme, enabled: true, minSize: minSize || 3, maxSize: maxSize || 20 };
     var restorePreviousConfig = function() {
       if (previousConfig) _symbologyConfig[layerId] = previousConfig;
@@ -2383,20 +2421,21 @@ window.GIS = window.GIS || {};
     if (type === 'unique') {
       if (!_applyUniqueValues(layer, gj, features, field, scheme)) {
         restorePreviousConfig();
-      }
+      } else applied = true;
     } else if (type === 'graduated') {
       if (!_applyGraduatedColors(layer, gj, features, field, classes, scheme)) {
         restorePreviousConfig();
-      }
+      } else applied = true;
     } else if (type === 'graduated-symbol') {
       if (!_applyGraduatedSymbols(layer, gj, features, field, classes, scheme, minSize, maxSize)) {
         restorePreviousConfig();
-      }
+      } else applied = true;
     } else if (type === 'proportional') {
       if (!_applyProportionalSymbols(layer, gj, features, field, minSize, maxSize)) {
         restorePreviousConfig();
-      }
+      } else applied = true;
     }
+    if (applied) _saveProjectChanges();
   }
 
   /** 获取色带颜色数组 */
@@ -2805,8 +2844,10 @@ window.GIS = window.GIS || {};
 
   function _getSymbologyState(layerId) {
     var config = _symbologyConfig[layerId];
-    if (!config || !config.enabled || config.featureStyleCount !== config.featureCount) return null;
-    var state = _cloneSerializable(config);
+    if (!config) return null;
+    var hasThematicStyle = !!config.enabled && config.featureStyleCount === config.featureCount;
+    if (!hasThematicStyle && !config.viz) return null;
+    var state = hasThematicStyle ? _cloneSerializable(config) : { viz: _cloneSerializable(config.viz) };
     if (_lastLegendData && _lastLegendData.layerId === layerId) {
       var panel = document.getElementById('mapFloatingLegend');
       var pill = document.getElementById('mapLegendTogglePill');
@@ -2824,11 +2865,28 @@ window.GIS = window.GIS || {};
   }
 
   function _restoreSymbologyState(layerId, snapshot) {
-    if (!snapshot || typeof snapshot !== 'object' || !snapshot.enabled || !snapshot.featureStyles ||
-        snapshot.featureStyleCount !== snapshot.featureCount) return false;
+    if (!snapshot || typeof snapshot !== 'object') return false;
+    var hasThematicStyle = !!snapshot.enabled && !!snapshot.featureStyles &&
+      snapshot.featureStyleCount === snapshot.featureCount;
+    var viz = snapshot.viz;
+    var validVizOnly = !hasThematicStyle && viz && viz.type === 'extrusion' &&
+      typeof viz.field === 'string' && viz.field.length > 0 && viz.field.length <= 256 &&
+      Number.isFinite(viz.maxHeight) && viz.maxHeight > 0 && viz.maxHeight <= 10000000 &&
+      Array.isArray(viz.ramp) && viz.ramp.length === 2 &&
+      viz.ramp.every(function(color) { return typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color); });
+    if (!hasThematicStyle && !validVizOnly) return false;
     var layer = layerData.find(function(item) { return item.layer_id === layerId; });
     var gj = layer && getLayerGeoJSON(layerId);
-    if (!layer || !gj) return false;
+    if (!layer) return false;
+    if (validVizOnly) {
+      if (!window.GIS.state || typeof window.GIS.state.applyVisualization !== 'function' ||
+          !window.GIS.state.getLayer || !window.GIS.state.getLayer(layerId)) return false;
+      var safeViz = { type: 'extrusion', field: viz.field, maxHeight: viz.maxHeight, ramp: viz.ramp.slice() };
+      _symbologyConfig[layerId] = { viz: safeViz };
+      window.GIS.state.applyVisualization(layerId, safeViz);
+      return true;
+    }
+    if (!gj) return false;
     var features = gj.type === 'FeatureCollection' ? (gj.features || [])
       : gj.type === 'Feature' ? [gj] : [];
     if (!features.length || snapshot.featureCount !== features.length) return false;
@@ -2921,6 +2979,12 @@ window.GIS = window.GIS || {};
     if (window.GIS.chat && typeof window.GIS.chat.addMessage === 'function') {
       window.GIS.chat.addMessage('已清除符号化，恢复默认样式', 'system');
     }
+  }
+
+  function _clearSymbologyFromInspector(layerId) {
+    var hadConfig = !!_symbologyConfig[layerId];
+    _clearSymbology(layerId);
+    if (hadConfig) _saveProjectChanges();
   }
 
   // ---- 属性表编辑函数 ----
@@ -3833,6 +3897,7 @@ window.GIS = window.GIS || {};
       return false;
     }
     _showLegend(layer.layer_id);
+    _saveProjectChanges();
     return true;
   }
 
@@ -3867,6 +3932,7 @@ window.GIS = window.GIS || {};
       return false;
     }
     _showLegend(layer.layer_id);
+    _saveProjectChanges();
     return true;
   }
 
@@ -3914,15 +3980,23 @@ window.GIS = window.GIS || {};
         return false;
       }
       _clearSymbology(layer.layer_id);
+      _saveProjectChanges();
       return true;
     },
     /** AI 自然语言调用：对图层添加属性标注 */
     addLabels: function(name, field) {
       var layer = _findLayerByNameOrFuzzy(name);
       if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return false; }
-      var applied = GIS.map && GIS.map.setLabels && GIS.map.setLabels(layer._rawName || layer.layer_id, field);
+      var labelConfig = { field: field, fontSize: 12, color: '#333333' };
+      var applied = GIS.map && GIS.map.setLabels && GIS.map.setLabels(
+        layer._rawName || layer.layer_id, field, labelConfig.fontSize, labelConfig.color
+      );
       if (!applied && window.GIS.chat) {
         window.GIS.chat.addMessage('未能为图层「' + name + '」显示标注，请确认字段存在且有非空值', 'system');
+      }
+      if (applied) {
+        layer.labels = labelConfig;
+        _saveProjectChanges();
       }
       return !!applied;
     },
@@ -3931,6 +4005,10 @@ window.GIS = window.GIS || {};
       var layer = _findLayerByNameOrFuzzy(name);
       if (!layer) return;
       if (GIS.map && GIS.map.clearLabels) GIS.map.clearLabels(layer._rawName || name);
+      if (layer.labels) {
+        delete layer.labels;
+        _saveProjectChanges();
+      }
     },
     /** AI 自然语言调用：显示图例 */
     addLegend: function(name) {
@@ -4328,6 +4406,7 @@ window.GIS = window.GIS || {};
       if (window.GIS.api && window.GIS.api.registerLayer && layer.geojson) {
         _queueLayerRegistration(layer, val, layer.geojson);
       }
+      _saveProjectChanges();
     }
     input.addEventListener('blur', commit);
     input.addEventListener('keydown', function(ke) {

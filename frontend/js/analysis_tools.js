@@ -606,10 +606,14 @@ window.GIS = window.GIS || {};
     if (!sel) return;
     var cur = sel.value;
     sel.innerHTML = '<option value="">-- 请选择图层 --</option>';
-    names.forEach(function (n) {
+    var entries = GIS.state && GIS.state.layerOptionEntries
+      ? GIS.state.layerOptionEntries(names)
+      : names.map(function(n) { return { value: n, suffix: '' }; });
+    entries.forEach(function (entry) {
+      var n = entry.value;
       var opt = document.createElement('option');
       opt.value = n;
-      opt.textContent = n;
+      opt.textContent = n + (entry.suffix || '');
       if (n === cur) opt.selected = true;
       sel.appendChild(opt);
     });
@@ -733,6 +737,13 @@ window.GIS = window.GIS || {};
   function _invoke(root, tool, args) {
     _root = root;
     var panelId = root.id;
+    var projectGeneration = GIS.project && typeof GIS.project.getLoadGeneration === 'function'
+      ? GIS.project.getLoadGeneration() : null;
+    function _projectChanged() {
+      return projectGeneration !== null && GIS.project &&
+        typeof GIS.project.getLoadGeneration === 'function' &&
+        GIS.project.getLoadGeneration() !== projectGeneration;
+    }
     var btn = _g('atRun');
     if (btn) btn.disabled = true;
     if (GIS.workspace) GIS.workspace.toolPending(panelId, btn);
@@ -743,9 +754,11 @@ window.GIS = window.GIS || {};
       ? Promise.all(layerNames.map(function (n) { return GIS.api.syncLayer(n); }))
       : Promise.resolve();
     return syncP.then(function () {
+      if (_projectChanged()) throw new Error('工程已切换，旧工程工具结果未执行');
       if (!(GIS.api && GIS.api.invokeTool)) throw new Error('GIS.api.invokeTool 不可用');
       return GIS.api.invokeTool(tool, args);
     }).then(function (result) {
+      if (_projectChanged()) throw new Error('工程已切换，旧工程工具结果未应用');
       if (btn && !GIS.workspace) btn.disabled = false;
       if (GIS.workspace && !GIS.workspace.toolFeedback(panelId, result)) return;
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);

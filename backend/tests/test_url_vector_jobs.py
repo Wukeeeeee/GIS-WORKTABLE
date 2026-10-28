@@ -99,3 +99,29 @@ def test_url_vector_job_error_redacts_source_credentials(monkeypatch):
         assert "https://example.test/roads" in error
     finally:
         main._url_fetch_jobs.pop(job_id, None)
+
+
+def test_url_vector_job_records_cooperative_cancellation(monkeypatch):
+    import threading
+    from backend import main
+    from backend.services import url_gis_service as ugs
+
+    job_id = "cooperative-cancel-test"
+    cancel_event = threading.Event()
+    main._url_fetch_jobs[job_id] = {"status": "running", "cancel_event": cancel_event}
+
+    def cancel_during_fetch(*_args, **kwargs):
+        cancel_event.set()
+        assert kwargs["cancel_check"]()
+        raise ugs.UrlGisError("获取已由用户取消")
+
+    monkeypatch.setattr(ugs, "fetch_gis_data_url", cancel_during_fetch)
+    try:
+        main._run_url_vector_fetch(
+            job_id, main.UrlVectorFetchRequest(url="https://example.test/FeatureServer/0"), cancel_event,
+        )
+        job = main._url_fetch_jobs[job_id]
+        assert job["status"] == "cancelled"
+        assert "result" not in job
+    finally:
+        main._url_fetch_jobs.pop(job_id, None)

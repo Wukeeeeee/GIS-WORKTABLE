@@ -1,11 +1,12 @@
 """Use configured proxies, ignoring only unreachable loopback system proxies."""
 import socket
 import ipaddress
+import time
 import urllib.request
 from urllib.parse import urlsplit
 
 
-def effective_model_proxy(url):
+def effective_model_proxy(url, timeout=0.3):
     from backend.services.tools import get_proxy_config
     custom = get_proxy_config()
     if custom:
@@ -36,10 +37,20 @@ def effective_model_proxy(url):
     except ValueError:
         is_loopback = host.lower() == "localhost"
     if is_loopback:
-        try:
-            default_port = 443 if parsed.scheme.lower() == "https" else 80
-            with socket.create_connection((host, port or default_port), timeout=0.3):
-                pass
-        except OSError:
+        default_port = 443 if parsed.scheme.lower() == "https" else 80
+        addresses = ("127.0.0.1", "::1") if host.lower() == "localhost" else (host,)
+        deadline = time.monotonic() + max(0.001, timeout)
+        connected = False
+        for address in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                with socket.create_connection((address, port or default_port), timeout=remaining):
+                    connected = True
+                    break
+            except OSError:
+                continue
+        if not connected:
             return None
     return proxy

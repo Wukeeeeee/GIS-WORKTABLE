@@ -2,6 +2,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import logging
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from uvicorn.logging import AccessFormatter
 
 import pytest
@@ -31,7 +34,7 @@ def test_geosource_proxy_errors_do_not_echo_sensitive_url_parts(
                 )
             raise urllib.error.URLError(f"connection failed for {request.full_url}")
 
-    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url: None)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
     monkeypatch.setattr(
         url_security.socket,
         "getaddrinfo",
@@ -104,7 +107,7 @@ def test_geosource_proxy_caps_large_responses(
     monkeypatch, content_length, expected_read_limit
 ):
     monkeypatch.setattr(main, "_GEOSOURCE_PROXY_MAX_BYTES", 8)
-    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url: None)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
     monkeypatch.setattr(
         url_security.socket,
         "getaddrinfo",
@@ -146,8 +149,282 @@ def test_geosource_proxy_caps_large_responses(
     assert response_body.read_limit == expected_read_limit
 
 
+def test_geosource_proxy_stops_a_slow_trickling_response(monkeypatch):
+    monkeypatch.setattr(main, "_GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
+    monkeypatch.setattr(
+        url_security.socket,
+        "getaddrinfo",
+        lambda _host, port, type: [(url_security.socket.AF_INET, type, 6, "", ("93.184.216.34", port))],
+    )
+
+    class SlowResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            time.sleep(0.03)
+            return b"x"
+
+    class Opener:
+        def open(self, _request, timeout):
+            assert timeout == 12
+            return SlowResponse()
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *_args, **_kwargs: Opener())
+    response = TestClient(app, base_url="http://127.0.0.1").post(
+        "/api/geosource/proxy",
+        json={"url": "https://example.test/data.geojson"},
+        headers={"Origin": "http://localhost:8003"},
+    )
+
+    assert response.status_code == 504
+
+
+def test_geosource_reader_reduces_socket_timeout_to_remaining_deadline():
+    clock = [0.0]
+    configured_timeouts = []
+
+    class Socket:
+        def settimeout(self, value):
+            configured_timeouts.append(value)
+
+    class Response:
+        fp = type("FilePointer", (), {
+            "raw": type("RawStream", (), {"_sock": Socket()})(),
+        })()
+
+        def __init__(self):
+            self.read_count = 0
+
+        def read(self, _limit):
+            self.read_count += 1
+            if self.read_count == 1:
+                clock[0] += 3
+                return b"x"
+            return b""
+
+    result = main._read_geosource_proxy_response(
+        Response(), 10, "10 bytes", 5.0, clock=lambda: clock[0],
+    )
+
+    assert result == b"x"
+    assert configured_timeouts == [5.0, 2.0]
+
+
+def test_geosource_proxy_total_deadline_stops_local_slow_drip(monkeypatch):
+    monkeypatch.setattr(main, "_GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS", 0.35)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
+
+    class SlowHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "6")
+            self.end_headers()
+            try:
+                for chunk in (b"ab", b"cd", b"ef"):
+                    time.sleep(0.2)
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except OSError:
+                pass
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        response = TestClient(app, base_url="http://127.0.0.1").post(
+            "/api/geosource/proxy",
+            json={"url": f"http://127.0.0.1:{server.server_port}/data"},
+            headers={"Origin": "http://localhost:8003"},
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+
+    assert response.status_code == 504
+
+
+def test_geosource_proxy_total_deadline_covers_slow_response_headers(monkeypatch):
+    monkeypatch.setattr(main, "_GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS", 0.35)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
+
+    class SlowHeaderHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            try:
+                for part in (
+                    b"HTTP/1.1 200 OK\r\n",
+                    b"Content-Type: application/json\r\n",
+                    b"Content-Length: 2\r\n",
+                    b"\r\n",
+                ):
+                    self.wfile.write(part)
+                    self.wfile.flush()
+                    time.sleep(0.3)
+                self.wfile.write(b"{}")
+                self.wfile.flush()
+            except OSError:
+                pass
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowHeaderHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    started = time.monotonic()
+    try:
+        response = TestClient(app, base_url="http://127.0.0.1").get(
+            "/api/geosource/proxy",
+            params={"url": f"http://127.0.0.1:{server.server_port}/slow-headers"},
+            headers={"Origin": "http://localhost:8003"},
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2)
+
+    assert response.status_code == 504
+    assert elapsed < 0.9
+
+
+def test_geosource_proxy_total_deadline_covers_stalled_dns(monkeypatch):
+    monkeypatch.setattr(main, "_GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
+
+    def stalled_lookup(_host, port, type):
+        time.sleep(1.0)
+        return [(url_security.socket.AF_INET, type, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(url_security.socket, "getaddrinfo", stalled_lookup)
+    started = time.monotonic()
+    response = TestClient(app).get(
+        "/api/geosource/proxy", params={"url": "https://slow-dns.example/data.geojson"}
+    )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 504
+    assert elapsed < 0.7
+
+
+def test_redirect_guard_bounds_dns_lookup_by_request_deadline(monkeypatch):
+    original_getaddrinfo = url_security.socket.getaddrinfo
+
+    def delayed_redirect_lookup(host, port, type, *args, **kwargs):
+        if host == "redirect-slow.example":
+            time.sleep(0.35)
+            return [(url_security.socket.AF_INET, type, 6, "", ("93.184.216.34", port))]
+        return original_getaddrinfo(host, port, type, *args, **kwargs)
+
+    monkeypatch.setattr(url_security.socket, "getaddrinfo", delayed_redirect_lookup)
+    deadline = time.monotonic() + 0.12
+    opener = url_security.safe_redirect_opener(
+        urllib.request.ProxyHandler({}), "http://127.0.0.1/start", header_deadline=deadline,
+    )
+    handler = next(
+        item for item in opener.handlers if isinstance(item, url_security.SafeHTTPRedirectHandler)
+    )
+    request = urllib.request.Request("http://127.0.0.1/start")
+    started = time.monotonic()
+
+    with pytest.raises(TimeoutError):
+        handler.redirect_request(
+            request, None, 302, "Found", {}, "http://redirect-slow.example/data.geojson"
+        )
+
+    assert time.monotonic() - started < 0.3
+
+
+def test_geosource_http_credential_preflight_dns_uses_the_request_deadline(monkeypatch):
+    monkeypatch.setattr(main, "_GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
+
+    def stalled_lookup(_host, port, type):
+        time.sleep(1.0)
+        return [(url_security.socket.AF_INET, type, 6, "", ("93.184.216.34", port))]
+
+    monkeypatch.setattr(url_security.socket, "getaddrinfo", stalled_lookup)
+    started = time.monotonic()
+    response = TestClient(app).post(
+        "/api/geosource/proxy",
+        json={"url": "http://slow-dns.example/data?api_key=secret", "auth_parameter": "api_key"},
+    )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 504
+    assert elapsed < 0.7
+
+
+def test_geosource_proxy_discovery_uses_remaining_request_deadline(monkeypatch):
+    monkeypatch.setattr(main, "_GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr("backend.services.tools.get_proxy_config", lambda: None)
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda _host: False)
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"http": "http://127.0.0.1:7890"})
+    observed = {}
+
+    def stalled_loopback_probe(_address, timeout):
+        observed["timeout"] = timeout
+        time.sleep(timeout)
+        raise TimeoutError("simulated proxy probe timeout")
+
+    monkeypatch.setattr(model_transport.socket, "create_connection", stalled_loopback_probe)
+    monkeypatch.setattr(main, "safe_redirect_opener", lambda *_args, **_kwargs: object())
+    started = time.monotonic()
+    response = TestClient(app).get(
+        "/api/geosource/proxy", params={"url": "http://provider.example/data.geojson"}
+    )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 504
+    assert 0 < observed["timeout"] <= 0.2
+    assert elapsed < 0.6
+
+
+def test_geosource_loopback_proxy_discovery_does_not_block_on_localhost_dns(monkeypatch):
+    monkeypatch.setattr(main, "_GEOSOURCE_PROXY_BODY_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr("backend.services.tools.get_proxy_config", lambda: "")
+    monkeypatch.setattr(urllib.request, "proxy_bypass", lambda _host: False)
+    monkeypatch.setattr(urllib.request, "getproxies", lambda: {"http": "http://localhost:7890"})
+    lookups = []
+
+    def stalled_lookup(host, port, type, *args, **kwargs):
+        lookups.append(host)
+        if host == "localhost":
+            time.sleep(1.0)
+        address = "::1" if host == "::1" else "127.0.0.1" if host == "127.0.0.1" else "93.184.216.34"
+        family = url_security.socket.AF_INET6 if ":" in address else url_security.socket.AF_INET
+        return [(family, type, 6, "", (address, port))]
+
+    monkeypatch.setattr(url_security.socket, "getaddrinfo", stalled_lookup)
+    class TimedOutOpener:
+        def open(self, *_args, **_kwargs):
+            raise TimeoutError("simulated request timeout")
+
+    monkeypatch.setattr(main, "safe_redirect_opener", lambda *_args, **_kwargs: TimedOutOpener())
+    started = time.monotonic()
+    response = TestClient(app).get(
+        "/api/geosource/proxy", params={"url": "http://provider.example/data.geojson"}
+    )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 504
+    assert "localhost" not in lookups
+    assert elapsed < 0.7
+
+
 def test_geosource_proxy_sandboxes_provider_controlled_document_responses(monkeypatch):
-    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url: None)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
     monkeypatch.setattr(
         url_security.socket,
         "getaddrinfo",
@@ -157,6 +434,9 @@ def test_geosource_proxy_sandboxes_provider_controlled_document_responses(monkey
     class ProviderResponse:
         headers = {"Content-Type": "text/html; charset=utf-8"}
 
+        def __init__(self):
+            self.read_once = False
+
         def __enter__(self):
             return self
 
@@ -164,6 +444,9 @@ def test_geosource_proxy_sandboxes_provider_controlled_document_responses(monkey
             return False
 
         def read(self, _limit):
+            if self.read_once:
+                return b""
+            self.read_once = True
             return b"<script>fetch('/api/user-settings')</script>"
 
     monkeypatch.setattr(
@@ -185,7 +468,7 @@ def test_geosource_proxy_sandboxes_provider_controlled_document_responses(monkey
 
 
 def test_geosource_tile_proxy_forwards_wms_parameters_and_returns_binary(monkeypatch):
-    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url: None)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
     monkeypatch.setattr(
         url_security.socket,
         "getaddrinfo",
@@ -196,6 +479,9 @@ def test_geosource_tile_proxy_forwards_wms_parameters_and_returns_binary(monkeyp
     class ImageResponse:
         headers = {"Content-Type": "image/png"}
 
+        def __init__(self):
+            self.read_once = False
+
         def __enter__(self):
             return self
 
@@ -204,6 +490,9 @@ def test_geosource_tile_proxy_forwards_wms_parameters_and_returns_binary(monkeyp
 
         def read(self, limit):
             captured["read_limit"] = limit
+            if self.read_once:
+                return b""
+            self.read_once = True
             return b"\x89PNG\r\n\x1a\n"
 
     class Opener:
@@ -235,7 +524,8 @@ def test_geosource_tile_proxy_forwards_wms_parameters_and_returns_binary(monkeyp
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert captured["accept"] == "*/*"
-    assert captured["read_limit"] == main._GEOSOURCE_TILE_MAX_BYTES + 1
+    assert captured["read_limit"] == 64 * 1024
+    assert captured["read_limit"] <= main._GEOSOURCE_TILE_MAX_BYTES + 1
     assert forwarded == {
         "token": ["KEY_SENTINEL"], "service": ["WMS"], "request": ["GetMap"],
         "layers": ["roads"], "bbox": ["1,2,3,4"],
@@ -245,11 +535,14 @@ def test_geosource_tile_proxy_forwards_wms_parameters_and_returns_binary(monkeyp
 
 
 def test_geosource_proxy_passes_manual_auth_parameter_to_redirect_guard(monkeypatch):
-    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url: None)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
     captured = {}
 
     class Response:
         headers = {"Content-Type": "application/json"}
+
+        def __init__(self):
+            self.read_once = False
 
         def __enter__(self):
             return self
@@ -258,6 +551,9 @@ def test_geosource_proxy_passes_manual_auth_parameter_to_redirect_guard(monkeypa
             return False
 
         def read(self, _limit):
+            if self.read_once:
+                return b""
+            self.read_once = True
             return b'{"type":"FeatureCollection","features":[]}'
 
     class Opener:
@@ -287,12 +583,12 @@ def test_geosource_proxy_passes_manual_auth_parameter_to_redirect_guard(monkeypa
 
 @pytest.mark.parametrize("classification", [True, None])
 def test_geo_source_proxy_rejects_credentials_over_public_or_unknown_http(monkeypatch, classification):
-    monkeypatch.setattr(main, "_is_public_http_target", lambda _url: classification)
-    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url: None)
-    monkeypatch.setattr(
-        main, "safe_redirect_opener",
-        lambda *_args, **_kwargs: pytest.fail("insecure credential request must not open"),
+    records = (
+        [(url_security.socket.AF_INET, url_security.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 80))]
+        if classification is True else []
     )
+    monkeypatch.setattr(url_security, "_resolve_http_target_before", lambda *_args: (classification, records))
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
 
     response = TestClient(app, base_url="http://127.0.0.1").post(
         "/api/geosource/proxy",
@@ -305,11 +601,15 @@ def test_geo_source_proxy_rejects_credentials_over_public_or_unknown_http(monkey
 
 
 def test_geo_source_proxy_allows_credentials_over_explicit_private_http(monkeypatch):
-    monkeypatch.setattr(main, "_is_public_http_target", lambda _url: False)
-    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url: None)
+    records = [(url_security.socket.AF_INET, url_security.socket.SOCK_STREAM, 6, "", ("192.168.1.20", 80))]
+    monkeypatch.setattr(url_security, "_resolve_http_target_before", lambda *_args: (False, records))
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
 
     class Response:
         headers = {"Content-Type": "application/json"}
+
+        def __init__(self):
+            self.read_once = False
 
         def __enter__(self):
             return self
@@ -318,6 +618,9 @@ def test_geo_source_proxy_allows_credentials_over_explicit_private_http(monkeypa
             return False
 
         def read(self, _limit):
+            if self.read_once:
+                return b""
+            self.read_once = True
             return b'{"type":"FeatureCollection","features":[]}'
 
     class Opener:
@@ -430,7 +733,7 @@ def test_shared_opener_strips_sensitive_query_on_cross_origin_redirect_by_defaul
 
 
 def test_geo_source_proxy_explains_auth_stripping_when_redirect_target_rejects_request(monkeypatch):
-    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url: None)
+    monkeypatch.setattr(model_transport, "effective_model_proxy", lambda _url, **_kwargs: None)
     guard = main._GeoSourceRedirectHandler(protect_public_target=True, credential_parameters={"code"})
     guard.credentials_stripped = True
 
@@ -667,7 +970,12 @@ def test_private_geo_source_redirect_to_ambiguous_host_enables_protection(monkey
 
 @pytest.mark.parametrize(
     "target_url",
-    ["file:///etc/passwd", "ftp://public.example/data", "http://user:pass@public.example/data"],
+    [
+        "file:///etc/passwd",
+        "ftp://public.example/data",
+        "http://user:pass@public.example/data",
+        "http://@public.example/data",
+    ],
 )
 def test_redirect_guard_rejects_non_http_and_userinfo_targets(target_url):
     handler = main._GeoSourceRedirectHandler(protect_public_target=False)

@@ -80,9 +80,11 @@ window.GIS = window.GIS || {};
     var row = [];
     var field = '';
     var quoted = false;
+    var rowStarted = false;
     for (var i = 0; i < text.length; i++) {
       var char = text[i];
       if (quoted) {
+        rowStarted = true;
         if (char === '"' && text[i + 1] === '"') {
           field += '"';
           i++;
@@ -93,22 +95,26 @@ window.GIS = window.GIS || {};
         }
       } else if (char === '"' && field === '') {
         quoted = true;
+        rowStarted = true;
       } else if (char === ',') {
         row.push(field);
         field = '';
+        rowStarted = true;
       } else if (char === '\n' || char === '\r') {
         if (char === '\r' && text[i + 1] === '\n') i++;
         row.push(field);
         field = '';
-        if (row.some(function(value) { return value.trim() !== ''; })) rows.push(row);
+        if (rowStarted) rows.push(row);
         if (rows.length >= 4) return rows;
         row = [];
+        rowStarted = false;
       } else {
         field += char;
+        rowStarted = true;
       }
     }
     row.push(field);
-    if (row.some(function(value) { return value.trim() !== ''; })) rows.push(row);
+    if (rowStarted) rows.push(row);
     return rows;
   }
 
@@ -118,6 +124,10 @@ window.GIS = window.GIS || {};
     var pending = fileQueue.then(async function() {
     for (var file of batch) {
       try {
+      if (file.size === 0) {
+        showUploadToast('error', file.name + ': 文件为空，请选择包含数据的文件');
+        continue;
+      }
       var parts = file.name.split('.');
       var ext;
       if (parts.length > 1 && file.name.lastIndexOf('.') > 0 && parts[parts.length - 1]) {
@@ -264,6 +274,7 @@ window.GIS = window.GIS || {};
     requestId = requestId || _newUploadRequestId();
     var controller = new AbortController();
     _uploadAbortControllers.set(uploadId, controller);
+    _uploadRequestIds.set(uploadId, requestId);
     showUploadToast('importing', file.name, uploadId);
     var signal = controller.signal;
     var uploadResult = null;
@@ -280,6 +291,10 @@ window.GIS = window.GIS || {};
           var processingError = new Error('上传仍在服务器处理中，请稍后检查状态');
           processingError.code = 'UPLOAD_PROCESSING';
           throw processingError;
+        } else if (prior && prior.status === 'unknown') {
+          var unknownReceiptError = new Error('服务器未找到可恢复的上传记录；请检查图层列表，确认未导入后再重新选择文件上传');
+          unknownReceiptError.code = 'UPLOAD_RECOVERY_UNKNOWN';
+          throw unknownReceiptError;
         } else if (prior && (prior.status === 'unsupported' || prior.status === 'unavailable')) {
           var recoveryUnavailable = new Error('当前服务无法安全核对上传状态，请先检查图层列表');
           recoveryUnavailable.code = 'UPLOAD_RECOVERY_UNAVAILABLE';
@@ -287,10 +302,14 @@ window.GIS = window.GIS || {};
         }
       }
       if (!result) {
+        var phaseWatch = _watchUploadPhase(requestId, signal, uploadId);
         try {
           result = await GIS.api.upload(file, signal, requestId);
         } catch (uploadError) {
-          if (uploadError.code !== 'UPLOAD_NETWORK_ERROR' || !GIS.api.getUploadStatus) throw uploadError;
+          phaseWatch.stop();
+          await phaseWatch.done;
+          var uncertainUpload = uploadError.code === 'UPLOAD_NETWORK_ERROR' || uploadError.code === 'UPLOAD_TIMEOUT';
+          if (!uncertainUpload || !GIS.api.getUploadStatus) throw uploadError;
           var recovered = await _waitForUploadResult(requestId, signal, 5);
           if (recovered && recovered.status === 'completed' && recovered.result) result = recovered.result;
           else {
@@ -299,6 +318,9 @@ window.GIS = window.GIS || {};
             uploadError.uploadRecoveryUnavailable = !!(recovered && (recovered.status === 'unsupported' || recovered.status === 'unavailable'));
             throw uploadError;
           }
+        } finally {
+          phaseWatch.stop();
+          await phaseWatch.done;
         }
       }
       if (signal.aborted) {
@@ -359,6 +381,7 @@ window.GIS = window.GIS || {};
         const info = result.raster_info;
         if (typeof info.url !== 'string' || !Array.isArray(info.bounds) || info.bounds.length !== 4
             || !info.bounds.every(Number.isFinite)) throw new Error('栅格预览缺少有效的地址或范围');
+        showUploadToast('phase', tr('upload.phase-loading', '正在加载到地图'), uploadId);
         const layerId = 'raster_' + Date.now() + '_' + uploadId.slice(7);
         const name = result.name || file.name.replace(/\.(tif|tiff)$/i, '');
         localMapName = layerId;
@@ -379,6 +402,7 @@ window.GIS = window.GIS || {};
         if (!addedRaster) throw new Error('图层面板未接收栅格上传结果');
         _rememberUploadRegistration(layerId, addedRaster._registeredName, result.registration_token, addedRaster);
         handoffCommitted = true;
+        _scheduleProjectSave();
 
         showUploadToast('success', name, uploadId);
         return;
@@ -386,6 +410,7 @@ window.GIS = window.GIS || {};
 
       // ===== GeoJSON / SHP / GPKG / KML 等矢量文件上传 =====
       if (!result.geojson || typeof result.name !== 'string' || !result.name) throw new Error('上传结果缺少有效的矢量数据或图层名');
+      showUploadToast('phase', tr('upload.phase-loading', '正在加载到地图'), uploadId);
       localMapName = result.name;
       localLayerId = 'vector_' + Date.now() + '_' + uploadId.slice(7);
       GIS.map.loadGeoJSON(result.geojson, result.name);
@@ -410,6 +435,7 @@ window.GIS = window.GIS || {};
       if (!addedVector) throw new Error('图层面板未接收矢量上传结果');
       _rememberUploadRegistration(localLayerId, result.name, result.registration_token, addedVector);
       handoffCommitted = true;
+      _scheduleProjectSave();
 
       // 通知 AI 文件路径（隐藏消息，不显示在聊天框，但 AI 能读到）
       if (GIS.chat && GIS.chat.addMessage) {
@@ -445,18 +471,23 @@ window.GIS = window.GIS || {};
       }
       var errorMessage = err.code === 'UPLOAD_RECOVERY_UNAVAILABLE' || err.uploadRecoveryUnavailable
         ? tr('upload.recovery-unavailable', '无法安全核对上传状态。请先检查图层列表；当前服务不支持安全恢复，因此不会重传。')
+        : (err.code === 'UPLOAD_RECOVERY_UNKNOWN'
+          ? tr('upload.recovery-unknown', '服务器未找到可恢复的上传记录，无法确认文件是否已导入。请检查图层列表；确认没有后，再重新选择文件上传。')
+        : (err.code === 'UPLOAD_TIMEOUT'
+          ? tr('upload.timeout-unknown', '上传等待超时，服务器可能仍在处理。请检查图层列表，或稍后使用“检查并恢复”。')
         : (err.code === 'UPLOAD_NETWORK_ERROR'
           ? tr('upload.connection-unknown', '上传连接中断，服务器可能已收到文件。请先检查图层列表，再决定是否重试，避免重复导入。')
         : (err.code === 'UPLOAD_PROCESSING'
           ? tr('upload.still-processing', '服务器仍在处理此上传，请稍后再次检查。')
-          : (err.message || '上传失败')));
+          : (err.message || '上传失败')))));
       showUploadToast('error', file.name + ': ' + errorMessage, uploadId);
       if (err.code === 'UPLOAD_PROCESSING'
-          || (err.code === 'UPLOAD_NETWORK_ERROR' && !err.uploadRecoveryUnavailable)) {
+          || ((err.code === 'UPLOAD_NETWORK_ERROR' || err.code === 'UPLOAD_TIMEOUT') && !err.uploadRecoveryUnavailable)) {
         _addUploadRecoveryAction(uploadId, file, requestId);
       }
     } finally {
       _uploadAbortControllers.delete(uploadId);
+      _uploadRequestIds.delete(uploadId);
     }
   }
 
@@ -469,6 +500,48 @@ window.GIS = window.GIS || {};
       return Array.from(bytes, function(value) { return value.toString(16).padStart(2, '0'); }).join('');
     }
     return 'upload-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+  }
+
+  function _watchUploadCancellation(requestId, bubble, uploadId) {
+    if (!GIS.api || typeof GIS.api.getUploadStatus !== 'function') return;
+    var attempts = 0;
+    function show(key, fallback) {
+      bubble.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">' + tr(key, fallback) + '</span>';
+    }
+    function poll() {
+      attempts += 1;
+      GIS.api.getUploadStatus(requestId).then(async function(status) {
+        if (status && status.status === 'cancelled') {
+          show('upload.cancelled', '导入已取消');
+          _scheduleUploadRowRemoval(uploadId, 3000);
+          return;
+        }
+        if (status && status.status === 'completed' && status.result) {
+          var result = status.result;
+          if (result.name && result.registration_token && GIS.api.unregisterLayer) {
+            try {
+              await GIS.api.unregisterLayer(result.name, result.registration_token);
+              show('upload.cancelled', '导入已取消');
+              _scheduleUploadRowRemoval(uploadId, 3000);
+              return;
+            } catch (_) {}
+          }
+          show('upload.cancel-uncertain', '取消请求未能确认完成，请检查图层列表');
+          _scheduleUploadRowRemoval(uploadId, 10 * 60 * 1000);
+          return;
+        }
+        if (status && status.status === 'processing' && attempts < 120) {
+          setTimeout(poll, 500);
+          return;
+        }
+        show('upload.cancel-uncertain', '取消请求未能确认完成，请检查图层列表');
+        _scheduleUploadRowRemoval(uploadId, 10 * 60 * 1000);
+      }).catch(function() {
+        show('upload.cancel-uncertain', '取消请求未能确认完成，请检查图层列表');
+        _scheduleUploadRowRemoval(uploadId, 10 * 60 * 1000);
+      });
+    }
+    poll();
   }
 
   async function _waitForUploadResult(requestId, signal, attempts) {
@@ -485,6 +558,54 @@ window.GIS = window.GIS || {};
       if (attempt + 1 < attempts) await new Promise(function(resolve) { setTimeout(resolve, 300); });
     }
     return { status: 'processing' };
+  }
+
+  function _watchUploadPhase(requestId, signal, uploadId) {
+    var active = true;
+    var waitTimer = null;
+    var wakeWait = null;
+    var statusController = new AbortController();
+    var abortStatus = function() { statusController.abort(); };
+    if (signal) {
+      if (signal.aborted) statusController.abort();
+      else signal.addEventListener('abort', abortStatus, { once: true });
+    }
+    var done = (async function() {
+      try {
+        while (active && !(signal && signal.aborted) && GIS.api.getUploadStatus) {
+          try {
+            var status = await GIS.api.getUploadStatus(requestId, statusController.signal);
+            if (active && status && status.status === 'processing') {
+              if (status.phase === 'parsing') {
+                showUploadToast('phase', tr('upload.phase-parsing', '正在检查并解析数据'), uploadId);
+              } else if (status.phase === 'saving') {
+                showUploadToast('phase', tr('upload.phase-saving', '服务器正在保存已接收的数据'), uploadId);
+              }
+            }
+          } catch (_) {
+            if (!active || (signal && signal.aborted)) return;
+          }
+          if (active && !(signal && signal.aborted)) await new Promise(function(resolve) {
+            wakeWait = resolve;
+            waitTimer = setTimeout(function() {
+              waitTimer = null;
+              wakeWait = null;
+              resolve();
+            }, 400);
+          });
+        }
+      } finally {
+        if (signal) signal.removeEventListener('abort', abortStatus);
+      }
+    })();
+    return { stop: function() {
+      active = false;
+      statusController.abort();
+      if (waitTimer) clearTimeout(waitTimer);
+      waitTimer = null;
+      if (wakeWait) wakeWait();
+      wakeWait = null;
+    }, done: done };
   }
 
   function _addUploadRecoveryAction(uploadId, file, requestId) {
@@ -534,9 +655,18 @@ window.GIS = window.GIS || {};
     });
   }
 
+  function _scheduleProjectSave() {
+    if (GIS.project && typeof GIS.project.autoSave === 'function') {
+      Promise.resolve(GIS.project.autoSave()).catch(function(error) {
+        console.warn('[GIS Upload] 图层上传后的工程自动保存失败', error);
+      });
+    }
+  }
+
   // ---- 上传状态气泡（显示在 AI 对话区，无头像，像 AI 消息样式） ----
 
   var _uploadAbortControllers = new Map();
+  var _uploadRequestIds = new Map();
   var _uploadRows = new Map();
   var _uploadStatusTimers = new Map();
   var _uploadIdCounter = 0;
@@ -554,7 +684,7 @@ window.GIS = window.GIS || {};
       bubble.className = 'system-pill';
       bubble.style.cssText = 'display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--on-surface-variant);background:var(--surface-container-high);border:1px solid var(--outline-variant);border-radius:12px;padding:3px 12px;line-height:1.4;';
       bubble.innerHTML =
-        "<span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span style=\"font-weight:500;\">" + tr('upload.importing', '导入中: ') + escapeHtml(msg || (GIS.i18n && GIS.i18n.isEnglish() ? 'file' : '文件')) + '</span>' +
+        "<span class=\"ui-icon upload-msg-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;width:13px;height:13px;--ui-icon-image:url('/assets/ui-icons/icon-12f8ae0661b2.png')\"></span><span class=\"upload-phase-label\" aria-live=\"polite\" style=\"font-weight:500;\">" + tr('upload.importing', '正在上传: ') + escapeHtml(msg || (GIS.i18n && GIS.i18n.isEnglish() ? 'file' : '文件')) + '</span>' +
         '<button class="upload-cancel-btn" style="margin-left:6px;font-size:10px;padding:1px 6px;border:1px solid var(--outline-variant);border-radius:3px;background:none;cursor:pointer;color:var(--on-surface-variant);white-space:nowrap;">' + tr('upload.cancel', '取消') + '</button>';
       row.appendChild(bubble);
       container.appendChild(row);
@@ -568,16 +698,47 @@ window.GIS = window.GIS || {};
 
       var cancelBtn = row.querySelector('.upload-cancel-btn');
       if (cancelBtn) {
-        cancelBtn.addEventListener('click', function() {
+        cancelBtn.addEventListener('click', async function() {
           var ctrl = _uploadAbortControllers.get(uploadId);
           if (!ctrl) return;
-          ctrl.abort();
+          var requestId = _uploadRequestIds.get(uploadId);
+          cancelBtn.disabled = true;
+          try {
+            var cancelResult = null;
+            if (requestId && GIS.api && typeof GIS.api.cancelUpload === 'function') {
+              cancelResult = await GIS.api.cancelUpload(requestId);
+            }
+            ctrl.abort();
+            if (!cancelResult) {
+              bubble.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">' +
+                tr('upload.cancel-uncertain', '已停止等待；服务器可能仍在处理，请检查图层列表') + '</span>';
+              _scheduleUploadRowRemoval(uploadId, 10 * 60 * 1000);
+              return;
+            }
+            if (cancelResult.status === 'cancelling') {
+              bubble.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">' +
+                tr('upload.cancelling', '正在取消并清理上传结果…') + '</span>';
+              _watchUploadCancellation(requestId, bubble, uploadId);
+              return;
+            }
+            if (cancelResult.status !== 'cancelled') throw new Error('服务器未确认取消');
+          } catch (_) {
+            ctrl.abort();
+            bubble.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">' +
+              tr('upload.cancel-uncertain', '已停止等待；服务器可能仍在处理，请检查图层列表') + '</span>';
+            _scheduleUploadRowRemoval(uploadId, 10 * 60 * 1000);
+            return;
+          }
           bubble.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">' +
             escapeHtml(msg || (GIS.i18n && GIS.i18n.isEnglish() ? 'File' : '文件')) + ' ' + tr('upload.cancelled', '导入已取消') + '</span>';
           _scheduleUploadRowRemoval(uploadId, 3000);
         });
       }
 
+    } else if (status === 'phase') {
+      var phaseRow = _uploadRows.get(uploadId);
+      var phaseLabel = phaseRow && phaseRow.querySelector('.upload-phase-label');
+      if (phaseLabel) phaseLabel.textContent = msg;
     } else {
       var targetRow = _uploadRows.get(uploadId);
       if (!targetRow) {

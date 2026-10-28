@@ -6,9 +6,11 @@ window.GIS = window.GIS || {};
   const GIS = window.GIS;
 
   let _currentProjectId = null;
+  let _activeRegistryProjectId = null;
   let _currentSessionId = _createSessionId();
   let _loadGeneration = 0;
   let _saveQueue = Promise.resolve();
+  const _pendingDeleteProjectIds = new Set();
 
   function _queueProjectSave(work) {
     var request = _saveQueue.then(work);
@@ -154,7 +156,7 @@ window.GIS = window.GIS || {};
   }
 
   function _collectLayerAssignments() {
-    return _collectLayers().map(function(layer) {
+    return _collectLayers().map(function(layer, order) {
       return {
         layer_id: layer.layer_id || null,
         registry_name: layer._registeredName || layer._rawName || layer.filename || null,
@@ -168,6 +170,8 @@ window.GIS = window.GIS || {};
         visible: layer.visible !== false,
         name: layer.filename || layer.name || '图层',
         raster: layer.raster || null,
+        labels: layer.labels || null,
+        order: order,
       };
     });
   }
@@ -273,9 +277,30 @@ window.GIS = window.GIS || {};
   }
 
   function _loadProject(pid) {
+    var cancelPromise = false;
+    if (GIS.chat && typeof GIS.chat.cancelActiveRequest === 'function') {
+      cancelPromise = GIS.chat.cancelActiveRequest('切换工程，已取消当前任务');
+    }
     var loadGeneration = ++_loadGeneration;
-    return GIS.api.loadProject(pid).then(function(data) {
+    var loadRequest;
+    if (cancelPromise && typeof cancelPromise.then === 'function') {
+      loadRequest = Promise.resolve(cancelPromise).catch(function() { return false; }).then(function(cancelled) {
+        if (cancelled === false) {
+          if (GIS.chat && typeof GIS.chat.addMessage === 'function') {
+            GIS.chat.addMessage('无法确认当前任务已停止，未切换工程。请稍后重试。', 'system');
+          }
+          return false;
+        }
+        if (loadGeneration !== _loadGeneration) return false;
+        return GIS.api.loadProject(pid);
+      });
+    } else {
+      loadRequest = loadGeneration === _loadGeneration
+        ? GIS.api.loadProject(pid) : Promise.resolve(false);
+    }
+    return Promise.resolve(loadRequest).then(function(data) {
       if (loadGeneration !== _loadGeneration) return false;
+      if (data === false) return false;
       if (!data || data.error) {
         GIS.chat.addMessage('加载工程失败', 'system');
         return false;
@@ -298,6 +323,7 @@ window.GIS = window.GIS || {};
       var projectLayerGroups = Array.isArray(data.layerGroups) ? data.layerGroups : [];
       if (data.layerGroups != null && !Array.isArray(data.layerGroups)) skippedProjectRecords++;
       _currentProjectId = data.id;
+      _activeRegistryProjectId = data.id;
       _currentSessionId = data.sessionId || ('proj_' + data.id);
       var capsuleName = document.getElementById('workspaceCurrentProjectName');
       if (capsuleName) capsuleName.textContent = projectName || '未命名工程';
@@ -324,9 +350,15 @@ window.GIS = window.GIS || {};
       if (projectLayers.length > 0) {
         var restoredLayerIds = new Set();
         var restoreWarnings = [];
+        var backendSkippedLayers = new Set(Array.isArray(data.registration_warnings)
+          ? data.registration_warnings.filter(function(name) { return typeof name === 'string'; }) : []);
         projectLayers.forEach(function(layer, layerIndex) {
           try {
             var layerName = layer.name || '图层';
+            if (backendSkippedLayers.has(layerName)) {
+              restoreWarnings.push(layerName);
+              return;
+            }
             var layerColor = layer.color || '#1c1b1b';
             var isVis = layer.visible !== false;
             var mapLayerName = 'project_' + data.id + '_layer_' + layerIndex;
@@ -382,6 +414,14 @@ window.GIS = window.GIS || {};
                     restoredLayer && restoredLayer.layer_id || layer.layer_id,
                     layer.symbology
                   );
+                }
+                if (layer.labels && typeof layer.labels.field === 'string' && layer.labels.field &&
+                    layer.labels.field.length <= 256 && GIS.map.setLabels) {
+                  var labelFontSize = Number(layer.labels.fontSize);
+                  if (!Number.isFinite(labelFontSize) || labelFontSize < 6 || labelFontSize > 48) labelFontSize = 12;
+                  var labelColor = typeof layer.labels.color === 'string' && /^#[0-9a-f]{6}$/i.test(layer.labels.color)
+                    ? layer.labels.color : '#333333';
+                  GIS.map.setLabels(mapLayerName, layer.labels.field, labelFontSize, labelColor);
                 }
                 if (GIS.map.setLayerOpacity) GIS.map.setLayerOpacity(mapLayerName, vectorOpacity);
                 if (restoredLayer && GIS.state && GIS.state.setOpacity) {
@@ -490,20 +530,34 @@ window.GIS = window.GIS || {};
   }
 
   function _deleteProject(pid, itemEl) {
-    GIS.api.deleteProject(pid).then(function() {
+    if (_pendingDeleteProjectIds.has(pid)) return;
+    _pendingDeleteProjectIds.add(pid);
+    var cancelPromise = false;
+    if (pid === _currentProjectId) {
+      _loadGeneration += 1;
+      if (GIS.chat && typeof GIS.chat.cancelActiveRequest === 'function') {
+        cancelPromise = GIS.chat.cancelActiveRequest('删除当前工程，已取消正在运行的任务');
+      }
+    }
+    _queueProjectSave(function() {
+      var deleteRequest = function() { return GIS.api.deleteProject(pid); };
+      if (cancelPromise && typeof cancelPromise.then === 'function') {
+        return Promise.resolve(cancelPromise).catch(function() { return false; }).then(function(cancelled) {
+          if (cancelled === false) throw new Error('无法确认当前任务已停止，未删除工程');
+          return deleteRequest();
+        });
+      }
+      return deleteRequest();
+    }).then(function(result) {
       if (itemEl && itemEl.parentNode) itemEl.remove();
       _refreshList();
-      // 若删除的是当前正在查看的工程，联动清空会话和图层，避免残留
-      if (pid === _currentProjectId) {
-        _currentProjectId = null;
-        _currentSessionId = _createSessionId();
-        var currentNameEl = document.getElementById('workspaceCurrentProjectName');
-        if (currentNameEl) currentNameEl.textContent = '未命名工程';
-        if (GIS.layers && typeof GIS.layers.clearAll === 'function') GIS.layers.clearAll(true);
-        GIS.chat.clear();
-        if (GIS.map && typeof GIS.map.resetView === 'function') { try { GIS.map.resetView(); } catch(_) {} }
-      }
+      if (result && result.warning && GIS.toast && typeof GIS.toast.warn === 'function') GIS.toast.warn(result.warning);
+      // Serialize deletion with saves so an in-flight or queued autosave cannot recreate this project.
+      if (pid === _currentProjectId) _clearCurrentProjectState();
+      _pendingDeleteProjectIds.delete(pid);
+      return result;
     }).catch(function(err) {
+      _pendingDeleteProjectIds.delete(pid);
       GIS.chat.addMessage('删除失败: ' + _escapeMarkup(err.message || err), 'system');
     });
   }
@@ -552,6 +606,21 @@ window.GIS = window.GIS || {};
     }).catch(function() {});
   }
 
+  function _clearCurrentProjectState() {
+    if (GIS.chat && typeof GIS.chat.cancelActiveRequest === 'function') {
+      GIS.chat.cancelActiveRequest('工程已关闭，已取消当前任务');
+    }
+    _loadGeneration += 1;
+    _currentProjectId = null;
+    _activeRegistryProjectId = null;
+    _currentSessionId = _createSessionId();
+    var currentNameEl = document.getElementById('workspaceCurrentProjectName');
+    if (currentNameEl) currentNameEl.textContent = '未命名工程';
+    if (GIS.layers && typeof GIS.layers.clearAll === 'function') GIS.layers.clearAll(true);
+    GIS.chat.clear();
+    if (GIS.map && typeof GIS.map.resetView === 'function') { try { GIS.map.resetView(); } catch(_) {} }
+  }
+
   function _bindHistoryToggle() {
     var btn = document.getElementById('historyBtn');
     if (!btn) return;
@@ -586,9 +655,41 @@ window.GIS = window.GIS || {};
     if (!btn) return;
     btn.addEventListener('click', function() {
       if (!confirm('确定删除全部历史会话？此操作不可恢复。')) return;
-      GIS.api.deleteAllProjects().then(function() {
-        _refreshList();
-        GIS.chat.addMessage('已删除全部历史会话', 'system');
+      _loadGeneration += 1;
+      var cancelPromise = GIS.chat && typeof GIS.chat.cancelActiveRequest === 'function'
+        ? GIS.chat.cancelActiveRequest('删除全部历史前已取消正在运行的任务') : false;
+      _queueProjectSave(function() {
+        var deleteRequest = function() { return GIS.api.deleteAllProjects(); };
+        if (cancelPromise && typeof cancelPromise.then === 'function') {
+          return Promise.resolve(cancelPromise).catch(function() { return false; }).then(function(cancelled) {
+            if (cancelled === false) throw new Error('无法确认当前任务已停止，未删除历史工程');
+            return deleteRequest();
+          });
+        }
+        return deleteRequest();
+      }).then(async function(result) {
+          _refreshList();
+          if (result && result.success === false) {
+            var currentId = _currentProjectId;
+            if (currentId) {
+              try {
+                var latest = await GIS.api.listProjects();
+                if (latest && Array.isArray(latest.projects) && _currentProjectId === currentId && !latest.projects.some(function(project) { return project.id === currentId; })) {
+                  _clearCurrentProjectState();
+                }
+              } catch (_) { /* Preserve the workspace when project existence cannot be verified. */ }
+            }
+            if (result.warning && GIS.toast && typeof GIS.toast.warn === 'function') {
+              GIS.toast.warn(result.warning);
+            } else {
+              GIS.chat.addMessage(_escapeMarkup(result.warning || '部分工程未能删除，请稍后重试。'), 'system');
+            }
+            return result;
+          }
+          _clearCurrentProjectState();
+          GIS.chat.addMessage('已删除全部历史会话', 'system');
+          if (result && result.warning && GIS.toast && typeof GIS.toast.warn === 'function') GIS.toast.warn(result.warning);
+          return result;
       }).catch(function(err) {
         GIS.chat.addMessage('删除失败: ' + _escapeMarkup(err.message || err), 'system');
       });
@@ -659,6 +760,8 @@ window.GIS = window.GIS || {};
     showHistory: _showHistory,
     loadProject: _loadProject,
     getCurrentProjectId: function() { return _currentProjectId; },
+    getActiveRegistryProjectId: function() { return _activeRegistryProjectId; },
+    getLoadGeneration: function() { return _loadGeneration; },
     setCurrentProjectId: function(id) {
       _loadGeneration += 1;
       _currentProjectId = id;
@@ -668,6 +771,7 @@ window.GIS = window.GIS || {};
     resetSession: function() {
       _loadGeneration += 1;
       _currentProjectId = null;
+      _activeRegistryProjectId = null;
       _currentSessionId = _createSessionId();
       return _currentSessionId;
     },

@@ -53,9 +53,10 @@ class Element {
   getBoundingClientRect() { return { left: 0, top: 0, right: 0, width: 0 }; }
 }
 
-function loadAnalysis(fetchResponse, language = 'zh-CN') {
+function loadAnalysis(fetchResponse, language = 'zh-CN', backendNames = [], invokeTool) {
   elements.clear();
   const listeners = {};
+  let projectGeneration = 0;
   const document = {
     documentElement: new Element('html'),
     createElement(tag) { const el = new Element(); el.tagName = tag; return el; },
@@ -68,7 +69,7 @@ function loadAnalysis(fetchResponse, language = 'zh-CN') {
     { properties: { population: null, district: 'A' } },
     { properties: { population: 125, late_field: 'available later' } },
   ];
-  const calls = [], feedback = [], alerts = [], preparedPanels = [];
+  const calls = [], feedback = [], alerts = [], preparedPanels = [], appliedResults = [];
   const layer = {geojson: {type: 'FeatureCollection', features}};
   const names = ['Districts'];
   const window = {
@@ -77,7 +78,22 @@ function loadAnalysis(fetchResponse, language = 'zh-CN') {
     addEventListener() {},
     GIS: {
       i18n: { t(key, fallback) { return language === 'en' ? 'EN:' + key : fallback; } },
-      api: { BASE_URL: '', syncLayer() { return Promise.resolve(); }, invokeTool(tool, args) { calls.push({tool, args}); return Promise.resolve({response: 'done'}); } },
+      api: { BASE_URL: '', syncLayer() { return Promise.resolve(); }, invokeTool(tool, args) { calls.push({tool, args}); return invokeTool ? invokeTool(tool, args) : Promise.resolve({response: 'done'}); } },
+      project: { getLoadGeneration() { return projectGeneration; } },
+      chat: { applyToolResult(result) { appliedResults.push(result); } },
+      state: {
+        layerOptionEntries(names) {
+          const counts = new Map(), seen = new Map();
+          names.forEach(name => counts.set(name.normalize('NFC'), (counts.get(name.normalize('NFC')) || 0) + 1));
+          return names.map(value => {
+            const key = value.normalize('NFC');
+            const occurrence = (seen.get(key) || 0) + 1;
+            seen.set(key, occurrence);
+            const suffix = counts.get(key) > 1 ? ` (${occurrence})` : '';
+            return { value, suffix };
+          });
+        },
+      },
       workspace: {preparePanel(...args) { preparedPanels.push(args); }, expandPanel() {}, centerPanel() {return [0, 0];}, clampPanel(_c, x, y) {return [x, y];}, toolPending() {}, toolFeedback(...args) {feedback.push(args); return !args[2];}},
       layers: {
         getLayerNames() { return names; },
@@ -85,14 +101,14 @@ function loadAnalysis(fetchResponse, language = 'zh-CN') {
       },
     },
   };
-  const fetch = fetchResponse || (() => Promise.resolve({ ok: true, json: () => Promise.resolve({ names: [] }) }));
+  const fetch = fetchResponse || (() => Promise.resolve({ ok: true, json: () => Promise.resolve({ names: backendNames }) }));
   const sourcePath = path.resolve(__dirname, '../js/analysis_tools.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
     window, document, fetch, Promise, Array, Object, String, Number, Math, Date, Set, Map,
     alert(message) { alerts.push(message); }, console,
   }, { filename: sourcePath });
 
-  return {window, layer, names, calls, feedback, alerts, preparedPanels, setLanguage(next) {
+  return {window, layer, names, calls, feedback, alerts, preparedPanels, appliedResults, switchProject() { projectGeneration += 1; }, setLanguage(next) {
     language = next;
     (listeners['gis:languagechange'] || []).forEach(callback => callback({detail: {language: next}}));
   }, launcherChildren() {
@@ -146,6 +162,19 @@ test('analysis tool field selector includes properties present after the first f
   assert.deepEqual(Object.keys(h.window.GIS.analysisTools), ['toggle']);
 });
 
+test('analysis layer selectors disambiguate legacy Unicode aliases and preserve exact values', async () => {
+  const h = loadAnalysis(undefined, 'zh-CN', ['é.geojson', 'e\u0301.geojson']);
+  const root = h.open('regression');
+  await new Promise(resolve => setImmediate(resolve));
+
+  const aliases = root.querySelector('#atLayer-regression').options
+    .filter(option => option.value.includes('geojson'));
+  assert.deepEqual(aliases.map(option => [option.value, option.textContent]), [
+    ['é.geojson', 'é.geojson (1)'],
+    ['e\u0301.geojson', 'e\u0301.geojson (2)'],
+  ]);
+});
+
 test('local layer names including prototype keys are available before a slow response', () => {
   const h = loadAnalysis(() => new Promise(() => {}));
   h.names.push('__proto__', 'constructor');
@@ -196,4 +225,21 @@ test('tool synchronization failure is returned to the owning panel without runni
   assert.equal(h.calls.length, 0);
   assert.equal(h.feedback[0][0], 'analysisToolsPanel-geomattrs');
   assert.equal(h.feedback[0][2].message, 'offline');
+});
+
+test('late direct tool results are discarded after the active project changes', async () => {
+  let resolveTool;
+  const h = loadAnalysis(undefined, 'zh-CN', [], () => new Promise(resolve => { resolveTool = resolve; }));
+  const root = h.open('geomattrs');
+  root.querySelector('#atLayer-geomattrs').value = 'Districts';
+
+  const running = root.querySelector('#atRun-geomattrs').fire('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.calls.length, 1);
+  h.switchProject();
+  resolveTool({response: 'old project result', layers: [{name: 'old-project-output'}]});
+  await running;
+
+  assert.deepEqual(h.appliedResults, []);
+  assert.match(h.feedback.at(-1)[2].message, /旧工程工具结果未应用/);
 });

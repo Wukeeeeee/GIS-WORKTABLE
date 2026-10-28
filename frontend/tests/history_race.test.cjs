@@ -34,6 +34,11 @@ function createHarness() {
   const elements = Object.fromEntries(ids.map(id => [id, new Element()]));
   const requests = [];
   const messages = [];
+  const addedLayers = [];
+  const panelLayers = [];
+  const syncs = [];
+  const rendered = [];
+  let autosaves = 0;
   let ready;
   const document = {
     readyState: 'loading',
@@ -41,7 +46,17 @@ function createHarness() {
     createElement() { return new Element(); },
     addEventListener(name, callback) { if (name === 'DOMContentLoaded') ready = callback; },
   };
-  const window = { GIS: { api: { BASE_URL: '' }, chat: { addMessage(message) { messages.push(message); } } } };
+  const window = { GIS: {
+    api: { BASE_URL: '' },
+    chat: { addMessage(message) { messages.push(message); } },
+    state: { addLayer(layer) { addedLayers.push(layer); return layer; } },
+    layers: {
+      getLayers() { return panelLayers; },
+      syncLayerData(id, geojson) { syncs.push([id, geojson]); return Promise.resolve(true); },
+    },
+    project: { autoSave() { autosaves++; return Promise.resolve(); } },
+    map: { loadGeoJSON(...args) { rendered.push(args); } },
+  } };
   const fetch = (url, options = {}) => new Promise((resolve, reject) => requests.push({ url, options, resolve, reject }));
   const sourcePath = path.resolve(__dirname, '../js/history.js');
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
@@ -49,7 +64,8 @@ function createHarness() {
     navigator: {}, console,
   }, { filename: sourcePath });
   ready();
-  return { history: window.GIS.history, elements, requests, messages };
+  return { window, history: window.GIS.history, elements, requests, messages, addedLayers, panelLayers, syncs, rendered,
+    getAutoSaves() { return autosaves; } };
 }
 
 async function flushPromises() {
@@ -109,4 +125,81 @@ test('history storage warnings are visible without hiding available records', as
   assert.equal(h.elements.historyBody.children[0].className, 'toolhist-warning');
   assert.match(h.elements.historyBody.children[0].textContent, /已暂停写入/);
   assert.equal(h.elements.historyBody.children.length, 2);
+});
+
+test('history rerun keeps the backend layer identity and version token', async () => {
+  const h = createHarness();
+  h.elements.toggleHistoryPanel.listeners.click[0]();
+  h.requests[0].resolve(historyResponse([{ index: 4, tool: 'buffer', ok: true, args: {}, time: '' }]));
+  await flushPromises();
+
+  const entry = h.elements.historyBody.children[0];
+  const actions = entry.children.find(child => child.className === 'toolhist-item-actions');
+  const rerunButton = actions.children.find(child => child.className === 'toolhist-rerun-btn');
+  rerunButton.listeners.click[0]();
+  assert.equal(h.requests[1].url, '/api/history/rerun');
+  h.requests[1].resolve({ ok: true, json: () => Promise.resolve({
+    ok: true,
+    layers: [{ name: 'roads_buffer', registry_name: 'roads_buffer', registration_token: 'registered-version',
+      geojson: { type: 'FeatureCollection', features: [] } }],
+    layer_ops: [],
+  }) });
+  await flushPromises();
+
+  assert.equal(h.addedLayers.length, 1);
+  assert.equal(h.addedLayers[0].registry_name, 'roads_buffer');
+  assert.equal(h.addedLayers[0].registration_token, 'registered-version');
+  assert.equal(h.getAutoSaves(), 1);
+});
+
+test('history rerun updates an existing same-name layer instead of duplicating it', async () => {
+  const h = createHarness();
+  const existing = { layer_id: 'roads-id', filename: 'roads', _registeredName: 'roads', _rawName: 'roads-map',
+    _registrationTokens: { roads: 'old-version' }, style: { color: '#123456' } };
+  h.panelLayers.push(existing);
+  h.elements.toggleHistoryPanel.listeners.click[0]();
+  h.requests[0].resolve(historyResponse([{ index: 5, tool: 'buffer', ok: true, args: {}, time: '' }]));
+  await flushPromises();
+
+  const entry = h.elements.historyBody.children[0];
+  const actions = entry.children.find(child => child.className === 'toolhist-item-actions');
+  actions.children.find(child => child.className === 'toolhist-rerun-btn').listeners.click[0]();
+  const geojson = { type: 'FeatureCollection', features: [] };
+  h.requests[1].resolve({ ok: true, json: () => Promise.resolve({
+    ok: true,
+    layers: [{ name: 'roads', registry_name: 'roads', registration_token: 'new-version', geojson }],
+    layer_ops: [],
+  }) });
+  await flushPromises();
+
+  assert.equal(h.addedLayers.length, 0);
+  assert.equal(h.panelLayers.length, 1);
+  assert.deepEqual(h.syncs, [['roads-id', geojson]]);
+  assert.equal(h.rendered[0][1], 'roads-map');
+  assert.equal(h.rendered[0][2], existing.style);
+  assert.equal(h.rendered[0][3].fitBounds, false);
+  assert.equal(existing._registrationTokens.roads, 'new-version');
+  assert.equal(h.getAutoSaves(), 1);
+});
+
+test('history rerun forwards raster preview operations through the shared tool-result handler', async () => {
+  const h = createHarness();
+  const applied = [];
+  h.elements.toggleHistoryPanel.listeners.click[0]();
+  h.requests[0].resolve(historyResponse([{ index: 8, tool: 'raster_reclassify', ok: true, args: {}, time: '' }]));
+  await flushPromises();
+
+  h.window.GIS.chat.applyToolResult = result => applied.push(result);
+  const entry = h.elements.historyBody.children[0];
+  const actions = entry.children.find(child => child.className === 'toolhist-item-actions');
+  actions.children.find(child => child.className === 'toolhist-rerun-btn').listeners.click[0]();
+  const op = { action: 'dem_result', name: 'classes.png', layer_name: 'classes',
+    url: '/output/uploads/classes.png', bounds: [100, 30, 101, 31], raster: { source_filename: 'classes.tif' } };
+  h.requests[1].resolve({ ok: true, json: () => Promise.resolve({
+    ok: true, response: '已重跑 #8 raster_reclassify → 成功', layers: [], layer_ops: [op],
+  }) });
+  await flushPromises();
+
+  assert.equal(applied.length, 1);
+  assert.equal(applied[0].layer_ops[0], op);
 });

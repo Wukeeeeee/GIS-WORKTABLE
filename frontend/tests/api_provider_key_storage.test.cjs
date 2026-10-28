@@ -151,6 +151,25 @@ test('chat and connection test send a provider key only inside llm_config', asyn
   assert.equal(Object.hasOwn(testBody, 'api_key'), false);
 });
 
+test('non-stream chat forwards its request ID and caller cancellation signal', async () => {
+  let requestOptions;
+  let finishFetch;
+  const h = createHarness({}, {}, (_url, options) => {
+    requestOptions = options;
+    return new Promise(resolve => { finishFetch = resolve; });
+  });
+  const caller = new AbortController();
+  const pending = h.api.chat('hello', 'session', null, [], 'full', 'request-123', caller.signal);
+  await Promise.resolve();
+
+  assert.equal(JSON.parse(requestOptions.body).request_id, 'request-123');
+  assert.notEqual(requestOptions.signal, caller.signal);
+  caller.abort('user-cancel');
+  assert.equal(requestOptions.signal.aborted, true);
+  finishFetch({ ok: true, json: async () => ({ response: 'cancelled' }) });
+  assert.equal((await pending).response, 'cancelled');
+});
+
 test('non-stream chat shows a backend transport-security explanation', async () => {
   const detail = '公网或无法确认地址的模型服务必须使用 HTTPS';
   const h = createHarness({}, {}, () => Promise.resolve({
@@ -213,6 +232,27 @@ test('registry API forwards the registration version and returns the next versio
   const request = h.requests.find(item => item.url.endsWith('/unregister'));
   assert.equal(JSON.parse(request.options.body).registration_token, 'next');
   assert.ok(request.options.signal instanceof AbortSignal);
+});
+
+test('registry API preserves the project context captured by the layer queue', async () => {
+  const h = createHarness({}, {}, () => Promise.resolve({
+    ok: true, json: async () => ({ success: true, registration_token: 'context-token' }),
+  }));
+  h.gis.project = {
+    getCurrentProjectId() { return 'project-b'; },
+    getActiveRegistryProjectId() { return null; },
+  };
+  await h.api.registerLayer('old-result', { type: 'FeatureCollection', features: [] }, null, 'project-a');
+  await h.api.registerLayer('new-session', { type: 'FeatureCollection', features: [] });
+  await h.api.resetActiveProjectContext(null);
+
+  const payloads = h.requests.filter(request => request.url.includes('/api/layer/register'))
+    .map(request => JSON.parse(request.options.body));
+  assert.deepEqual(payloads.map(payload => [payload.project_context, payload.expected_project_id]), [
+    [true, 'project-a'], [true, null],
+  ]);
+  const reset = h.requests.find(request => request.url.endsWith('/api/projects/active/reset'));
+  assert.deepEqual(JSON.parse(reset.options.body), { expected_project_id: null });
 });
 
 for (const method of ['registerLayer', 'unregisterLayer']) test(`${method} aborts a stalled request and releases its timer`, async () => {

@@ -23,23 +23,34 @@ function createChatHarness(streamResponse, withExecutionCards = false, layerList
   const tasks = [];
   let taskId = 0;
   const streamCalls = [];
+  const cancelCalls = [];
   const exportCalls = [];
+  const workspaceResetCalls = [];
   const executionRows = [];
   const createdElements = [];
   const api = {
     BASE_URL: 'http://127.0.0.1:8000',
     resolveProvider(id) { return { id, name: id, api_key: 'test-key' }; },
     getAmapKey() { return ''; },
+    getActiveProjectContext() { workspaceResetCalls.push(['read-context']); return Promise.resolve({active_project_id: 'project-a'}); },
+    resetActiveProjectContext(id) { workspaceResetCalls.push(['reset-context', id]); return Promise.resolve({success: true}); },
+    clearMemory() { return Promise.resolve({success: true}); },
   };
+  let activeRegistryProjectId = 'project-a';
   const window = { GIS: {
     api,
     workspace: { toggleAI() {} },
-    project: { getCurrentSessionId() { return 'session-a'; } },
+    project: {
+      getCurrentSessionId() { return 'session-a'; },
+      getCurrentProjectId() { return 'project-a'; },
+      getActiveRegistryProjectId() { return activeRegistryProjectId; },
+      resetSession() { activeRegistryProjectId = null; return 'session-b'; },
+    },
     map: {
       exportMap(format) { exportCalls.push({ action: 'png', format }); },
       exportPdf(title) { exportCalls.push({ action: 'pdf', title }); },
     },
-    layers: { getLayers() { return []; } },
+    layers: { getLayers() { return []; }, clearAll() { workspaceResetCalls.push(['clear-ui']); } },
     task: {
       createTask() { const task = { id: String(++taskId), status: 'pending' }; tasks.push(task); return task; },
       updateTask(id, updates) { Object.assign(tasks.find(task => task.id === id), updates); },
@@ -64,7 +75,7 @@ function createChatHarness(streamResponse, withExecutionCards = false, layerList
     addEventListener() {},
   };
   const fetch = (url, options) => {
-    if (url.includes('/api/cancel')) return Promise.resolve({ ok: true });
+    if (url.includes('/api/cancel')) { cancelCalls.push(url); return Promise.resolve({ ok: true }); }
     if (url.endsWith('/api/layers')) return Promise.resolve({ ok: true, json() { return Promise.resolve(layerListResponse); } });
     if (!url.endsWith('/api/chat/stream')) return Promise.resolve({ ok: true });
     streamCalls.push({ signal: options.signal, body: JSON.parse(options.body || '{}') });
@@ -92,7 +103,7 @@ function createChatHarness(streamResponse, withExecutionCards = false, layerList
     'GIS.chat = { _renderChatMarkdown: _renderChatMarkdown, _linkRenderer: _linkRenderer, _attachOutputButtons: _attachOutputButtons, _downloadFile: downloadFile, addMessage, init, send,',
   );
   vm.runInContext(chatSource, context, { filename: sourcePath });
-  return { window, context, tasks, streamCalls, exportCalls, elements, getElement, executionRows, createdElements };
+  return { window, context, tasks, streamCalls, cancelCalls, exportCalls, elements, getElement, executionRows, createdElements, workspaceResetCalls };
 }
 
 test('plain user chat messages render as text instead of executable HTML', () => {
@@ -106,6 +117,42 @@ test('plain user chat messages render as text instead of executable HTML', () =>
   const content = bubble.children[0];
   assert.equal(content.textContent, rawHtml);
   assert.equal(content.innerHTML, undefined);
+});
+
+test('starting a new chat resets backend GIS context before clearing the current workspace', async () => {
+  const h = createChatHarness();
+  await h.window.GIS.chat.clearSession();
+
+  assert.deepEqual(h.workspaceResetCalls, [
+    ['reset-context', 'project-a'],
+    ['clear-ui'],
+  ]);
+  assert.equal(h.window.GIS.project.getActiveRegistryProjectId(), null);
+});
+
+test('starting a new chat reads the backend context after a frontend reload', async () => {
+  const h = createChatHarness();
+  h.window.GIS.project.getActiveRegistryProjectId = () => null;
+  await h.window.GIS.chat.clearSession();
+
+  assert.deepEqual(h.workspaceResetCalls, [
+    ['read-context'],
+    ['reset-context', 'project-a'],
+    ['clear-ui'],
+  ]);
+});
+
+test('a failed backend GIS context reset leaves the current workspace intact', async () => {
+  const h = createChatHarness();
+  h.window.GIS.api.resetActiveProjectContext = id => {
+    h.workspaceResetCalls.push(['reset-context', id]);
+    return Promise.reject(new Error('HTTP 409'));
+  };
+  const cleared = await h.window.GIS.chat.clearSession();
+
+  assert.equal(cleared, false);
+  assert.deepEqual(h.workspaceResetCalls, [['reset-context', 'project-a']]);
+  assert.equal(h.window.GIS.project.getActiveRegistryProjectId(), 'project-a');
 });
 
 test('chat markdown escapes raw HTML and blocks executable link schemes', () => {
@@ -210,6 +257,9 @@ test('replacing a chat request cancels its task without letting stale cleanup un
   const second = harness.window.GIS.chat.send('第二条任务');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(harness.streamCalls.length, 2);
+  assert.notEqual(harness.streamCalls[0].body.request_id, harness.streamCalls[1].body.request_id);
+  assert.match(harness.cancelCalls[0], new RegExp('request_id=' + encodeURIComponent(harness.streamCalls[0].body.request_id)));
+  assert.doesNotMatch(harness.cancelCalls[0], new RegExp('request_id=' + encodeURIComponent(harness.streamCalls[1].body.request_id)));
   await first;
 
   assert.equal(harness.tasks[0].status, 'cancelled');
@@ -221,6 +271,62 @@ test('replacing a chat request cancels its task without letting stale cleanup un
   await second;
   assert.equal(harness.tasks[1].status, 'cancelled');
   assert.equal(harness.window._aiRunning, false);
+});
+
+test('a late failure from a replaced chat request cannot reset the newer request UI', async () => {
+  const harness = createChatHarness();
+  harness.window.GIS.chat.init();
+  let rejectFirstStream;
+  let streamCount = 0;
+  harness.context.fetch = (url, options) => {
+    if (url.includes('/api/cancel')) return Promise.resolve({ ok: true });
+    if (url.endsWith('/api/layers')) return Promise.resolve({ ok: true, json() { return Promise.resolve({ layers: [] }); } });
+    if (url.endsWith('/api/chat/stream')) {
+      streamCount += 1;
+      if (streamCount === 1) return new Promise((_resolve, reject) => { rejectFirstStream = reject; });
+      return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => {
+        const error = new Error('aborted');
+        error.name = 'AbortError';
+        reject(error);
+      }, { once: true }));
+    }
+    return Promise.resolve({ ok: true });
+  };
+
+  const first = harness.window.GIS.chat.send('第一条任务');
+  await new Promise(resolve => setImmediate(resolve));
+  const second = harness.window.GIS.chat.send('第二条任务');
+  await new Promise(resolve => setImmediate(resolve));
+  const input = harness.elements.get('chatInput');
+  input.placeholder = '第二条任务正在运行';
+
+  rejectFirstStream(new Error('late connection failure'));
+  await first;
+
+  assert.equal(input.placeholder, '第二条任务正在运行');
+  assert.equal(harness.window._aiRunning, true);
+  assert.equal(harness.elements.get('chatMessages').children.some(row => /late connection failure/.test(row._rawText || '')), false);
+  harness.window._aiAbortController.abort('user-cancel');
+  await second;
+});
+
+test('project switching cancellation aborts the active request and invalidates its generation', async () => {
+  const harness = createChatHarness();
+  const activeSend = harness.window.GIS.chat.send('切换工程前仍在运行的任务');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.streamCalls.length, 1);
+  const requestId = harness.streamCalls[0].body.request_id;
+  const controller = harness.window._aiAbortController;
+
+  const cancelled = harness.window.GIS.chat.cancelActiveRequest('切换工程，已取消当前任务');
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(harness.window._aiRunning, false);
+  assert.equal(harness.window._aiRequestId, null);
+  assert.match(harness.cancelCalls[0], /session_id=session-a/);
+  assert.match(harness.cancelCalls[0], new RegExp('request_id=' + encodeURIComponent(requestId)));
+  assert.equal(harness.tasks[0].status, 'cancelled');
+  assert.equal(await cancelled, true);
+  await activeSend;
 });
 
 test('streaming chat sends the provider key only inside llm_config', async () => {
@@ -251,6 +357,23 @@ test('streaming chat keeps the backend transport-security explanation', async ()
   await harness.window.GIS.chat.send('你好');
 
   assert.match(harness.tasks[0].error, /公网模型地址必须使用 HTTPS/);
+});
+
+test('ordinary chat fallback keeps the same request ID and stop signal as the failed stream', async () => {
+  const harness = createChatHarness({
+    ok: false, status: 503, json: async () => ({ detail: 'stream unavailable' }),
+  });
+  let fallbackArgs;
+  harness.window.GIS.api.chat = async (...args) => {
+    fallbackArgs = args;
+    return { response: 'fallback reply' };
+  };
+
+  await harness.window.GIS.chat.send('你好');
+
+  assert.equal(fallbackArgs[5], harness.streamCalls[0].body.request_id);
+  assert.equal(typeof fallbackArgs[5], 'string');
+  assert.equal(fallbackArgs[6], harness.streamCalls[0].signal);
 });
 
 test('chat stops before calling the AI when a current layer cannot sync to backend analysis state', async () => {
@@ -314,6 +437,70 @@ test('raster analysis results enter the layer panel with project-ready source me
   assert.equal(addedLayers[0].raster.source_filename, 'terrain_slope.tif');
   assert.equal(addedLayers[0]._registrationTokens.terrain_slope, 'raster-version');
   assert.equal(autoSaves, 1);
+});
+
+test('COG preview result is persisted as a preview layer and does not claim pixel analysis', async () => {
+  const op = { action: 'dem_result', name: 'cog_scene.png', layer_name: 'scene（COG 预览）',
+    url: '/output/uploads/cog_scene.png', bounds: [100, 30, 101, 31], crs: 'EPSG:4326',
+    label: 'COG 影像: scene', raster: {
+      filename: 'cog_scene.png', url: '/output/uploads/cog_scene.png',
+      bounds: [100, 30, 101, 31], width: 1024, height: 512,
+      preview_width: 256, preview_height: 128, bands: 4, preview_only: true,
+    } };
+  const event = { type: 'done', response: 'COG 已加载', layers: [], layer_ops: [op] };
+  const bytes = new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n');
+  let reads = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } });
+  const overlays = [];
+  const addedLayers = [];
+  let autoSaves = 0;
+  h.window.GIS.map.addImageOverlay = (...args) => overlays.push(args);
+  h.window.GIS.layers.getLayers = () => addedLayers;
+  h.window.GIS.layers.addLayer = (layer, skipRegister) => {
+    assert.equal(skipRegister, true);
+    addedLayers.push(layer);
+  };
+  h.window.GIS.project = { autoSave() { autoSaves++; } };
+  h.window.GIS.chat.init();
+
+  await h.window.GIS.chat.send('加载 COG');
+
+  assert.deepEqual(overlays, [[op.url, op.bounds, op.name, op.layer_name]]);
+  assert.equal(addedLayers[0].raster.preview_only, true);
+  assert.equal(autoSaves, 1);
+  assert.ok(h.createdElements.some(element => String(element._rawText || '').includes('像元分析需提供原始栅格文件')));
+});
+
+test('manual tool results preserve the backend registration name and deletion token', () => {
+  const h = createChatHarness();
+  const added = [];
+  h.window.GIS.state = { addLayer(layer) { added.push(layer); return layer; } };
+  const geojson = { type: 'FeatureCollection', features: [] };
+
+  h.window.GIS.chat.applyToolResult({ layers: [{
+    name: 'roads_buffer', registry_name: 'roads_buffer', registration_token: 'registered-version', geojson,
+  }] });
+
+  assert.equal(added.length, 1);
+  assert.equal(added[0].registry_name, 'roads_buffer');
+  assert.equal(added[0].registration_token, 'registered-version');
+  assert.equal(added[0].name.startsWith('roads_buffer_'), true);
+});
+
+test('manual vector tool results schedule a project autosave', () => {
+  const h = createChatHarness();
+  let autosaves = 0;
+  h.window.GIS.state = { addLayer(layer) { return layer; } };
+  h.window.GIS.project.autoSave = () => { autosaves++; return Promise.resolve(); };
+
+  h.window.GIS.chat.applyToolResult({ layers: [{
+    name: 'roads_buffer', registry_name: 'roads_buffer', registration_token: 'registered-version',
+    geojson: { type: 'FeatureCollection', features: [] },
+  }] });
+
+  assert.equal(autosaves, 1);
 });
 
 test('layer recovery requires an exact name and warns instead of attaching a similarly named layer', async () => {
@@ -395,6 +582,95 @@ test('streamed fits retry after final layers load before execution cards finish'
   const card = h.executionRows[0].children[0].children[0];
   assert.equal(fits, 1);
   assert.match(card.className, /ai-step-success/);
+});
+
+test('same-name spatial tool output replaces the visible layer instead of creating a suffixed duplicate', async () => {
+  const updatedGeoJSON = { type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { value: 2 }, geometry: { type: 'Point', coordinates: [121, 31] } },
+  ] };
+  const event = { type: 'done', response: '已更新 roads', layers: [{ name: 'roads', geojson: updatedGeoJSON }] };
+  const bytes = new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n');
+  let reads = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } });
+  const existing = { layer_id: 'roads-id', filename: 'roads', _registeredName: 'roads',
+    _rawName: 'roads-map-name', style: { color: '#123456' }, geojson: { type: 'FeatureCollection', features: [] } };
+  const panelLayers = [existing];
+  const rendered = [];
+  const syncs = [];
+  let added = 0;
+  h.window.GIS.layers.getLayers = () => panelLayers;
+  h.window.GIS.layers.syncToolLayer = async () => true;
+  h.window.GIS.layers.addLayer = () => { added++; };
+  h.window.GIS.layers.syncLayerData = (id, data) => { syncs.push([id, data]); existing.geojson = data; return Promise.resolve(true); };
+  h.window.GIS.layers.renderList = () => {};
+  h.window.GIS.state = { addLayer() { added++; } };
+  h.window.GIS.map.loadGeoJSON = (...args) => rendered.push(args);
+  h.window.GIS.chat.init();
+
+  await h.window.GIS.chat.send('更新 roads');
+
+  assert.equal(panelLayers.length, 1);
+  assert.equal(added, 0);
+  assert.equal(syncs.length, 1);
+  assert.equal(syncs[0][0], 'roads-id');
+  assert.equal(JSON.stringify(syncs[0][1]), JSON.stringify(updatedGeoJSON));
+  assert.equal(JSON.stringify(rendered[0][0]), JSON.stringify(updatedGeoJSON));
+  assert.equal(rendered[0][1], 'roads-map-name');
+  assert.equal(rendered[0][2], existing.style);
+  assert.equal(rendered[0][3].fitBounds, false);
+});
+
+test('manual same-name tool output updates the existing panel layer instead of duplicating it', () => {
+  const h = createChatHarness();
+  const geojson = { type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { value: 2 }, geometry: { type: 'Point', coordinates: [121, 31] } },
+  ] };
+  const existing = { layer_id: 'roads-id', filename: 'roads', _registeredName: 'roads', _rawName: 'roads-map',
+    _registrationTokens: { roads: 'old-version' }, style: { color: '#123456' } };
+  const panelLayers = [existing];
+  const added = [];
+  const syncs = [];
+  const rendered = [];
+  h.window.GIS.layers.getLayers = () => panelLayers;
+  h.window.GIS.layers.syncLayerData = (id, data) => { syncs.push([id, data]); return Promise.resolve(true); };
+  h.window.GIS.state = { addLayer(layer) { added.push(layer); } };
+  h.window.GIS.map.loadGeoJSON = (...args) => rendered.push(args);
+
+  h.window.GIS.chat.applyToolResult({ layers: [{
+    name: 'roads', registry_name: 'roads', registration_token: 'new-version', geojson,
+  }] });
+
+  assert.equal(added.length, 0);
+  assert.equal(panelLayers.length, 1);
+  assert.deepEqual(syncs, [['roads-id', geojson]]);
+  assert.equal(rendered[0][1], 'roads-map');
+  assert.equal(rendered[0][2], existing.style);
+  assert.equal(rendered[0][3].fitBounds, false);
+  assert.equal(existing._registeredName, 'roads');
+  assert.equal(existing._registrationTokens.roads, 'new-version');
+});
+
+test('new backend-registered vector results refresh the panel registration token through its sync queue', async () => {
+  const geojson = { type: 'FeatureCollection', features: [] };
+  const event = { type: 'done', response: '已生成 roads-buffer', layers: [{ name: 'roads-buffer', geojson }] };
+  const bytes = new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n');
+  let reads = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } });
+  let added = null;
+  const syncs = [];
+  h.window.GIS.state = { addLayer(record) { added = record; return { layer_id: record.layer_id }; } };
+  h.window.GIS.layers.syncLayerData = (...args) => { syncs.push(args); return Promise.resolve(true); };
+  h.window.GIS.layers.getLayers = () => [];
+  h.window.GIS.chat.init();
+
+  await h.window.GIS.chat.send('生成道路缓冲区');
+
+  assert.equal(added.name, 'roads-buffer');
+  assert.deepEqual(syncs, [[added.layer_id, geojson]]);
 });
 
 test('geospatial QA warnings escape layer names and messages before system HTML rendering', () => {
@@ -512,6 +788,41 @@ test('agent timeout marks the task failed and execution cards interrupted', asyn
   const card = h.executionRows[0].children[0].children[0];
   assert.match(card.className, /ai-step-interrupted/);
   assert.equal(h.window._aiRunning, false);
+});
+
+test('backend cancellation status is not shown as a successful task', async () => {
+  const events = [
+    { type: 'tool_start', tool_call_id: 'cancelled-call', step_id: 'cancelled-step', name: 'buffer' },
+    { type: 'done', response: '用户已取消', layers: [], execution_status: 'cancelled' },
+  ];
+  const bytes = new TextEncoder().encode(events.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join(''));
+  let reads = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } }, true);
+  h.window.GIS.chat.init();
+
+  await h.window.GIS.chat.send('取消缓冲分析');
+
+  assert.equal(h.tasks[0].status, 'cancelled');
+  const card = h.executionRows[0].children[0].children[0];
+  assert.match(card.className, /ai-step-cancelled/);
+});
+
+test('non-stream cancellation response keeps the task cancelled after stream fallback', async () => {
+  const h = createChatHarness({
+    ok: false, status: 503,
+    async json() { return { detail: 'stream unavailable' }; },
+  }, true);
+  h.window.GIS.api.chat = async () => ({
+    response: '用户已取消', execution_status: 'cancelled', layers: [],
+  });
+  h.window.GIS.chat.init();
+
+  await h.window.GIS.chat.send('执行分析');
+
+  assert.equal(h.tasks[0].status, 'cancelled');
+  assert.equal(h.tasks[0].error, '用户取消');
 });
 
 test('unresolved failed GIS steps mark the task as partially completed', async () => {

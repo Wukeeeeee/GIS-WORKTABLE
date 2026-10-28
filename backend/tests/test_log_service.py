@@ -30,6 +30,21 @@ def test_session_names_do_not_collide_and_records_have_distinct_ids():
     assert first[0]["record_id"] != second[0]["record_id"]
 
 
+def test_malformed_layer_snapshot_does_not_drop_the_conversation_record():
+    logs.log_turn(
+        "s", "请检查这张图", "已显示在地图",
+        layers_snapshot={
+            "valid": {"feature_count": 1, "geometry_types": ["Point"]},
+            "broken": None,
+        },
+    )
+
+    records = logs.get_temp_log("s")
+    assert len(records) == 1
+    assert records[0]["user"] == "请检查这张图"
+    assert records[0]["layers"] == {"valid": {"feature_count": 1, "geometry_types": ["Point"]}}
+
+
 def test_archive_retains_only_issues_and_clears_temporary_log():
     logs.log_turn("s", "normal", "完成")
     logs.log_turn("s", "problem", "执行失败")

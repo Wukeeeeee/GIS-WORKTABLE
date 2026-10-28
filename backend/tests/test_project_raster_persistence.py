@@ -1,5 +1,10 @@
 import io
+import gzip
+import hashlib
+import json
+import multiprocessing
 import os
+import time
 import zipfile
 from pathlib import Path
 
@@ -8,6 +13,29 @@ from fastapi.testclient import TestClient
 
 from backend import main
 from backend.services import ai_service, project_service, tools
+
+
+def _save_project_pause_before_index(project_dir, project_id, ready):
+    project_service._PROJECT_DIR = project_dir
+    project_service._BLOB_DIR = os.path.join(project_dir, "blobs")
+    project_service._INDEX_PATH = os.path.join(project_dir, "index.json")
+    project_service._blob_refcount.clear()
+
+    def pause_before_index(_index):
+        ready.set()
+        while True:
+            time.sleep(0.05)
+
+    project_service._save_index = pause_before_index
+    project_service.save_project(
+        project_id=project_id, name="工程文件已更新", session_id="crash-window", provider="test",
+        map_state={}, messages=[], layers=[{"name": "更新图层", "geojson": {
+            "type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {"version": "new"},
+                "geometry": {"type": "Point", "coordinates": [114.0, 29.0]},
+            }],
+        }}],
+    )
 
 
 def _use_temp_projects(tmp_path, monkeypatch):
@@ -64,6 +92,122 @@ def test_failed_replacement_keeps_existing_project_geojson_intact(tmp_path, monk
     assert project_service._blob_refcount == {original_blob: 1}
     assets_dir = tmp_path / "projects" / project["id"] / "assets"
     assert not assets_dir.exists() or list(assets_dir.iterdir()) == []
+
+
+def test_project_save_rejects_vector_coordinates_outside_wgs84(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    invalid_geojson = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {},
+        "geometry": {"type": "Point", "coordinates": [0, 100]},
+    }]}
+
+    with pytest.raises(ValueError, match="WGS-84"):
+        project_service.save_project(
+            project_id=None, name="越界图层", session_id="invalid-coordinates", provider="test",
+            map_state={}, messages=[], layers=[{"name": "越界", "geojson": invalid_geojson}],
+        )
+
+    assert project_service.list_projects() == []
+
+
+def test_project_save_rejects_malformed_vector_positions(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    malformed_geojson = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {},
+        "geometry": {"type": "LineString", "coordinates": [[1]]},
+    }]}
+
+    with pytest.raises(ValueError, match="WGS-84"):
+        project_service.save_project(
+            project_id=None, name="无效图形", session_id="invalid-geometry", provider="test",
+            map_state={}, messages=[], layers=[{"name": "无效线", "geojson": malformed_geojson}],
+        )
+
+    assert project_service.list_projects() == []
+
+
+def test_project_activation_skips_legacy_vector_coordinates_outside_wgs84(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    data = {"layers": [
+        {"name": "坏坐标", "geojson": {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Point", "coordinates": [0, 100]},
+        }]}},
+        {"name": "正常图层", "geojson": {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Point", "coordinates": [120, 30]},
+        }]}},
+    ], "messages": []}
+
+    result = project_service._activate_project_data("legacy", data, "legacy-session")
+
+    assert result["registration_warnings"] == ["坏坐标"]
+    assert list(tools._registered_layers) == ["正常图层"]
+
+
+def test_project_import_rejects_blob_with_valid_digest_but_invalid_json(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="有效工程", session_id="invalid-blob", provider="test",
+        map_state={}, messages=[], layers=[{"name": "有效图层", "geojson": {
+            "type": "FeatureCollection", "features": [],
+        }}],
+    )
+    exported = project_service.export_project(saved["id"])
+    corrupt_raw = b'{"type": '
+    corrupt_blob = hashlib.sha256(corrupt_raw).hexdigest()[:12]
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(exported), "r") as source, zipfile.ZipFile(archive_bytes, "w") as target:
+        for name in source.namelist():
+            if name == "project.json" or name.startswith("blobs/"):
+                continue
+            target.writestr(name, source.read(name))
+        project = json.loads(source.read("project.json"))
+        project["layers"][0]["blob"] = corrupt_blob
+        target.writestr("project.json", json.dumps(project).encode("utf-8"))
+        target.writestr(f"blobs/{corrupt_blob}.geojson.gz", gzip.compress(corrupt_raw))
+
+    with pytest.raises(ValueError, match="无效矢量图层数据"):
+        project_service.import_project(archive_bytes.getvalue())
+    assert [project["id"] for project in project_service.list_projects()] == [saved["id"]]
+
+
+def test_project_import_rejects_vector_layer_with_missing_blob(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="有效工程", session_id="missing-blob", provider="test",
+        map_state={}, messages=[], layers=[{"name": "有效图层", "geojson": {
+            "type": "FeatureCollection", "features": [],
+        }}],
+    )
+    exported = project_service.export_project(saved["id"])
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(exported), "r") as source, zipfile.ZipFile(archive_bytes, "w") as target:
+        for name in source.namelist():
+            if name.startswith("blobs/"):
+                continue
+            if name == "project.json":
+                project = json.loads(source.read(name))
+                project["layers"][0]["blob"] = None
+                target.writestr(name, json.dumps(project).encode("utf-8"))
+            else:
+                target.writestr(name, source.read(name))
+
+    with pytest.raises(ValueError, match="缺少矢量图层数据"):
+        project_service.import_project(archive_bytes.getvalue())
+    assert [project["id"] for project in project_service.list_projects()] == [saved["id"]]
+
+
+def test_project_save_rejects_layer_without_vector_raster_or_service_payload(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="缺少矢量、栅格或服务数据"):
+        project_service.save_project(
+            project_id=None, name="空图层工程", session_id="empty-layer", provider="test",
+            map_state={}, messages=[], layers=[{"name": "空图层"}],
+        )
+
+    assert project_service.list_projects() == []
 
 
 def test_failed_atomic_project_write_keeps_old_file_and_releases_new_blob(tmp_path, monkeypatch):
@@ -126,6 +270,38 @@ def test_project_index_write_failure_reports_saved_project_and_list_recovers(tmp
     assert [project["id"] for project in project_service.list_projects()] == [saved["id"]]
 
 
+def test_process_termination_after_project_replace_rebuilds_index_on_restart(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="旧工程", session_id="crash-window", provider="test",
+        map_state={}, messages=[], layers=[{"name": "旧图层", "geojson": {
+            "type": "FeatureCollection", "features": [],
+        }}],
+    )
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    child = context.Process(
+        target=_save_project_pause_before_index,
+        args=(str(project_service._PROJECT_DIR), saved["id"], ready),
+    )
+    child.start()
+    try:
+        assert ready.wait(10), "child should reach the index write after replacing project.json"
+        child.terminate()
+        child.join(10)
+        assert not child.is_alive(), "terminated saver should release its cross-process project lock"
+
+        summaries = project_service.list_projects()
+        recovered = project_service._load_project_data(saved["id"])
+        assert next(item for item in summaries if item["id"] == saved["id"])["name"] == "工程文件已更新"
+        feature = project_service._blob_get(recovered["layers"][0]["blob"])["features"][0]
+        assert feature["properties"]["version"] == "new"
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join(10)
+
+
 def test_project_rename_survives_index_write_failure_and_list_recovers(tmp_path, monkeypatch):
     _use_temp_projects(tmp_path, monkeypatch)
     saved = project_service.save_project(
@@ -143,6 +319,235 @@ def test_project_rename_survives_index_write_failure_and_list_recovers(tmp_path,
     assert "warning" in renamed
     assert project_service._load_project_data(saved["id"])["name"] == "新名称"
     assert project_service.list_projects()[0]["name"] == "新名称"
+
+
+def test_project_delete_reports_success_and_rebuildable_index_warning(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="待删除工程", session_id="delete-index-failure", provider="test",
+        map_state={}, messages=[], layers=[{
+            "name": "点图层", "geojson": {"type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Point", "coordinates": [114.0, 29.0]},
+            }]},
+        }],
+    )
+
+    def fail_index_write(_index):
+        raise OSError("simulated index write failure")
+
+    monkeypatch.setattr(project_service, "_save_index", fail_index_write)
+    with TestClient(main.app) as client:
+        response = client.delete(f"/api/projects/{saved['id']}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert "warning" in payload
+    assert not os.path.exists(project_service._project_dir(saved["id"]))
+    assert project_service.list_projects() == []
+
+
+def test_deleting_active_project_clears_backend_layer_registry(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="当前工程", session_id="active-delete", provider="test",
+        map_state={}, messages=[], layers=[{
+            "name": "当前图层", "geojson": {"type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Point", "coordinates": [114.0, 29.0]},
+            }]},
+        }],
+    )
+    project_service.open_project(saved["id"])
+    assert tools._active_project_id == saved["id"]
+    assert "当前图层" in tools._registered_layers
+
+    project_service.delete_project(saved["id"])
+
+    assert tools._active_project_id is None
+    assert tools._registered_layers == {}
+    assert tools._pending_layers == []
+    assert tools._pending_layer_ops == []
+
+
+def test_delete_index_failure_keeps_blob_shared_with_remaining_project(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    shared_geojson = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"id": "shared"},
+        "geometry": {"type": "Point", "coordinates": [114.0, 29.0]},
+    }]}
+    layers = [{"name": "共享图层", "geojson": shared_geojson}]
+    first = project_service.save_project(
+        project_id=None, name="待删除工程", session_id="delete-shared-first", provider="test",
+        map_state={}, messages=[], layers=layers,
+    )
+    second = project_service.save_project(
+        project_id=None, name="保留工程", session_id="delete-shared-second", provider="test",
+        map_state={}, messages=[], layers=layers,
+    )
+    blob = project_service._load_project_data(first["id"])["layers"][0]["blob"]
+    assert project_service._load_project_data(second["id"])["layers"][0]["blob"] == blob
+
+    def fail_index_write(_index):
+        raise OSError("simulated index write failure")
+
+    monkeypatch.setattr(project_service, "_save_index", fail_index_write)
+    result = project_service.delete_project(first["id"])
+
+    assert result and "warning" in result
+    assert not os.path.exists(project_service._project_dir(first["id"]))
+    restored = project_service.load_project(second["id"])
+    assert restored["layers"][0]["geojson"] == shared_geojson
+    assert project_service._blob_refcount[blob] == 1
+    assert [item["id"] for item in project_service.list_projects()] == [second["id"]]
+
+
+@pytest.mark.parametrize("delete_all", [False, True], ids=["single-delete", "bulk-delete"])
+def test_delete_handles_project_with_malformed_layer_entries(tmp_path, monkeypatch, delete_all):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = [project_service.save_project(
+        project_id=None, name=f"工程 {index}", session_id=f"malformed-layer-{index}",
+        provider="test", map_state={}, messages=[], layers=[],
+    ) for index in range(2 if delete_all else 1)]
+
+    damaged_path = os.path.join(project_service._project_dir(saved[0]["id"]), "project.json")
+    with open(damaged_path, "r", encoding="utf-8") as source:
+        damaged = json.load(source)
+    damaged["layers"] = [None]
+    with open(damaged_path, "w", encoding="utf-8") as target:
+        json.dump(damaged, target)
+
+    if delete_all:
+        project_service.delete_all_projects()
+    else:
+        project_service.delete_project(saved[0]["id"])
+
+    assert all(not os.path.exists(project_service._project_dir(project["id"])) for project in saved)
+
+
+def test_delete_all_finishes_before_reporting_rebuildable_index_warning(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = [project_service.save_project(
+        project_id=None, name=f"工程 {index}", session_id=f"delete-all-{index}", provider="test",
+        map_state={}, messages=[], layers=[],
+    ) for index in range(2)]
+
+    def fail_index_write(_index):
+        raise OSError("simulated index write failure")
+
+    monkeypatch.setattr(project_service, "_save_index", fail_index_write)
+    with TestClient(main.app) as client:
+        response = client.delete("/api/projects")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert "warning" in payload
+    assert all(not os.path.exists(project_service._project_dir(project["id"])) for project in saved)
+    assert project_service.list_projects() == []
+
+
+def test_delete_all_reports_project_directory_removal_failure_and_preserves_blob(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    geojson = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"name": "still available"},
+        "geometry": {"type": "Point", "coordinates": [114.0, 29.0]},
+    }]}
+    saved = project_service.save_project(
+        project_id=None, name="索引外残留工程", session_id="orphan-delete-all", provider="test",
+        map_state={}, messages=[], layers=[{"name": "点", "geojson": geojson}],
+    )
+    removable = project_service.save_project(
+        project_id=None, name="仍应继续删除", session_id="delete-all-continues", provider="test",
+        map_state={}, messages=[], layers=[],
+    )
+    orphan_dir = project_service._project_dir(saved["id"])
+    blob = project_service._load_project_data(saved["id"])["layers"][0]["blob"]
+    blob_path = project_service._blob_path(blob)
+    original_rmtree = project_service.shutil.rmtree
+
+    def fail_orphan_removal(path, *args, **kwargs):
+        if os.path.normcase(os.path.normpath(path)) == os.path.normcase(os.path.normpath(orphan_dir)):
+            raise OSError("simulated orphan directory removal failure")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_service.shutil, "rmtree", fail_orphan_removal)
+    with TestClient(main.app) as client:
+        response = client.delete("/api/projects")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert "未能删除" in payload["warning"]
+    assert os.path.exists(project_service._project_path(saved["id"]))
+    assert not os.path.exists(project_service._project_dir(removable["id"]))
+    assert [project["id"] for project in project_service.list_projects()] == [saved["id"]]
+    assert os.path.exists(blob_path)
+    assert project_service.load_project(saved["id"])["layers"][0]["geojson"] == geojson
+
+
+def test_project_delete_filesystem_failure_preserves_project_blobs(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    geojson = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"name": "protected"},
+        "geometry": {"type": "Point", "coordinates": [114.0, 29.0]},
+    }]}
+    saved = project_service.save_project(
+        project_id=None, name="删除失败应保留", session_id="delete-filesystem-failure", provider="test",
+        map_state={}, messages=[], layers=[{"name": "点", "geojson": geojson}],
+    )
+    blob = project_service._load_project_data(saved["id"])["layers"][0]["blob"]
+    blob_path = project_service._blob_path(blob)
+    original_rmtree = project_service.shutil.rmtree
+
+    def fail_project_removal(path, *args, **kwargs):
+        if os.path.normpath(path) == os.path.normpath(project_service._project_dir(saved["id"])):
+            raise OSError("simulated project directory removal failure")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_service.shutil, "rmtree", fail_project_removal)
+    with TestClient(main.app, raise_server_exceptions=False) as client:
+        response = client.delete(f"/api/projects/{saved['id']}")
+
+    assert response.status_code == 500
+    assert os.path.exists(project_service._project_path(saved["id"]))
+    assert os.path.exists(blob_path)
+    assert project_service.load_project(saved["id"])["layers"][0]["geojson"] == geojson
+
+
+def test_project_delete_reports_orphaned_blob_when_blob_file_is_locked(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="Blob 被占用", session_id="delete-blob-lock", provider="test",
+        map_state={}, messages=[], layers=[{"name": "点", "geojson": {
+            "type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Point", "coordinates": [114.0, 29.0]},
+            }],
+        }}],
+    )
+    blob = project_service._load_project_data(saved["id"])["layers"][0]["blob"]
+    blob_path = project_service._blob_path(blob)
+    original_remove = project_service.os.remove
+
+    def fail_blob_removal(path, *args, **kwargs):
+        if os.path.normcase(os.path.normpath(path)) == os.path.normcase(os.path.normpath(blob_path)):
+            raise PermissionError("simulated locked blob")
+        return original_remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_service.os, "remove", fail_blob_removal)
+    with TestClient(main.app, raise_server_exceptions=False) as client:
+        response = client.delete(f"/api/projects/{saved['id']}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert "Blob" in payload["warning"]
+    assert not os.path.exists(project_service._project_dir(saved["id"]))
+    assert os.path.exists(blob_path)
+    assert blob not in project_service._blob_refcount
+    assert project_service.list_projects() == []
 
 
 def test_raster_assets_survive_project_save_export_import_and_restore(tmp_path, monkeypatch):
@@ -188,13 +593,13 @@ def test_raster_assets_survive_project_save_export_import_and_restore(tmp_path, 
 
 
 def test_project_asset_responses_sandbox_active_content(tmp_path, monkeypatch):
-    asset = tmp_path / "untrusted.svg"
+    _use_temp_projects(tmp_path, monkeypatch)
+    asset = Path(project_service._project_dir("test")) / "assets" / "untrusted.svg"
+    asset.parent.mkdir(parents=True)
     asset.write_text("<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>", encoding="utf-8")
-    monkeypatch.setattr(
-        project_service,
-        "get_project_raster_asset",
-        lambda project_id, filename: str(asset) if (project_id, filename) == ("test", "untrusted.svg") else None,
-    )
+    project_service._save_project_data("test", {
+        "layers": [{"name": "untrusted", "raster": {"asset": "untrusted.svg"}}],
+    })
 
     response = TestClient(main.app).get("/api/projects/test/assets/untrusted.svg")
 
@@ -202,6 +607,137 @@ def test_project_asset_responses_sandbox_active_content(tmp_path, monkeypatch):
     assert "sandbox" in response.headers["content-security-policy"]
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "<script>" in response.text
+
+
+def test_preview_only_cog_raster_asset_survives_project_save_and_reload(tmp_path, monkeypatch):
+    source = _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="远程 COG 预览", session_id="cog-preview-project", provider="test",
+        map_state={}, messages=[], layers=[{
+            "name": "影像预览", "geometry_type": "Raster", "raster": {
+                "filename": "cog-preview.png", "url": "/output/uploads/source.png",
+                "bounds": [100, 30, 101, 31], "width": 512, "height": 256,
+                "preview_width": 128, "preview_height": 64, "bands": 4,
+                "preview_only": True, "source_reference": "https://example.test/scene.tif",
+            },
+        }],
+    )
+
+    loaded = project_service.load_project(saved["id"])["layers"][0]["raster"]
+    asset_path = project_service.get_project_raster_asset(saved["id"], loaded["asset"])
+
+    assert loaded["preview_only"] is True
+    assert loaded["preview_width"] == 128 and loaded["preview_height"] == 64
+    assert loaded["source_reference"] == "https://example.test/scene.tif"
+    assert Path(asset_path).read_bytes() == source.read_bytes()
+
+
+def test_project_asset_route_honors_byte_ranges_without_gzip(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    asset = Path(project_service._project_dir("test")) / "assets" / "preview.bin"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"0123456789" * 5000)
+    project_service._save_project_data("test", {
+        "layers": [{"name": "preview", "raster": {"asset": "preview.bin"}}],
+    })
+
+    response = TestClient(main.app).get(
+        "/api/projects/test/assets/preview.bin",
+        headers={"Range": "bytes=2-4", "Accept-Encoding": "gzip"},
+    )
+
+    assert response.status_code == 206
+    assert response.headers["content-range"] == "bytes 2-4/50000"
+    assert response.headers.get("content-encoding") is None
+    assert response.content == b"234"
+
+
+def test_project_asset_route_rejects_symlink_swap_before_deferred_file_open(tmp_path, monkeypatch):
+    source = _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="资源竞态工程", session_id="asset-symlink-race", provider="test",
+        map_state={}, messages=[], layers=[{"name": "影像", "geometry_type": "Raster", "raster": {
+            "filename": source.name, "url": "/output/uploads/source.png", "bounds": [1, 2, 3, 4],
+        }}],
+    )
+    raster = project_service._load_project_data(saved["id"])["layers"][0]["raster"]
+    target = Path(project_service._project_raster_path(saved["id"], raster["asset"]))
+    outside = tmp_path / "outside-secret.png"
+    outside.write_bytes(b"outside secret sentinel")
+    original_lookup = project_service.get_project_raster_asset
+
+    def swap_after_asset_lookup(project_id, filename):
+        path = original_lookup(project_id, filename)
+        if path and os.fspath(path) == os.fspath(target):
+            target.unlink()
+            try:
+                target.symlink_to(outside)
+            except OSError as exc:
+                pytest.skip(f"local symlink creation unavailable: {exc}")
+        return path
+
+    monkeypatch.setattr(project_service, "get_project_raster_asset", swap_after_asset_lookup)
+    response = TestClient(main.app).get(f"/api/projects/{saved['id']}/assets/{raster['asset']}")
+
+    assert response.status_code == 403
+    assert response.content != outside.read_bytes()
+
+
+def test_project_asset_route_rejects_assets_directory_symlink_outside_project(tmp_path, monkeypatch):
+    source = _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="资源目录链接工程", session_id="assets-directory-link", provider="test",
+        map_state={}, messages=[], layers=[{"name": "影像", "geometry_type": "Raster", "raster": {
+            "filename": source.name, "url": "/output/uploads/source.png", "bounds": [1, 2, 3, 4],
+        }}],
+    )
+    raster = project_service._load_project_data(saved["id"])["layers"][0]["raster"]
+    project_dir = Path(project_service._project_dir(saved["id"]))
+    assets_dir = project_dir / "assets"
+    assets_dir.rename(tmp_path / "original-assets")
+    outside = tmp_path / "outside-assets"
+    outside.mkdir()
+    sentinel = outside / raster["asset"]
+    sentinel.write_bytes(b"outside raster secret sentinel")
+    try:
+        assets_dir.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"local symlink creation unavailable: {exc}")
+
+    response = TestClient(main.app).get(
+        f"/api/projects/{saved['id']}/assets/{raster['asset']}"
+    )
+
+    assert response.status_code in {403, 404}
+    assert response.content != sentinel.read_bytes()
+
+
+def test_project_save_does_not_delete_files_through_assets_directory_symlink(tmp_path, monkeypatch):
+    source = _use_temp_projects(tmp_path, monkeypatch)
+    saved = project_service.save_project(
+        project_id=None, name="资源清理链接工程", session_id="assets-cleanup-link", provider="test",
+        map_state={}, messages=[], layers=[{"name": "影像", "geometry_type": "Raster", "raster": {
+            "filename": source.name, "url": "/output/uploads/source.png", "bounds": [1, 2, 3, 4],
+        }}],
+    )
+    project_dir = Path(project_service._project_dir(saved["id"]))
+    assets_dir = project_dir / "assets"
+    assets_dir.rename(tmp_path / "original-assets")
+    outside = tmp_path / "outside-assets"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_bytes(b"keep unrelated external file")
+    try:
+        assets_dir.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"local symlink creation unavailable: {exc}")
+
+    project_service.save_project(
+        project_id=saved["id"], name="移除栅格", session_id="assets-cleanup-link", provider="test",
+        map_state={}, messages=[], layers=[],
+    )
+
+    assert sentinel.read_bytes() == b"keep unrelated external file"
 
 
 def test_interpolation_raster_survives_project_save_load_and_reanalysis(tmp_path, monkeypatch):
@@ -272,6 +808,26 @@ def test_autosave_includes_uploaded_raster_layers(tmp_path, monkeypatch):
     saved_layer = project_service.load_project(result["id"])["layers"][0]
     assert saved_layer["name"] == "高程"
     assert saved_layer["raster"]["asset"]
+
+
+def test_autosave_keeps_raster_when_only_registry_name_is_sent(tmp_path, monkeypatch):
+    source = _use_temp_projects(tmp_path, monkeypatch)
+    monkeypatch.setattr(ai_service, "conversation_history", {
+        "canonical-raster-session": [{"role": "user", "content": "保存栅格"}],
+    })
+    monkeypatch.setattr(tools, "_registered_layers", {})
+    raster = {"filename": source.name, "url": "/output/uploads/source.png",
+              "bounds": [100.0, 30.0, 101.0, 31.0], "width": 2, "height": 3}
+
+    result = project_service.auto_save(
+        session_id="canonical-raster-session",
+        layer_assignments=[{"registry_name": "elevation", "raster": raster, "order": 0}],
+    )
+
+    saved_layers = project_service.load_project(result["id"])["layers"]
+    assert len(saved_layers) == 1
+    assert saved_layers[0]["name"] == "elevation"
+    assert saved_layers[0]["raster"]["asset"]
 
 
 def _upload_real_raster(tmp_path, monkeypatch):
@@ -450,5 +1006,48 @@ def test_import_rejects_unsafe_or_missing_original_assets(tmp_path, monkeypatch,
         zipped.writestr('assets/preview.png', b'preview')
     with pytest.raises(ValueError, match='栅格资源'):
         project_service.import_project(archive.getvalue())
+    assert project_service.list_projects() == []
+    assert not list((tmp_path / 'projects').glob('proj_*'))
+
+
+@pytest.mark.parametrize('entries', [
+    [('assets', b'file entry'), ('assets/preview.png', b'child entry')],
+    [('assets/preview.png', b'child entry'), ('assets', b'file entry')],
+])
+def test_import_rejects_archive_file_directory_prefix_conflict(tmp_path, monkeypatch, entries):
+    _use_temp_projects(tmp_path, monkeypatch)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        for name, content in entries:
+            zipped.writestr(name, content)
+
+    client = TestClient(main.app, raise_server_exceptions=False)
+    response = client.post('/api/projects/import', files={
+        'file': ('conflicting.giswork', archive.getvalue(), 'application/zip'),
+    })
+
+    assert response.status_code == 400
+    assert '路径冲突' in response.json()['detail']
+    assert project_service.list_projects() == []
+    assert not list((tmp_path / 'projects').glob('proj_*'))
+
+
+def test_import_rejects_archive_unicode_normalization_path_aliases(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    archive = io.BytesIO()
+    composed = "é.txt"
+    decomposed = "e\u0301.txt"
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        zipped.writestr('project.json', '{"name":"Unicode aliases","layers":[]}')
+        zipped.writestr('assets/' + composed, b'composed')
+        zipped.writestr('assets/' + decomposed, b'decomposed')
+
+    client = TestClient(main.app, raise_server_exceptions=False)
+    response = client.post('/api/projects/import', files={
+        'file': ('unicode-aliases.giswork', archive.getvalue(), 'application/zip'),
+    })
+
+    assert response.status_code == 400
+    assert '重复的文件路径' in response.json()['detail']
     assert project_service.list_projects() == []
     assert not list((tmp_path / 'projects').glob('proj_*'))

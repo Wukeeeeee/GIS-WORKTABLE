@@ -64,6 +64,36 @@ window.GIS = window.GIS || {};
     return null;
   }
 
+  function layerNameComparisonKey(name) {
+    var value = String(name == null ? '' : name);
+    return typeof value.normalize === 'function' ? value.normalize('NFC') : value;
+  }
+
+  function layerOptionEntries(names) {
+    var counts = Object.create(null);
+    var seen = Object.create(null);
+    (names || []).forEach(function(name) {
+      var key = layerNameComparisonKey(name);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    return (names || []).map(function(name) {
+      var key = layerNameComparisonKey(name);
+      var suffix = '';
+      if (counts[key] > 1) {
+        seen[key] = (seen[key] || 0) + 1;
+        suffix = ' (' + seen[key] + ')';
+      }
+      return { value: name, label: String(name) + suffix, suffix: suffix };
+    });
+  }
+
+  function layerNameExists(name) {
+    var key = layerNameComparisonKey(name);
+    return layers.some(function(layer) {
+      return layerNameComparisonKey(layer.name) === key || layerNameComparisonKey(layer._rawName) === key;
+    });
+  }
+
   // ============================================================
   // 极简发布订阅
   // ============================================================
@@ -96,7 +126,7 @@ window.GIS = window.GIS || {};
     var name = record.name || '图层';
     var uniqueName = name;
     var suffix = 1;
-    while (layerByName(uniqueName)) { uniqueName = name + '_' + (suffix++); }
+    while (layerNameExists(uniqueName)) { uniqueName = name + '_' + (suffix++); }
 
     var geojson = record.geojson;
     var features = (geojson && geojson.type === 'FeatureCollection') ? (geojson.features || [])
@@ -106,7 +136,10 @@ window.GIS = window.GIS || {};
     // 最后使用要素序号，避免选择、专题着色和 3D 映射互相覆盖。
     var usedFids = Object.create(null);
     features.forEach(function(f, idx) {
-      if (!f || !f.properties) return;
+      if (!f) return;
+      if (!f.properties || typeof f.properties !== 'object' || Array.isArray(f.properties)) {
+        f.properties = {};
+      }
       var props = f.properties;
       var fid = props._fid !== undefined && props._fid !== null && props._fid !== ''
         ? String(props._fid) : makeFid(props, idx);
@@ -127,11 +160,18 @@ window.GIS = window.GIS || {};
     var bbox = computeBbox(features);
     var layerId = record.layer_id || ('state_' + Date.now().toString(36) + '_' +
       Math.floor(Math.random() * 1e6).toString(36));
+    var registeredName = record.registry_name || record._registeredName || null;
+    var registrationTokens = Object.assign(Object.create(null), record._registrationTokens || {});
+    if (registeredName && typeof record.registration_token === 'string' && record.registration_token) {
+      registrationTokens[registeredName] = record.registration_token;
+    }
 
     var rec = {
       layer_id: layerId,
       name: uniqueName,
       _rawName: uniqueName,          // map.js/layers.js 以此查找
+      _registeredName: registeredName,
+      _registrationTokens: registrationTokens,
       geojson: geojson,
       style: Object.assign({ color: record.color ||
         (GIS.layers && GIS.layers.nextColor ? GIS.layers.nextColor() : '#e74c3c') }, record.style || {}),
@@ -178,6 +218,8 @@ window.GIS = window.GIS || {};
         source: rec.source,
         provenance: rec.provenance,
         groupId: rec.groupId,
+        _registeredName: rec._registeredName,
+        _registrationTokens: rec._registrationTokens,
         _rawName: rawName,
         _panelSync: true,   // 防递归：面板 addLayer 见此标记走正常入库，不再桥接回 state
       }, true /* skipRegister：数据来自后端或本模块，无需前端再注册 */);
@@ -520,6 +562,7 @@ window.GIS = window.GIS || {};
     getDrillStack: getDrillStack,
     getLayers: function() { return layers.slice(); },
     getLayer: findLayer,
+    layerOptionEntries: layerOptionEntries,
     getSelection: function() { return selection; },
   };
 })();

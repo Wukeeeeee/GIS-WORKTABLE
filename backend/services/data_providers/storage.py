@@ -18,6 +18,7 @@ import os
 import shutil
 import tempfile
 import threading
+from contextlib import contextmanager
 from typing import Optional
 
 from backend.services.ai_service import _TEMP_OUTPUT_DIR
@@ -342,6 +343,83 @@ def write_vector(geojson: dict, *, out_format: str, name: str, dirpath: str,
         raise DownloadError(f"写入或校验 {out_format} 失败：{e}", hint="磁盘或驱动异常。") from e
     finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
+
+
+@contextmanager
+def vector_import_transaction(*, out_format: str, name: str, dirpath: str):
+    """Keep an existing dataset and its metadata intact if an import fails."""
+    base = sanitize_name(name)
+    out_format = out_format.lower().strip().lstrip(".")
+    data_extensions = {ALLOWED_FORMAT_EXTS[out_format]}
+    if out_format == "shp":
+        data_extensions.update({
+            ".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".fix", ".sbn", ".sbx",
+        })
+    asset_names = {f"{base}{ext}" for ext in data_extensions}
+    metadata_name = f"{base}.metadata.json"
+    asset_names.add(metadata_name)
+
+    os.makedirs(dirpath, exist_ok=True)
+    with _CATALOG_LOCK:
+        backup_dir = tempfile.mkdtemp(prefix=".vector-import-", dir=dirpath)
+        backed_up_names = []
+        catalog_path = os.path.join(dirpath, "catalog.json")
+        catalog_backup = os.path.join(backup_dir, "catalog.json")
+        catalog_existed = os.path.isfile(catalog_path)
+        catalog_backup_ready = False
+        write_started = False
+        preserve_backup = False
+        try:
+            for filename in asset_names:
+                source = os.path.join(dirpath, filename)
+                if os.path.isfile(source):
+                    shutil.copy2(source, os.path.join(backup_dir, filename))
+                    backed_up_names.append(filename)
+            if catalog_existed:
+                shutil.copy2(catalog_path, catalog_backup)
+                catalog_backup_ready = True
+            write_started = True
+            yield
+        except BaseException as exc:
+            rollback_errors = []
+            if write_started:
+                for filename in asset_names:
+                    path = os.path.join(dirpath, filename)
+                    try:
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
+                    except OSError as rollback_exc:
+                        rollback_errors.append(rollback_exc)
+            restore_names = backed_up_names if write_started else ()
+            for filename in restore_names:
+                backup_path = os.path.join(backup_dir, filename)
+                if os.path.exists(backup_path):
+                    try:
+                        os.replace(backup_path, os.path.join(dirpath, filename))
+                    except OSError as rollback_exc:
+                        rollback_errors.append(rollback_exc)
+            if catalog_existed and catalog_backup_ready:
+                try:
+                    os.replace(catalog_backup, catalog_path)
+                except OSError as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            elif not catalog_existed:
+                try:
+                    os.remove(catalog_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as rollback_exc:
+                    rollback_errors.append(rollback_exc)
+            if rollback_errors:
+                preserve_backup = True
+                raise DownloadError(
+                    f"数据导入失败且旧成果无法完全恢复；恢复副本保留在 {backup_dir}。"
+                ) from exc
+            raise
+        finally:
+            if not preserve_backup:
+                shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def _truncate_shapefile_columns(gdf) -> None:

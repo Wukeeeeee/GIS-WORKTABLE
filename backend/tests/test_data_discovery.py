@@ -218,6 +218,46 @@ class TestDownloadVector:
         assert m["crs"] == "EPSG:4326"
         assert asset["geojson"]["type"] == "FeatureCollection"
 
+    @pytest.mark.parametrize("file_format", ["geojson", "shp"])
+    def test_catalog_write_failure_preserves_existing_dataset_and_metadata(
+        self, monkeypatch, tmp_path, file_format,
+    ):
+        _download_asset(
+            monkeypatch, tmp_path, "roads", layer_name="stable_roads",
+            file_format=file_format,
+        )
+        old_assets = {
+            path.name: path.read_bytes() for path in tmp_path.glob("stable_roads.*")
+        }
+        old_catalog = (tmp_path / "catalog.json").read_bytes()
+        changed_fixtures = {
+            "count": {"elements": [{"type": "count", "tags": {"ways": 1}}]},
+            "geom": {"elements": [_line_way(99, {"highway": "primary", "name": "new road"})]},
+        }
+        monkeypatch.setattr(osm_provider.http, "post_overpass", _fake_overpass(changed_fixtures))
+        write_json_atomic = storage._write_json_atomic
+
+        def fail_catalog_write(path, value):
+            if os.path.basename(path) == "catalog.json":
+                raise OSError("simulated catalog write failure")
+            return write_json_atomic(path, value)
+
+        monkeypatch.setattr(storage, "_write_json_atomic", fail_catalog_write)
+
+        with pytest.raises(OSError, match="catalog write failure"):
+            data_discovery.download(
+                kind="roads", area="长沙", bbox="112.9,28.1,113.2,28.4",
+                max_items=50, out_dir=str(tmp_path), layer_name="stable_roads",
+                file_format=file_format,
+            )
+
+        current_assets = {
+            path.name: path.read_bytes() for path in tmp_path.glob("stable_roads.*")
+        }
+        assert current_assets == old_assets
+        assert (tmp_path / "catalog.json").read_bytes() == old_catalog
+        assert not list(tmp_path.glob(".vector-import-*"))
+
 
 
 

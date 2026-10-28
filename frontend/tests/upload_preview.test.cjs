@@ -41,9 +41,11 @@ function loadUploadModule(readFailure, uploadResponse, config = {}) {
   const vectorRemovals = [];
   const requests = [];
   const statusRequests = [];
+  const cancelRequests = [];
   const reads = [];
   const warnings = [];
   const stateLayerIds = [];
+  let projectSaveCalls = 0;
   let stateLayer = null;
   const elements = new Map();
   elements.set('chatMessages', makeElement());
@@ -80,6 +82,7 @@ function loadUploadModule(readFailure, uploadResponse, config = {}) {
     slice(start, end) { return { content: this.content.slice(start, end) }; }
   }
   const window = { GIS: {
+    project: { autoSave() { projectSaveCalls++; return Promise.resolve(); } },
     utils: { escapeHtml: value => String(value) },
     api: {
       upload(file, signal, requestId) { uploadCalls.push(file.name); requests.push({ file, signal, requestId });
@@ -88,6 +91,10 @@ function loadUploadModule(readFailure, uploadResponse, config = {}) {
       getUploadStatus(requestId) {
         statusRequests.push(requestId);
         return config.uploadStatus ? config.uploadStatus(requestId) : Promise.resolve({ status: 'unknown' });
+      },
+      cancelUpload(requestId) {
+        cancelRequests.push(requestId);
+        return config.cancelUpload ? config.cancelUpload(requestId) : Promise.resolve({ status: 'cancelling' });
       },
     },
     map: {
@@ -135,7 +142,8 @@ function loadUploadModule(readFailure, uploadResponse, config = {}) {
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   window.GIS.upload.init();
   const input = elements.get('fileInput');
-  return { window, upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, rasterRemovals, layerAdds, layerRemovals, vectorLoads, vectorRemovals, requests, statusRequests, reads, warnings, stateLayerIds,
+  return { window, upload: window.GIS.upload, overlays, uploadCalls, rasterOverlays, rasterRemovals, layerAdds, layerRemovals, vectorLoads, vectorRemovals, requests, statusRequests, cancelRequests, reads, warnings, stateLayerIds,
+    getProjectSaveCalls() { return projectSaveCalls; },
     selectFiles(files) { input.files = files; return input.fire('change', { target: input }); },
     dropFiles(files) { return document.body.fire('drop', { preventDefault() {}, dataTransfer: { files } }); },
     chatMessages: elements.get('chatMessages') };
@@ -158,6 +166,19 @@ test('CSV upload preview preserves quoted commas, escaped quotes, and embedded n
   assert.equal(harness.overlays.length, 0);
 });
 
+test('CSV preview preserves an explicit record whose fields are all empty', async () => {
+  const harness = loadUploadModule();
+  const content = 'lon,lat\n,\n1,2\n';
+  const file = { name: 'empty-record.csv', size: content.length, content, slice() { return { content }; } };
+  const pending = harness.selectFiles([file]);
+  await new Promise(resolve => setImmediate(resolve));
+
+  const overlay = harness.overlays[0];
+  assert.match(overlay.innerHTML, /<tbody><tr><td><\/td><td><\/td><\/tr><tr><td>1<\/td><td>2<\/td><\/tr><\/tbody>/);
+  overlay.querySelector('.preview-btn-cancel').fire('click');
+  await pending;
+});
+
 test('CSV preview read failure stops instead of implicitly confirming upload', async () => {
   const harness = loadUploadModule(true);
   const file = { name: 'unreadable.csv', size: 10, content: '', slice() { return this; } };
@@ -165,6 +186,29 @@ test('CSV preview read failure stops instead of implicitly confirming upload', a
 
   assert.deepEqual(harness.uploadCalls, []);
   assert.match(harness.chatMessages.children[0].children[0].innerHTML, /无法读取文件预览，文件未上传/);
+});
+
+test('double-clicking preview confirmation uploads the selected file only once', async () => {
+  const harness = loadUploadModule(false, { name: 'points', geojson: { type: 'FeatureCollection', features: [] } });
+  const pending = harness.selectFiles([csv('points.geojson', '{"type":"FeatureCollection","features":[]}')]);
+  await new Promise(resolve => setImmediate(resolve));
+  const confirm = harness.overlays[0].querySelector('.preview-btn-confirm');
+
+  await Promise.all([confirm.fire('click'), confirm.fire('click')]);
+  await pending;
+
+  assert.equal(harness.uploadCalls.length, 1);
+  assert.equal(harness.layerAdds.length, 1);
+  assert.equal(harness.getProjectSaveCalls(), 1);
+});
+
+test('empty files are rejected before preview or upload', async () => {
+  const harness = loadUploadModule();
+  await harness.selectFiles([{ name: 'empty.geojson', size: 0 }]);
+
+  assert.equal(harness.reads.length, 0);
+  assert.equal(harness.uploadCalls.length, 0);
+  assert.match(harness.chatMessages.children[0].children[0].innerHTML, /文件为空/);
 });
 
 test('uploaded raster layers use a stable map identity for independent visibility controls', async () => {
@@ -183,6 +227,7 @@ test('uploaded raster layers use a stable map identity for independent visibilit
   assert.equal(harness.layerAdds[0][0]._registrationTokens.elevation, 'raster-version');
   assert.equal(layer.layer_id, mapLayerId);
   assert.equal(layer._rawName, mapLayerId);
+  assert.equal(harness.getProjectSaveCalls(), 1);
 });
 
 test('failed vector layer handoff removes the local map result and backend registration', async () => {
@@ -197,6 +242,7 @@ test('failed vector layer handoff removes the local map result and backend regis
   assert.equal(h.vectorLoads.length, 1);
   assert.deepEqual(h.vectorRemovals, ['points']);
   assert.equal(h.layerRemovals.length, 1);
+  assert.equal(h.getProjectSaveCalls(), 0);
   assert.deepEqual(unregistered, [['points', 'vector-version']]);
   assert.match(h.chatMessages.children[0].children[0].innerHTML, /上传失败/);
 });
@@ -215,6 +261,7 @@ test('failed raster layer handoff removes the preview overlay and backend regist
   const mapLayerId = h.rasterOverlays[0][3];
   assert.deepEqual(h.rasterRemovals, [mapLayerId]);
   assert.deepEqual(h.layerRemovals, [mapLayerId]);
+  assert.equal(h.getProjectSaveCalls(), 0);
   assert.deepEqual(unregistered, [['elevation', 'raster-version']]);
   assert.match(h.chatMessages.children[0].children[0].innerHTML, /上传失败/);
 });
@@ -302,17 +349,22 @@ test('multiple previews are presented sequentially rather than stacked', async (
 
 test('canceling an upload prevents a late response from adding map layers', async () => {
   let complete;
-  const h = loadUploadModule(false, () => new Promise(resolve => { complete = resolve; }));
+  const h = loadUploadModule(false, () => new Promise(resolve => { complete = resolve; }), {
+    uploadStatus: () => Promise.resolve({ status: 'cancelled' }),
+  });
   const cleaned = [];
   h.window.GIS.api.unregisterLayer = (...args) => { cleaned.push(args); return Promise.resolve({ success: true }); };
   const pending = h.selectFiles([{ name: 'points.gpkg', size: 10 }]);
   await tick();
   await h.chatMessages.children[0].querySelector('.upload-cancel-btn').fire('click');
+  assert.deepEqual(h.cancelRequests, [h.requests[0].requestId]);
   complete({ name: 'points', geojson: { type: 'FeatureCollection', features: [] }, registration_token: 'owned' });
   await pending;
+  await tick();
   assert.equal(h.vectorLoads.length, 0);
   assert.equal(h.layerAdds.length, 0);
   assert.deepEqual(cleaned, [['points', 'owned']]);
+  assert.match(h.chatMessages.children[0].children[0].innerHTML, /导入已取消/);
 });
 
 test('CSV conversion uses the returned real path without interrupting an existing AI task', async () => {
@@ -360,6 +412,53 @@ test('an interrupted upload warns that the server may have received the file bef
   assert.doesNotMatch(message, /Failed to fetch/);
 });
 
+test('a timed-out upload recovers a completed result without resending the file', async () => {
+  const geojson = { type: 'FeatureCollection', features: [] };
+  const h = loadUploadModule(false,
+    () => Promise.reject(Object.assign(new Error('Upload timed out'), { code: 'UPLOAD_TIMEOUT' })),
+    { uploadStatus: () => Promise.resolve({ status: 'completed', result: {
+      name: 'timeout-recovered', geojson, registration_token: 'timeout-version',
+    } }) });
+
+  await h.selectFiles([{ name: 'slow.gpkg', size: 10 }]);
+
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.layerAdds.length, 1);
+  assert.match(h.chatMessages.children[0].children[0].innerHTML, /上传成功/);
+});
+
+test('an unresolved timed-out upload offers status recovery without an automatic retry', async () => {
+  const h = loadUploadModule(false,
+    () => Promise.reject(Object.assign(new Error('Upload timed out'), { code: 'UPLOAD_TIMEOUT' })),
+    { uploadStatus: () => Promise.resolve({ status: 'unknown' }) });
+
+  await h.selectFiles([{ name: 'slow.gpkg', size: 10 }]);
+
+  assert.equal(h.requests.length, 1);
+  const row = h.chatMessages.children[0];
+  assert.match(row.children[0].innerHTML, /上传等待超时/);
+  assert.equal(row.querySelector('.upload-recovery-btn').textContent, '检查并恢复');
+});
+
+test('upload status phases update the visible progress label before map handoff', async () => {
+  const geojson = { type: 'FeatureCollection', features: [] };
+  let phaseSeen;
+  let h;
+  h = loadUploadModule(false,
+    async () => {
+      await new Promise(resolve => setImmediate(resolve));
+      phaseSeen = h.chatMessages.children[0].querySelector('.upload-phase-label').textContent;
+      return { name: 'points', geojson };
+    },
+    { uploadStatus: () => Promise.resolve({ status: 'processing', phase: 'parsing' }) });
+
+  await h.selectFiles([{ name: 'points.gpkg', size: 10 }]);
+
+  assert.equal(phaseSeen, '正在检查并解析数据');
+  assert.equal(h.chatMessages.children[0].querySelector('.upload-phase-label').textContent, '正在加载到地图');
+  assert.equal(h.layerAdds.length, 1);
+});
+
 test('a backend without status recovery support does not offer a potentially duplicating retry', async () => {
   const h = loadUploadModule(false,
     () => Promise.reject(Object.assign(new Error('Failed to fetch'), { code: 'UPLOAD_NETWORK_ERROR' })),
@@ -386,24 +485,18 @@ test('a completed upload is recovered after a lost response without sending the 
   await pending;
 
   assert.equal(h.requests.length, 1);
-  assert.equal(h.statusRequests.length, 1);
+  assert.equal(h.statusRequests.length, 2);
   assert.equal(h.requests[0].requestId.length > 0, true);
   assert.equal(h.layerAdds.length, 1);
   assert.equal(h.layerAdds[0][0].filename, 'recovered.geojson');
   assert.match(h.chatMessages.children[0].children[0].innerHTML, /上传成功/);
 });
 
-test('manual recovery retries the same upload request ID after checking an unknown receipt', async () => {
-  const geojson = { type: 'FeatureCollection', features: [{
-    type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [-122.3, 47.6] },
-  }] };
-  let uploadCount = 0;
-  const h = loadUploadModule(false, () => {
-    uploadCount += 1;
-    if (uploadCount === 1) return Promise.reject(Object.assign(new Error('Failed to fetch'), { code: 'UPLOAD_NETWORK_ERROR' }));
-    return Promise.resolve({ name: 'recovered.geojson', geojson, registration_token: 'recovered-version' });
-  }, { uploadStatus: () => Promise.resolve({ status: 'unknown' }) });
-  const pending = h.selectFiles([csv('recovered.geojson', JSON.stringify(geojson))]);
+test('unknown upload receipt recovery does not resend a possibly completed upload', async () => {
+  const h = loadUploadModule(false,
+    () => Promise.reject(Object.assign(new Error('Failed to fetch'), { code: 'UPLOAD_NETWORK_ERROR' })),
+    { uploadStatus: () => Promise.resolve({ status: 'unknown' }) });
+  const pending = h.selectFiles([csv('recovered.geojson', '{"type":"FeatureCollection","features":[]}')]);
   await tick();
   await h.overlays[0].querySelector('.preview-btn-confirm').fire('click');
   await pending;
@@ -412,7 +505,7 @@ test('manual recovery retries the same upload request ID after checking an unkno
   assert.equal(recoveryButton.textContent, '检查并恢复');
 
   await recoveryButton.fire('click');
-  assert.equal(h.requests.length, 2);
-  assert.equal(h.requests[1].requestId, h.requests[0].requestId);
-  assert.equal(h.layerAdds.length, 1);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.layerAdds.length, 0);
+  assert.match(h.chatMessages.children.at(-1).children[0].innerHTML, /未找到可恢复的上传记录/);
 });

@@ -21,6 +21,20 @@ test('shared layer state gives duplicate feature IDs unique fallbacks and indexe
   assert.equal(layer.fidIndex[ids[1]], 1);
 });
 
+test('shared layer state assigns and indexes feature IDs when GeoJSON properties are null', () => {
+  const window = { GIS: { map: { loadGeoJSON() {} } } };
+  const sourcePath = path.resolve(__dirname, '../js/gis_state.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), { window, Date, Math, Object, Array, String, Number }, { filename: sourcePath });
+  const geojson = { type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: null, geometry: { type: 'Point', coordinates: [1, 2] } },
+  ] };
+
+  const layer = window.GIS.state.addLayer({ layer_id: 'null-properties', name: '空属性', geojson });
+
+  assert.equal(geojson.features[0].properties._fid, 'i:0');
+  assert.equal(layer.fidIndex['i:0'], 0);
+});
+
 test('data source IDs take precedence over repeated feature names', () => {
   const window = { GIS: { map: { loadGeoJSON() {} } } };
   const sourcePath = path.resolve(__dirname, '../js/gis_state.js');
@@ -31,6 +45,38 @@ test('data source IDs take precedence over repeated feature names', () => {
   ] };
   window.GIS.state.addLayer({ name: '同名数据', geojson });
   assert.deepEqual(geojson.features.map(item => item.properties._fid), ['id:1', 'id:2']);
+});
+
+test('shared layer state suffixes Unicode normalization aliases of existing names', () => {
+  const window = { GIS: { map: { loadGeoJSON() {} } } };
+  const sourcePath = path.resolve(__dirname, '../js/gis_state.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), { window, Date, Math, Object, Array, String, Number }, { filename: sourcePath });
+
+  const composed = window.GIS.state.addLayer({
+    name: 'é', geojson: { type: 'FeatureCollection', features: [] },
+  });
+  const decomposed = window.GIS.state.addLayer({
+    name: 'e\u0301', geojson: { type: 'FeatureCollection', features: [] },
+  });
+
+  assert.equal(composed.name, 'é');
+  assert.equal(decomposed.name, 'e\u0301_1');
+});
+
+test('layer selector labels disambiguate Unicode aliases without changing option values', () => {
+  const window = { GIS: {} };
+  const sourcePath = path.resolve(__dirname, '../js/gis_state.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, Date, Math, Object, Array, String, Number,
+  }, { filename: sourcePath });
+
+  const entries = window.GIS.state.layerOptionEntries(['é.geojson', 'e\u0301.geojson', 'roads.geojson']);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(entries)), [
+    { value: 'é.geojson', label: 'é.geojson (1)', suffix: ' (1)' },
+    { value: 'e\u0301.geojson', label: 'e\u0301.geojson (2)', suffix: ' (2)' },
+    { value: 'roads.geojson', label: 'roads.geojson', suffix: '' },
+  ]);
 });
 
 test('shared layer state forwards source provenance to the layer panel', () => {
@@ -51,6 +97,30 @@ test('shared layer state forwards source provenance to the layer panel', () => {
 
   assert.equal(layer.provenance.provider_name, 'OpenStreetMap');
   assert.equal(panelLayer.provenance.crs, 'EPSG:4326');
+});
+
+test('shared layer state preserves backend registration identity and version token', () => {
+  let panelLayer;
+  const window = { GIS: {
+    map: { loadGeoJSON() {} },
+    layers: { addLayer(layer) { panelLayer = layer; } },
+  } };
+  const sourcePath = path.resolve(__dirname, '../js/gis_state.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, Date, Math, Object, Array, String, Number,
+  }, { filename: sourcePath });
+
+  const layer = window.GIS.state.addLayer({
+    name: 'roads_buffer_1730000000000_0',
+    registry_name: 'roads_buffer',
+    registration_token: 'registered-version',
+    geojson: { type: 'FeatureCollection', features: [] },
+  });
+
+  assert.equal(layer._registeredName, 'roads_buffer');
+  assert.equal(layer._registrationTokens.roads_buffer, 'registered-version');
+  assert.equal(panelLayer._registeredName, 'roads_buffer');
+  assert.equal(panelLayer._registrationTokens.roads_buffer, 'registered-version');
 });
 
 test('a hidden state-only layer is rendered when it becomes visible without changing map extent', () => {

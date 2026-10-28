@@ -88,7 +88,9 @@ def test_stream_endpoint_emits_error_event_when_agent_initialization_fails(monke
     import backend.services.graph as graph
     import backend.services.pending_action as pending_action
 
-    monkeypatch.setattr(main, "resolve_llm_config", lambda *args: None)
+    monkeypatch.setattr(main, "resolve_llm_config", lambda *args: main.LLMConfig(
+        base_url="https://example.invalid/v1", model="test-model",
+    ))
     monkeypatch.setattr(ai_service, "_build_system_content", lambda *args: ("system", "", "mock"))
     monkeypatch.setattr(ai_service, "_get_or_create_history", lambda *args: [])
     monkeypatch.setattr(ai_service, "_build_langgraph_messages", lambda *args: [])
@@ -96,14 +98,19 @@ def test_stream_endpoint_emits_error_event_when_agent_initialization_fails(monke
     monkeypatch.setattr(pending_action, "build_choice_backfill", lambda *args: "")
     monkeypatch.setattr(pending_action, "clear_pending_action", lambda *args: None)
 
-    def broken_stream(**_kwargs):
+    stream_args = {}
+
+    def broken_stream(**kwargs):
+        stream_args.update(kwargs)
         raise RuntimeError("model init failed")
         yield  # Keep this a generator so failure occurs while the SSE body is consumed.
 
     monkeypatch.setattr(graph, "run_agent_stream", broken_stream)
 
     async def consume():
-        request = main.ChatRequest(message="做一个缓冲区", session_id="stream-init-error")
+        request = main.ChatRequest(
+            message="做一个缓冲区", session_id="stream-init-error", request_id="cancel-target-123",
+        )
         response = await main.chat_stream(request)
         chunks = []
         async for chunk in response.body_iterator:
@@ -116,3 +123,4 @@ def test_stream_endpoint_emits_error_event_when_agent_initialization_fails(monke
         "type": "error",
         "message": "AI 流式执行失败，请检查服务状态后重试。",
     }]
+    assert stream_args["request_id"] == "cancel-target-123"

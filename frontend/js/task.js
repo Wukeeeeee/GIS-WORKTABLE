@@ -15,7 +15,7 @@ window.GIS = window.GIS || {};
 
   const GIS = window.GIS;
   const STORAGE_KEY = 'gis_task_history';
-  const MAX_HISTORY = 50;
+  const MAX_UNSAVED_HISTORY = 20;
 
   let taskRecords = [];
   let _nextId = 1;
@@ -44,8 +44,9 @@ window.GIS = window.GIS || {};
     if (clearBtn) {
       clearBtn.addEventListener('click', function() {
         if (confirm('确定清除所有历史记录？已保存的任务将一并删除。')) {
+          var previousRecords = taskRecords;
           taskRecords = [];
-          saveToStorage();
+          if (!saveToStorage()) taskRecords = previousRecords;
           renderAll();
         }
       });
@@ -58,12 +59,24 @@ window.GIS = window.GIS || {};
     try {
       var saved = taskRecords.filter(function(t) { return t.saved; });
       // New tasks are unshifted, so keep the first 20 unsaved records (newest first).
-      var recent = taskRecords.filter(function(t) { return !t.saved; }).slice(0, 20);
+      var recent = taskRecords.filter(function(t) { return !t.saved; }).slice(0, MAX_UNSAVED_HISTORY);
       var toStore = saved.concat(recent);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
+      return true;
     } catch(e) {
       console.warn('[GIS Task] 保存失败:', e);
+      if (GIS.toast && typeof GIS.toast.error === 'function') {
+        try { GIS.toast.error('任务历史未能保存到本地；浏览器存储空间可能已满。'); } catch (_) {}
+      }
+      return false;
     }
+  }
+
+  function trimUnsavedHistory() {
+    var retainedUnsaved = 0;
+    taskRecords = taskRecords.filter(function(t) {
+      return t.saved || retainedUnsaved++ < MAX_UNSAVED_HISTORY;
+    });
   }
 
   function loadFromStorage() {
@@ -94,8 +107,9 @@ window.GIS = window.GIS || {};
   }
 
   function clearUnsaved() {
+    var previousRecords = taskRecords;
     taskRecords = taskRecords.filter(function(t) { return t.saved; });
-    saveToStorage();
+    if (!saveToStorage()) taskRecords = previousRecords;
     renderAll();
   }
 
@@ -133,9 +147,7 @@ window.GIS = window.GIS || {};
       saved: false,
     };
     taskRecords.unshift(task);
-    if (taskRecords.length > MAX_HISTORY) {
-      taskRecords = taskRecords.slice(0, MAX_HISTORY);
-    }
+    trimUnsavedHistory();
     saveToStorage();
     renderAll();
     return task;
@@ -163,14 +175,21 @@ window.GIS = window.GIS || {};
   function toggleSaved(taskId) {
     var task = findTask(taskId);
     if (!task) return;
+    var previousRecords = taskRecords.slice();
+    var previousSaved = task.saved;
     task.saved = !task.saved;
-    saveToStorage();
+    trimUnsavedHistory();
+    if (!saveToStorage()) {
+      taskRecords = previousRecords;
+      task.saved = previousSaved;
+    }
     renderAll();
   }
 
   function deleteTask(taskId) {
+    var previousRecords = taskRecords;
     taskRecords = taskRecords.filter(function(t) { return t.id !== taskId; });
-    saveToStorage();
+    if (!saveToStorage()) taskRecords = previousRecords;
     renderAll();
   }
 

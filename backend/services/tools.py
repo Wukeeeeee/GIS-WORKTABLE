@@ -12,6 +12,7 @@ GIS WorkTable — LangChain 工具集
 import os
 import sys
 import json
+import copy
 import math
 import time
 import glob
@@ -26,6 +27,8 @@ import shutil
 import urllib.request
 import urllib.parse
 import uuid
+import unicodedata
+from numbers import Real
 from typing import Optional, Dict, Any, List, Literal
 
 from langchain.tools import tool
@@ -207,6 +210,7 @@ def _validate_field_calculation_ast(node, column_names):
 _pending_layers: list = []          # 待推送到前端的 GeoJSON 图层
 _pending_qa_warnings: list = []     # 地理质量自检警告（geo_qa，随图层通道收集）
 _pending_images: list = []          # 待推送到前端的图片/HTML
+_INLINE_HTML_PREVIEW_LIMIT = 2 * 1024 * 1024
 _pending_aoi_suggestions: dict = {} # AOI 候选列表
 _pending_heatmap: dict = {"latest": None}
 _clear_layers_flag: bool = False
@@ -255,8 +259,22 @@ def get_pending_state():
     """获取当前所有待发送状态并消费（清空），防止跨请求污染和校验器重复收集"""
     global _clear_layers_flag
     with _state_lock:
+        pending_layers = []
+        for layer in _pending_layers:
+            if not isinstance(layer, dict):
+                pending_layers.append(layer)
+                continue
+            result_layer = dict(layer)
+            registered_name = result_layer.get("name")
+            registered = _registered_layers.get(registered_name) if isinstance(registered_name, str) else None
+            if isinstance(registered, dict):
+                result_layer["registry_name"] = registered_name
+                token = registered.get("registration_token")
+                if isinstance(token, str) and token:
+                    result_layer["registration_token"] = token
+            pending_layers.append(result_layer)
         result = {
-            "layers": list(_pending_layers),
+            "layers": pending_layers,
             "images": list(_pending_images),
             "qa_warnings": list(_pending_qa_warnings),
             "aoi_suggestions": _pending_aoi_suggestions.get("latest"),
@@ -476,6 +494,11 @@ def _push_layer(name: str, geojson: dict, style: dict = None, provenance: dict =
                     break
             if not replaced:
                 _pending_layers.append(layer)
+            else:
+                _pending_qa_warnings[:] = [
+                    item for item in _pending_qa_warnings
+                    if not (isinstance(item, dict) and item.get("layer") == name)
+                ]
             for w in _geo_qa(geojson):
                 _pending_qa_warnings.append({"layer": name, "warning": w})
     except Exception:
@@ -512,6 +535,63 @@ def _normalize_geojson(geojson: dict) -> dict:
     return geojson
 
 
+def _valid_registration_geometry(geometry: dict) -> bool:
+    if not isinstance(geometry, dict):
+        return False
+
+    def valid_position(position):
+        if not isinstance(position, (list, tuple)) or len(position) < 2:
+            return False
+        for value in position:
+            if not isinstance(value, Real) or isinstance(value, bool):
+                return False
+            try:
+                if not math.isfinite(float(value)):
+                    return False
+            except (OverflowError, TypeError, ValueError):
+                return False
+        return True
+
+    def valid_line(line, minimum=2):
+        return (
+            isinstance(line, (list, tuple)) and len(line) >= minimum
+            and all(valid_position(p) for p in line)
+        )
+
+    def valid_ring(ring):
+        return valid_line(ring, minimum=4) and tuple(ring[0]) == tuple(ring[-1])
+
+    kind = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    if kind == "Point":
+        return valid_position(coordinates)
+    if kind == "MultiPoint":
+        return (
+            isinstance(coordinates, (list, tuple)) and bool(coordinates)
+            and all(valid_position(p) for p in coordinates)
+        )
+    if kind == "LineString":
+        return valid_line(coordinates)
+    if kind == "MultiLineString":
+        return (
+            isinstance(coordinates, (list, tuple)) and bool(coordinates)
+            and all(valid_line(line) for line in coordinates)
+        )
+    if kind == "Polygon":
+        return (
+            isinstance(coordinates, (list, tuple)) and bool(coordinates)
+            and all(valid_ring(ring) for ring in coordinates)
+        )
+    if kind == "MultiPolygon":
+        return (isinstance(coordinates, (list, tuple)) and bool(coordinates)
+                and all(isinstance(polygon, (list, tuple)) and bool(polygon)
+                        and all(valid_ring(ring) for ring in polygon) for polygon in coordinates))
+    if kind == "GeometryCollection":
+        geometries = geometry.get("geometries")
+        return isinstance(geometries, list) and all(_valid_registration_geometry(child) for child in geometries)
+    return False
+
+
 def _compute_bbox(geojson: dict) -> list:
     """计算 GeoJSON 的包围盒 [minLng, minLat, maxLng, maxLat]"""
     coords = []
@@ -528,6 +608,38 @@ def _compute_bbox(geojson: dict) -> list:
     lngs = [c[0] for c in valid]
     lats = [c[1] for c in valid]
     return [min(lngs), min(lats), max(lngs), max(lats)]
+
+
+def _validate_wgs84_geojson(geojson: dict) -> None:
+    """Validate GeoJSON structure and coordinate bounds before accepting a vector layer."""
+    try:
+        feature_collection = _normalize_geojson(geojson)
+        structurally_valid = (
+            isinstance(feature_collection, dict)
+            and isinstance(feature_collection.get("features"), list)
+            and all(
+                isinstance(feature, dict)
+                and (feature.get("geometry") is None or _valid_registration_geometry(feature["geometry"]))
+                for feature in feature_collection["features"]
+            )
+        )
+    except (AttributeError, IndexError, TypeError, ValueError, OverflowError):
+        structurally_valid = False
+    if not structurally_valid:
+        raise ValueError("GeoJSON 几何结构无效：坐标需包含有效位置和有限数值")
+    try:
+        bounds = _compute_bbox(feature_collection)
+        valid_bounds = (
+            isinstance(bounds, (list, tuple)) and len(bounds) == 4
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(float(value)) for value in bounds)
+            and -180 <= bounds[0] <= bounds[2] <= 180
+            and -90 <= bounds[1] <= bounds[3] <= 90
+        )
+    except (AttributeError, IndexError, TypeError, ValueError, OverflowError):
+        valid_bounds = False
+    if not valid_bounds:
+        raise ValueError("矢量图层坐标超出 WGS-84 范围或格式无效")
 
 
 def _extract_coords(geom: dict, coords: list):
@@ -653,7 +765,15 @@ def _normalize_layer_provenance(provenance):
     return result or None
 
 
-def _register_layer(name: str, geojson: dict, group_name: str = None, provenance: dict = None):
+def _unicode_layer_name_conflict(name: str) -> str | None:
+    """Return an existing visually equivalent Unicode name, if it is a different key."""
+    normalized_name = unicodedata.normalize("NFC", name)
+    return next((existing for existing in _registered_layers
+                 if existing != name and unicodedata.normalize("NFC", existing) == normalized_name), None)
+
+
+def _register_layer(name: str, geojson: dict, group_name: str = None, provenance: dict = None,
+                    allow_unicode_alias: bool = False, unique_name: bool = False):
     """注册图层供 AI 后续查询。注册时为每个要素注入稳定 _fid（幂等），
     供前端 2D/3D 选中同步与下钻状态机使用。"""
     if not isinstance(name, str) or not name.strip():
@@ -669,7 +789,10 @@ def _register_layer(name: str, geojson: dict, group_name: str = None, provenance
     for i, feature in enumerate(features):
         if not isinstance(feature, dict):
             raise ValueError(f"第 {i + 1} 个要素格式无效")
-        geom = feature.get("geometry") or {}
+        raw_geometry = feature.get("geometry")
+        if raw_geometry is not None and not _valid_registration_geometry(raw_geometry):
+            raise ValueError("GeoJSON 几何结构无效：坐标需包含有效位置和有限数值")
+        geom = raw_geometry or {}
         if geom.get("type"):
             types.add(geom["type"])
         props = feature.get("properties")
@@ -690,6 +813,15 @@ def _register_layer(name: str, geojson: dict, group_name: str = None, provenance
 
     bbox = _compute_bbox(fc)
     with _state_lock:
+        if unique_name and name in _registered_layers:
+            stem, extension = os.path.splitext(name)
+            suffix = 1
+            while f"{stem}_{suffix}{extension}" in _registered_layers:
+                suffix += 1
+            name = f"{stem}_{suffix}{extension}"
+        conflicting_name = _unicode_layer_name_conflict(name) if not allow_unicode_alias else None
+        if conflicting_name:
+            raise ValueError(f"图层名称与现有图层「{conflicting_name}」仅 Unicode 规范形式不同，为避免显示重复请先重命名")
         registration_token = uuid.uuid4().hex
         previous = _registered_layers.get(name) or {}
         safe_provenance = _normalize_layer_provenance(provenance)
@@ -755,14 +887,16 @@ def _layer_property_examples(geojson: dict, limit: int = 3) -> list:
     return examples
 
 
-def _register_raster_layer(name: str, raster: dict, source_path: str = None):
+def _register_raster_layer(name: str, raster: dict, source_path: str = None,
+                           allow_unicode_alias: bool = False):
     """Register a managed raster independently of its preview/map identifier."""
     import uuid
     if not isinstance(name, str) or not name.strip() or not isinstance(raster, dict):
         raise ValueError("栅格图层名称或资源无效")
     bounds = raster.get('bounds')
     if (not isinstance(bounds, (list, tuple)) or len(bounds) != 4
-            or not all(isinstance(value, (int, float)) and math.isfinite(value) for value in bounds)
+            or not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                       and math.isfinite(value) for value in bounds)
             or not (-180 <= bounds[0] <= bounds[2] <= 180 and -90 <= bounds[1] <= bounds[3] <= 90)):
         raise ValueError("栅格范围必须是有效的 WGS-84 范围")
     if not source_path and any(raster.get(key) for key in ('source_asset', 'source_filename', 'source_url')):
@@ -772,6 +906,9 @@ def _register_raster_layer(name: str, raster: dict, source_path: str = None):
             raise ValueError("栅格原始数据资源不存在")
     token = uuid.uuid4().hex
     with _state_lock:
+        conflicting_name = _unicode_layer_name_conflict(name) if not allow_unicode_alias else None
+        if conflicting_name:
+            raise ValueError(f"图层名称与现有图层「{conflicting_name}」仅 Unicode 规范形式不同，为避免显示重复请先重命名")
         _registered_layers[name] = {'geojson': None, 'geometry_types': ['Raster'], 'feature_count': 0,
                                     'bbox': list(bounds), 'raster': dict(raster),
                                     'raster_source_path': source_path, 'registration_token': token}
@@ -781,7 +918,9 @@ def _register_raster_layer(name: str, raster: dict, source_path: str = None):
 def get_registered_layers_snapshot() -> list:
     """返回当前所有注册图层的快照，包括属性样例，供 AI 识别图层内容。"""
     result = []
-    for name, info in list(_registered_layers.items()):
+    with _state_lock:
+        snapshot = list(_registered_layers.items())
+    for name, info in snapshot:
         geojson = info.get("geojson") or {}
         result.append({
             "filename": name,
@@ -817,9 +956,9 @@ def reset_registered_layers(layers: list = None, tolerate_invalid: bool = False)
                 geojson = l.get("geojson") or l.get("geojson_data")
                 try:
                     if name and isinstance(l.get('raster'), dict):
-                        _register_raster_layer(name, l['raster'])
+                        _register_raster_layer(name, l['raster'], allow_unicode_alias=True)
                     elif name and geojson:
-                        _register_layer(name, geojson, provenance=l.get("provenance"))
+                        _register_layer(name, geojson, provenance=l.get("provenance"), allow_unicode_alias=True)
                 except Exception:
                     if not tolerate_invalid:
                         raise
@@ -832,10 +971,14 @@ def _add_pending_item(url: str, file_path: str = None):
     init_temp_dir()
     if file_path and file_path.lower().endswith(".html"):
         try:
-            with open(file_path, "r", encoding="utf-8") as _f:
-                _content = _f.read()
-            _pending_images.append({"url": url, "type": "html", "content": _content})
-            os.remove(file_path)
+            with open(file_path, "rb") as _f:
+                preview = _f.read(_INLINE_HTML_PREVIEW_LIMIT + 1)
+            if len(preview) <= _INLINE_HTML_PREVIEW_LIMIT:
+                _pending_images.append({
+                    "url": url, "type": "html", "content": preview.decode("utf-8"),
+                })
+            else:
+                _pending_images.append({"url": url, "type": "html"})
         except Exception:
             _pending_images.append({"url": url, "type": "html"})
     else:
@@ -3810,6 +3953,20 @@ def _get_utm_crs(lon: float, lat: float) -> str:
     return f"EPSG:{32600 + utm_zone}" if lat >= 0 else f"EPSG:{32700 + utm_zone}"
 
 
+def _local_utm_extent_error(bounds) -> str | None:
+    if not all(math.isfinite(float(value)) for value in bounds):
+        return "输入坐标包含非有限值，无法执行局部 UTM 分析"
+    if bounds[0] < -180 or bounds[2] > 180 or bounds[1] < -90 or bounds[3] > 90:
+        return "输入坐标超出 WGS84 经纬度范围（经度 -180°–180°，纬度 -90°–90°）"
+    if bounds[2] - bounds[0] > 180:
+        return "输入范围跨越日期变更线，单一局部 UTM 投影不适用"
+    if bounds[2] - bounds[0] > 6:
+        return "输入范围超过 6° 经度，单一局部 UTM 投影不适用，请按区域分区处理"
+    if bounds[1] < -80 or bounds[3] > 84:
+        return "输入范围超出 UTM 投影适用纬度（80°S–84°N）"
+    return None
+
+
 # ============================================================
 # 辅助函数：图层 ↔ GeoDataFrame 互转（供空间分析工具使用）
 # ============================================================
@@ -3836,6 +3993,9 @@ def _layer_to_gdf(layer_name: str) -> tuple:
 
 def _to_local_metric_gdf(gdf):
     """把局部地理数据转到覆盖范围对应的 UTM 米制坐标系。"""
+    extent_error = _local_utm_extent_error(gdf.total_bounds)
+    if extent_error:
+        raise ValueError(extent_error)
     crs = gdf.estimate_utm_crs()
     if crs is None:
         raise ValueError("无法为当前图层范围确定合适的米制投影")
@@ -3859,8 +4019,11 @@ def _gdf_to_layer(gdf, name: str, style: dict = None, provenance: dict = None):
     import json
     geojson_data = json.loads(gdf.to_json())
     geojson_data["name"] = name
+    # Registration validates and adds stable FIDs in place. Validate a copy first so
+    # invalid output never enters the pending response, while the pushed GeoJSON
+    # keeps its existing pre-registration shape.
+    _register_layer(name, copy.deepcopy(geojson_data), provenance=provenance)
     _push_layer(name, geojson_data, style=style, provenance=provenance)
-    _register_layer(name, geojson_data, provenance=provenance)
 
 
 def _gdf_area_km2(gdf, unique=False):
@@ -3920,10 +4083,9 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
             warnings.simplefilter("ignore", UserWarning)
         # 用 bounds 中心确定 UTM 带号（避免在 geographic CRS 下计算 centroid 的 warning）
         _b = gdf.total_bounds
-        if _b[2] - _b[0] > 180:
-            return "缓冲区分析失败: 输入范围跨越日期变更线，单一局部 UTM 投影不适用"
-        if _b[1] < -80 or _b[3] > 84:
-            return "缓冲区分析失败: 输入范围超出 UTM 投影适用纬度（80°S–84°N）"
+        extent_error = _local_utm_extent_error(_b)
+        if extent_error:
+            return f"缓冲区分析失败: {extent_error}"
         lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
         crs_utm = _get_utm_crs(lon, lat)
         gdf_utm = gdf.to_crs(crs_utm)
@@ -4018,6 +4180,9 @@ def spatial_multi_ring_buffer(layer_name: str, distances: str, unit: str = "m", 
 
         # 用 bounds 中心确定 UTM 带号（避免 geographic CRS 下计算 centroid 的 warning）
         _b = gdf.total_bounds
+        extent_error = _local_utm_extent_error(_b)
+        if extent_error:
+            return f"多环缓冲区失败: {extent_error}"
         lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
         crs_utm = _get_utm_crs(lon, lat)
         gdf_utm = gdf.to_crs(crs_utm)
@@ -4087,6 +4252,7 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
         if dx == 0 and dy == 0:
             return "位移量 dx 和 dy 不能同时为 0"
 
+        requested_dx, requested_dy = dx, dy
         if unit == "km":
             dx *= 1000
             dy *= 1000
@@ -4097,6 +4263,9 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
             warnings.simplefilter("ignore", UserWarning)
         # 用 bounds 中心确定 UTM 带号（避免 geographic CRS 下计算 centroid 的 warning）
         _b = gdf.total_bounds
+        extent_error = _local_utm_extent_error(_b)
+        if extent_error:
+            return f"移动要素失败: {extent_error}；未修改图层"
         lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
         crs_utm = _get_utm_crs(lon, lat)
 
@@ -4114,7 +4283,7 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
         dir_str = (dir_y + dir_x) if (dx != 0 and dy != 0) else (dir_y or dir_x)
         unit_str = "km" if unit == "km" else "m"
         return (f"已移动图层「{layer_name}」{dir_str}方向 "
-                f"（{dx}{unit_str}, {dy}{unit_str}），"
+                f"（{requested_dx}{unit_str}, {requested_dy}{unit_str}），"
                 f"{len(gdf_result)} 个要素，已同步地图")
     except Exception as e:
         import traceback
@@ -4831,11 +5000,9 @@ def spatial_cluster(
         if distance_unit == "degrees":
             coords = geometries.get_coordinates().values
         else:
-            bounds = gdf.total_bounds
-            if bounds[2] - bounds[0] > 180:
-                return "聚类失败: 输入范围跨越日期变更线，单一局部 UTM 投影不适用"
-            if bounds[1] < -80 or bounds[3] > 84:
-                return "聚类失败: 输入范围超出 UTM 投影适用纬度（80°S–84°N）"
+            extent_error = _local_utm_extent_error(gdf.total_bounds)
+            if extent_error:
+                return f"聚类失败: {extent_error}"
             coords = _to_local_metric_gdf(gdf).geometry.get_coordinates().values
         if len(coords) < min_samples:
             return f"要素数（{len(coords)}）少于最少点数（{min_samples}），无法聚类"
@@ -5828,46 +5995,56 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
         ny, nx = dem.shape
         if source_crs and source_crs.is_geographic:
             # Elevation values are linear while geographic raster pixels are angular.
-            # Convert one pixel in each grid direction to ground metres near the
-            # raster centre before calculating slope and hillshade.
+            # Build the local east/north vectors for both affine pixel axes near
+            # the raster centre, including rotated or sheared grids.
             geod = PyprojCRS.from_wkt(source_crs.to_wkt()).get_geod()
             center_x, center_y = transform * (source_width / 2, source_height / 2)
-            _, _, pixel_x_m = geod.inv(
+            azimuth_col, _, pixel_col_m = geod.inv(
                 center_x, center_y,
                 center_x + transform.a, center_y + transform.d,
             )
-            _, _, pixel_y_m = geod.inv(
+            azimuth_row, _, pixel_row_m = geod.inv(
                 center_x, center_y,
                 center_x + transform.b, center_y + transform.e,
             )
-            cx = abs(pixel_x_m)
-            cy = math.copysign(abs(pixel_y_m), transform.e)
+            x_col = pixel_col_m * math.sin(math.radians(azimuth_col))
+            y_col = pixel_col_m * math.cos(math.radians(azimuth_col))
+            x_row = pixel_row_m * math.sin(math.radians(azimuth_row))
+            y_row = pixel_row_m * math.cos(math.radians(azimuth_row))
         elif source_crs and source_crs.is_projected:
             # Projected data may use feet (or another linear unit), while DEM
-            # elevations are conventionally metres. Normalize the horizontal
-            # pixel size to metres so the derivative is dimensionless.
-            unit_to_m = src.crs.linear_units_factor[1]
-            cx = abs(transform.a) * unit_to_m
-            cy = transform.e * unit_to_m
+            # elevations are conventionally metres. Normalize the full affine
+            # pixel basis to metres before converting grid derivatives to east/north.
+            unit_to_m = float(src.crs.linear_units_factor[1])
+            x_col, y_col = transform.a * unit_to_m, transform.d * unit_to_m
+            x_row, y_row = transform.b * unit_to_m, transform.e * unit_to_m
         else:
             # Retain support for legacy unreferenced rasters whose cell units
             # cannot be inferred; uploaded GeoTIFFs are required to carry a CRS.
-            cx = transform[0]
-            cy = -abs(transform[4])
-        if not math.isfinite(cx) or not math.isfinite(cy) or cx <= 0 or abs(cy) <= 0:
-            return "DEM分析失败: 无法从栅格变换和坐标系确定有效像元距离"
+            x_col, y_col = transform.a, transform.d
+            x_row, y_row = transform.b, transform.e
+        pixel_basis = (x_col, y_col, x_row, y_row)
+        determinant = x_col * y_row - x_row * y_col
+        if (not all(math.isfinite(value) for value in pixel_basis)
+                or not math.isfinite(determinant) or determinant == 0):
+            return "DEM分析失败: 无法从栅格变换和坐标系确定有效像元基向量"
         # Horn's formula — 3x3 window
-        dzdx = np.full_like(dem, np.nan)
-        dzdy = np.full_like(dem, np.nan)
+        dzdcol = np.full_like(dem, np.nan)
+        dzdrow = np.full_like(dem, np.nan)
         # interior cells
-        dzdx[1:-1,1:-1] = (
+        dzdcol[1:-1,1:-1] = (
             (dem[:-2,2:] + 2*dem[1:-1,2:] + dem[2:,2:]) -
             (dem[:-2,:-2] + 2*dem[1:-1,:-2] + dem[2:,:-2])
-        ) / (8 * cx)
-        dzdy[1:-1,1:-1] = (
+        ) / 8
+        dzdrow[1:-1,1:-1] = (
             (dem[2:,:-2] + 2*dem[2:,1:-1] + dem[2:,2:]) -
             (dem[:-2,:-2] + 2*dem[:-2,1:-1] + dem[:-2,2:])
-        ) / (8 * cy)
+        ) / 8
+        # Grid-axis derivatives are not east/north derivatives for rotated
+        # rasters. Apply the inverse-transpose affine Jacobian to recover the
+        # gradient in ground coordinates before calculating slope or aspect.
+        dzdx = (y_row * dzdcol - y_col * dzdrow) / determinant
+        dzdy = (-x_row * dzdcol + x_col * dzdrow) / determinant
         valid = np.isfinite(dzdx) & np.isfinite(dzdy)
         if analysis == "slope":
             data = np.degrees(np.arctan(np.sqrt(dzdx**2 + dzdy**2)))
@@ -5875,8 +6052,7 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
             label = "坡度(Slope)"
             cmap = "slope"
         elif analysis == "aspect":
-            # 坡向 = 最陡下坡方向的方位角（自正北顺时针）。栅格北向上（row 增大→南），
-            # dzdy 已含负 cy，故正确形式为 atan2(-dzdx, -dzdy)，等价于 atan2(-∂z/∂东, ∂z/∂北)。
+            # 坡向 = 最陡下坡方向的方位角（自正北顺时针）；dzdx、dzdy 已换算为东向和北向梯度。
             data = np.degrees(np.arctan2(-dzdx, -dzdy)) % 360
             data[~valid] = np.nan
             label = "坡向(Aspect)"
@@ -6402,7 +6578,21 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
                     flowacc[ni, nj] += flowacc[i, j]
         if analysis == "flowdir":
             # 流向可视化（按角度色环）
-            angle_map = np.array([0, 45, 90, 135, 180, 225, 270, 315])
+            # D8 codes describe raster-neighbor offsets; rotated grids do not
+            # have E/N aligned with their column/row axes. Color each direction
+            # using its local true-compass bearing near the raster centre.
+            from pyproj import CRS as PyprojCRS, Transformer
+            to_wgs84 = Transformer.from_crs(src_crs, "EPSG:4326", always_xy=True)
+            geod_wgs84 = PyprojCRS.from_epsg(4326).get_geod()
+            center_col, center_row = nx / 2, ny / 2
+            center_x, center_y = transform * (center_col, center_row)
+            center_lon, center_lat = to_wgs84.transform(center_x, center_y)
+            angle_map = np.empty(8, dtype=np.float64)
+            for k, (step_x, step_y) in enumerate(zip(dx, dy)):
+                neighbor_x, neighbor_y = transform * (center_col + step_x, center_row + step_y)
+                neighbor_lon, neighbor_lat = to_wgs84.transform(neighbor_x, neighbor_y)
+                bearing = geod_wgs84.inv(center_lon, center_lat, neighbor_lon, neighbor_lat)[0]
+                angle_map[k] = bearing % 360
             dir_deg = np.full_like(dem, np.nan, dtype=np.float64)
             for k in range(8):
                 dir_deg[direction == k] = angle_map[k]
@@ -6461,7 +6651,7 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
         if analysis == "flowdir":
             result_data = direction.astype(np.float32)
             result_data[direction < 0] = np.nan
-            value_units = "D8 direction code (0=E, 1=NE, 2=N, 3=NW, 4=W, 5=SW, 6=S, 7=SE)"
+            value_units = "D8 raster-neighbor code (0=col+, 1=col+row-, 2=row-, 3=col-row-, 4=col-, 5=col-row+, 6=row+, 7=col+row+)"
             quality_warnings = ["采用当前工具的简化 D8 邻域流向算法；结果未经外部水文基准验证"]
         elif analysis == "flowacc":
             result_data = flowacc.astype(np.float32)
@@ -9667,18 +9857,43 @@ def load_cog(url: str, layer_name: str = "", max_size: int = 2048) -> str:
     upload_dir = os.path.join(_temp_output_dir, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     safe = re.sub(r'[\\/:*?"<>|]', "_", name)
-    png_name = f"cog_{safe}_{int(time.time())}.png"
+    png_name = f"cog_{safe}_{int(time.time())}_{uuid.uuid4().hex[:12]}.png"
     png_path = os.path.join(upload_dir, png_name)
     with open(png_path, "wb") as f:
         f.write(result["png_bytes"])
     bounds = result["bounds"]
     meta = result["meta"]
+    preview_url = f"/output/uploads/{png_name}"
+    preview_layer_name = f"{name}（COG 预览）"
+    source_reference = (
+        sanitize_http_url(url)
+        if parsed_url.scheme.lower() in {"http", "https"}
+        else os.path.basename(source_path)
+    )
+    raster_info = {
+        "filename": png_name,
+        "url": preview_url,
+        "source_name": name,
+        "source_reference": source_reference,
+        "bounds": [float(v) for v in bounds],
+        "width": int(meta["width"]),
+        "height": int(meta["height"]),
+        "preview_width": int(meta["resampled"][0]),
+        "preview_height": int(meta["resampled"][1]),
+        "bands": int(meta["count"]),
+        "crs": meta["crs"],
+        "preview_only": True,
+        "processing": "云端 COG 影像预览",
+    }
     # 影像叠加（dem_result 通道：前端 addImageOverlay）
     _pending_layer_ops.append({
         "action": "dem_result", "name": png_name,
-        "url": f"/output/uploads/{png_name}",
+        "url": preview_url,
         "bounds": [float(v) for v in bounds],
         "label": f"COG 影像: {name}",
+        "layer_name": preview_layer_name,
+        "raster": raster_info,
+        "crs": meta["crs"],
     })
     # 注册范围框图层（供 AI 查询/缩放/卷帘，透明填充红框）
     minx, miny, maxx, maxy = bounds
@@ -9694,7 +9909,7 @@ def load_cog(url: str, layer_name: str = "", max_size: int = 2048) -> str:
         f"已加载 COG 影像「{name}」并叠加到地图: {meta['width']}x{meta['height']} 像素, "
         f"{meta['count']} 波段, CRS {meta['crs']}, 范围 {meta['bounds_wgs84']}, "
         f"预览降采样至 {meta['resampled'][0]}x{meta['resampled'][1]}。"
-        f"已注册同名范围框图层可供查询"
+        f"已注册同名范围框图层可供查询；当前仅保存地图预览，像元分析需提供原始栅格文件"
     )
 
 
@@ -10063,8 +10278,11 @@ def _raster_preview_op(src, data, out_name: str, label: str, preview_image=None,
     import numpy as np
     from PIL import Image
     import rasterio
+    from affine import Affine
     from urllib.parse import quote
-    from rasterio.warp import transform_bounds
+    from rasterio.enums import Resampling
+    from rasterio.transform import array_bounds
+    from rasterio.warp import calculate_default_transform, reproject
     values = np.asarray(data)
     band = (values if values.ndim == 2 else values[0]).astype("float64")
     valid = np.isfinite(band)
@@ -10088,20 +10306,57 @@ def _raster_preview_op(src, data, out_name: str, label: str, preview_image=None,
         input_tags, input_units = {}, ()
     png_name = os.path.basename(str(out_name)) + ".png"
     png_path = os.path.join(upload_dir, png_name)
-    img.save(png_path)
     raster_path = os.path.join(upload_dir, os.path.basename(str(out_name)) + ".tif")
     if not os.path.isfile(raster_path):
         raster_path = _write_raster_output(src.name, out_name, values)
     with rasterio.open(raster_path) as result_src:
-        if result_src.crs and result_src.crs.to_string() != "EPSG:4326":
-            bounds = list(transform_bounds(result_src.crs, "EPSG:4326", *result_src.bounds))
+        preview_rgba = np.dstack((np.asarray(img.convert("RGB")), valid.astype("uint8") * 255))
+        transform = result_src.transform
+        if result_src.crs and (
+            not result_src.crs.is_geographic
+            or abs(float(transform.b)) > 1e-12
+            or abs(float(transform.d)) > 1e-12
+            or result_src.crs.to_epsg() != 4326
+        ):
+            preview_transform, preview_width, preview_height = calculate_default_transform(
+                result_src.crs, "EPSG:4326", result_src.width, result_src.height,
+                *result_src.bounds,
+            )
+            max_preview_pixels = 4_000_000
+            if preview_width * preview_height > max_preview_pixels:
+                scale = (preview_width * preview_height / max_preview_pixels) ** 0.5
+                target_width = max(1, int(preview_width / scale))
+                target_height = max(1, int(preview_height / scale))
+                preview_transform = preview_transform * Affine.scale(
+                    preview_width / target_width, preview_height / target_height,
+                )
+                preview_width, preview_height = target_width, target_height
+            warped_rgba = np.zeros((preview_height, preview_width, 4), dtype="uint8")
+            for band_index in range(4):
+                reproject(
+                    source=preview_rgba[:, :, band_index],
+                    destination=warped_rgba[:, :, band_index],
+                    src_transform=transform, src_crs=result_src.crs,
+                    dst_transform=preview_transform, dst_crs="EPSG:4326",
+                    resampling=Resampling.nearest,
+                )
+            img = Image.fromarray(warped_rgba, mode="RGBA")
+            bounds = list(array_bounds(preview_height, preview_width, preview_transform))
+        elif result_src.crs:
+            img = Image.fromarray(preview_rgba, mode="RGBA")
+            bounds = [result_src.bounds.left, result_src.bounds.bottom,
+                      result_src.bounds.right, result_src.bounds.top]
         else:
+            img = Image.fromarray(preview_rgba, mode="RGBA")
             bounds = [result_src.bounds.left, result_src.bounds.bottom,
                       result_src.bounds.right, result_src.bounds.top]
         crs = result_src.crs.to_string() if result_src.crs else None
         width, height = result_src.width, result_src.height
         bands = result_src.count
-        pixel_size = [abs(float(result_src.transform.a)), abs(float(result_src.transform.e))]
+        pixel_size = [
+            math.hypot(float(result_src.transform.a), float(result_src.transform.d)),
+            math.hypot(float(result_src.transform.b), float(result_src.transform.e)),
+        ]
         source_tags = {key.upper(): value for key, value in result_src.tags().items()}
         result_units = (value_units or (result_src.units[0] if result_src.units and result_src.units[0] else None)
                         or source_tags.get("VALUE_UNITS")
@@ -10109,6 +10364,8 @@ def _raster_preview_op(src, data, out_name: str, label: str, preview_image=None,
                         or input_tags.get("VALUE_UNITS"))
         pixel_units = result_src.crs.linear_units if result_src.crs and result_src.crs.is_projected else ("degree" if result_src.crs and result_src.crs.is_geographic else "unknown")
         warnings = list(quality_warnings or [])
+        if result_src.crs is None:
+            warnings.append("预览栅格缺少 CRS；未能进行地理配准转换")
         source_quality_note = (source_tags.get("QUALITY_NOTE") or source_tags.get("SOURCE_QUALITY_NOTE")
                                or input_tags.get("QUALITY_NOTE") or input_tags.get("SOURCE_QUALITY_NOTE"))
         if source_quality_note and source_quality_note not in warnings:
@@ -10144,6 +10401,7 @@ def _raster_preview_op(src, data, out_name: str, label: str, preview_image=None,
         }
     with rasterio.open(raster_path, "r+") as output_src:
         output_src.update_tags(**{key: str(value) for key, value in output_tags.items() if value is not None})
+    img.save(png_path)
     preview_url = "/output/uploads/" + quote(png_name, safe="")
     source_url = "/output/uploads/" + quote(os.path.basename(raster_path), safe="")
     layer_name = os.path.splitext(os.path.basename(raster_path))[0]
@@ -13075,6 +13333,9 @@ def _tool_result_failed(tool_name, result):
 def _recorded(t):
     """包装一个工具：执行后把 名称/参数/成败/产物图层 写入处理历史"""
     def _run_and_record(**kwargs):
+        from backend.services.ai_service import is_current_request_cancelled
+        if is_current_request_cancelled():
+            return "用户已取消，工具未执行。"
         _t0 = time.time()
         _before = dict(_registered_layers)
         _run_id = get_current_run_id()

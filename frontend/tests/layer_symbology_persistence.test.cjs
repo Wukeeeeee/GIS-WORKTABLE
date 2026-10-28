@@ -6,9 +6,12 @@ const assert = require('node:assert/strict');
 
 const layerSource = fs.readFileSync(path.resolve(__dirname, '../js/layers.js'), 'utf8');
 
-function createLayers(features, applied = [], mapApplyResult = true, labelApplyResult = true, withLegendPanel = false) {
+function createLayers(features, applied = [], mapApplyResult = true, labelApplyResult = true, withLegendPanel = false, options = {}) {
   const messages = [];
+  let saveCalls = 0;
   let legendLookups = 0;
+  const stateApplyCalls = [];
+  let stateLayer = null;
   const legendElements = withLegendPanel ? {
     mapFloatingLegend: { style: {}, addEventListener() {} },
     mapLegendTogglePill: { style: {}, addEventListener() {} },
@@ -18,27 +21,47 @@ function createLayers(features, applied = [], mapApplyResult = true, labelApplyR
     mapLegendItems: { innerHTML: '', appendChild() {} },
     mapLegendClose: { addEventListener() {} },
   } : {};
+  if (options.vizField) {
+    legendElements.v3dField = { value: options.vizField };
+    legendElements.v3dMax = { value: String(options.maxHeight || 50000) };
+  }
   const document = {
     getElementById(id) { legendLookups++; return legendElements[id] || null; },
+    querySelector() { return null; },
     createElement() { return { style: {}, appendChild() {} }; },
     addEventListener() {},
   };
-  const window = { GIS: { map: {
+  const window = { GIS: { project: { autoSave() { saveCalls++; return Promise.resolve(); } }, map: {
     loadGeoJSON() {}, setLayerColor() {}, setLayerVisible() {},
     applySymbology(_name, _geojson, styles) { applied.push(JSON.parse(JSON.stringify(styles))); return mapApplyResult; },
     setLabels() { return labelApplyResult; },
     clearAll() { return { ok: true, remaining: 0 }; },
     removeLayer() {},
   }, chat: { addMessage(message) { messages.push(message); } } } };
+  if (options.withState) {
+    window.GIS.state = {
+      getLayer(id) { return stateLayer && stateLayer.layer_id === id ? stateLayer : null; },
+      addLayer(layer) {
+        stateLayer = { ...layer };
+        return window.GIS.layers.addLayer({ ...layer, _panelSync: true }, true);
+      },
+      applyVisualization(id, visualization) { stateApplyCalls.push([id, visualization]); },
+    };
+  }
   const context = vm.createContext({ window, document, console, Promise, Date, Math, Number, String, Object, Array, JSON, Set, Map });
   const instrumentedSource = layerSource.replace('  GIS.layers = {',
-    '  GIS.__applySymbologyForTest = _applySymbology;\n  GIS.layers = {');
+    '  GIS.__applySymbologyForTest = _applySymbology;\n  GIS.__applyViz3dForTest = _applyViz3dFromUI;\n  GIS.__clearInspectorSymbologyForTest = _clearSymbologyFromInspector;\n  GIS.layers = {');
   vm.runInContext(instrumentedSource, context, { filename: 'layers.js' });
   window.GIS.layers.addLayer({
     layer_id: 'population-layer', filename: '长沙区县', geojson: { type: 'FeatureCollection', features },
   }, true);
   return { layers: window.GIS.layers, applied, messages, getLegendLookups() { return legendLookups; },
-    applySymbology: window.GIS.__applySymbologyForTest };
+    getSaveCalls() { return saveCalls; },
+    getStateApplyCalls() { return stateApplyCalls; },
+    setVizField(value) { if (legendElements.v3dField) legendElements.v3dField.value = value; },
+    applySymbology: window.GIS.__applySymbologyForTest,
+    applyViz3d: window.GIS.__applyViz3dForTest,
+    clearInspectorSymbology: window.GIS.__clearInspectorSymbologyForTest };
 }
 
 function feature(fid, value, geometryType = 'Polygon') {
@@ -50,6 +73,7 @@ test('graduated symbology restores exact breaks, per-feature styles and legend b
   const original = [feature('adcode:1', 12), feature('adcode:2', 28), feature('adcode:3', 19)];
   const first = createLayers(original);
   first.layers.applyGraduatedColors('长沙区县', 'population', 2, 'ylorrd', 'quantile', [10, 20, 30], 0.2);
+  assert.equal(first.getSaveCalls(), 1);
   const saved = first.layers.getSymbologyState('population-layer');
   assert.equal(saved.type, 'graduated');
   assert.equal(saved.method, 'quantile');
@@ -80,12 +104,14 @@ test('symbology is not applied to changed feature data with missing saved IDs', 
 test('a failed field change keeps the last successful thematic style and legend', () => {
   const source = createLayers([feature('adcode:1', 12), feature('adcode:2', 28)]);
   assert.equal(source.layers.applyGraduatedColors('长沙区县', 'population', 2, 'ylorrd', 'quantile', [10, 20, 30], 0.2), true);
+  assert.equal(source.getSaveCalls(), 1);
   const before = source.layers.getSymbologyState('population-layer');
 
   assert.equal(source.layers.applyGraduatedColors('长沙区县', 'missing_field', 4, 'blues', 'equal_interval'), false);
   const after = source.layers.getSymbologyState('population-layer');
   assert.deepEqual(JSON.parse(JSON.stringify(after)), JSON.parse(JSON.stringify(before)));
   assert.equal(source.applied.length, 1, 'a failed attempt must not redraw the map');
+  assert.equal(source.getSaveCalls(), 1, 'a failed styling attempt must not enqueue a project save');
 });
 
 test('failed map rendering does not save symbology as a successful layer state and informs the user', () => {
@@ -94,6 +120,52 @@ test('failed map rendering does not save symbology as a successful layer state a
   assert.equal(source.layers.applyGraduatedColors('长沙区县', 'population', 2, 'ylorrd', 'quantile'), false);
   assert.equal(source.layers.getSymbologyState('population-layer'), null);
   assert.ok(source.messages.some(message => message.includes('地图未能渲染图层符号化结果')));
+  assert.equal(source.getSaveCalls(), 0);
+});
+
+test('inspector symbology changes save only after the map accepts the new style', () => {
+  const good = createLayers([feature('adcode:1', 12), feature('adcode:2', 28)]);
+  good.applySymbology('population-layer', 'graduated', 'population', 2, 'ylorrd');
+  assert.equal(good.getSaveCalls(), 1);
+
+  const failed = createLayers([feature('adcode:1', 12)], [], false);
+  failed.applySymbology('population-layer', 'graduated', 'population', 2, 'ylorrd');
+  assert.equal(failed.getSaveCalls(), 0);
+});
+
+test('3D-only visualization is included in project saves and reapplied on restore', () => {
+  const features = [feature('adcode:1', 12), feature('adcode:2', 28)];
+  const configured = createLayers(features, [], true, true, false, {
+    withState: true, vizField: 'population', maxHeight: 3000,
+  });
+  configured.applyViz3d('population-layer');
+  const snapshot = configured.layers.getSymbologyState('population-layer');
+  assert.deepEqual(JSON.parse(JSON.stringify(snapshot)), {
+    viz: { type: 'extrusion', field: 'population', ramp: ['#f7fbff', '#08306b'], maxHeight: 3000 },
+    legendPresentation: 'hidden',
+  });
+  assert.equal(configured.getSaveCalls(), 1);
+
+  const restored = createLayers(features, [], true, true, false, { withState: true });
+  assert.equal(restored.layers.restoreSymbologyState('population-layer', snapshot), true);
+  assert.equal(restored.getStateApplyCalls().length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.getStateApplyCalls()[0][1])), snapshot.viz);
+
+  configured.setVizField('');
+  configured.applyViz3d('population-layer');
+  assert.equal(configured.layers.getSymbologyState('population-layer'), null);
+  assert.equal(configured.getSaveCalls(), 2, 'clearing an active 3D visualization saves its removal');
+});
+
+test('clearing an Inspector symbol style schedules an autosave', () => {
+  const source = createLayers([feature('adcode:1', 12), feature('adcode:2', 28)]);
+  assert.equal(source.layers.applyGraduatedColors('长沙区县', 'population', 2, 'ylorrd'), true);
+  assert.equal(source.getSaveCalls(), 1);
+
+  source.clearInspectorSymbology('population-layer');
+
+  assert.equal(source.layers.getSymbologyState('population-layer'), null);
+  assert.equal(source.getSaveCalls(), 2);
 });
 
 test('label requests report failure when the map cannot apply the label field', () => {

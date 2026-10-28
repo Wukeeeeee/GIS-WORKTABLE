@@ -43,6 +43,7 @@ import re
 import threading
 import uuid
 import time
+from contextvars import copy_context
 from functools import wraps
 
 from langchain_core.callbacks import BaseCallbackHandler
@@ -212,6 +213,7 @@ def _compact_messages(msgs: list) -> list:
 
 _GRAPH_RECURSION_LIMIT = int(__import__("os").environ.get("GIS_GRAPH_RECURSION", "120"))
 _AGENT_LOCK_LEASE = threading.local()
+_STREAM_CANCELLED = object()
 
 
 class _DeferredLockLease:
@@ -263,23 +265,49 @@ class _ToolInvocationTracker(BaseCallbackHandler):
         self.started.set()
 
 
-def _invoke_agent_with_budget(agent, payload, limit, timeout_s, callbacks=None):
+def _invoke_agent_with_budget(agent, payload, limit, timeout_s, callbacks=None, cancel_check=None):
     """在调用方剩余总时长预算内等待一次 agent.invoke。"""
     executor = _cf_mod.ThreadPoolExecutor(max_workers=1)
     config = {"recursion_limit": limit}
     if callbacks:
         config["callbacks"] = callbacks
-    future = executor.submit(agent.invoke, payload, config)
+    invoke_context = copy_context()
+    future = executor.submit(invoke_context.run, agent.invoke, payload, config)
     try:
-        return "ok", future.result(timeout=max(0.0, float(timeout_s)))
-    except _cf_mod.TimeoutError as e:
-        if future.done():
-            return "err", e
-        lease = getattr(_AGENT_LOCK_LEASE, "current", None)
-        if lease is not None:
-            lease.track_future(future)
-        future.cancel()
-        return "timeout", TimeoutError("graph total budget exceeded")
+        deadline = _time_mod.monotonic() + max(0.0, float(timeout_s))
+        while True:
+            if cancel_check is not None and cancel_check():
+                lease = getattr(_AGENT_LOCK_LEASE, "current", None)
+                if lease is not None:
+                    lease.track_future(future)
+                future.cancel()
+                return "cancelled", None
+            remaining = deadline - _time_mod.monotonic()
+            if remaining <= 0:
+                if future.done():
+                    try:
+                        return "ok", future.result()
+                    except Exception as error:
+                        return "err", error
+                lease = getattr(_AGENT_LOCK_LEASE, "current", None)
+                if lease is not None:
+                    lease.track_future(future)
+                future.cancel()
+                return "timeout", TimeoutError("graph total budget exceeded")
+            try:
+                result = future.result(timeout=min(remaining, 0.1) if cancel_check is not None else remaining)
+                if cancel_check is not None and cancel_check():
+                    return "cancelled", None
+                return "ok", result
+            except _cf_mod.TimeoutError as error:
+                if future.done():
+                    return "err", error
+                if cancel_check is None:
+                    lease = getattr(_AGENT_LOCK_LEASE, "current", None)
+                    if lease is not None:
+                        lease.track_future(future)
+                    future.cancel()
+                    return "timeout", TimeoutError("graph total budget exceeded")
     except Exception as e:
         return ("err", e)
     finally:
@@ -288,7 +316,7 @@ def _invoke_agent_with_budget(agent, payload, limit, timeout_s, callbacks=None):
         executor.shutdown(wait=False)
 
 
-def _stream_with_deadline(stream, deadline, lease=None):
+def _stream_with_deadline(stream, deadline, lease=None, cancel_check=None):
     """Consume a blocking LangGraph stream without exceeding the caller deadline."""
     events = queue.Queue(maxsize=1)
     stopped = threading.Event()
@@ -315,7 +343,10 @@ def _stream_with_deadline(stream, deadline, lease=None):
             if lease is not None:
                 lease.worker_finished()
 
-    worker = threading.Thread(target=produce, name="gis-agent-stream", daemon=True)
+    stream_context = copy_context()
+    worker = threading.Thread(
+        target=stream_context.run, args=(produce,), name="gis-agent-stream", daemon=True,
+    )
     if lease is not None:
         lease.worker_started()
     try:
@@ -329,9 +360,16 @@ def _stream_with_deadline(stream, deadline, lease=None):
             remaining = deadline - _time_mod.monotonic()
             if remaining <= 0:
                 raise TimeoutError("graph stream total budget exceeded")
+            if cancel_check is not None and cancel_check():
+                stopped.set()
+                yield _STREAM_CANCELLED
+                return
             try:
-                kind, value = events.get(timeout=remaining)
+                wait_for = min(remaining, 0.1) if cancel_check is not None else remaining
+                kind, value = events.get(timeout=wait_for)
             except queue.Empty as error:
+                if cancel_check is not None:
+                    continue
                 raise TimeoutError("graph stream total budget exceeded") from error
             if kind == "done":
                 return
@@ -509,8 +547,10 @@ _RECOVERY_PROMPT_EMPTY = (
 def _invoke_empty_response_recovery(agent, messages: list, recursion_limit: int = 60,
                                     cfg: LLMConfig = None, available_tools: list = None,
                                     recovery_prompt: str = _RECOVERY_PROMPT_EMPTY,
-                                    timeout_s: float | None = None):
+                                    timeout_s: float | None = None, cancel_check=None):
     """空正文/空口承诺时，关闭推理并强制发出结构化工具调用，再执行 ReAct 循环。"""
+    if cancel_check is not None and cancel_check():
+        return _STREAM_CANCELLED
     recovery_agent = agent
     fallback_agent = agent
     if cfg is not None and available_tools:
@@ -537,10 +577,14 @@ def _invoke_empty_response_recovery(agent, messages: list, recursion_limit: int 
     deadline = None if timeout_s is None else _time_mod.monotonic() + max(0.0, float(timeout_s))
 
     def invoke_bounded(target):
-        if deadline is None:
+        if deadline is None and cancel_check is None:
             return target.invoke(payload, {"recursion_limit": recursion_limit})
-        remaining = deadline - _time_mod.monotonic()
-        status, result = _invoke_agent_with_budget(target, payload, recursion_limit, remaining)
+        remaining = float("inf") if deadline is None else max(0.0, deadline - _time_mod.monotonic())
+        status, result = _invoke_agent_with_budget(
+            target, payload, recursion_limit, remaining, cancel_check=cancel_check,
+        )
+        if status == "cancelled":
+            return _STREAM_CANCELLED
         if status == "ok":
             return result
         raise result
@@ -548,6 +592,8 @@ def _invoke_empty_response_recovery(agent, messages: list, recursion_limit: int 
     try:
         return invoke_bounded(recovery_agent)
     except Exception as recovery_error:
+        if cancel_check is not None and cancel_check():
+            return _STREAM_CANCELLED
         if recovery_agent is fallback_agent:
             raise
         # Provider 可能不支持 tool_choice=required。保留有界回退，至少重试一次普通工具模式。
@@ -631,7 +677,12 @@ def _with_session_lock(func):
                 "clear_layers": False, "layer_ops": [], "pending_suggestions": None,
                 "confirm_pending": None, "busy": True,
             }
+        request_id = kwargs.get("request_id", args[7] if len(args) > 7 else None)
+        import backend.services.ai_service as _cancel_service
+        _cancel_service.register_cancel_request(session_id, request_id)
+        cancel_context_token = _cancel_service.set_request_cancel_context(session_id, request_id)
         lease = _DeferredLockLease(lambda: (
+            _cancel_service.finish_cancel_request(session_id, request_id),
             _tools_mod.release_shared_state_lock(),
             _tools_mod.release_session_lock(session_id),
         ))
@@ -642,6 +693,7 @@ def _with_session_lock(func):
         finally:
             _AGENT_LOCK_LEASE.current = previous_lease
             lease.finish()
+            _cancel_service.reset_request_cancel_context(cancel_context_token)
     return wrapped
 
 
@@ -663,6 +715,7 @@ def run_agent(
     original_message: str = "",
     session_id: str = "default",
     task_id: str = None,
+    request_id: str = None,
 ) -> dict:
     """运行 LangGraph Agent 并对最终产物执行确定性真实性检查。
 
@@ -690,7 +743,7 @@ def run_agent(
     """
     # 重置共享状态（tools.py 中的全局变量）
     import backend.services.ai_service as _ai_cancel_svc
-    _ai_cancel_svc.clear_session_cancel(session_id or "default")
+    _cancel_generation = _ai_cancel_svc.clear_session_cancel(session_id or "default", request_id)
     reset_state(amap_key)
     _tools_mod.set_last_user_message(original_message or "")
     # 提取最近多轮上下文（供工具层消歧与实体复用）
@@ -733,13 +786,30 @@ def run_agent(
     # A+ 优化：去掉"帮我"等易误判词，短路时用精简版 system prompt
     _simple = not _should_use_agent(messages, session_id)
     if _simple:
-        if _ai_svc.is_session_cancelled(session_id or "default"):
+        if _ai_svc.is_session_cancelled(session_id or "default", request_id, _cancel_generation):
             _record_run_finish(_run_id, "用户已取消", "cancelled")
             return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
                     "heatmap": None, "clear_layers": False, "layer_ops": [],
-                    "pending_suggestions": None}
+                    "pending_suggestions": None, "execution_status": "cancelled"}
         try:
-            _resp = llm.invoke(messages)
+            def _invoke_simple_model():
+                yield llm.invoke(messages)
+
+            _resp = None
+            for _simple_result in _stream_with_deadline(
+                _invoke_simple_model(),
+                _time_mod.monotonic() + _GRAPH_TOTAL_TIMEOUT_S,
+                lease=getattr(_AGENT_LOCK_LEASE, "current", None),
+                cancel_check=lambda: _ai_svc.is_session_cancelled(
+                    session_id or "default", request_id, _cancel_generation
+                ),
+            ):
+                if _simple_result is _STREAM_CANCELLED:
+                    _record_run_finish(_run_id, "用户已取消", "cancelled")
+                    return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
+                            "heatmap": None, "clear_layers": False, "layer_ops": [],
+                            "pending_suggestions": None, "execution_status": "cancelled"}
+                _resp = _simple_result
             _quick_text = _clean_ai_text(_resp.content or "")
             if _looks_like_incomplete_promise(_quick_text):
                 # 快路径不带任何工具：模型只是"口头承诺去获取/生成"时必须改走 Agent，
@@ -799,7 +869,7 @@ def run_agent(
     for _attempt in range(2):
         _tool_tracker = _ToolInvocationTracker()
         try:
-            if _ai_svc.is_session_cancelled(session_id or "default"):
+            if _ai_svc.is_session_cancelled(session_id or "default", request_id, _cancel_generation):
                 _record_run_finish(_run_id, "用户已取消", "cancelled")
                 return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
                         "heatmap": None, "clear_layers": False, "layer_ops": [],
@@ -811,7 +881,15 @@ def run_agent(
             _status, _inv = _invoke_agent_with_budget(
                 agent, {"messages": _msgs}, _GRAPH_RECURSION_LIMIT, _remaining_budget,
                 callbacks=[_tool_tracker],
+                cancel_check=lambda: _ai_svc.is_session_cancelled(
+                    session_id or "default", request_id, _cancel_generation
+                ),
             )
+            if _status == "cancelled":
+                _record_run_finish(_run_id, "用户已取消", "cancelled")
+                return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
+                        "heatmap": None, "clear_layers": False, "layer_ops": [],
+                        "pending_suggestions": None, "execution_status": "cancelled"}
             if _status == "timeout":
                 _budget_hit = True
                 raise _inv
@@ -956,7 +1034,15 @@ def run_agent(
         try:
             _retry = _invoke_empty_response_recovery(
                 agent, messages, recursion_limit=60, cfg=cfg, available_tools=tools,
-                timeout_s=max(0.0, _budget_deadline - _time_mod.monotonic()))
+                timeout_s=max(0.0, _budget_deadline - _time_mod.monotonic()),
+                cancel_check=lambda: _ai_svc.is_session_cancelled(
+                    session_id or "default", request_id, _cancel_generation
+                ))
+            if _retry is _STREAM_CANCELLED:
+                _record_run_finish(_run_id, "用户已取消", "cancelled")
+                return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
+                        "heatmap": None, "clear_layers": False, "layer_ops": [],
+                        "pending_suggestions": None, "execution_status": "cancelled"}
             _retry_msgs = _retry.get("messages", [])
             _usage_attempts.append(list(_retry_msgs))
             _retry_text, _retry_reasoning = _last_ai_text(_retry_msgs)
@@ -1021,7 +1107,15 @@ def run_agent(
             _forced = _invoke_empty_response_recovery(
                 agent, final_messages, recursion_limit=60, cfg=cfg,
                 available_tools=tools, recovery_prompt=_prompt_text,
-                timeout_s=max(0.0, _budget_deadline - _time_mod.monotonic()))
+                timeout_s=max(0.0, _budget_deadline - _time_mod.monotonic()),
+                cancel_check=lambda: _ai_svc.is_session_cancelled(
+                    session_id or "default", request_id, _cancel_generation
+                ))
+            if _forced is _STREAM_CANCELLED:
+                _record_run_finish(_run_id, "用户已取消", "cancelled")
+                return {"response": "用户已取消", "reasoning": None, "layers": [], "images": [],
+                        "heatmap": None, "clear_layers": False, "layer_ops": [],
+                        "pending_suggestions": None, "execution_status": "cancelled"}
             _fm = _forced.get("messages", [])
             _usage_attempts.append(list(_fm))
             if _fm:
@@ -1296,6 +1390,7 @@ def _run_agent_stream_impl(
     mode: str = "full",
     read_only_location_analysis: bool = False,
     task_id: str = None,
+    request_id: str = None,
     run_context: dict | None = None,
 ):
     """运行 Agent 并逐步 yield 事件（供 SSE 端点使用）
@@ -1328,9 +1423,9 @@ def _run_agent_stream_impl(
     _stream_call_steps: dict[str, dict] = {}
     _stream_active_web: dict | None = None
     _streamed_layer_op_ids: set[str] = set()
-    # 重置取消标志（每次新请求开始；仅清本会话，不误伤并发中的其他会话）
+    # 捕获本次请求的取消代次；有 request_id 时不清理其他请求的取消标志。
     import backend.services.ai_service as _ai_svc
-    _ai_svc.clear_session_cancel(session_id or "default")
+    _cancel_generation = _ai_svc.clear_session_cancel(session_id or "default", request_id)
     llm = build_llm(cfg)
     # 流式总预算：与非流式 _GRAPH_TOTAL_TIMEOUT_S 一致
     _stream_budget_deadline = _time_mod.monotonic() + _GRAPH_TOTAL_TIMEOUT_S
@@ -1357,7 +1452,27 @@ def _run_agent_stream_impl(
     _simple = not _should_use_agent(messages, session_id)
     if _simple:
         try:
-            _resp = llm.invoke(messages)
+            # Keep the synchronous SDK call off the SSE consumer thread so a
+            # cancel can be observed while the provider is still responding.
+            def _invoke_simple_model():
+                yield llm.invoke(messages)
+
+            _resp = None
+            for _simple_result in _stream_with_deadline(
+                _invoke_simple_model(),
+                _stream_budget_deadline,
+                lease=getattr(_AGENT_LOCK_LEASE, "current", None),
+                cancel_check=lambda: _ai_svc.is_session_cancelled(
+                    session_id or "default", request_id, _cancel_generation
+                ),
+            ):
+                if _simple_result is _STREAM_CANCELLED:
+                    _record_run_finish(_run_id, "用户已取消", "cancelled")
+                    if run_context is not None:
+                        run_context["finished"] = True
+                    yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
+                    return
+                _resp = _simple_result
         except Exception:
             _record_run_finish(_run_id, "AI 回复失败", "error")
             if run_context is not None:
@@ -1413,14 +1528,23 @@ def _run_agent_stream_impl(
             ),
             _stream_budget_deadline,
             lease=getattr(_AGENT_LOCK_LEASE, "current", None),
+            cancel_check=lambda: _ai_svc.is_session_cancelled(
+                session_id or "default", request_id, _cancel_generation
+            ),
         ):
+            if _stream_item is _STREAM_CANCELLED:
+                _record_run_finish(_run_id, "用户已取消", "cancelled")
+                if run_context is not None:
+                    run_context["finished"] = True
+                yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
+                return
             _stream_channel = None
             step = _stream_item
             if (isinstance(_stream_item, tuple) and len(_stream_item) == 2
                     and isinstance(_stream_item[0], str)):
                 _stream_channel, step = _stream_item
             # 每次循环检查是否被取消
-            if _ai_svc.is_session_cancelled(session_id or "default"):
+            if _ai_svc.is_session_cancelled(session_id or "default", request_id, _cancel_generation):
                 _record_run_finish(_run_id, "用户已取消", "cancelled")
                 if run_context is not None:
                     run_context["finished"] = True
@@ -1638,7 +1762,7 @@ def _run_agent_stream_impl(
             # 写入图层或访问外部服务。只有尚未产生任何工具调用/结果时才安全重试。
             _attempt_has_tool_activity = _count_tool_calls(msgs) > 0 or _has_tool_messages(msgs)
             if (_is_temp_stream and not _attempt_has_tool_activity
-                    and not _ai_svc.is_session_cancelled(session_id or "default")):
+                    and not _ai_svc.is_session_cancelled(session_id or "default", request_id, _cancel_generation)):
                 _retry_ok = False
                 try:
                     print("[GIS] 流式遇到临时性服务端异常，整轮重试一次: " + _err_str[:100], flush=True)
@@ -1646,7 +1770,16 @@ def _run_agent_stream_impl(
                     _retry_status, _retry_res = _invoke_agent_with_budget(
                         agent, {"messages": list(messages)}, 60,
                         max(0.0, _stream_budget_deadline - _time_mod.monotonic()),
+                        cancel_check=lambda: _ai_svc.is_session_cancelled(
+                            session_id or "default", request_id, _cancel_generation
+                        ),
                     )
+                    if _retry_status == "cancelled":
+                        _record_run_finish(_run_id, "用户已取消", "cancelled")
+                        if run_context is not None:
+                            run_context["finished"] = True
+                        yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
+                        return
                     if _retry_status != "ok":
                         raise _retry_res
                     _rm = _retry_res.get("messages", [])
@@ -1714,7 +1847,16 @@ def _run_agent_stream_impl(
         try:
             _retry = _invoke_empty_response_recovery(
                 agent, messages, recursion_limit=60, cfg=cfg, available_tools=available_tools,
-                timeout_s=max(0.0, _stream_budget_deadline - _time_mod.monotonic()))
+                timeout_s=max(0.0, _stream_budget_deadline - _time_mod.monotonic()),
+                cancel_check=lambda: _ai_svc.is_session_cancelled(
+                    session_id or "default", request_id, _cancel_generation
+                ))
+            if _retry is _STREAM_CANCELLED:
+                _record_run_finish(_run_id, "用户已取消", "cancelled")
+                if run_context is not None:
+                    run_context["finished"] = True
+                yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
+                return
             _retry_msgs = _retry.get("messages", [])
             _usage_attempts.append(list(_retry_msgs))
             _retry_text, _retry_reasoning = _last_ai_text(_retry_msgs)
@@ -1828,7 +1970,16 @@ def _run_agent_stream_impl(
             _forced = _invoke_empty_response_recovery(
                 agent, msgs, recursion_limit=60, cfg=cfg,
                 available_tools=available_tools, recovery_prompt=_prompt_text,
-                timeout_s=max(0.0, _stream_budget_deadline - _time_mod.monotonic()))
+                timeout_s=max(0.0, _stream_budget_deadline - _time_mod.monotonic()),
+                cancel_check=lambda: _ai_svc.is_session_cancelled(
+                    session_id or "default", request_id, _cancel_generation
+                ))
+            if _forced is _STREAM_CANCELLED:
+                _record_run_finish(_run_id, "用户已取消", "cancelled")
+                if run_context is not None:
+                    run_context["finished"] = True
+                yield f"data: {json.dumps({'type': 'cancelled', 'message': '用户取消了请求'})}\n\n"
+                return
             _fm = _forced.get("messages", [])
             _usage_attempts.append(list(_fm))
             if _fm:
@@ -1928,6 +2079,7 @@ def run_agent_stream(
     mode: str = "full",
     read_only_location_analysis: bool = False,
     task_id: str = None,
+    request_id: str = None,
 ):
     """运行流式 Agent，并在正常结束、异常或客户端断开时释放会话锁。"""
     sid = session_id or "default"
@@ -1954,11 +2106,15 @@ def run_agent_stream(
         }, ensure_ascii=False)
         yield f"data: {busy_event}\n\n"
         return
+    import backend.services.ai_service as _cancel_service
     run_context = {}
     lease = _DeferredLockLease(lambda: (
+        _cancel_service.finish_cancel_request(sid, request_id),
         _tools_mod.release_shared_state_lock(),
         _tools_mod.release_session_lock(sid),
     ))
+    _cancel_service.register_cancel_request(sid, request_id)
+    cancel_context_token = _cancel_service.set_request_cancel_context(sid, request_id)
     previous_lease = getattr(_AGENT_LOCK_LEASE, "current", None)
     _AGENT_LOCK_LEASE.current = lease
     try:
@@ -1972,10 +2128,12 @@ def run_agent_stream(
             mode=mode,
             read_only_location_analysis=read_only_location_analysis,
             task_id=task_id,
+            request_id=request_id,
             run_context=run_context,
         )
     finally:
         _AGENT_LOCK_LEASE.current = previous_lease
+        _cancel_service.reset_request_cancel_context(cancel_context_token)
         if run_context.get("run_id") and not run_context.get("finished"):
             _record_run_finish(run_context["run_id"], "流式请求中断", "interrupted")
         lease.finish()

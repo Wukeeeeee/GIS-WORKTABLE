@@ -12,6 +12,7 @@
 """
 
 import os
+import sqlite3
 import sys
 import pytest
 from fastapi.testclient import TestClient
@@ -107,6 +108,34 @@ def test_search_services_by_keyword():
         assert "protocol" in r
 
 
+def test_search_treats_like_wildcards_as_literal_text(monkeypatch):
+    def make_db():
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE master (service_id, service_name, country, region, provider, category, "
+            "protocol, service_url, official_url, docs_url, free, is_free, need_no_key, format, "
+            "spatial_coverage, status, data_description, crs, notes)"
+        )
+        rows = [
+            ("PERCENT", "literal % marker"),
+            ("UNDERSCORE", "literal _ marker"),
+            ("ORDINARY", "literal X marker"),
+        ]
+        conn.executemany(
+            "INSERT INTO master (service_id, service_name) VALUES (?, ?)", rows
+        )
+        return conn
+
+    monkeypatch.setattr(gs, "get_db_connection", lambda readonly=False: make_db())
+
+    percent = gs.search_services(keyword="%")
+    underscore = gs.search_services(keyword="_")
+
+    assert [row["service_id"] for row in percent["results"]] == ["PERCENT"]
+    assert [row["service_id"] for row in underscore["results"]] == ["UNDERSCORE"]
+
+
 def test_search_services_by_filters():
     """按国家和协议组合筛选。"""
     res = gs.search_services(country="中国", limit=10)
@@ -185,6 +214,29 @@ def test_query_sql_rejects_oversized_statements():
     assert "不能超过" in result["error"]
 
 
+def test_query_sql_bounds_large_values_and_summarizes_binary_results(monkeypatch):
+    monkeypatch.setattr(gs, "_SQL_QUERY_MAX_VALUE_BYTES", 64)
+
+    oversized = gs.query_sql("SELECT randomblob(65) AS payload")
+    binary = gs.query_sql("SELECT randomblob(32) AS payload")
+
+    assert "error" in oversized
+    assert "too big" in oversized["error"].lower()
+    assert binary["rows"] == [{"payload": {"type": "blob", "bytes": 32}}]
+
+
+def test_query_sql_caps_total_result_bytes_and_marks_partial_results(monkeypatch):
+    monkeypatch.setattr(gs, "_SQL_QUERY_MAX_RESULT_BYTES", 25)
+
+    result = gs.query_sql(
+        "SELECT '1234567890' AS value UNION ALL SELECT 'abcdefghij'"
+    )
+
+    assert result["row_count"] == 1
+    assert result["rows"] == [{"value": "1234567890"}]
+    assert result["truncated"] is True
+
+
 def test_langchain_tools():
     """验证 LangGraph/LangChain @tool 工具。"""
     # 1. 概况工具
@@ -230,6 +282,16 @@ def test_fastapi_geosource_endpoints(client):
     r_sql = client.post("/api/geosource/query-sql", json={"query": "SELECT count(*) as c FROM layers"})
     assert r_sql.status_code == 200
     assert r_sql.json()["rows"][0]["c"] >= 1000
+    r_blob = client.post(
+        "/api/geosource/query-sql", json={"query": "SELECT randomblob(32) as payload"}
+    )
+    assert r_blob.status_code == 200
+    assert r_blob.json()["rows"] == [{"payload": {"type": "blob", "bytes": 32}}]
+    r_non_finite = client.post(
+        "/api/geosource/query-sql", json={"query": "SELECT 1e999 as value"}
+    )
+    assert r_non_finite.status_code == 200
+    assert r_non_finite.json()["rows"] == [{"value": "Infinity"}]
 
     # GET /api/geosource/proxy (非法 URL 拦截测试)
     r_proxy_bad = client.get("/api/geosource/proxy?url=invalid_url")

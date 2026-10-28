@@ -1,3 +1,7 @@
+import threading
+
+import pytest
+
 from backend.services import tools
 from backend.services import project_service
 
@@ -42,6 +46,89 @@ def test_register_normalizes_feature_and_keeps_unique_stable_ids_on_replacement(
     assert current["bbox"] == [120.0, 30.0, 121.0, 31.0]
 
 
+def test_gdf_to_layer_does_not_push_result_when_registration_validation_fails():
+    import geopandas as gpd
+    from shapely.geometry import Point
+
+    result = gpd.GeoDataFrame(
+        {"value": [1]},
+        geometry=[Point(float("inf"), 0)],
+        crs="EPSG:4326",
+    )
+
+    with pytest.raises(ValueError, match="GeoJSON"):
+        tools._gdf_to_layer(result, "invalid-result")
+
+    assert tools.get_pending_state()["layers"] == []
+    assert "invalid-result" not in tools._registered_layers
+
+
+@pytest.mark.parametrize("bounds", ([True, 0, 1, 1], [0, False, 1, 1]))
+def test_raster_registration_rejects_boolean_bounds(bounds):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    response = TestClient(app).post("/api/layer/register", json={
+        "name": "invalid-raster", "raster": {"bounds": bounds},
+    })
+
+    assert response.status_code == 400
+    assert "WGS-84" in response.json()["detail"]
+    assert "invalid-raster" not in tools._registered_layers
+
+
+@pytest.mark.parametrize("coordinates", ([True, 30], ["foo", 30], [None, 30], [1]))
+def test_vector_registration_rejects_malformed_coordinates(coordinates):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    response = TestClient(app).post("/api/layer/register", json={
+        "name": "invalid-vector",
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Point", "coordinates": coordinates},
+            }],
+        },
+    })
+
+    assert response.status_code == 400
+    assert "坐标" in response.json()["detail"]
+    assert "invalid-vector" not in tools._registered_layers
+
+
+@pytest.mark.parametrize("geometry", ({}, "not-a-geometry"))
+def test_vector_registration_rejects_malformed_geometry_objects(geometry):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    response = TestClient(app).post("/api/layer/register", json={
+        "name": "invalid-vector",
+        "geojson": {"type": "Feature", "properties": {}, "geometry": geometry},
+    })
+
+    assert response.status_code == 400
+    assert "几何结构无效" in response.json()["detail"]
+
+
+def test_null_geometry_and_empty_collections_remain_registerable():
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    client = TestClient(app)
+    null_geometry = client.post("/api/layer/register", json={
+        "name": "null-geometry",
+        "geojson": {"type": "Feature", "properties": {}, "geometry": None},
+    })
+    empty_collection = client.post("/api/layer/register", json={
+        "name": "empty-collection", "geojson": {"type": "FeatureCollection", "features": []},
+    })
+
+    assert null_geometry.status_code == 200
+    assert empty_collection.status_code == 200
+
+
 def test_layer_registration_api_reports_invalid_geojson_as_client_error():
     from fastapi.testclient import TestClient
     from backend.main import app
@@ -57,6 +144,88 @@ def test_layer_registration_api_reports_invalid_geojson_as_client_error():
     invalid = client.post("/api/layer/register", json={"name": "invalid-layer", "geojson": {"type": "Unknown"}})
     assert invalid.status_code == 400
     assert "invalid-layer" not in tools._registered_layers
+
+
+def test_layer_registration_api_rejects_wgs84_out_of_range_coordinates():
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    response = TestClient(app).post("/api/layer/register", json={
+        "name": "out-of-range-layer",
+        "geojson": {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Point", "coordinates": [0, 100]},
+        }]},
+    })
+
+    assert response.status_code == 400
+    assert "WGS-84" in response.json()["detail"]
+    assert "out-of-range-layer" not in tools._registered_layers
+
+
+@pytest.mark.parametrize("second_payload", [
+    {"geojson": _points()},
+    {"raster": {"bounds": [0, 0, 1, 1]}},
+])
+def test_layer_registration_rejects_unicode_normalization_aliases(second_payload):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    client = TestClient(app)
+    first = client.post("/api/layer/register", json={
+        "name": "\u00e9.geojson", "geojson": _points(),
+    })
+    assert first.status_code == 200
+
+    duplicate = client.post("/api/layer/register", json={
+        "name": "e\u0301.geojson", **second_payload,
+    })
+
+    assert duplicate.status_code == 400
+    assert "\u00e9.geojson" in duplicate.json()["detail"]
+    assert list(tools._registered_layers) == ["\u00e9.geojson"]
+
+    exact_replacement = client.post("/api/layer/register", json={
+        "name": "\u00e9.geojson", "geojson": _points(),
+    })
+    assert exact_replacement.status_code == 200
+    assert list(tools._registered_layers) == ["\u00e9.geojson"]
+
+
+def test_project_restore_preserves_existing_unicode_alias_layer_names():
+    legacy_layers = [
+        {"name": "\u00e9.geojson", "geojson": _points()},
+        {"name": "e\u0301.geojson", "geojson": _points()},
+    ]
+
+    skipped = tools.reset_registered_layers(legacy_layers)
+
+    assert skipped == []
+    assert list(tools._registered_layers) == ["\u00e9.geojson", "e\u0301.geojson"]
+
+
+def test_unregister_legacy_unicode_alias_targets_exact_name_and_token():
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    composed = tools._register_layer("\u00e9.geojson", _points())
+    decomposed = tools._register_layer(
+        "e\u0301.geojson", _points(), allow_unicode_alias=True,
+    )
+    client = TestClient(app)
+
+    removed_alias = client.post("/api/layer/unregister", json={
+        "name": "e\u0301.geojson", "registration_token": decomposed,
+    })
+    stale_other = client.post("/api/layer/unregister", json={
+        "name": "\u00e9.geojson", "registration_token": decomposed,
+    })
+
+    assert removed_alias.json()["removed"] is True
+    assert stale_other.json()["removed"] is False
+    assert stale_other.json()["stale"] is True
+    assert list(tools._registered_layers) == ["\u00e9.geojson"]
+    assert tools._registered_layers["\u00e9.geojson"]["registration_token"] == composed
 
 
 def test_group_metadata_is_available_to_ai_and_can_be_cleared():
@@ -211,6 +380,59 @@ def test_ai_layer_detail_does_not_expose_internal_feature_identity_as_a_field():
     detail = tools.get_layer_detail.invoke({"layer_name": "places"})
     assert "_fid" not in detail.split("属性字段", 1)[-1]
     assert "稳定 ID: id:a" in detail
+
+
+def test_registered_layer_snapshot_is_atomic_with_registry_mutation(monkeypatch):
+    iteration_started = threading.Event()
+    release_iteration = threading.Event()
+    writer_started = threading.Event()
+    writer_finished = threading.Event()
+    errors = []
+
+    class PausingRegistry(dict):
+        def items(self):
+            iterator = iter(super().items())
+            yield next(iterator)
+            iteration_started.set()
+            assert release_iteration.wait(2)
+            yield from iterator
+
+    monkeypatch.setattr(tools, "_registered_layers", PausingRegistry({
+        "base": {"geojson": {"features": []}, "feature_count": 0, "geometry_types": [], "bbox": []}
+    }))
+    monkeypatch.setattr(tools, "_layer_property_examples", lambda _geojson: [])
+
+    def take_snapshot():
+        try:
+            tools.get_registered_layers_snapshot()
+        except Exception as exc:
+            errors.append(exc)
+
+    def mutate_registry():
+        writer_started.set()
+        with tools._state_lock:
+            tools._registered_layers["concurrent"] = {
+                "geojson": {"features": []}, "feature_count": 0, "geometry_types": [], "bbox": []
+            }
+        writer_finished.set()
+
+    reader = threading.Thread(target=take_snapshot)
+    reader.start()
+    try:
+        assert iteration_started.wait(1)
+        writer = threading.Thread(target=mutate_registry)
+        writer.start()
+        assert writer_started.wait(1)
+        writer_finished_while_snapshot_paused = writer_finished.wait(0.05)
+    finally:
+        release_iteration.set()
+        reader.join(1)
+        if "writer" in locals():
+            writer.join(1)
+
+    assert not writer_finished_while_snapshot_paused
+    assert not errors
+    assert writer_finished.is_set()
 
 
 def test_register_edit_rename_save_reload_delete_round_trip(tmp_path, monkeypatch):

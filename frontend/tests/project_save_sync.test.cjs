@@ -46,6 +46,24 @@ test('autosave collects names and groups after current registration finishes', a
   assert.equal(h.saves[0].assignments[0].groupId, 'new-group');
 });
 
+test('autosave includes the current panel order for each layer', async () => {
+  const h = setup([
+    { layer_id: 'second', filename: 'Second', _registeredName: 'Second' },
+    { layer_id: 'first', filename: 'First', _registeredName: 'First' },
+  ]);
+  await h.project.autoSave();
+
+  assert.deepEqual(Array.from(h.saves[0].assignments, assignment => assignment.order), [0, 1]);
+});
+
+test('autosave includes the active per-layer label configuration', async () => {
+  const labels = { field: 'district', fontSize: 14, color: '#223344' };
+  const h = setup([{ layer_id: 'labeled', filename: 'Districts', _registeredName: 'Districts', labels }]);
+  await h.project.autoSave();
+
+  assert.deepEqual(JSON.parse(JSON.stringify(h.saves[0].assignments[0].labels)), labels);
+});
+
 for (const results of [[[false]], [[{ success: false }]], [[{ ok: false }]], undefined]) {
   test(`autosave rejects failed or unknown synchronization results: ${JSON.stringify(results)}`, async () => {
     const h = setup([], () => Promise.resolve(results));

@@ -70,7 +70,7 @@ def _http_get(url: str, params: dict = None, timeout: int = 15) -> requests.Resp
         if params:
             credential_query = urllib.parse.urlencode(params, doseq=True)
             credential_parameters.update(sensitive_query_parameter_names("?" + credential_query))
-        initial_classification = is_public_http_target(url)
+        initial_classification = is_public_http_target(url, timeout=timeout)
         protect_public_target = initial_classification is not False
         if initial_classification is not True:
             proxies = {"http": None, "https": None}
@@ -903,6 +903,8 @@ def fetch_gis_data_url(
     else:
         raise UrlGisError(f"服务类型 {stype} 目前不支持直接矢量要素抓取。如果是栅格/瓦片，请使用专用流式加载工具")
 
+    if mode == "full" and cancel_check and cancel_check():
+        raise UrlGisError("获取已由用户取消")
     if gdf is None:
         raise UrlGisError("数据源没有返回可读取的矢量要素")
 
@@ -919,6 +921,9 @@ def fetch_gis_data_url(
 
     if len(gdf) == 0:
         acquisition["checks"].append({"name": "empty_result", "status": "passed", "detail": "查询成功，匹配要素数为 0"})
+
+    if mode == "full" and cancel_check and cancel_check():
+        raise UrlGisError("获取已由用户取消")
 
     # 落盘保存为文件
     fmt_lower = output_format.lower().strip()

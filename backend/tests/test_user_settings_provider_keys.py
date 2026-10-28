@@ -10,6 +10,7 @@ from backend import main
 def test_user_settings_post_strips_provider_keys(tmp_path, monkeypatch):
     settings_path = tmp_path / "user_settings.json"
     monkeypatch.setattr(main, "_USER_SETTINGS_PATH", str(settings_path))
+    _use_temporary_credential_store(tmp_path, monkeypatch)
 
     with TestClient(main.app) as client:
         response = client.post(
@@ -33,6 +34,7 @@ def test_legacy_provider_keys_are_removed_from_persisted_settings(tmp_path, monk
         encoding="utf-8",
     )
     monkeypatch.setattr(main, "_USER_SETTINGS_PATH", str(settings_path))
+    _use_temporary_credential_store(tmp_path, monkeypatch)
 
     with TestClient(main.app) as client:
         fetched = client.get("/api/user-settings")

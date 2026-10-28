@@ -1,10 +1,12 @@
 """Shared redirect checks for user-supplied HTTP(S) data sources."""
 
 import ipaddress
+import concurrent.futures
 import http.client
 import re
 import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +29,40 @@ _SENSITIVE_QUERY_NAME = re.compile(
 )
 _URL_WITH_USERINFO = re.compile(r"(?i)(https?://)[^/@\s\"'<>]+@")
 _EMBEDDED_HTTP_URL = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+# DNS lookups are blocking and cannot be interrupted once libc has started one.
+# Keep timed lookups on a small pool and cap outstanding work, since a stuck
+# libc resolver call cannot be interrupted after the caller's deadline expires.
+_DNS_LOOKUP_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="url-security-dns"
+)
+_DNS_LOOKUP_SLOTS = threading.BoundedSemaphore(4)
+
+
+def _request_dns_timeout(timeout):
+    """Bound DNS checks by Requests' connect timeout, with a finite default."""
+    if hasattr(timeout, "connect_timeout"):
+        timeout = timeout.connect_timeout
+    if isinstance(timeout, (tuple, list)):
+        timeout = timeout[0] if timeout else None
+    try:
+        return max(0.0, float(timeout)) if timeout is not None else 10.0
+    except (TypeError, ValueError):
+        return 10.0
+
+
+def _timed_getaddrinfo(host, port, timeout):
+    if not _DNS_LOOKUP_SLOTS.acquire(blocking=False):
+        raise concurrent.futures.TimeoutError()
+    try:
+        future = _DNS_LOOKUP_EXECUTOR.submit(
+            socket.getaddrinfo, host, port, type=socket.SOCK_STREAM
+        )
+    except BaseException:
+        _DNS_LOOKUP_SLOTS.release()
+        raise
+    future.add_done_callback(lambda _future: _DNS_LOOKUP_SLOTS.release())
+    return future.result(timeout=max(0.0, timeout))
 
 
 def sanitize_http_url(url):
@@ -80,7 +116,7 @@ def sanitize_error_text(error, source_url=None):
     return detail
 
 
-def resolve_http_target(target_url):
+def resolve_http_target(target_url, timeout=None):
     """Resolve an HTTP(S) URL once and return its public/private/unknown class plus records."""
     try:
         parsed = urllib.parse.urlsplit(target_url)
@@ -92,7 +128,13 @@ def resolve_http_target(target_url):
         return None, ()
 
     try:
-        records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        if timeout is None:
+            records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        else:
+            remaining = max(0.0, float(timeout))
+            records = _timed_getaddrinfo(host, port, remaining)
+    except concurrent.futures.TimeoutError:
+        return None, ()
     except OSError:
         return None, ()
     addresses = []
@@ -109,9 +151,9 @@ def resolve_http_target(target_url):
     return classifications.pop(), tuple(records)
 
 
-def is_public_http_target(target_url):
+def is_public_http_target(target_url, timeout=None):
     """Return True/False for globally routable HTTP(S), or None if unknown."""
-    return resolve_http_target(target_url)[0]
+    return resolve_http_target(target_url, timeout=timeout)[0]
 
 
 def _http_origin_key(target_url):
@@ -125,6 +167,15 @@ def _http_origin_key(target_url):
         )
     except (TypeError, ValueError):
         return None
+
+
+def _resolve_http_target_before(target_url, deadline):
+    if deadline is None:
+        return resolve_http_target(target_url)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None, ()
+    return resolve_http_target(target_url, timeout=remaining)
 
 
 def redirect_origin_key(target_url):
@@ -207,20 +258,27 @@ def _public_http_userinfo_is_insecure(target_url, classification):
     )
 
 
-def redirect_is_allowed(target_url, protect_public_target):
+_CLASSIFICATION_UNSET = object()
+
+
+def redirect_is_allowed(
+    target_url, protect_public_target, target_classification=_CLASSIFICATION_UNSET,
+):
     try:
         target = urllib.parse.urlsplit(target_url)
         valid_target = (
             target.scheme.lower() in {"http", "https"}
             and bool(target.hostname)
-            and not target.username
-            and not target.password
+            and target.username is None
+            and target.password is None
         )
     except (TypeError, ValueError):
         return False
-    return valid_target and (
-        not protect_public_target or is_public_http_target(target_url) is True
-    )
+    if not valid_target or not protect_public_target:
+        return valid_target
+    if target_classification is _CLASSIFICATION_UNSET:
+        target_classification = is_public_http_target(target_url)
+    return target_classification is True
 
 
 def _host_header(parsed):
@@ -245,7 +303,7 @@ def _url_with_pinned_address(target_url, records):
 class SafeHTTPRedirectHandler(urllib.request.HTTPRedirectHandler):
     def __init__(
         self, protect_public_target, connection_policy=None, credential_parameters=None,
-        reject_authenticated_cross_origin=False,
+        reject_authenticated_cross_origin=False, header_deadline=None,
     ):
         super().__init__()
         self.protect_public_target = protect_public_target
@@ -254,6 +312,7 @@ class SafeHTTPRedirectHandler(urllib.request.HTTPRedirectHandler):
             str(name).casefold() for name in (credential_parameters or ()) if name
         }
         self.reject_authenticated_cross_origin = bool(reject_authenticated_cross_origin)
+        self.header_deadline = header_deadline
         self.credentials_stripped = False
         self.authenticated_redirect_blocked = False
 
@@ -268,14 +327,19 @@ class SafeHTTPRedirectHandler(urllib.request.HTTPRedirectHandler):
             raise urllib.error.HTTPError(
                 req.full_url, 403, "Authenticated cross-origin redirect is not allowed", headers, fp
             )
-        if not redirect_is_allowed(newurl, self.protect_public_target):
+        classification, _records = _resolve_http_target_before(newurl, self.header_deadline)
+        if self.header_deadline is not None and time.monotonic() >= self.header_deadline:
+            raise TimeoutError("HTTP redirect DNS deadline exceeded")
+        if not redirect_is_allowed(
+            newurl, self.protect_public_target, target_classification=classification,
+        ):
             raise urllib.error.HTTPError(
                 req.full_url, 403, "Redirect target is not allowed", headers, fp
             )
         # A user-selected private origin may redirect to a public CDN. Once the
         # chain reaches a public or ambiguously classified host, keep the guard
         # active so later redirects cannot pivot back into the local network.
-        if is_public_http_target(newurl) is not False:
+        if classification is not False:
             self.protect_public_target = True
         if self.protect_public_target and self.connection_policy is not None:
             self.connection_policy["require_public_target"] = True
@@ -303,36 +367,46 @@ class _PinnedAddressStore:
             return self._records.get((host.lower(), port), ())
 
 
-def _connect_pinned_socket(connection, pin_store):
+def _connect_pinned_socket(connection, pin_store, deadline=None):
     records = pin_store.get(connection.host, connection.port) if pin_store else ()
     last_error = None
     for record in records:
         try:
+            timeout = connection.timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("HTTP connection deadline exceeded")
+                timeout = remaining if timeout is None else min(timeout, remaining)
             return socket.create_connection(
-                record[4], timeout=connection.timeout,
+                record[4], timeout=timeout,
                 source_address=connection.source_address,
             )
         except OSError as exc:
             last_error = exc
+            if deadline is not None and deadline <= time.monotonic():
+                raise TimeoutError("HTTP connection deadline exceeded") from exc
     raise OSError(f"No checked address could be reached for {connection.host}: {last_error or 'no addresses'}")
 
 
 class _PinnedUrllibHTTPConnection(http.client.HTTPConnection):
     _default_pin_store = None
+    _connect_deadline = None
 
     def connect(self):
         if self._tunnel_host:
             raise OSError("Pinned direct connection cannot use a proxy tunnel")
-        self.sock = _connect_pinned_socket(self, self._default_pin_store)
+        self.sock = _connect_pinned_socket(self, self._default_pin_store, self._connect_deadline)
 
 
 class _PinnedUrllibHTTPSConnection(http.client.HTTPSConnection):
     _default_pin_store = None
+    _connect_deadline = None
 
     def connect(self):
         if self._tunnel_host:
             raise OSError("Pinned direct connection cannot use a proxy tunnel")
-        raw_sock = _connect_pinned_socket(self, self._default_pin_store)
+        raw_sock = _connect_pinned_socket(self, self._default_pin_store, self._connect_deadline)
         try:
             self.sock = self._context.wrap_socket(raw_sock, server_hostname=self.host)
         except Exception:
@@ -342,6 +416,7 @@ class _PinnedUrllibHTTPSConnection(http.client.HTTPSConnection):
 
 class _PinnedUrllibProxyHTTPSConnection(http.client.HTTPSConnection):
     _default_pin_store = None
+    _connect_deadline = None
 
     def set_tunnel(self, host, port=None, headers=None):
         records = self._default_pin_store.get(host, port or 443) if self._default_pin_store else ()
@@ -354,9 +429,14 @@ class _PinnedUrllibProxyHTTPSConnection(http.client.HTTPSConnection):
     def connect(self):
         if not self._tunnel_host:
             return super().connect()
-        raw_sock = socket.create_connection(
-            (self.host, self.port), timeout=self.timeout, source_address=self.source_address,
-        )
+        timeout = self.timeout
+        if self._connect_deadline is not None:
+            remaining = self._connect_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("HTTP connection deadline exceeded")
+            timeout = remaining if timeout is None else min(timeout, remaining)
+        raw_sock = socket.create_connection((self.host, self.port), timeout=timeout,
+                                            source_address=self.source_address)
         try:
             self.sock = raw_sock
             self._tunnel()
@@ -364,6 +444,52 @@ class _PinnedUrllibProxyHTTPSConnection(http.client.HTTPSConnection):
         except Exception:
             raw_sock.close()
             raise
+
+
+class _DeadlineHeaderReader:
+    """Read HTTP header lines with a monotonic deadline checked per byte."""
+
+    def __init__(self, stream, sock, deadline):
+        self._stream = stream
+        self._sock = sock
+        self._deadline = deadline
+
+    def readline(self, limit=-1):
+        result = bytearray()
+        while limit < 0 or len(result) < limit:
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("HTTP response header deadline exceeded")
+            self._sock.settimeout(remaining)
+            char = self._stream.read(1)
+            if not char:
+                break
+            result.extend(char)
+            if char == b"\n":
+                break
+        return bytes(result)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+class _DeadlineHTTPResponse(http.client.HTTPResponse):
+    _header_deadline = None
+
+    def __init__(self, sock, *args, **kwargs):
+        super().__init__(sock, *args, **kwargs)
+        if self._header_deadline is not None:
+            self.fp = _DeadlineHeaderReader(self.fp, sock, self._header_deadline)
+
+
+def _connection_class_with_header_deadline(connection_class, deadline):
+    response_class = type(
+        "DeadlineHTTPResponse", (_DeadlineHTTPResponse,), {"_header_deadline": deadline},
+    )
+    return type(
+        "DeadlineHTTPConnection", (connection_class,),
+        {"response_class": response_class, "_connect_deadline": deadline},
+    )
 
 
 def _request_uses_proxy(req):
@@ -380,24 +506,33 @@ def _request_uses_proxy(req):
 
 
 class _SafePinnedHTTPHandler(urllib.request.HTTPHandler):
-    def __init__(self, connection_policy, pin_store, debuglevel=0):
+    def __init__(self, connection_policy, pin_store, debuglevel=0, header_deadline=None):
         super().__init__(debuglevel=debuglevel)
         self.connection_policy = connection_policy
         self.pin_store = pin_store
+        self.header_deadline = header_deadline
+        connection_base = _PinnedUrllibHTTPConnection
+        if header_deadline is not None:
+            connection_base = _connection_class_with_header_deadline(connection_base, header_deadline)
         self._connection_class = type(
-            "PinnedUrllibHTTPConnection", (_PinnedUrllibHTTPConnection,),
+            "PinnedUrllibHTTPConnection", (connection_base,),
             {"_default_pin_store": pin_store},
         )
 
     def http_open(self, req):
         origin_key = _http_origin_key(req.full_url)
         if _request_uses_proxy(req):
-            classification, records = resolve_http_target(req.full_url)
+            classification, records = _resolve_http_target_before(req.full_url, self.header_deadline)
+            if (
+                self.connection_policy.get("initial_private_origin") == origin_key
+                and classification is not False
+            ):
+                raise urllib.error.URLError("Target failed the public DNS safety check")
+            if _public_http_credential_is_insecure(req.full_url, classification, self.connection_policy):
+                raise urllib.error.URLError("GeoSource credentials over public HTTP require HTTPS")
             if (
                 not records
-                or (self.connection_policy.get("initial_private_origin") == origin_key and classification is not False)
                 or (self.connection_policy["require_public_target"] and classification is not True)
-                or _public_http_credential_is_insecure(req.full_url, classification, self.connection_policy)
                 or _public_http_userinfo_is_insecure(req.full_url, classification)
             ):
                 raise urllib.error.URLError("Target failed the public DNS safety check")
@@ -410,19 +545,27 @@ class _SafePinnedHTTPHandler(urllib.request.HTTPHandler):
             req.selector = _url_with_pinned_address(req.full_url, records)
             req.headers["Host"] = _host_header(parsed)
             try:
-                return self.do_open(http.client.HTTPConnection, req)
+                connection_class = http.client.HTTPConnection
+                if self.header_deadline is not None:
+                    connection_class = _connection_class_with_header_deadline(connection_class, self.header_deadline)
+                return self.do_open(connection_class, req)
             finally:
                 req.selector = original_selector
                 req.headers.clear()
                 req.headers.update(original_headers)
                 req.unredirected_hdrs.clear()
                 req.unredirected_hdrs.update(original_unredirected_headers)
-        classification, records = resolve_http_target(req.full_url)
+        classification, records = _resolve_http_target_before(req.full_url, self.header_deadline)
+        if (
+            self.connection_policy.get("initial_private_origin") == origin_key
+            and classification is not False
+        ):
+            raise urllib.error.URLError("Target failed the public DNS safety check")
+        if _public_http_credential_is_insecure(req.full_url, classification, self.connection_policy):
+            raise urllib.error.URLError("GeoSource credentials over public HTTP require HTTPS")
         if (
             not records
-            or (self.connection_policy.get("initial_private_origin") == origin_key and classification is not False)
             or (self.connection_policy["require_public_target"] and classification is not True)
-            or _public_http_credential_is_insecure(req.full_url, classification, self.connection_policy)
             or _public_http_userinfo_is_insecure(req.full_url, classification)
         ):
             raise urllib.error.URLError("Target failed the public DNS safety check")
@@ -433,19 +576,24 @@ class _SafePinnedHTTPHandler(urllib.request.HTTPHandler):
 
 
 class _SafePinnedHTTPSHandler(urllib.request.HTTPSHandler):
-    def __init__(self, connection_policy, pin_store, debuglevel=None, context=None, check_hostname=None):
+    def __init__(self, connection_policy, pin_store, debuglevel=None, context=None, check_hostname=None,
+                 header_deadline=None):
         super().__init__(debuglevel=debuglevel, context=context, check_hostname=check_hostname)
         self.connection_policy = connection_policy
         self.pin_store = pin_store
+        self.header_deadline = header_deadline
+        connection_base = _PinnedUrllibHTTPSConnection
+        if header_deadline is not None:
+            connection_base = _connection_class_with_header_deadline(connection_base, header_deadline)
         self._connection_class = type(
-            "PinnedUrllibHTTPSConnection", (_PinnedUrllibHTTPSConnection,),
+            "PinnedUrllibHTTPSConnection", (connection_base,),
             {"_default_pin_store": pin_store},
         )
 
     def https_open(self, req):
         origin_key = _http_origin_key(req.full_url)
         if _request_uses_proxy(req):
-            classification, records = resolve_http_target(req.full_url)
+            classification, records = _resolve_http_target_before(req.full_url, self.header_deadline)
             if (
                 not records
                 or (self.connection_policy.get("initial_private_origin") == origin_key and classification is not False)
@@ -455,12 +603,15 @@ class _SafePinnedHTTPSHandler(urllib.request.HTTPSHandler):
             parsed = urllib.parse.urlsplit(req.full_url)
             port = parsed.port or 443
             self.pin_store.set(parsed.hostname, port, records)
+            proxy_base = _PinnedUrllibProxyHTTPSConnection
+            if self.header_deadline is not None:
+                proxy_base = _connection_class_with_header_deadline(proxy_base, self.header_deadline)
             proxy_connection_class = type(
-                "PinnedUrllibProxyHTTPSConnection", (_PinnedUrllibProxyHTTPSConnection,),
+                "PinnedUrllibProxyHTTPSConnection", (proxy_base,),
                 {"_default_pin_store": self.pin_store},
             )
             return self.do_open(proxy_connection_class, req, context=self._context)
-        classification, records = resolve_http_target(req.full_url)
+        classification, records = _resolve_http_target_before(req.full_url, self.header_deadline)
         if (
             not records
             or (self.connection_policy.get("initial_private_origin") == origin_key and classification is not False)
@@ -611,7 +762,9 @@ class PinnedAddressHTTPAdapter(HTTPAdapter):
         proxy = select_proxy(request.url, proxies or {})
         if proxy and proxy.lower().startswith("socks") and self.require_public_target:
             raise requests.ConnectionError("当前 SOCKS 代理无法固定远端 DNS 地址，已阻止该请求")
-        classification, records = resolve_http_target(request.url)
+        classification, records = resolve_http_target(
+            request.url, timeout=_request_dns_timeout(timeout),
+        )
         if (
             not records
             or (_http_origin_key(request.url) == self.initial_private_origin and classification is not False)
@@ -656,9 +809,10 @@ def safe_redirect_opener(
     strip_sensitive_query=True,
     require_https_for_credentials=None,
     reject_authenticated_cross_origin=False,
+    header_deadline=None,
 ):
     """Create an urllib opener following the user's private-network policy."""
-    initial_classification = is_public_http_target(initial_url)
+    initial_classification = _resolve_http_target_before(initial_url, header_deadline)[0]
     if initial_classification is not True:
         # Only clearly public origins use a proxy. Private, mixed, and unknown
         # origins stay on the locally checked direct path.
@@ -682,7 +836,8 @@ def safe_redirect_opener(
         SafeHTTPRedirectHandler(
             protect_public_target, connection_policy, redirect_credential_parameters,
             reject_authenticated_cross_origin=reject_authenticated_cross_origin,
+            header_deadline=header_deadline,
         ),
-        _SafePinnedHTTPHandler(connection_policy, pin_store),
-        _SafePinnedHTTPSHandler(connection_policy, pin_store),
+        _SafePinnedHTTPHandler(connection_policy, pin_store, header_deadline=header_deadline),
+        _SafePinnedHTTPSHandler(connection_policy, pin_store, header_deadline=header_deadline),
     )

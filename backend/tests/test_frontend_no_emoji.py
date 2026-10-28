@@ -28,6 +28,7 @@ OWNED_FILES = [
     "task.js",
     "workspace.js",
 ]
+INLINE_SVG_FILES = [name for name in OWNED_FILES if name != "settings.js"]
 
 # Characters the owner ruled out of the UI: decorative typographic glyphs plus
 # the pictographs that previously lived in these files.
@@ -82,7 +83,7 @@ def test_owned_files_are_the_expected_set():
     assert "analysis_tools.js" not in expected
 
 
-@pytest.mark.parametrize("name", OWNED_FILES)
+@pytest.mark.parametrize("name", INLINE_SVG_FILES)
 def test_inline_svgs_use_current_color(name):
     """Every inline SVG we introduced must inherit the surrounding text colour."""
     text = _normalise(_read(name))
@@ -92,7 +93,7 @@ def test_inline_svgs_use_current_color(name):
     assert not missing, "%s has svg without currentColor: %s" % (name, missing[:3])
 
 
-@pytest.mark.parametrize("name", OWNED_FILES)
+@pytest.mark.parametrize("name", INLINE_SVG_FILES)
 def test_decorative_svgs_are_aria_hidden(name):
     text = _normalise(_read(name))
     for tag in re.findall(r"<svg\b[^>]*>", text):

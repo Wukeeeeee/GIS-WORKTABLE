@@ -26,7 +26,7 @@ function makeElement(isSelect = false) {
   return element;
 }
 
-function loadRasterTools(features) {
+function loadRasterTools(features, registeredNames) {
   const ids = [
     'rasterToolsPanelWrapper', 'rasterToolsPanelContainer', 'rasterToolsPanel', 'rasterToolsToolbar',
     'rasterToolsBody', 'rasterToolsClose', 'rtOp', 'rtLayer', 'rtLayerField', 'rtLayerLabel',
@@ -44,6 +44,19 @@ function loadRasterTools(features) {
   const window = { GIS: {
     workspace,
     api: { BASE_URL: '' },
+    state: {
+      layerOptionEntries(names) {
+        const counts = new Map(), seen = new Map();
+        names.forEach(name => counts.set(name.normalize('NFC'), (counts.get(name.normalize('NFC')) || 0) + 1));
+        return names.map(value => {
+          const key = value.normalize('NFC');
+          const occurrence = (seen.get(key) || 0) + 1;
+          seen.set(key, occurrence);
+          const suffix = counts.get(key) > 1 ? ` (${occurrence})` : '';
+          return { value, suffix };
+        });
+      },
+    },
     layers: {
       getLayerNames() { return ['local-grid']; },
       getLayerByName(name) { return name === 'local-grid' ? layer : null; },
@@ -57,7 +70,11 @@ function loadRasterTools(features) {
     addEventListener() {}, removeEventListener() {},
   };
   const context = {
-    window, document, fetch() { return Promise.reject(new Error('offline')); },
+    window, document, fetch() {
+      return registeredNames
+        ? Promise.resolve({ json: () => Promise.resolve({ names: registeredNames }) })
+        : Promise.reject(new Error('offline'));
+    },
     console, Promise, Array, Object, String, Number, Math, Date, Set, Map, isFinite, parseFloat, parseInt,
   };
   const sourcePath = path.resolve(__dirname, '../js/raster_tools.js');
@@ -73,6 +90,18 @@ test('raster layer-name fallback keeps the selected layer and refreshes its nume
   assert.equal(harness.elements.get('rtLayer').value, 'local-grid');
   assert.ok(harness.elements.get('rtFieldSel').options.some(option => option.value === 'elevation'));
   assert.ok(!harness.elements.get('rtFieldSel').options.some(option => option.value === 'category'));
+});
+
+test('raster layer selector labels legacy Unicode aliases while preserving exact values', async () => {
+  const harness = loadRasterTools(undefined, ['é.geojson', 'e\u0301.geojson']);
+  harness.tools.openWith('slope');
+  await new Promise(resolve => setImmediate(resolve));
+
+  const aliases = harness.elements.get('rtLayer').options.filter(option => option.value.includes('geojson'));
+  assert.deepEqual(aliases.map(option => [option.value, option.textContent]), [
+    ['é.geojson', 'é.geojson (1)'],
+    ['e\u0301.geojson', 'e\u0301.geojson (2)'],
+  ]);
 });
 
 test('split fields include categorical properties from later features and retain selection', async () => {

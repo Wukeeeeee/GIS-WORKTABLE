@@ -13,6 +13,7 @@ GIS WorkTable — AI 服务层
 
 import os, time, tempfile, json, datetime, re
 import threading
+from contextvars import ContextVar
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -982,12 +983,47 @@ def _try_handle_confirm_command(session_id: str, message: str) -> dict | None:
     return result
 
 
+def _handle_pending_action_safely(session_id: str, message: str) -> dict | None:
+    """Handle or clear session pending state only while its GIS locks are held."""
+    from backend.services import pending_action, tools
+
+    sid = session_id or "default"
+    has_pending_action = pending_action.get_pending_action(sid) is not None
+    is_short_command = pending_action.classify_short_command(message) is not None
+    if not has_pending_action and not is_short_command:
+        return None
+
+    def busy_result(response):
+        return {
+            "response": response, "reasoning": None, "layers": [], "images": [],
+            "heatmap": None, "clear_layers": False, "layer_ops": [],
+            "pending_suggestions": None, "confirm_pending": None, "busy": True,
+        }
+
+    if not tools.acquire_session_lock(sid, timeout=0):
+        return busy_result("当前会话已有请求在处理中，请等待上一条完成后再发送新消息。")
+    try:
+        if not tools.acquire_shared_state_lock(0):
+            return busy_result("当前 GIS 工作区正在处理另一项操作，请稍后重试。")
+        try:
+            if pending_action.get_pending_action(sid) is None:
+                return None
+            result = _try_handle_confirm_command(sid, message)
+            if result is None:
+                pending_action.clear_pending_action(sid)
+            return result
+        finally:
+            tools.release_shared_state_lock()
+    finally:
+        tools.release_session_lock(sid)
+
+
 # ============================================================
 # 主入口: chat_with_ai（重构后使用 LangGraph Agent）
 # ============================================================
 
 def chat_with_ai(message: str, session_id: str = "default", cfg=None,
-                 force_skills: list = None, amap_key: str = None,
+                 force_skills: list = None, amap_key: str = None, request_id: str = None,
                  provider: str = "", mode: str = "full", task_id: str = None) -> dict:
     """
     调用 AI 进行对话（使用 LangGraph Agent）
@@ -1020,18 +1056,14 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
     # 自动清理过期缓存
     clean_old_cache(7)
 
-    # 确定性短指令：存在 pending task 时，“继续/确认/执行/取消”不走 LLM
-    handled = _try_handle_confirm_command(session_id, message)
+    from backend.services import pending_action as _pa
+    # Read choice context before safely consuming the pending action.
+    _ctx_backfill = _pa.build_choice_backfill(session_id, message)
+    # Deterministic actions mutate the same session/GIS state as Agent tools,
+    # so they must honor the same locks before execution or pending-state reset.
+    handled = _handle_pending_action_safely(session_id, message)
     if handled is not None:
         return handled
-    from backend.services import pending_action as _pa
-    # choose_option 上下文回填：用户点击选项后只发短 label，把原任务拼回（防地名幻觉）
-    # 必须在 clear_pending_action 之前取值
-    _ctx_backfill = _pa.build_choice_backfill(session_id, message)
-
-    # 走正常 AI：先清掉上一轮遗留的 pending（若本轮有新的“就绪未展示”图层，
-    # 会在 Agent 结束时由 auto-promote 重新挂起）
-    _pa.clear_pending_action(session_id)
 
     if _ctx_backfill:
         message = _ctx_backfill
@@ -1059,6 +1091,7 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
         original_message=message,
         session_id=session_id,
         task_id=task_id,
+        request_id=request_id,
     )
 
     elapsed = time.time() - start_time
@@ -1070,10 +1103,13 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
         # 用户消息尚未提交；busy 结果不能替换或污染正式历史。
         print("[GIS] 会话忙，本轮不写入会话历史", flush=True)
         return result
-    else:
-        commit_assistant_reply(
-            session_id, ai_reply, result.get("reasoning"), history_context=history,
-        )
+    if result.get("execution_status") == "cancelled":
+        # Cancelled runs are not assistant replies; match the SSE path, which
+        # only commits history after receiving a completed `done` event.
+        return result
+    commit_assistant_reply(
+        session_id, ai_reply, result.get("reasoning"), history_context=history,
+    )
 
     # 定期清理过期历史文件
     if len(conversation_history) > 100:
@@ -1173,15 +1209,93 @@ def clear_memory(session_id: str = "default"):
 _global_cancel_generation = 0
 _session_cancel_generation: dict = {}
 _cancelled_sessions: dict = {}
+_cancelled_requests: dict = {}
+_active_cancel_requests: set = set()
+_active_cancel_sessions: dict = {}
 _CANCELLED_SESSIONS_MAX = 1000
 _CANCEL_LOCK = threading.Lock()
+_REQUEST_CANCEL_CONTEXT = ContextVar("gis_request_cancel_context", default=None)
 
-def request_cancel(session_id: str = ""):
+
+def set_request_cancel_context(session_id: str, request_id: str = None):
+    """Bind cancellation identity so worker-thread tool wrappers can check it."""
+    return _REQUEST_CANCEL_CONTEXT.set({
+        "session_id": session_id or "default",
+        "request_id": request_id,
+        "global_generation": None,
+    })
+
+
+def reset_request_cancel_context(token):
+    _REQUEST_CANCEL_CONTEXT.reset(token)
+
+
+def is_current_request_cancelled() -> bool:
+    context = _REQUEST_CANCEL_CONTEXT.get()
+    if not isinstance(context, dict):
+        return False
+    return is_session_cancelled(
+        context["session_id"], context.get("request_id"), context.get("global_generation"),
+    )
+
+
+def register_cancel_request(session_id: str, request_id: str = None):
+    with _CANCEL_LOCK:
+        if request_id:
+            key = (session_id, request_id)
+            if key in _active_cancel_requests:
+                return
+            _active_cancel_requests.add(key)
+        _active_cancel_sessions[session_id] = _active_cancel_sessions.get(session_id, 0) + 1
+
+
+def finish_cancel_request(session_id: str, request_id: str = None):
+    with _CANCEL_LOCK:
+        if request_id:
+            key = (session_id, request_id)
+            if key not in _active_cancel_requests:
+                return
+            _active_cancel_requests.discard(key)
+        active_count = _active_cancel_sessions.get(session_id, 0)
+        if active_count <= 1:
+            _active_cancel_sessions.pop(session_id, None)
+        else:
+            _active_cancel_sessions[session_id] = active_count - 1
+
+        for cache in (_cancelled_sessions, _session_cancel_generation):
+            while len(cache) > _CANCELLED_SESSIONS_MAX:
+                evictable = next(
+                    (candidate for candidate in cache
+                     if candidate not in _active_cancel_sessions),
+                    None,
+                )
+                if evictable is None:
+                    break
+                cache.pop(evictable)
+
+def request_cancel(session_id: str = "", request_id: str = None):
     """标记取消指定会话的 AI 请求（由 /api/cancel 端点调用）。
 
     session_id 为空时视为"全局取消"（兼容旧前端：取消所有正在跑的会话）。
     """
     global _global_cancel_generation
+    if request_id and not session_id:
+        return "按请求取消时必须提供会话 ID"
+    if request_id:
+        key = (session_id, request_id)
+        with _CANCEL_LOCK:
+            if key not in _cancelled_requests:
+                while len(_cancelled_requests) >= _CANCELLED_SESSIONS_MAX:
+                    evictable = next(
+                        (candidate for candidate in _cancelled_requests
+                         if candidate not in _active_cancel_requests),
+                        None,
+                    )
+                    if evictable is None:
+                        break
+                    _cancelled_requests.pop(evictable)
+            _cancelled_requests[key] = True
+        return f"已发送取消信号（请求 {request_id}）"
     if not session_id:
         # 兼容模式：全局取消
         with _CANCEL_LOCK:
@@ -1191,26 +1305,54 @@ def request_cancel(session_id: str = ""):
     with _CANCEL_LOCK:
         if session_id not in _cancelled_sessions:
             while len(_cancelled_sessions) >= _CANCELLED_SESSIONS_MAX:
-                _cancelled_sessions.pop(next(iter(_cancelled_sessions)))
+                evictable = next(
+                    (candidate for candidate in _cancelled_sessions
+                     if candidate not in _active_cancel_sessions),
+                    None,
+                )
+                if evictable is None:
+                    break
+                _cancelled_sessions.pop(evictable)
         _cancelled_sessions[session_id] = True
     print(f"[GIS] 用户请求取消，已标记会话 {session_id} 的取消标志", flush=True)
     return f"已发送取消信号（会话 {session_id}）"
 
-def is_session_cancelled(session_id: str) -> bool:
+def is_session_cancelled(session_id: str, request_id: str = None,
+                          global_generation: int = None) -> bool:
     """检查指定会话是否被取消（同时兼容全局标志）。"""
     with _CANCEL_LOCK:
+        if request_id:
+            return ((global_generation is not None and global_generation < _global_cancel_generation)
+                    or bool(_cancelled_requests.get((session_id, request_id))))
         started_generation = _session_cancel_generation.get(session_id, _global_cancel_generation)
         return (started_generation < _global_cancel_generation
                 or bool(_cancelled_sessions.get(session_id)))
 
-def clear_session_cancel(session_id: str):
-    """请求开始时清除本会话的取消标记（不动其他会话）。"""
+def clear_session_cancel(session_id: str, request_id: str = None):
+    """Begin a run: clear the legacy session marker or snapshot global cancel state."""
     with _CANCEL_LOCK:
+        if request_id:
+            # Request-scoped runs must not clear a legacy session cancel that
+            # still belongs to an older client request in the same session.
+            generation = _global_cancel_generation
+            context = _REQUEST_CANCEL_CONTEXT.get()
+            if (isinstance(context, dict) and context.get("session_id") == session_id
+                    and context.get("request_id") == request_id):
+                context["global_generation"] = generation
+            return generation
         _cancelled_sessions.pop(session_id, None)
         if session_id not in _session_cancel_generation:
             while len(_session_cancel_generation) >= _CANCELLED_SESSIONS_MAX:
-                _session_cancel_generation.pop(next(iter(_session_cancel_generation)))
+                evictable = next(
+                    (candidate for candidate in _session_cancel_generation
+                     if candidate not in _active_cancel_sessions),
+                    None,
+                )
+                if evictable is None:
+                    break
+                _session_cancel_generation.pop(evictable)
         _session_cancel_generation[session_id] = _global_cancel_generation
+        return None
 
 
 # ============================================================

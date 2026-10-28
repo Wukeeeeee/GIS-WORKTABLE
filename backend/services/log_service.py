@@ -71,22 +71,30 @@ def log_turn(session_id: str, user_message: str, ai_reply: str,
     if layers_snapshot:
         record["layers"] = {}
         for name, info in layers_snapshot.items():
+            if not isinstance(info, dict):
+                continue
             layer_info = {
                 "feature_count": info.get("feature_count", 0),
                 "geometry_types": info.get("geometry_types", []),
             }
             # 提取图层属性预览（第一个要素的属性样例 + 所有属性字段名）
             geojson = info.get("geojson")
-            if geojson:
+            if isinstance(geojson, dict):
                 features = geojson.get("features", [])
+                if not isinstance(features, list):
+                    features = []
                 if features:
-                    props = features[0].get("properties", {}) or {}
+                    first = features[0]
+                    props = first.get("properties", {}) if isinstance(first, dict) else {}
+                    if not isinstance(props, dict):
+                        props = {}
                     layer_info["properties_sample"] = dict(list(props.items())[:8])
                     # 所有要素共有的属性字段
                     all_keys = set()
                     for f in features[:50]:
-                        p = f.get("properties", {}) or {}
-                        all_keys.update(p.keys())
+                        p = f.get("properties", {}) if isinstance(f, dict) else {}
+                        if isinstance(p, dict):
+                            all_keys.update(p.keys())
                     if all_keys:
                         layer_info["property_fields"] = list(all_keys)[:15]
             record["layers"][name] = layer_info
