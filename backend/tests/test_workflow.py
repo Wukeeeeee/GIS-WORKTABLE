@@ -161,6 +161,32 @@ def test_executor_all_success():
     assert result["nodes"][1]["outputs"]["result"] == 12  # 6 * 2
 
 
+def test_executor_rerun_does_not_reuse_outputs_from_previous_run():
+    """重跑已保存工作流时，下游不能读取上次运行遗留的输出。"""
+    received = []
+
+    def source():
+        return {"fresh_value": "new-run"}
+
+    def sink(value=None):
+        received.append(value)
+        return {"received": value}
+
+    wf = new_workflow("重跑", nodes=[
+        new_node("source", "来源", "source"),
+        new_node("sink", "下游", "sink", {"value": "${source.layer_name}"}, ["source"]),
+    ])
+    # 已保存的工作流可能携带上一次运行的结果字段。
+    wf["nodes"][0]["outputs"] = {"layer_name": "old-layer-from-prior-run"}
+
+    result = WorkflowExecutor({"source": source, "sink": sink}).execute(wf)
+
+    assert result["status"] == "failed"
+    assert result["nodes"][0]["outputs"] == {"fresh_value": "new-run"}
+    assert "未产生输出 layer_name" in result["nodes"][1]["error"]
+    assert received == []
+
+
 def test_executor_invokes_langchain_structured_tool():
     """WorkflowExecutor 应通过 invoke 执行 LangChain StructuredTool。"""
     from langchain_core.tools import StructuredTool

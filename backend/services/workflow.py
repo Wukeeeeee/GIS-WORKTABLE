@@ -391,6 +391,13 @@ class WorkflowExecutor:
             })
             return wf
 
+        # A saved workflow may include outputs and statuses from its last run.
+        # They are results, not defaults: retaining them lets downstream nodes
+        # consume stale values when the current run no longer produces a key.
+        for node in wf["nodes"]:
+            node["outputs"] = {}
+            node["error"] = None
+
         if not isinstance(wf.get("id"), str) or not wf["id"].strip():
             wf["id"] = f"wf_{uuid.uuid4().hex[:12]}"
         wf["status"] = "running"
@@ -447,10 +454,7 @@ class WorkflowExecutor:
                         pass
                 if failure:
                     raise RuntimeError(failure)
-                outputs = {
-                    **node.get("outputs", {}),
-                    **(result if isinstance(result, dict) else {"result": result}),
-                }
+                outputs = result if isinstance(result, dict) else {"result": result}
                 if self.layer_snapshot_fn:
                     layers_after = self.layer_snapshot_fn()
                     changed_layers = [
