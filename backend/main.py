@@ -567,6 +567,7 @@ class ChatRequest(BaseModel):
     task_id: Optional[str] = None         # 任务 ID（跨轮保持）
     mode: str = "full"                    # 回复模式（已固定为完整模式，保留参数用于兼容）
     read_only_location_analysis: bool = False  # 右键位置分析只允许只读工具，禁止地图图层副作用
+    privacy_mode: bool = False  # 受保护任务重跑时保留外发限制
 
 class TestKeyRequest(BaseModel):
     llm_config: Optional[LLMConfig] = None  # 通用测速入参即 cfg
@@ -592,10 +593,14 @@ class SnapRequest(BaseModel):
 # 前端发消息到这里，用 LangGraph Agent 处理
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
+    from backend.services.privacy_service import session_protected, mark_session
+    if request.privacy_mode:
+        mark_session(request.session_id)
+    private_mode = session_protected(request.session_id)
     # 如果前端附带了待分析图层，注入到消息中
     msg = request.message
     pending = request.pending_layer
-    if pending and pending.get("geojson"):
+    if pending and pending.get("geojson") and not private_mode:
         import json
         layer_name = pending.get("name", "未命名图层")
         layer_type = pending.get("type", "未知")
@@ -613,7 +618,7 @@ async def chat(request: ChatRequest):
             f"GeoJSON:\n```json\n{geo_json_str}\n```\n\n"
         ) + msg
     # 如果前端附带了被引用的上一条回复，注入到消息中（让 Agent 明确讨论上下文）
-    if request.quoted:
+    if request.quoted and not private_mode:
         msg = (
             f"[用户引用了上一条回复，请围绕其内容理解下面的问题]\n"
             f"{request.quoted[:4000]}\n\n"
@@ -642,6 +647,9 @@ async def chat(request: ChatRequest):
 
     # 组装前端响应（保持与原格式兼容）
     output = {"response": response_text}
+    if result.get("privacy_mode"):
+        output["privacy_mode"] = True
+        output["privacy_results"] = result.get("privacy_results", [])
     if result.get("execution_status"):
         output["execution_status"] = result["execution_status"]
     # 任务 ID（跨轮保持）
@@ -747,6 +755,10 @@ async def chat_stream(request: ChatRequest):
         raise HTTPException(status_code=400, detail=transport_error)
     amap_key = request.amap_key or ""
     session_id = request.session_id or "default"
+    from backend.services.privacy_service import session_protected, mark_session
+    if request.privacy_mode:
+        mark_session(session_id)
+    private_mode = session_protected(session_id)
 
     _SSE_HEADERS = {
         "Cache-Control": "no-cache",
@@ -760,7 +772,7 @@ async def chat_stream(request: ChatRequest):
     # === choose_option 上下文回填：用户点击选项后只发短 label，把原任务拼回，
     # === 避免「选完数据源，AI 忘记原任务地名（如上海）而幻觉成其他城市」
     # === 必须在 clear_pending_action 之前取值 ===
-    _ctx_backfill = _pa.build_choice_backfill(session_id, request.message)
+    _ctx_backfill = "" if private_mode else _pa.build_choice_backfill(session_id, request.message)
 
     # === 确定性短指令：pending task 的“继续/确认/执行/取消”直接处理，不走 LLM ===
     if not has_attachment:
@@ -788,7 +800,7 @@ async def chat_stream(request: ChatRequest):
     # 如果前端附带了待分析图层，将 GeoJSON 注入到用户消息中（同时进入 agent 上下文和校验器）
     original_message = request.message
     pending = request.pending_layer
-    if pending and pending.get("geojson"):
+    if pending and pending.get("geojson") and not private_mode:
         layer_name = pending.get("name", "未命名图层")
         layer_type = pending.get("type", "未知")
         layer_coords = pending.get("coords", "")
@@ -811,7 +823,7 @@ async def chat_stream(request: ChatRequest):
         original_message = layer_ctx + original_message
 
     # 如果前端附带了被引用的上一条回复，注入到上下文（让 Agent 明确讨论围绕该回复）
-    if request.quoted:
+    if request.quoted and not private_mode:
         quoted_ctx = (
             f"[用户引用了上一条回复，请围绕其内容理解下面的问题]\n"
             f"{request.quoted[:4000]}\n\n"
@@ -1093,6 +1105,7 @@ async def list_layers():
             "geojson": info.get("geojson"),
             "bbox": info.get("bbox"),
             "style": info.get("style"),
+            "sensitive": info.get("sensitive") is True,
         })
     return {"layers": layers}
 
@@ -2213,7 +2226,7 @@ async def get_project_asset(project_id: str, filename: str, request: Request):
     # Anchor the file response at the canonical project directory. Using the
     # assets path itself as the allowed root would let an assets-directory
     # symlink make both the file and its check root resolve outside the project.
-    allowed_root = project_service._project_dir(project_id)
+    allowed_root = project_service._decrypted_asset_root()
     return _output_file_response(
         path,
         request=request,
@@ -2310,6 +2323,7 @@ class RegisterLayerRequest(BaseModel):
     group_name: Optional[str] = None
     project_context: bool = False
     expected_project_id: Optional[str] = None
+    sensitive: Optional[bool] = None
 
 
 class ActiveProjectResetRequest(BaseModel):
@@ -2357,11 +2371,13 @@ async def register_layer(request: RegisterLayerRequest):
                 raise HTTPException(status_code=409, detail="工程已切换，请刷新图层后重试")
         if request.raster is not None:
             from backend.services.tools import _register_raster_layer
-            token = await asyncio.to_thread(_register_raster_layer, request.name, request.raster)
+            token = await asyncio.to_thread(_register_raster_layer, request.name, request.raster,
+                                            sensitive=True if request.sensitive else None)
         elif request.geojson is not None:
             from backend.services.tools import _validate_wgs84_geojson
             _validate_wgs84_geojson(request.geojson)
-            token = _register_layer(request.name, request.geojson, group_name=request.group_name)
+            token = _register_layer(request.name, request.geojson, group_name=request.group_name,
+                                    sensitive=True if request.sensitive else None)
         else:
             raise ValueError("图层缺少矢量或栅格数据")
     except ValueError as e:
@@ -2369,7 +2385,46 @@ async def register_layer(request: RegisterLayerRequest):
     finally:
         if owns_shared_lock:
             registry_tools.release_shared_state_lock()
-    return {"success": True, "registration_token": token, "message": f"已注册图层: {request.name}"}
+    return {"success": True, "registration_token": token,
+            "sensitive": registry_tools._registered_layers[request.name].get("sensitive") is True,
+            "message": f"已注册图层: {request.name}"}
+
+
+class LayerPrivacyRequest(BaseModel):
+    name: str
+    sensitive: bool
+    registration_token: str
+
+
+@app.post("/api/layer/privacy")
+async def set_layer_privacy(request: LayerPrivacyRequest):
+    from backend.services import tools as registry
+    if not await asyncio.to_thread(registry.acquire_shared_state_lock, 0):
+        raise HTTPException(status_code=409, detail="当前工作区正在处理操作，请结束后设置图层保护")
+    try:
+        with registry._state_lock:
+            info = registry._registered_layers.get(request.name)
+            if info is None or info.get("registration_token") != request.registration_token:
+                raise HTTPException(status_code=409, detail="图层已更新，请刷新后重试")
+            if request.sensitive is not True:
+                raise HTTPException(status_code=409, detail="图层默认受保护，不能通过同步请求关闭保护")
+            info["sensitive"] = True
+        return {"success": True, "sensitive": True}
+    finally:
+        registry.release_shared_state_lock()
+
+
+@app.get("/api/privacy/audit")
+async def get_privacy_egress_audit(request: Request, limit: int = 100):
+    """Return local AI-request metadata without returning prompt or GIS content."""
+    try:
+        if not request.client or not __import__("ipaddress").ip_address(request.client.host).is_loopback:
+            raise HTTPException(status_code=403, detail="外发审计仅允许本机查看")
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="外发审计仅允许本机查看") from exc
+    from backend.services.privacy_audit_service import list_events
+    events = await asyncio.to_thread(list_events, limit)
+    return {"events": events}
 
 
 # ===== SHP 导出接口 =====

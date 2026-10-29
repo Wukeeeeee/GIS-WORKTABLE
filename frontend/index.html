@@ -1540,6 +1540,11 @@
           <h3>日志导出</h3>
           <p class="setting-desc">导出当前会话的完整问答日志，包含用户输入、AI 回复、当时的图层状态，方便排查问题和复盘分析流程。</p>
           <div class="setting-group">
+            <label class="setting-label">AI 请求外发审计</label>
+            <p class="setting-desc">记录 AI 请求准备发往的服务、模型、数据类别和模型是否返回响应；不保存提示词、坐标、属性值或密钥。收到响应能证明服务端处理过请求，但客户端无法据此判断服务商之后是否留存。此列表只审计 AI 模型请求，不包含底图瓦片和在线数据服务请求。</p>
+            <div id="privacyAuditList" class="logs-info-list" aria-live="polite">正在读取本机审计记录…</div>
+          </div>
+          <div class="setting-group">
             <div class="logs-stats">
               <div class="logs-stat-card">
                 <div class="logs-stat-num" id="logsTempCount">0</div>

@@ -269,6 +269,7 @@ def get_pending_state():
             registered = _registered_layers.get(registered_name) if isinstance(registered_name, str) else None
             if isinstance(registered, dict):
                 result_layer["registry_name"] = registered_name
+                result_layer["sensitive"] = registered.get("sensitive") is True
                 token = registered.get("registration_token")
                 if isinstance(token, str) and token:
                     result_layer["registration_token"] = token
@@ -480,6 +481,8 @@ def _push_layer(name: str, geojson: dict, style: dict = None, provenance: dict =
     """将图层加入待发送列表（同名图层就地覆盖最新数据，防止单轮多次更新累加出重复图层）"""
     try:
         layer = {"geojson": geojson, "name": name}
+        if (_registered_layers.get(name) or {}).get("sensitive") is True:
+            layer["sensitive"] = True
         if style:
             layer["style"] = style
         safe_provenance = _normalize_layer_provenance(provenance)
@@ -773,7 +776,8 @@ def _unicode_layer_name_conflict(name: str) -> str | None:
 
 
 def _register_layer(name: str, geojson: dict, group_name: str = None, provenance: dict = None,
-                    allow_unicode_alias: bool = False, unique_name: bool = False):
+                    allow_unicode_alias: bool = False, unique_name: bool = False,
+                    sensitive: bool | None = None):
     """注册图层供 AI 后续查询。注册时为每个要素注入稳定 _fid（幂等），
     供前端 2D/3D 选中同步与下钻状态机使用。"""
     if not isinstance(name, str) or not name.strip():
@@ -824,12 +828,16 @@ def _register_layer(name: str, geojson: dict, group_name: str = None, provenance
             raise ValueError(f"图层名称与现有图层「{conflicting_name}」仅 Unicode 规范形式不同，为避免显示重复请先重命名")
         registration_token = uuid.uuid4().hex
         previous = _registered_layers.get(name) or {}
+        # Every registered vector is protected. Keep the argument for old
+        # callers, but never let a stale false value downgrade the registry.
+        is_sensitive = True
         safe_provenance = _normalize_layer_provenance(provenance)
         if (safe_provenance is None and previous.get("geojson") == fc
                 and isinstance(previous.get("provenance"), dict)):
             safe_provenance = _normalize_layer_provenance(previous["provenance"])
         _registered_layers[name] = {
             "name": name,
+            "sensitive": bool(is_sensitive),
             "layer_id": previous.get("layer_id") or uuid.uuid4().hex,
             "registration_token": registration_token,
             "group_name": (group_name.strip() if isinstance(group_name, str) else previous.get("group_name", "")),
@@ -888,7 +896,7 @@ def _layer_property_examples(geojson: dict, limit: int = 3) -> list:
 
 
 def _register_raster_layer(name: str, raster: dict, source_path: str = None,
-                           allow_unicode_alias: bool = False):
+                           allow_unicode_alias: bool = False, sensitive: bool | None = None):
     """Register a managed raster independently of its preview/map identifier."""
     import uuid
     if not isinstance(name, str) or not name.strip() or not isinstance(raster, dict):
@@ -909,7 +917,11 @@ def _register_raster_layer(name: str, raster: dict, source_path: str = None,
         conflicting_name = _unicode_layer_name_conflict(name) if not allow_unicode_alias else None
         if conflicting_name:
             raise ValueError(f"图层名称与现有图层「{conflicting_name}」仅 Unicode 规范形式不同，为避免显示重复请先重命名")
+        previous = _registered_layers.get(name) or {}
+        is_sensitive = True
         _registered_layers[name] = {'geojson': None, 'geometry_types': ['Raster'], 'feature_count': 0,
+                                    'sensitive': bool(is_sensitive),
+                                    'layer_id': previous.get('layer_id') or uuid.uuid4().hex,
                                     'bbox': list(bounds), 'raster': dict(raster),
                                     'raster_source_path': source_path, 'registration_token': token}
     return token
@@ -924,6 +936,7 @@ def get_registered_layers_snapshot() -> list:
         geojson = info.get("geojson") or {}
         result.append({
             "filename": name,
+            "sensitive": info.get("sensitive") is True,
             "group_name": info.get("group_name", ""),
             "geojson": geojson,
             "geometry_types": info.get("geometry_types", []),
@@ -956,9 +969,11 @@ def reset_registered_layers(layers: list = None, tolerate_invalid: bool = False)
                 geojson = l.get("geojson") or l.get("geojson_data")
                 try:
                     if name and isinstance(l.get('raster'), dict):
-                        _register_raster_layer(name, l['raster'], allow_unicode_alias=True)
+                        _register_raster_layer(name, l['raster'], allow_unicode_alias=True,
+                                               sensitive=True)
                     elif name and geojson:
-                        _register_layer(name, geojson, provenance=l.get("provenance"), allow_unicode_alias=True)
+                        _register_layer(name, geojson, provenance=l.get("provenance"), allow_unicode_alias=True,
+                                        sensitive=True)
                 except Exception:
                     if not tolerate_invalid:
                         raise
@@ -2994,6 +3009,8 @@ def layer_control(action: str, name: str = "", new_name: str = "", color: str = 
                 return f"图层重命名失败: 图层「{new_name}」已存在；未重命名任何图层"
             _registered_layers[new_name] = _registered_layers.pop(name)
             _registered_layers[new_name]["name"] = new_name
+            # Invalidate session-scoped AI handles bound to the previous name.
+            _registered_layers[new_name]["registration_token"] = uuid.uuid4().hex
             _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
         return f"已重命名图层: {name} → {new_name}"
     elif action == "fit":
@@ -4761,7 +4778,10 @@ def spatial_select(target_layer: str, source_layer: str, predicate: str = "inter
         if gdf_s is None: return name_s
         result = gpd.sjoin(gdf_t, gdf_s, how="inner", predicate=predicate)
         result = result.drop(columns=[c for c in result.columns if c.endswith("_right") or c == "index_right"], errors="ignore")
-        result = result.drop_duplicates()
+        # Keep one row per target feature. ``drop_duplicates`` hashes every
+        # property and fails for valid nested JSON attributes (dict/list); the
+        # spatial join preserves the left index for each duplicate match.
+        result = result.loc[~result.index.duplicated(keep="first")]
         if result.empty:
             return f"没有要素满足「{predicate}」关系"
         result_name = f"{name_t}_选择"

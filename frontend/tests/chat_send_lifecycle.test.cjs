@@ -64,6 +64,7 @@ function createChatHarness(streamResponse, withExecutionCards = false, layerList
     createElement() { const element = {
       style: {}, dataset: {}, classList: { add() {}, remove() {}, toggle() {} }, children: [],
       appendChild(child) { this.children.push(child); }, setAttribute() {}, remove() { this.removed = true; },
+      insertBefore(child) { this.children.unshift(child); },
       click() { this.clicked = true; },
       insertAdjacentElement(position, element) { executionRows.push(element); },
       querySelector() { return null; }, querySelectorAll() { return []; }, addEventListener() {}, closest() { return null; },
@@ -345,6 +346,35 @@ test('streaming chat sends the provider key only inside llm_config', async () =>
   const body = harness.streamCalls[0].body;
   assert.equal(body.llm_config.api_key, 'test-key');
   assert.equal(Object.hasOwn(body, 'api_key'), false);
+});
+
+test('a protected response identifies its local GIS mode in the chat', async () => {
+  const payload = 'data: ' + JSON.stringify({ type: 'done', response: '完成', layers: [], privacy_mode: true }) + '\n\n';
+  let reads = 0;
+  const bytes = new TextEncoder().encode(payload);
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } });
+  h.window.GIS.chat.init();
+  await h.window.GIS.chat.send('查看图层');
+  const label = h.createdElements.find(element => element.className === 'chat-privacy-label');
+  assert.ok(label);
+  assert.equal(label.textContent, '敏感图层模式 · 本地 GIS 操作');
+});
+
+test('protected replies render restored names as text without loading model supplied images', async () => {
+  const text = '![秘密设施](https://untrusted.example/image?name=秘密设施)';
+  const payload = 'data: ' + JSON.stringify({ type: 'done', response: text, layers: [], privacy_mode: true }) + '\n\n';
+  const bytes = new TextEncoder().encode(payload);
+  let reads = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } });
+  h.window.GIS.chat.init();
+  await h.window.GIS.chat.send('查看图层');
+  const content = h.createdElements.find(element => element.textContent === text);
+  assert.ok(content);
+  assert.equal(content.innerHTML, undefined);
 });
 
 test('streaming chat keeps the backend transport-security explanation', async () => {

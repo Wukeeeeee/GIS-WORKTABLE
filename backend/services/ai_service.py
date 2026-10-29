@@ -588,8 +588,9 @@ def _load_history(session_id: str) -> list:
     path = _history_path(session_id)
     if os.path.exists(path):
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return _sanitize_history(json.load(f))
+            from backend.services.local_encryption import read_bytes
+            raw = read_bytes(path, f"history:{_sanitize_session_id(session_id)}")
+            return _sanitize_history(json.loads(raw.decode("utf-8")))
         except Exception:
             pass
     return []
@@ -599,8 +600,9 @@ def _save_history(session_id: str, history: list):
     _ensure_history_dir()
     path = _history_path(session_id)
     try:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+        from backend.services.local_encryption import write_bytes_atomic
+        payload = json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8")
+        write_bytes_atomic(path, payload, f"history:{_sanitize_session_id(session_id)}")
     except Exception:
         pass
 
@@ -766,6 +768,11 @@ def _build_system_content(cfg, message: str, session_id: str = "default", force_
     - 所有可变部分（时间、模型名、技能）统一追加到末尾
     - 这样 API 服务端可以命中前缀 KV 缓存，首 token 时间从 10-30s 降到 0.5-1s
     """
+    from backend.services.privacy_service import session_protected
+    if session_protected(session_id):
+        # The private agent builds its own allowlisted context under the GIS lock.
+        # In particular, do not invoke skill routing with the original message.
+        return "当前使用敏感图层模式，由本地受限工具处理。", "", cfg.model
     now = datetime.datetime.now().astimezone()
 
     # 固定前缀（永远不变 → KV cache 命中）
@@ -986,6 +993,11 @@ def _try_handle_confirm_command(session_id: str, message: str) -> dict | None:
 def _handle_pending_action_safely(session_id: str, message: str) -> dict | None:
     """Handle or clear session pending state only while its GIS locks are held."""
     from backend.services import pending_action, tools
+    from backend.services.privacy_service import session_protected
+
+    if session_protected(session_id):
+        # Previously saved code/workflows must not run through confirmation shortcuts.
+        return None
 
     sid = session_id or "default"
     has_pending_action = pending_action.get_pending_action(sid) is not None
@@ -1058,7 +1070,8 @@ def chat_with_ai(message: str, session_id: str = "default", cfg=None,
 
     from backend.services import pending_action as _pa
     # Read choice context before safely consuming the pending action.
-    _ctx_backfill = _pa.build_choice_backfill(session_id, message)
+    from backend.services.privacy_service import session_protected
+    _ctx_backfill = "" if session_protected(session_id) else _pa.build_choice_backfill(session_id, message)
     # Deterministic actions mutate the same session/GIS state as Agent tools,
     # so they must honor the same locks before execution or pending-state reset.
     handled = _handle_pending_action_safely(session_id, message)
@@ -1162,6 +1175,8 @@ def clear_memory(session_id: str = "default"):
             pass
         if session_id in conversation_history:
             conversation_history[session_id] = []
+        from backend.services.privacy_service import forget_session
+        forget_session(session_id)
         # 清除待确认的 pending task
         try:
             from backend.services import pending_action
@@ -1404,7 +1419,23 @@ def test_key(cfg) -> tuple:
         from backend.services.llm_config import build_llm
         from langchain_core.messages import HumanMessage
         llm = build_llm(cfg.model_copy(update={"reasoning": False, "max_tokens": 1}))
-        llm.invoke([HumanMessage(content="hi")])
+        from backend.services.privacy_service import approved_request, record_model_outcome
+        probe_messages = [HumanMessage(content="hi")]
+        # A fixed, data-free connectivity probe is safe even in protected mode.
+        audit_context = {
+            "base_url": cfg.base_url,
+            "provider": "OpenAI-compatible endpoint",
+            "model": cfg.model,
+            "data_categories": ["固定的无数据连通性探测"],
+        }
+        with approved_request(probe_messages, [], audit_context):
+            try:
+                llm.invoke(probe_messages)
+            except Exception:
+                record_model_outcome("provider_call_failed_or_no_model_reply", "连通性探测失败或超时")
+                raise
+            else:
+                record_model_outcome("provider_response_received")
         return True, "连接成功 ✓"
     except Exception as e:
         err_msg = str(e)

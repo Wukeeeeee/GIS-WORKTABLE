@@ -741,6 +741,9 @@ def run_agent(
             "pending_suggestions": {...} | None,  # AOI 候选
         }
     """
+    from backend.services.privacy_service import session_protected, run_private_agent
+    if session_protected(session_id):
+        return run_private_agent(original_message, session_id, cfg, request_id)
     # 重置共享状态（tools.py 中的全局变量）
     import backend.services.ai_service as _ai_cancel_svc
     _cancel_generation = _ai_cancel_svc.clear_session_cancel(session_id or "default", request_id)
@@ -1407,6 +1410,13 @@ def _run_agent_stream_impl(
         {"type":"thinking"}
         {"type":"done","response":"...","reasoning":...,"layers":[...],...}
     """
+    from backend.services.privacy_service import session_protected, run_private_agent
+    if session_protected(session_id):
+        yield 'data: ' + json.dumps({"type": "thinking", "privacy_mode": True}) + '\n\n'
+        result = run_private_agent(original_message, session_id, cfg, request_id,
+                                   read_only=read_only_location_analysis)
+        yield 'data: ' + json.dumps({"type": "done", **result}, ensure_ascii=False) + '\n\n'
+        return
     reset_state(amap_key)
     available_tools = _tools_for_request(read_only_location_analysis)
     _tools_mod.set_last_user_message(original_message or "")
@@ -2133,7 +2143,13 @@ def run_agent_stream(
         )
     finally:
         _AGENT_LOCK_LEASE.current = previous_lease
-        _cancel_service.reset_request_cancel_context(cancel_context_token)
-        if run_context.get("run_id") and not run_context.get("finished"):
-            _record_run_finish(run_context["run_id"], "流式请求中断", "interrupted")
-        lease.finish()
+        try:
+            # Starlette can resume a sync generator in a different copied
+            # Context. A token from its first iteration cannot be reset there.
+            _cancel_service.reset_request_cancel_context(cancel_context_token)
+        except ValueError:
+            pass
+        finally:
+            if run_context.get("run_id") and not run_context.get("finished"):
+                _record_run_finish(run_context["run_id"], "流式请求中断", "interrupted")
+            lease.finish()

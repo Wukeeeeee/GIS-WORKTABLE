@@ -25,18 +25,39 @@ def _ensure_dir():
 
 
 def _get_or_create_key() -> bytes:
-    """获取或生成加密密钥（存在本地，仅本机可用）"""
+    """获取或生成加密密钥；新密钥放系统密钥库，迁移后删除旧明文密钥文件。"""
     with _CRED_LOCK:
         _ensure_dir()
-        if os.path.exists(_KEY_FILE):
-            with open(_KEY_FILE, "rb") as f:
-                return f.read()
-        key = Fernet.generate_key()
-        _write_atomic(_KEY_FILE, key)
+        from backend.services.local_encryption import secure_keyring, LocalEncryptionUnavailable
         try:
-            os.chmod(_KEY_FILE, 0o600)
-        except OSError:
-            pass
+            keyring = secure_keyring()
+            service, username = "GIS WorkTable credential encryption", "fernet-key-v1"
+            stored = keyring.get_password(service, username)
+            if stored:
+                key = stored.encode("ascii")
+                Fernet(key)
+                if os.path.exists(_KEY_FILE):
+                    with open(_KEY_FILE, "rb") as f:
+                        legacy_key = f.read()
+                    if legacy_key == key:
+                        os.remove(_KEY_FILE)
+                return key
+            if os.path.exists(_KEY_FILE):
+                with open(_KEY_FILE, "rb") as f:
+                    key = f.read()
+                Fernet(key)
+            else:
+                key = Fernet.generate_key()
+            encoded = key.decode("ascii")
+            keyring.set_password(service, username, encoded)
+            if keyring.get_password(service, username) != encoded:
+                raise LocalEncryptionUnavailable("无法确认凭据密钥已安全保存")
+            if os.path.exists(_KEY_FILE):
+                os.remove(_KEY_FILE)
+        except LocalEncryptionUnavailable:
+            raise
+        except Exception as exc:
+            raise LocalEncryptionUnavailable("系统密钥库不可用，无法读取或保存凭据") from exc
         return key
 
 

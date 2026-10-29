@@ -1,4 +1,4 @@
-import os, json, hashlib, gzip, shutil, uuid, datetime, zipfile, io, re, stat, math, threading
+import os, json, hashlib, gzip, shutil, uuid, datetime, zipfile, io, re, stat, math, threading, tempfile, atexit
 from functools import wraps
 from contextlib import contextmanager
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
@@ -171,6 +171,7 @@ def extract_clean_title(content: str, max_len: int = 30) -> str:
 _PROJECT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "cache", "projects")
 _BLOB_DIR = os.path.join(_PROJECT_DIR, "blobs")
 _INDEX_PATH = os.path.join(_PROJECT_DIR, "index.json")
+_DECRYPTED_ASSET_DIR = None
 _MAX_PROJECTS = 30
 # Imported project archives are user-selected ZIPs. Keep decompression bounded
 # while leaving room for several source rasters in a portable GIS project.
@@ -278,12 +279,50 @@ def _project_raster_path(pid: str, filename: str) -> str | None:
         return None
     return path if os.path.normcase(assets_common) == os.path.normcase(assets_dir) else None
 
+
+def _decrypted_asset_root() -> str:
+    global _DECRYPTED_ASSET_DIR
+    if _DECRYPTED_ASSET_DIR is None:
+        _DECRYPTED_ASSET_DIR = os.path.join(
+            tempfile.gettempdir(), f"gisw-private-assets-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+        )
+        os.makedirs(_DECRYPTED_ASSET_DIR, mode=0o700, exist_ok=True)
+        atexit.register(shutil.rmtree, _DECRYPTED_ASSET_DIR, True)
+    return _DECRYPTED_ASSET_DIR
+
+
+def _materialize_project_asset(pid: str, filename: str, encrypted_path: str) -> str:
+    """Keep the durable raster encrypted; materialize an app-private runtime copy."""
+    from backend.services.local_encryption import decrypted_file, is_encrypted_file, decrypt_file
+    context = f"project-asset:{pid}:{filename}"
+    if not is_encrypted_file(encrypted_path):
+        # Migrate imported/legacy plaintext assets on first use.
+        with decrypted_file(encrypted_path, context):
+            pass
+    target = os.path.join(
+        _decrypted_asset_root(),
+        hashlib.sha256(f"{pid}:{filename}".encode()).hexdigest() + os.path.splitext(filename)[1],
+    )
+    if not os.path.isfile(target) or os.path.getmtime(target) < os.path.getmtime(encrypted_path):
+        temp_path = target + "." + uuid.uuid4().hex + ".tmp"
+        try:
+            decrypt_file(encrypted_path, temp_path, context)
+            os.replace(temp_path, target)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+    return target
+
 def _raster_source_path(raster: dict) -> str | None:
     asset = raster.get("asset")
     source_pid = raster.get("project_id")
     if asset and source_pid:
         path = _project_raster_path(source_pid, asset)
-        return path if path and os.path.isfile(path) else None
+        if not path or not os.path.isfile(path):
+            return None
+        return _materialize_project_asset(source_pid, asset, path)
     url_path = unquote(urlsplit(str(raster.get("url") or "")).path)
     prefix = "/output/uploads/"
     filename = url_path[len(prefix):] if url_path.startswith(prefix) else ""
@@ -324,16 +363,22 @@ def _store_raster_asset(pid: str, source: str, allowed_extensions: set[str]) -> 
     if target is None:
         raise ValueError("工程栅格资源路径无效")
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    if not os.path.exists(target):
-        import tempfile
+    if os.path.exists(target):
+        from backend.services.local_encryption import decrypted_file
+        with decrypted_file(target, f"project-asset:{pid}:{filename}"):
+            pass
+    else:
         fd, staging = tempfile.mkstemp(prefix='.raster-', dir=os.path.dirname(target))
+        os.close(fd)
+        encrypted_staging = staging + ".enc"
         try:
-            with os.fdopen(fd, 'wb') as output, open(source, 'rb') as original:
-                shutil.copyfileobj(original, output)
-            os.replace(staging, target)
+            from backend.services.local_encryption import encrypt_file
+            encrypt_file(source, encrypted_staging, f"project-asset:{pid}:{filename}")
+            os.replace(encrypted_staging, target)
         finally:
-            if os.path.exists(staging):
-                os.unlink(staging)
+            for temp_path in (staging, encrypted_staging):
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
     return filename
 
 
@@ -375,7 +420,12 @@ def get_project_raster_asset(pid: str, filename: str) -> str | None:
     if not proj or not any(filename in _raster_asset_names(layer.get("raster") or {}) for layer in proj.get("layers", [])):
         return None
     path = _project_raster_path(pid, filename)
-    return path if path and os.path.isfile(path) else None
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        return _materialize_project_asset(pid, filename, path)
+    except Exception:
+        return None
 
 def _cleanup_project_raster_assets(pid: str, keep_assets: set[str]):
     assets_dir = _project_assets_dir(pid)
@@ -466,18 +516,21 @@ def _blob_put(geojson: dict) -> str:
         _blob_refcount[sha] = _blob_refcount.get(sha, 0) + 1
         return sha
 
-    import tempfile
-    fd, staging = tempfile.mkstemp(prefix=f".{sha}.", suffix=".tmp", dir=_BLOB_DIR)
-    os.close(fd)
+    fd, encrypted_staging = tempfile.mkstemp(prefix=f".{sha}.", suffix=".tmp", dir=_BLOB_DIR)
     try:
-        with gzip.open(staging, "wt", encoding="utf-8") as f:
-            f.write(raw)
+        from backend.services.local_encryption import encrypted_writer
+        with os.fdopen(fd, "wb") as target:
+            with encrypted_writer(target, f"project-blob:{sha}") as secure:
+                with gzip.GzipFile(fileobj=secure, mode="wb") as compressed:
+                    compressed.write(raw.encode("utf-8"))
+            target.flush()
+            os.fsync(target.fileno())
         # A failed or interrupted write must never leave a partial blob at its
         # content-addressed path. Replace a corrupt leftover atomically on retry.
-        os.replace(staging, path)
+        os.replace(encrypted_staging, path)
     finally:
-        if os.path.exists(staging):
-            os.unlink(staging)
+        if os.path.exists(encrypted_staging):
+            os.unlink(encrypted_staging)
     _blob_refcount[sha] = _blob_refcount.get(sha, 0) + 1
     return sha
 
@@ -488,8 +541,10 @@ def _blob_get(sha: str) -> dict | None:
         return None
     if not os.path.exists(path):
         return None
-    with gzip.open(path, "rt", encoding="utf-8") as f:
-        return json.load(f)
+    from backend.services.local_encryption import decrypted_file
+    with decrypted_file(path, f"project-blob:{sha}") as clear_path:
+        with gzip.open(clear_path, "rt", encoding="utf-8") as f:
+            return json.load(f)
 
 
 def _blob_reference_count_on_disk(sha: str) -> int | None:
@@ -529,10 +584,12 @@ def _blob_reference_count_on_disk(sha: str) -> int | None:
 
 def _blob_file_matches_digest(path: str, sha: str) -> bool:
     try:
+        from backend.services.local_encryption import decrypted_file
         digest = hashlib.sha256()
-        with gzip.open(path, "rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
+        with decrypted_file(path, f"project-blob:{sha}") as clear_path:
+            with gzip.open(clear_path, "rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
         return digest.hexdigest()[:12] == sha
     except Exception:
         return False
@@ -624,8 +681,8 @@ def _project_index_matches_files(index: dict) -> bool:
 
 def _load_index() -> dict:
     try:
-        with open(_INDEX_PATH, "r", encoding="utf-8") as f:
-            index = json.load(f)
+        from backend.services.local_encryption import read_bytes
+        index = json.loads(read_bytes(_INDEX_PATH, "project-index").decode("utf-8"))
         projects = index.get("projects") if isinstance(index, dict) else None
         if (isinstance(projects, dict)
                 and all(isinstance(pid, str) and isinstance(summary, dict)
@@ -647,23 +704,19 @@ def _load_index() -> dict:
                 continue
             projects[pid] = _project_index_summary(pid, proj)
     rebuilt = {"projects": projects}
-    try:
-        _save_index(rebuilt)
-    except OSError:
-        # Keep serving the recovered view even if the index cannot be repaired on disk.
-        pass
+    if projects:
+        try:
+            _save_index(rebuilt)
+        except OSError:
+            # Keep serving the recovered view even if the index cannot be repaired on disk.
+            pass
     return rebuilt
 
 def _save_index(index: dict):
     _ensure_dirs()
-    temp_path = _INDEX_PATH + f".{uuid.uuid4().hex}.tmp"
-    try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
-        os.replace(temp_path, _INDEX_PATH)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    from backend.services.local_encryption import write_bytes_atomic
+    data = json.dumps(index, ensure_ascii=False, indent=2).encode("utf-8")
+    write_bytes_atomic(_INDEX_PATH, data, "project-index")
 
 def _rebuild_refcount():
     _blob_refcount.clear()
@@ -711,8 +764,8 @@ def _load_project_data(pid: str) -> dict | None:
     except ValueError:
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        from backend.services.local_encryption import read_bytes
+        data = json.loads(read_bytes(path, f"project-json:{pid}").decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
@@ -722,14 +775,9 @@ def _save_project_data(pid: str, data: dict):
     d = _project_dir(pid)
     os.makedirs(d, exist_ok=True)
     path = _project_path(pid)
-    temp_path = path + f".{uuid.uuid4().hex}.tmp"
-    try:
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(temp_path, path)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    from backend.services.local_encryption import write_bytes_atomic
+    payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    write_bytes_atomic(path, payload, f"project-json:{pid}")
 
 @_with_project_lock
 def save_project(
@@ -788,6 +836,7 @@ def save_project(
             layer_refs.append({
                 "layer_id": layer.get("layer_id") if isinstance(layer.get("layer_id"), str) and layer.get("layer_id").strip() else None,
                 "name": layer.get("filename") or layer.get("name", "未命名"),
+                "sensitive": True,
                 "blob": blob,
                 "color": layer.get("color", "#1c1b1b"),
                 "style": layer.get("style") if isinstance(layer.get("style"), dict) else {},
@@ -837,6 +886,8 @@ def save_project(
         "layers": layer_refs,
         "layerGroups": saved_layer_groups,
     }
+    # New and migrated projects always reopen behind the protected router.
+    proj_data["privacy_mode"] = True
 
     try:
         _save_project_data(pid, proj_data)
@@ -1018,6 +1069,11 @@ def _restorable_project_messages(messages):
 def _activate_project_data(pid: str, data: dict, session_id: str = None) -> dict:
     """Activate an already loaded snapshot without resolving its resources again."""
     sid = session_id or data.get("sessionId") or f"proj_{pid}"
+    # Opening any current or legacy project creates a protected AI session,
+    # including empty projects whose old chat history may contain raw context.
+    from backend.services.privacy_service import mark_session
+    mark_session(sid)
+    data["privacy_mode"] = True
     from backend.services.ai_service import conversation_history
     from backend.services import tools as registry
     layers = data.get("layers", [])
@@ -1246,15 +1302,19 @@ def export_project(pid: str) -> bytes:
                 if not os.path.isfile(blob_path):
                     raise ValueError("工程矢量图层数据缺失，无法导出完整工程")
                 try:
+                    from backend.services.local_encryption import decrypted_file
                     digest = hashlib.sha256()
-                    with gzip.open(blob_path, "rb") as source:
-                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                            digest.update(chunk)
+                    with decrypted_file(blob_path, f"project-blob:{blob}") as clear_path:
+                        with gzip.open(clear_path, "rb") as source:
+                            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                                digest.update(chunk)
+                        if digest.hexdigest()[:12] != blob:
+                            raise ValueError("工程矢量图层数据校验失败")
+                        # User-requested portable export is intentionally readable by
+                        # other GIS WorkTable installations; the archive is plaintext.
+                        zf.write(clear_path, f"blobs/{blob}.geojson.gz")
                 except Exception as exc:
                     raise ValueError("工程矢量图层数据无效，无法导出完整工程") from exc
-                if digest.hexdigest()[:12] != blob:
-                    raise ValueError("工程矢量图层数据校验失败，无法导出完整工程")
-                zf.write(blob_path, f"blobs/{blob}.geojson.gz")
                 archived_vector_blobs.add(blob)
             raster = layer.get("raster")
             for asset in _raster_asset_names(raster) if isinstance(raster, dict) else []:
@@ -1263,7 +1323,9 @@ def export_project(pid: str) -> bytes:
                 asset_path = _project_raster_path(pid, asset)
                 if not asset_path or not os.path.isfile(asset_path):
                     raise ValueError("工程栅格资源缺失，无法导出完整工程")
-                zf.write(asset_path, f"assets/{asset}")
+                from backend.services.local_encryption import decrypted_file
+                with decrypted_file(asset_path, f"project-asset:{pid}:{asset}") as clear_path:
+                    zf.write(clear_path, f"assets/{asset}")
                 archived_raster_assets.add(asset)
     buf.seek(0)
     return buf.read()
@@ -1384,6 +1446,21 @@ def import_project(zip_bytes) -> dict:
                 shutil.rmtree(target_dir, ignore_errors=True)
                 raise ValueError("导入的工程文件缺少栅格资源")
 
+    # Project archives are portable plaintext; encrypt their raster assets before
+    # making the imported project available in the local project store.
+    try:
+        from backend.services.local_encryption import decrypted_file
+        for layer in proj_data.get("layers", []):
+            raster = layer.get("raster")
+            for asset in _raster_asset_names(raster) if isinstance(raster, dict) else []:
+                asset_path = _project_raster_path(pid, asset)
+                if asset_path:
+                    with decrypted_file(asset_path, f"project-asset:{pid}:{asset}"):
+                        pass
+    except Exception as exc:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise ValueError("无法安全加密导入的栅格资源") from exc
+
     # 迁移 blob 到全局 blob 目录
     imported_blobs = os.path.join(target_dir, "blobs")
     newly_migrated_blobs = []
@@ -1396,7 +1473,8 @@ def import_project(zip_bytes) -> dict:
                 if os.path.exists(dst) and not _blob_file_matches_digest(dst, blob_name):
                     temp_path = dst + f".{uuid.uuid4().hex}.tmp"
                     try:
-                        shutil.copy2(src, temp_path)
+                        from backend.services.local_encryption import encrypt_file
+                        encrypt_file(src, temp_path, f"project-blob:{blob_name}")
                         os.replace(temp_path, dst)
                     finally:
                         try:
@@ -1404,11 +1482,14 @@ def import_project(zip_bytes) -> dict:
                         except OSError:
                             pass
                 elif not os.path.exists(dst):
+                    temp_path = dst + f".{uuid.uuid4().hex}.tmp"
                     try:
-                        shutil.copy2(src, dst)
+                        from backend.services.local_encryption import encrypt_file
+                        encrypt_file(src, temp_path, f"project-blob:{blob_name}")
+                        os.replace(temp_path, dst)
                     except Exception:
                         try:
-                            os.unlink(dst)
+                            os.unlink(temp_path)
                         except OSError:
                             pass
                         raise
@@ -1515,6 +1596,7 @@ def auto_save(
             continue
         layers.append({
             "name": name,
+            "sensitive": True,
             "geojson": info.get("geojson"),
             "raster": info.get("raster"),
             "geometry_type": ", ".join(info.get("geometry_types", [])),

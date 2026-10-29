@@ -345,7 +345,7 @@ window.GIS = window.GIS || {};
       GIS.chat.clear();
       projectMessages.forEach(function(msg) {
         if (msg.role === 'user') GIS.chat.addMessage(_escapeMarkup(msg.content), 'user');
-        else if (msg.role === 'assistant') GIS.chat.addMessage(msg.content, 'ai');
+        else if (msg.role === 'assistant') GIS.chat.addMessage(msg.content, 'ai', { noMarkdown: data.privacy_mode === true });
       });
       if (projectLayers.length > 0) {
         var restoredLayerIds = new Set();
@@ -404,6 +404,7 @@ window.GIS = window.GIS || {};
                   visible: isVis,
                   source: layer.source || 'ai',
                   provenance: layer.provenance || null,
+                  sensitive: true,
                   groupId: layer.groupId || null,
                 });
                 if (!isVis && GIS.map.setLayerVisible) {
@@ -450,6 +451,7 @@ window.GIS = window.GIS || {};
                   style: layer.style || {},
                   opacity: Number.isFinite(rasterOpacity) ? rasterOpacity : 1,
                   raster: layer.raster,
+                  sensitive: true,
                   _registeredName: layerName,
                   visible: isVis,
                   groupId: layer.groupId || null,

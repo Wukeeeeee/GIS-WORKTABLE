@@ -30,6 +30,31 @@ test('cancelled tasks are visibly distinct and can be rerun', () => {
   assert.match(taskList.innerHTML, /task-rerun/);
 });
 
+test('protected task retries preserve privacy before a new response arrives', () => {
+  const taskList = { innerHTML: '', addEventListener() {} };
+  const storage = new Map();
+  const sent = [];
+  const window = { GIS: {
+    api: { resolveProvider() { return null; } },
+    chat: { send(text, options) { sent.push({ text, options }); } },
+  } };
+  const sourcePath = path.resolve(__dirname, '../js/task.js');
+  vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), {
+    window, document: { getElementById(id) { return id === 'historyList' ? taskList : null; } },
+    localStorage: { getItem(key) { return storage.get(key) || null; }, setItem(key, value) { storage.set(key, value); } },
+    Date, Math, JSON, String, Number, Array, Object, console: { warn() {} },
+  }, { filename: sourcePath });
+  window.GIS.task.init();
+  const task = window.GIS.task.createTask('处理受保护数据', 'test', [{ name: '秘密', sensitive: true }]);
+  assert.equal(task.privacyMode, true);
+  const retry = window.GIS.task.rerunTask(task.id);
+  assert.equal(retry.privacyMode, true);
+  assert.equal(sent[0].options.privacyMode, true);
+  const again = window.GIS.task.rerunTask(retry.id);
+  assert.equal(again.privacyMode, true);
+  assert.equal(sent[1].options.privacyMode, true);
+});
+
 test('rerunning with a missing provider key does not leave a pending task', async () => {
   const taskList = { innerHTML: '', addEventListener() {} };
   const elements = new Map();

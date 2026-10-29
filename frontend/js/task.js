@@ -127,6 +127,7 @@ window.GIS = window.GIS || {};
       id: String(_nextId++),
       goal: goal || '',
       provider: provider || 'glm-routed',
+      privacyMode: (inputLayers || []).length > 0,
       model: (_taskProv && _taskProv.name) || modelNames[provider] || 'DeepSeek V4 Flash+',
       timestamp: Date.now(),
       completedAt: null,
@@ -197,11 +198,13 @@ window.GIS = window.GIS || {};
     var original = findTask(taskId);
     if (!original) return;
     var newTask = createTask(original.goal, original.provider, original.inputLayers);
+    if (original.privacyMode === true) updateTask(newTask.id, { privacyMode: true });
     if (GIS.chat && typeof GIS.chat.send === 'function') {
       GIS.chat.send(original.goal, {
         displayText: '[重新运行] ' + (original.goal.length > 50 ? original.goal.slice(0, 50) + '...' : original.goal),
         provider: original.provider,
         _taskId: newTask.id,
+        privacyMode: original.privacyMode === true,
       });
     }
     return newTask;

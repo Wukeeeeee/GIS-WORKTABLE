@@ -229,6 +229,7 @@ window.GIS = window.GIS || {};
         '<div class="layer-title-line">' +
           '<span class="layer-color-dot" style="background:' + color + ';opacity:' + opacityValue + '" data-color="' + color + '" data-id="' + layerId + '" title="' + (english ? 'Change color · Opacity ' : '修改颜色 · 不透明度 ') + op + '%"></span>' +
           '<span class="layer-name" data-id="' + layerId + '" title="' + escapeHtml(displayName) + (english ? ' · Double-click to rename' : ' · 双击重命名') + '">' + escapeHtml(displayName) + '</span>' +
+          '<span class="layer-privacy-badge" title="' + (english ? 'AI uses aliases; GIS processing stays in the backend' : 'AI 使用代号，GIS 在后端处理') + '">' + (english ? 'AI protected' : 'AI 保护') + '</span>' +
         '</div>' +
         '<div class="layer-meta-line">' +
           '<span class="layer-type">' + escapeHtml(typeText) + '</span>' + (features !== null && features !== undefined ? '<span class="layer-feature-count">' + (GIS.i18n ? GIS.i18n.featureCount(features) : '· ' + features + ' 个要素') + '</span>' : '') +
@@ -287,10 +288,15 @@ window.GIS = window.GIS || {};
     })).then(function(results) {
       if (!results.every(_registryResultOk)) throw new Error('同名旧图层尚未完成清理');
       return projectContext && projectContext.provided
-        ? window.GIS.api.registerLayer(name, geojson, layer.raster, projectContext.id)
-        : window.GIS.api.registerLayer(name, geojson, layer.raster);
+        ? window.GIS.api.registerLayer(name, geojson, layer.raster, projectContext.id, layer.sensitive)
+        : window.GIS.api.registerLayer(name, geojson, layer.raster, undefined, layer.sensitive);
     }).then(function(result) {
       if (!_registryResultOk(result)) throw new Error('后台未确认图层注册成功');
+      if (result && typeof result.sensitive === 'boolean') {
+        layer.sensitive = result.sensitive;
+        var stateRecord = GIS.state && GIS.state.getLayer ? GIS.state.getLayer(layer.layer_id) : null;
+        if (stateRecord) stateRecord.sensitive = result.sensitive;
+      }
       if (result && typeof result.registration_token === 'string') {
         var tokens = layer._registrationTokens || (layer._registrationTokens = Object.create(null));
         tokens[name] = result.registration_token;
@@ -438,6 +444,7 @@ window.GIS = window.GIS || {};
         color: color,
         source: layer.source || 'upload',
         provenance: layer.provenance || null,
+        sensitive: true,
         visible: layer.visible !== false,
         _panelSync: true,
         _skip2DRender: true,
@@ -465,7 +472,7 @@ window.GIS = window.GIS || {};
     // 兜底生成 layer_id：工程恢复等场景可能不带 layer_id，缺失会导致删除按钮 data-id 为空而失效
     var _layerId = layer.layer_id || ('layer_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e6).toString(36));
     var isVisible = layer.visible !== false;
-    layerData.push({ ...layer, layer_id: _layerId, filename: name, _rawName, visible: isVisible, color });
+    layerData.push({ ...layer, layer_id: _layerId, filename: name, _rawName, visible: isVisible, color, sensitive: true });
     if (!layer._panelSync && GIS.map && GIS.map.setLayerColor) GIS.map.setLayerColor(_rawName, color);
     if (!isVisible && GIS.map && GIS.map.setLayerVisible) GIS.map.setLayerVisible(_rawName, false);
     renderList();

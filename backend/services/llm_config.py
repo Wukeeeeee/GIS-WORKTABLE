@@ -236,6 +236,7 @@ class ReasoningChatOpenAI(ChatOpenAI):
 
     def _get_request_payload(self, input_, *, stop=None, **kwargs):
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        from backend.services.privacy_service import check_model_payload
         # 只在 chat/completions 路径（payload 带 messages）注入思考开关
         if getattr(self, "_inject_reasoning", False) and isinstance(payload.get("messages"), list):
             body = _reasoning_request_body(getattr(self, "openai_api_base", ""))
@@ -243,6 +244,8 @@ class ReasoningChatOpenAI(ChatOpenAI):
                 payload.update(body)
         serialized = payload.get("messages")
         if not isinstance(serialized, list) or not serialized:
+            check_model_payload(payload, {"base_url": getattr(self, "openai_api_base", ""),
+                                          "model": getattr(self, "model_name", "")})
             return payload
         # 响应走 chat/completions 时 messages 与输入消息一一对应
         input_messages: List[BaseMessage] = self._convert_input(input_).to_messages()
@@ -251,6 +254,8 @@ class ReasoningChatOpenAI(ChatOpenAI):
                 rc = lc_msg.additional_kwargs.get(_REASONING_KEY)
                 if rc not in (None, ""):
                     body[_REASONING_KEY] = rc
+        check_model_payload(payload, {"base_url": getattr(self, "openai_api_base", ""),
+                                      "model": getattr(self, "model_name", "")})
         return payload
 
 

@@ -699,7 +699,7 @@ window.GIS.api = (() => {
    * @param {ProviderItem|string} [provider] Provider 对象或 id；缺省用当前选中项
    * @param {string[]} [forceSkills=[]]
    */
-  async function chat(message, sessionId = 'default', provider = null, forceSkills = [], mode = 'full', requestId = null, callerSignal = null) {
+  async function chat(message, sessionId = 'default', provider = null, forceSkills = [], mode = 'full', requestId = null, callerSignal = null, privacyMode = false) {
     // 解析出完整 Provider 条目作为唯一配置来源
     const prov = resolveProvider(provider);
     const controller = new AbortController();
@@ -722,6 +722,7 @@ window.GIS.api = (() => {
           llm_config: prov,                     // 含 Key 的唯一配置来源
           request_id: requestId || undefined,
           force_skills: forceSkills,
+          privacy_mode: privacyMode === true,
           amap_key: getAmapKey() || undefined,
           mode: mode
         })
@@ -787,10 +788,11 @@ window.GIS.api = (() => {
   }
 
   /** 通知后端注册新加载的图层（名字 + GeoJSON）。 */
-  async function registerLayer(name, geojson, raster, expectedProjectId) {
+  async function registerLayer(name, geojson, raster, expectedProjectId, sensitive) {
     const project = GIS.project;
     const payload = { name, geojson, raster };
-    if (arguments.length >= 4) {
+    if (typeof sensitive === 'boolean') payload.sensitive = sensitive;
+    if (arguments.length >= 4 && expectedProjectId !== undefined) {
       payload.project_context = true;
       payload.expected_project_id = expectedProjectId == null ? null : expectedProjectId;
     } else if (project && typeof project.getActiveRegistryProjectId === 'function') {

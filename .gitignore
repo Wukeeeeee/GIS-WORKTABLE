@@ -99,3 +99,10 @@ ai_implementation_reference/
 /.serena/
 /.codex-test-tmp/
 /.pytest-*-tmp*/
+
+# Local investigation, regression runs and browser state
+/.goal-upload-investigation-20261026/
+/.pytest-*/
+/backend/tests/.pytest-*/
+/backend/tests/.browser-acceptance*/
+/artifacts/privacy-mode-20261029/local-state/

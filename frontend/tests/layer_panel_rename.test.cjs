@@ -110,6 +110,14 @@ test('restored layer IDs, colors, and opacity cannot inject table markup', () =>
   assert.equal(harness.layers.getLayers()[1].color, '#e74c3c');
 });
 
+test('new panel layers are protected by default without a per-layer toggle', () => {
+  const harness = loadLayerPanel();
+  const layer = harness.layers.getLayers()[0];
+  assert.equal(layer.sensitive, true);
+  assert.match(harness.tbody.innerHTML, /layer-privacy-badge/);
+  assert.equal(harness.layers.setLayerPrivacy, undefined);
+});
+
 test('restored layer IDs cannot inject the attribute inspector toolbar', async () => {
   const harness = loadLayerPanel();
   harness.state.getLayer = null;

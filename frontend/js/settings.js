@@ -964,6 +964,49 @@ window.GIS = window.GIS || {};
           if (pathEl) pathEl.textContent = data.log_dir || 'logs/';
         })
         .catch(function() {});
+      refreshPrivacyAudit();
+    }
+
+    function refreshPrivacyAudit() {
+      var list = document.getElementById('privacyAuditList');
+      if (!list) return;
+      fetch('/api/privacy/audit?limit=40')
+        .then(function(r) {
+          if (!r.ok) throw new Error('读取失败');
+          return r.json();
+        })
+        .then(function(data) {
+          list.textContent = '';
+          var events = Array.isArray(data.events) ? data.events : [];
+          if (!events.length) {
+            list.textContent = '暂无 AI 请求外发记录。';
+            return;
+          }
+          events.forEach(function(event) {
+            var row = document.createElement('div');
+            row.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--outline-variant);line-height:1.5;';
+            var title = document.createElement('strong');
+            var labels = {
+              outbound_preflight_passed: '已通过本机检查，准备发送',
+              provider_response_received: '已收到模型服务响应',
+              provider_call_failed_or_no_model_reply: '请求失败或未返回模型结果；是否到达服务端无法确认',
+              blocked_payload_mismatch: '已拦截：请求内容与批准内容不一致',
+              blocked_unapproved_model_call: '已拦截：未经隐私边界批准的模型请求',
+            };
+            title.textContent = labels[event.event] || '请求事件：' + String(event.event || '未知');
+            var detail = document.createElement('div');
+            detail.textContent = [event.time_utc, event.destination, event.provider, event.model]
+              .filter(Boolean).join(' · ') + ' · 请求体约 ' + Number(event.payload_bytes || 0) + ' 字节';
+            var categories = document.createElement('div');
+            categories.textContent = '请求包含：' + ((event.data_categories || []).join('、') || '未分类')
+              + '；消息 ' + Number(event.message_count || 0) + ' 条；工具 ' + ((event.tool_names || []).join('、') || '无');
+            row.appendChild(title);
+            row.appendChild(detail);
+            row.appendChild(categories);
+            list.appendChild(row);
+          });
+        })
+        .catch(function() { list.textContent = '暂时无法读取本机 AI 外发审计记录。'; });
     }
 
     if (exportBtn) {
@@ -974,6 +1017,8 @@ window.GIS = window.GIS || {};
     if (refreshBtn) {
       refreshBtn.addEventListener('click', refreshStats);
     }
+    var logsNav = document.querySelector('.modal-sidenav-item[data-panel="logs"]');
+    if (logsNav) logsNav.addEventListener('click', refreshStats);
     if (clearBtn) {
       clearBtn.addEventListener('click', function() {
         if (!confirm('确定清除当前会话的所有日志吗？此操作不可恢复。')) return;

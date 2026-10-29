@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GIS WorkTable · UI 风格对比</title>
+  <style>
+    :root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif; color: #26312e; background: #eef1ed; font-synthesis: none; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: #eef1ed; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .page { max-width: 1600px; margin: auto; padding: 26px 30px 34px; }
+    .page-head { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin: 0 2px 20px; }
+    .eyebrow { color: #60766c; font: 700 11px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { margin: 8px 0 5px; color: #202a26; font-size: clamp(22px, 3vw, 30px); font-weight: 650; letter-spacing: -.035em; }
+    .subtitle { margin: 0; color: #68746e; font-size: 13px; line-height: 1.6; text-wrap: pretty; }
+    .shared-context { flex: 0 0 auto; padding: 9px 12px; border: 1px solid #dce2dc; border-radius: 8px; color: #596860; background: #f8faf7; font-size: 11px; }
+    .shared-context strong { color: #34423a; font-weight: 600; }
+    .compare { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+    .variant { min-width: 0; overflow: hidden; border: 1px solid #d8ddd8; border-radius: 12px; background: #fff; box-shadow: 0 8px 24px #34423a0b; }
+    .variant-head { min-height: 61px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-bottom: 1px solid #e6e9e6; }
+    .variant-title { display: flex; align-items: center; gap: 9px; color: #2e3934; font-size: 14px; font-weight: 650; }
+    .variant-title .index { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 6px; background: #edf0ed; color: #66726b; font: 600 11px/1 ui-monospace, monospace; }
+    .refined .variant-title .index { color: #426451; background: #e4eee7; }
+    .variant-note { color: #7a847e; font-size: 11px; }
+    .workspace { display: grid; grid-template-columns: minmax(0, 1fr) 228px; min-height: 603px; }
+    .map-area { position: relative; min-width: 0; min-height: 603px; overflow: hidden; background: #e7ebe6; }
+    .map-art { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .map-ribbon { position: absolute; z-index: 1; top: 13px; left: 13px; display: flex; gap: 5px; }
+    .map-ribbon span { padding: 6px 8px; border: 1px solid #d4dad4; border-radius: 5px; color: #46534b; background: #f7f8f6; font-size: 10px; }
+    .map-tools { position: absolute; top: 13px; right: 13px; display: grid; gap: 3px; padding: 4px; border: 1px solid #d3d9d3; border-radius: 7px; background: #f7f8f6; }
+    .map-tools button { width: 29px; height: 27px; border: 0; border-radius: 4px; color: #4c5a51; background: transparent; font-size: 14px; }
+    .map-tools button:hover { background: #e9eee9; }
+    .scale { position: absolute; bottom: 13px; left: 15px; display: flex; align-items: center; gap: 6px; color: #59665e; font-size: 10px; }
+    .scale i { width: 41px; height: 5px; border-right: 1px solid #46534b; border-bottom: 1px solid #46534b; border-left: 1px solid #46534b; }
+    .coordinates { position: absolute; right: 12px; bottom: 11px; padding: 5px 7px; border: 1px solid #d9dfd9; border-radius: 4px; color: #56635a; background: #f7f8f6eF; font: 10px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .side { min-width: 0; padding: 12px; border-left: 1px solid #e2e6e2; background: #fff; }
+    .panel-title { display: flex; align-items: center; justify-content: space-between; margin: 1px 0 10px; color: #303a35; font-size: 12px; font-weight: 650; }
+    .panel-title button { border: 0; color: #77827b; background: transparent; font-size: 13px; }
+    .layer { display: flex; align-items: center; gap: 8px; min-height: 33px; padding: 5px 6px; border-radius: 5px; color: #47534c; font-size: 11px; }
+    .layer.active { background: #f1f4f1; }
+    .check { color: #6e8a75; font-size: 12px; }
+    .swatch { width: 9px; height: 9px; border-radius: 2px; background: #75a17e; }
+    .swatch.blue { background: #789db2; }
+    .swatch.amber { background: #c69b65; }
+    .layer small { margin-left: auto; color: #8a938d; font-size: 9px; }
+    .divider { height: 1px; margin: 10px 0; background: #eceeec; }
+    .field { display: grid; gap: 5px; margin: 9px 0; }
+    .field label { color: #626e66; font-size: 10px; }
+    .field input, .field select { width: 100%; height: 32px; padding: 0 8px; border: 1px solid #dce1dc; border-radius: 5px; outline: none; color: #344039; background: #fff; font-size: 11px; }
+    .field input:focus, .field select:focus { border-color: #719078; box-shadow: 0 0 0 2px #fff, 0 0 0 4px #71907873; }
+    .usual .field input:focus, .usual .field select:focus { border-color: #7298ab; box-shadow: 0 0 0 2px #7298ab33; }
+    .num { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+    .help { color: #818a84; font-size: 9px; line-height: 1.5; text-wrap: pretty; }
+    .run { width: 100%; min-height: 34px; margin-top: 4px; border: 0; border-radius: 5px; color: white; background: #55745f; font-size: 11px; font-weight: 600; }
+    .usual .run { background: #487b91; }
+    .result { margin-top: 11px; padding: 10px; border: 1px solid #e4e8e4; border-radius: 6px; background: #f7f9f6; }
+    .result-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: #47584c; font-size: 10px; font-weight: 600; }
+    .result p { margin: 0; color: #667269; font-size: 10px; line-height: 1.6; text-wrap: pretty; }
+    .result-actions { display: flex; justify-content: end; margin-top: 6px; }
+    .copy { border: 0; padding: 3px 5px; color: #667269; background: transparent; font-size: 9px; }
+    .copy:hover { color: #375a41; }
+    .section-toggle { display: flex; width: 100%; justify-content: space-between; align-items: center; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; }
+    .section-content { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .22s ease; }
+    .section-content > div { overflow: hidden; }
+    .collapsed .section-content { grid-template-rows: 0fr; }
+    .collapsed .section-content > div { min-height: 0; }
+    .fold-chevron { transition: transform .2s ease; }
+    .collapsed .fold-chevron { transform: rotate(-90deg); }
+    .icon { display: inline-block; transform: translateY(.125em); }
+    .refined .workspace { background: #f7f9f6; }
+    .refined .map-area { background: #edf1eb; }
+    .refined .side { border-left-color: #e7ebe6; background: #f7f9f6; }
+    .refined .layer { color: #46534a; }
+    .refined .layer.active { background: #eef3ee; }
+    .refined .result { border-color: #e3eae3; background: #f2f6f1; }
+    .refined .coordinates { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+    .refined .map-tools button .icon { transform: translateY(.125em); }
+    .refined .stream span { display: inline; filter: blur(6px); opacity: .15; animation: type-in 120ms ease-out forwards; }
+    .refined .stream span:nth-child(2) { animation-delay: 30ms; }
+    .refined .stream span:nth-child(3) { animation-delay: 60ms; }
+    .refined .stream span:nth-child(4) { animation-delay: 90ms; }
+    @keyframes type-in { to { filter: blur(0); opacity: 1; } }
+    .refined .draggable { transition: transform 1.2s cubic-bezier(.22, 1, .36, 1); }
+    .refined .draggable.moved { transform: translateX(8px); }
+    .refined .copy.done { color: #4d7957; }
+    .rules { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; margin-top: 16px; }
+    .rule { min-height: 70px; padding: 10px 11px; border: 1px solid #dce1dc; border-radius: 7px; background: #f8faf7; }
+    .rule b { display: block; margin-bottom: 5px; color: #465a4b; font-size: 10px; font-weight: 650; }
+    .rule span { display: block; color: #748078; font-size: 9px; line-height: 1.45; text-wrap: pretty; }
+    .footnote { margin: 11px 2px 0; color: #737e76; font-size: 10px; line-height: 1.6; text-wrap: pretty; }
+    @media (max-width: 980px) { .workspace { grid-template-columns: minmax(0, 1fr) 205px; } .rules { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 720px) { .page { padding: 18px 12px 24px; } .page-head { display: block; } .shared-context { display: inline-block; margin-top: 12px; } .compare { grid-template-columns: 1fr; } .workspace { grid-template-columns: minmax(0, 1fr) 215px; } }
+    @media (max-width: 480px) { .workspace { display: flex; flex-direction: column; } .map-area { min-height: 280px; } .side { border-top: 1px solid #e2e6e2; border-left: 0; } .rules { grid-template-columns: 1fr 1fr; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="page-head">
+      <div><div class="eyebrow">GIS WORKTABLE / UI STUDY 01</div><h1>专业 GIS 界面：常规版 × 高定版</h1><p class="subtitle">同一张分析工作台、同一组数据。左侧呈现常规工具界面，右侧展示 10 条规则的选择性应用。</p></div>
+      <div class="shared-context"><strong>共同场景</strong>　缓冲区分析 · 河网与居民点 · EPSG:32650</div>
+    </header>
+    <section class="compare" aria-label="界面风格对比">
+      <article class="variant usual">
+        <header class="variant-head"><div class="variant-title"><span class="index">A</span>常规 GIS 工具界面</div><span class="variant-note">清楚直接 · 常见控件</span></header>
+        <div class="workspace">
+          <div class="map-area">
+            <svg class="map-art" viewBox="0 0 640 600" preserveAspectRatio="xMidYMid slice" aria-label="河网、道路和分析范围示意图">
+              <rect width="640" height="600" fill="#e8ece7"/><path d="M-30 120 C70 75 88 190 170 168 S245 90 322 133 380 225 461 193 548 112 690 158M-40 365 C65 300 112 391 191 335S300 275 365 323 464 398 523 345 586 294 680 319M72 -20 C95 91 164 117 141 203S89 315 147 377 221 476 205 640M424 -30 C388 64 460 120 437 204S367 337 410 411 490 519 470 640" fill="none" stroke="#c6d2c6" stroke-width="22" opacity=".75"/><path d="M-30 120 C70 75 88 190 170 168 S245 90 322 133 380 225 461 193 548 112 690 158M-40 365 C65 300 112 391 191 335S300 275 365 323 464 398 523 345 586 294 680 319" fill="none" stroke="#fbfcf8" stroke-width="12"/><path d="M34 503 C119 456 158 470 226 427S353 394 414 428 513 470 619 422M15 263 C96 246 139 274 205 245S303 214 356 245 448 278 533 244 603 220 664 236M298 -10 C275 74 295 112 268 174S239 260 282 312 334 383 308 455 287 528 309 623" fill="none" stroke="#fafbf7" stroke-width="5"/><path d="M-18 308 C60 250 110 310 172 278S280 222 346 260 443 330 507 290 604 250 667 268" fill="none" stroke="#6b9bb1" stroke-width="5"/><path d="M120 295 C150 234 232 210 299 224s112 63 116 122-57 121-133 126-157-39-170-91 2-65 8-86Z" fill="#7fa78225" stroke="#54845c" stroke-width="2" stroke-dasharray="7 5"/><g fill="#c9835a" stroke="#fff" stroke-width="2"><circle cx="196" cy="289" r="7"/><circle cx="338" cy="355" r="7"/><circle cx="254" cy="420" r="7"/><circle cx="393" cy="270" r="7"/></g><g fill="#77877b" font-family="sans-serif" font-size="11"><text x="58" y="208">北郊河</text><text x="442" y="382">新城片区</text><text x="178" y="494">研究区</text></g>
+            </svg>
+            <div class="map-ribbon"><span>图层</span><span>选择</span><span>分析</span></div>
+            <div class="map-tools"><button title="放大">＋</button><button title="缩小">−</button><button title="定位">⌖</button></div>
+            <div class="scale"><i></i>1 km</div><div class="coordinates">E 492,381　N 3,427,260</div>
+          </div>
+          <aside class="side">
+            <div class="panel-title">图层 <button>•••</button></div>
+            <div class="layer active"><span class="check">☑</span><span class="swatch blue"></span>河网 <small>线</small></div>
+            <div class="layer"><span class="check">☑</span><span class="swatch amber"></span>居民点 <small>点</small></div>
+            <div class="layer"><span class="check">☑</span><span class="swatch"></span>缓冲区结果 <small>面</small></div>
+            <div class="divider"></div>
+            <div class="section" data-section>
+              <div class="panel-title"><button class="section-toggle" aria-expanded="true"><span>缓冲区参数</span><span class="fold-chevron">⌄</span></button></div>
+              <div class="section-content"><div>
+                <div class="field"><label>输入图层</label><select><option>河网</option></select></div>
+                <div class="field"><label>距离（米）</label><input value="500" inputmode="decimal"></div>
+                <div class="field"><label>端点样式</label><select><option>圆形</option></select></div>
+                <p class="help">按投影坐标系计算。输出将新增为一个面图层。</p>
+                <button class="run">运行分析</button>
+              </div></div>
+            </div>
+            <div class="result"><div class="result-head">✦ AI 分析摘要</div><p class="ai-copy">缓冲区覆盖居民点 <strong>4</strong> 处，可优先核查北侧与东侧聚落。</p><div class="result-actions"><button class="copy" data-copy>复制摘要</button></div></div>
+          </aside>
+        </div>
+      </article>
+      <article class="variant refined">
+        <header class="variant-head"><div class="variant-title"><span class="index">B</span>高定规则选择性应用</div><span class="variant-note">层次克制 · 数值易读</span></header>
+        <div class="workspace">
+          <div class="map-area">
+            <svg class="map-art" viewBox="0 0 640 600" preserveAspectRatio="xMidYMid slice" aria-label="河网、道路和分析范围示意图">
+              <rect width="640" height="600" fill="#edf1eb"/><path d="M-30 120 C70 75 88 190 170 168 S245 90 322 133 380 225 461 193 548 112 690 158M-40 365 C65 300 112 391 191 335S300 275 365 323 464 398 523 345 586 294 680 319M72 -20 C95 91 164 117 141 203S89 315 147 377 221 476 205 640M424 -30 C388 64 460 120 437 204S367 337 410 411 490 519 470 640" fill="none" stroke="#d0dbce" stroke-width="22" opacity=".76"/><path d="M-30 120 C70 75 88 190 170 168 S245 90 322 133 380 225 461 193 548 112 690 158M-40 365 C65 300 112 391 191 335S300 275 365 323 464 398 523 345 586 294 680 319" fill="none" stroke="#f8faf6" stroke-width="12"/><path d="M34 503 C119 456 158 470 226 427S353 394 414 428 513 470 619 422M15 263 C96 246 139 274 205 245S303 214 356 245 448 278 533 244 603 220 664 236M298 -10 C275 74 295 112 268 174S239 260 282 312 334 383 308 455 287 528 309 623" fill="none" stroke="#f6f8f3" stroke-width="5"/><path d="M-18 308 C60 250 110 310 172 278S280 222 346 260 443 330 507 290 604 250 667 268" fill="none" stroke="#709bb0" stroke-width="5"/><path d="M120 295 C150 234 232 210 299 224s112 63 116 122-57 121-133 126-157-39-170-91 2-65 8-86Z" fill="#80a88920" stroke="#5b8162" stroke-width="2" stroke-dasharray="7 5"/><g fill="#c9835a" stroke="#fff" stroke-width="2"><circle cx="196" cy="289" r="7"/><circle cx="338" cy="355" r="7"/><circle cx="254" cy="420" r="7"/><circle cx="393" cy="270" r="7"/></g><g fill="#738078" font-family="sans-serif" font-size="11"><text x="58" y="208">北郊河</text><text x="442" y="382">新城片区</text><text x="178" y="494">研究区</text></g>
+            </svg>
+            <div class="map-ribbon"><span>图层</span><span>选择</span><span>分析</span></div>
+            <div class="map-tools"><button title="放大"><span class="icon">＋</span></button><button title="缩小"><span class="icon">−</span></button><button title="定位"><span class="icon">⌖</span></button></div>
+            <div class="scale"><i></i>1 km</div><div class="coordinates">E 492,381　N 3,427,260</div>
+          </div>
+          <aside class="side">
+            <div class="panel-title">图层 <button>•••</button></div>
+            <div class="layer active"><span class="check">☑</span><span class="swatch blue"></span>河网 <small>线</small></div>
+            <div class="layer"><span class="check">☑</span><span class="swatch amber"></span>居民点 <small>点</small></div>
+            <div class="layer draggable" id="drag-layer"><span class="check">☑</span><span class="swatch"></span>缓冲区结果 <small>⠿ 面</small></div>
+            <div class="divider"></div>
+            <div class="section" data-section>
+              <div class="panel-title"><button class="section-toggle" aria-expanded="true"><span>缓冲区参数</span><span class="fold-chevron">⌄</span></button></div>
+              <div class="section-content"><div>
+                <div class="field"><label>输入图层</label><select><option>河网</option></select></div>
+                <div class="field"><label>距离（米）</label><input class="num" value="500" inputmode="decimal"></div>
+                <div class="field"><label>端点样式</label><select><option>圆形</option></select></div>
+                <p class="help">按投影坐标系计算。输出将新增为一个面图层。</p>
+                <button class="run">运行分析</button>
+              </div></div>
+            </div>
+            <div class="result"><div class="result-head">✦ AI 分析摘要</div><p class="ai-copy stream"><span>缓冲区覆盖居民点</span> <span><strong>4</strong></span><span> 处，可优先核查北侧与东侧聚落。</span></p><div class="result-actions"><button class="copy" data-copy>复制摘要</button></div></div>
+          </aside>
+        </div>
+      </article>
+    </section>
+    <section class="rules" aria-label="规则应用说明">
+      <div class="rule"><b>01　背景层级</b><span>四层表面只差约 1–3% 明度，面板与画布柔和区分。</span></div>
+      <div class="rule"><b>02　输入聚焦</b><span>双环阴影提供清楚焦点，保留可见的键盘定位反馈。</span></div>
+      <div class="rule"><b>03　字重克制</b><span>说明和一般标签降重；标题、状态和关键数值仍清晰。</span></div>
+      <div class="rule"><b>04　AI 渐显</b><span>仅摘要文字短暂 blur 渐显；代码与坐标不加效果。</span></div>
+      <div class="rule"><b>05　图标对齐</b><span>工具图标微下移，与文字基线更自然地对齐。</span></div>
+      <div class="rule"><b>06　等宽数字</b><span>坐标、面积、距离与比例尺固定数字宽度，避免跳动。</span></div>
+      <div class="rule"><b>07　参数折叠</b><span>点击「缓冲区参数」查看内容按网格平滑展开/收起。</span></div>
+      <div class="rule"><b>08　说明换行</b><span>说明文本使用 pretty；表格和紧凑数据保持原排版。</span></div>
+      <div class="rule"><b>09　动作动效</b><span>右侧图层可点动体验 1200/80 缓动；地图交互保持即时。</span></div>
+      <div class="rule"><b>10　复制反馈</b><span>点「复制摘要」，按钮显示对勾约 2.5 秒后复原。</span></div>
+    </section>
+    <p class="footnote">这是独立的静态交互样稿，用来比较视觉与微交互。高定规则按 GIS 使用情境收敛：不对地图拖动、绘制、测量、属性表或代码输出施加装饰性动效。</p>
+  </main>
+  <script>
+    document.querySelectorAll('.section-toggle').forEach(button => button.addEventListener('click', () => {
+      const section = button.closest('[data-section]');
+      const collapsed = section.classList.toggle('collapsed');
+      button.setAttribute('aria-expanded', String(!collapsed));
+    }));
+    document.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', async () => {
+      const text = button.closest('.result').querySelector('.ai-copy').innerText.trim();
+      try { await navigator.clipboard.writeText(text); } catch { /* file previews may block clipboard access */ }
+      button.classList.add('done'); button.textContent = '✓ 已复制';
+      window.setTimeout(() => { button.classList.remove('done'); button.textContent = '复制摘要'; }, 2500);
+    }));
+    const draggable = document.querySelector('#drag-layer');
+    draggable.addEventListener('click', () => draggable.classList.toggle('moved'));
+  </script>
+</body>
+</html>

@@ -1398,3 +1398,19 @@ html.theme-dark .modal-input:focus {
   border-color: var(--workspace-accent, #e0e0e0) !important;
   box-shadow: 0 0 0 1px var(--workspace-accent, #e0e0e0) !important;
 }
+.layer-privacy-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border: 1px solid var(--outline-variant, #b8c9bf);
+  border-radius: 4px;
+  color: var(--on-surface, #204934);
+  background: var(--surface-container, #edf3ef);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.chat-privacy-label {
+  color: var(--on-surface-variant, #52645b);
+  font-size: 11px;
+  margin-bottom: 6px;
+}

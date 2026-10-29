@@ -20,7 +20,6 @@ import uuid
 import threading
 import datetime
 import shutil
-import tempfile
 from typing import Optional
 
 # ============================================================
@@ -151,28 +150,27 @@ def _new_exec_record(task_id: str, step_id: int, source_code: str,
 # 磁盘持久化
 # ============================================================
 
-def _write_atomic(path: str, write_content) -> None:
-    directory = os.path.dirname(os.path.abspath(path))
-    os.makedirs(directory, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=".task-write-", suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            write_content(f)
-        os.replace(temp_path, path)
-    finally:
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-
-
 def _write_json_atomic(path: str, value) -> None:
-    _write_atomic(path, lambda f: json.dump(value, f, ensure_ascii=False, indent=2))
+    from backend.services.local_encryption import write_bytes_atomic
+    payload = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+    write_bytes_atomic(path, payload, _storage_context(path))
 
 
 def _write_text_atomic(path: str, value: str) -> None:
-    _write_atomic(path, lambda f: f.write(value))
+    from backend.services.local_encryption import write_bytes_atomic
+    write_bytes_atomic(path, str(value).encode("utf-8"), _storage_context(path))
+
+
+def _storage_context(path: str) -> str:
+    relative = os.path.relpath(os.path.abspath(path), os.path.abspath(_BASE_DIR))
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        raise ValueError("任务加密文件路径越界")
+    return "task-store:" + relative.replace(os.sep, "/")
+
+
+def _read_text(path: str) -> str:
+    from backend.services.local_encryption import read_bytes
+    return read_bytes(path, _storage_context(path)).decode("utf-8")
 
 
 def _save_task_to_disk(task: dict):
@@ -185,8 +183,7 @@ def _load_task_from_disk(task_id: str) -> Optional[dict]:
     if not os.path.exists(path):
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = json.loads(_read_text(path))
         return data if isinstance(data, dict) else None
     except Exception:
         return None
@@ -201,8 +198,7 @@ def _load_artifacts_from_disk(task_id: str) -> list:
     if not os.path.exists(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = json.loads(_read_text(path))
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
     except Exception:
         return []
@@ -217,8 +213,7 @@ def _load_exec_log_from_disk(task_id: str) -> list:
     if not os.path.exists(path):
         return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = json.loads(_read_text(path))
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
     except Exception:
         return []
@@ -422,8 +417,7 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
         latest_existed = os.path.isfile(latest_file)
         latest_before = None
         if latest_existed:
-            with open(latest_file, "r", encoding="utf-8") as f:
-                latest_before = f.read()
+            latest_before = _read_text(latest_file)
 
         try:
             _write_text_atomic(version_file, source_code)
@@ -435,8 +429,7 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
                 meta = {}
                 if os.path.exists(meta_path):
                     try:
-                        with open(meta_path, "r", encoding="utf-8") as f:
-                            meta = json.load(f)
+                        meta = json.loads(_read_text(meta_path))
                     except Exception:
                         pass
                 meta[f"step_{step:03d}"] = {"label": label, "saved_at": _now()}
@@ -449,13 +442,12 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
                 if os.path.exists(version_file):
                     os.remove(version_file)
                 if latest_existed:
-                    with open(latest_file, "r", encoding="utf-8") as f:
-                        current_latest = f.read()
+                    current_latest = _read_text(latest_file)
                     if current_latest != latest_before:
                         _write_text_atomic(latest_file, latest_before)
                 elif os.path.exists(latest_file):
                     os.remove(latest_file)
-            except OSError:
+            except Exception:
                 pass
             raise
 
@@ -472,9 +464,8 @@ def get_latest_code(task_id: str) -> Optional[str]:
         return None
     latest = os.path.join(code_dir, "latest.py")
     try:
-        with open(latest, "r", encoding="utf-8") as f:
-            return f.read()
-    except OSError:
+        return _read_text(latest)
+    except Exception:
         return None
 
 
@@ -487,9 +478,8 @@ def get_code_version(task_id: str, step: int) -> Optional[str]:
     except ValueError:
         return None
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    except OSError:
+        return _read_text(path)
+    except Exception:
         return None
 
 

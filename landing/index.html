@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GIS WorkTable · 从数据到地图</title>
+  <meta name="description" content="GIS WorkTable 是开源的地理工作台。导入数据，使用 GIS 工具或 AI 助手完成分析，在地图上查看结果并保存工程。">
+  <meta property="og:title" content="GIS WorkTable · 从数据到地图">
+  <meta property="og:description" content="数据、地图、分析，在一张工作台上。">
+  <meta property="og:image" content="assets/worktable.png">
+  <link rel="icon" href="assets/favicon.png" type="image/png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="refinement.css">
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳至正文</a>
+  <header class="nav">
+    <a class="brand" href="#main" aria-label="GIS WorkTable 首页"><img src="assets/brand.png" width="180" height="48" alt="GIS WorkTable"></a>
+    <button class="menu-toggle" aria-expanded="false" aria-controls="nav-links" aria-label="打开菜单"><span></span><span></span></button>
+    <nav id="nav-links" aria-label="主导航"><a href="#workspace">工作台</a><a href="#workflow">使用流程</a><a href="#questions">FAQ</a><a class="nav-start" href="#start">开始使用 <span aria-hidden="true">↗</span></a></nav>
+  </header>
+  <main id="main">
+    <section class="hero wrap">
+      <div class="eyebrow"><span class="status-dot"></span> OPEN SOURCE · BUILT FOR GIS</div>
+      <div class="hero-copy"><h1>打开数据，<br>开始分析。</h1><div class="hero-side"><p>用自然语言调用 GIS 工具，也可以自己操作。导入数据、检查结果，把这次的分析保存成工程。</p><a class="button" href="#start">开始使用 <span aria-hidden="true">↗</span></a><span class="micro">开源 · 本地运行 · MIT License</span></div></div>
+      <figure class="product" id="workspace"><div class="window-bar"><span><i></i><i></i><i></i></span><span>GIS WorkTable / Workspace</span><span class="window-label">实际界面</span></div><img src="assets/worktable.png" width="1280" height="720" alt="GIS WorkTable 实际界面：左侧图层面板，右侧卫星地图上显示点与面要素"><figcaption><span>01 / THE WORKSPACE</span><span>图层、工具和地图，在同一个地方。</span><span aria-hidden="true">GIS WorkTable</span></figcaption></figure>
+    </section>
+    <section class="intro wrap reveal"><div class="section-tag">LESS SWITCHING. MORE DOING.</div><h2>数据已经有了。<br>接下来，把问题放到地图上。</h2><p>一份文件、一条数据服务地址，或一个现有工程。<br>从手边的数据出发，分析、检查，再继续下一步。</p></section>
+    <section class="features wrap" aria-label="工作台功能">
+      <article class="feature reveal"><div class="feature-number">01 / DATA</div><div class="mini source-brand"><img src="assets/geosource.svg" width="616" height="240" alt="GeoSource 数据接入模块"><span>公开数据与服务接入</span></div><h3>先把数据放进来</h3><p>导入矢量和栅格文件，也能接入公开数据服务。在图层面板中整理数据，查看属性和坐标系。</p><a href="https://github.com/Wukeeeeee/GIS-WORKTABLE/blob/main/docs/features.md">查看支持的功能 <span aria-hidden="true">↗</span></a></article>
+      <article class="feature reveal"><div class="feature-number">02 / ANALYSIS</div><figure class="mini analysis-shot"><img src="assets/buffer-result.png" width="1920" height="1080" alt="工作台实际缓冲分析截图，显示 500 米参数和结果图层"></figure><h3>自己操作，也能请 AI 帮忙</h3><p>缓冲、叠置、地形分析，从工具菜单开始。也可以告诉 AI 你要做什么，让它结合当前图层调用工具。</p><span class="feature-note">AI 助手需要配置模型服务</span></article>
+      <article class="feature reveal"><div class="feature-number">03 / PROJECT</div><div class="mini project" aria-hidden="true"><div class="project-file"><span>▧</span><strong>我的分析工程</strong><small>.giswork</small></div><div class="project-meta"><span>图层</span><span>样式</span><span>处理历史</span></div></div><h3>保存下来，下次接着做</h3><p>把图层、样式和处理历史留在工程里。需要交付时，导出数据、地图或报告，继续用于其他 GIS 软件。</p><span class="feature-note">工程保存与恢复 / 数据导出</span></article>
+    </section>
+    <section class="workflow" id="workflow"><div class="wrap workflow-grid"><div class="workflow-intro reveal"><div class="section-tag">A SMALL FIRST STEP</div><h2>先做一个<br>缓冲区。</h2><p>不用先配置模型。<br>用演示工程，走一遍本地分析流程。</p><a class="text-link" href="https://github.com/Wukeeeeee/GIS-WORKTABLE/blob/main/docs/competition/demo-runbook.zh-CN.md">打开演示指南 <span aria-hidden="true">↗</span></a></div><ol class="steps"><li class="reveal"><span>01</span><div><h3>打开演示工程</h3><p>启动工作台，导入仓库提供的 .giswork 示例，查看示例面图层。</p></div></li><li class="reveal"><span>02</span><div><h3>选中图层，运行缓冲分析</h3><p>在工具中设置距离参数，生成结果后，回到地图上检查范围。</p></div></li><li class="reveal"><span>03</span><div><h3>检查结果，保存工程</h3><p>查看图层与处理记录。保存后，下次打开还能接着处理。</p></div></li></ol></div></section>
+    <section class="statement wrap reveal"><div class="section-tag">KEEP YOUR WORK</div><p class="tagline"><span class="tag-word">从数据出发，</span><br><span class="tag-word">下次打开，接着分析。</span></p><div class="statement-bottom"><span>GIS WorkTable</span><span>学习 · 分析 · 验证</span><span aria-hidden="true">＋</span></div></section>
+    <section class="faq wrap" id="questions"><div class="faq-heading"><div class="section-tag">BEFORE YOU START</div><h2>你可能想问</h2></div><div class="faq-list">
+      <article class="answer"><h3 class="question">这是在线服务，还是本地软件？<span>＋</span></h3><p>目前主要在本地运行，启动后通过浏览器打开工作台。Windows 可使用仓库中的 start.bat。桌面客户端仍是实验性功能。</p></article>
+      <article class="answer"><h3 class="question">不用 AI，也能做分析吗？<span>＋</span></h3><p>可以。图层管理和手动 GIS 工具可以独立使用，本地分析无需模型 API Key。AI 助手则需要配置兼容 OpenAI 接口的模型服务。</p></article>
+      <article class="answer"><h3 class="question">可以导入哪些数据？<span>＋</span></h3><p>支持常见矢量、栅格文件，以及 OGC、ArcGIS 等数据服务。不同格式和工具有各自的输入要求，具体请查看仓库中的功能说明。</p></article>
+      <article class="answer"><h3 class="question">没有网络可以用吗？<span>＋</span></h3><p>安装好依赖后，可以对本地数据进行部分手动分析。在线底图、公开数据服务和远程模型仍需要网络。</p></article>
+      <article class="answer"><h3 class="question">数据会发到哪里？<span>＋</span></h3><p>本地后端处理导入的数据。使用在线数据服务或 AI 助手时，相关请求会发送到对应服务；使用前请查看模型配置和工具说明，确认数据适合发送。</p></article>
+      <article class="answer"><h3 class="question">适合用来做正式业务吗？<span>＋</span></h3><p>项目仍在开发中，目前更适合 GIS 学习、分析原型和工作流演示。分析结果需要结合数据质量、坐标系和方法适用性核验，不能代替专业判断。</p></article>
+    </div></section>
+    <section class="start wrap" id="start"><div><div class="section-tag">READY WHEN YOU ARE</div><h2>带上数据，<br>打开工作台。</h2><p>从 GitHub 获取源码和启动说明。<br>Windows 用户可以从 start.bat 开始。</p></div><div class="start-actions"><a class="button button-light" href="https://github.com/Wukeeeeee/GIS-WORKTABLE#快速开始">开始使用 <span aria-hidden="true">↗</span></a><a href="https://gitee.com/wukeeeeee/GIS-WORKTABLE">也可以从 Gitee 获取 <span aria-hidden="true">↗</span></a><span>Python 3.11+ · 现代浏览器</span></div></section>
+  </main>
+  <footer class="wrap"><a class="footer-brand" href="#main">GIS WorkTable</a><span>一个开源的地理工作台。</span><div><a href="https://github.com/Wukeeeeee/GIS-WORKTABLE">GitHub ↗</a><a href="https://github.com/Wukeeeeee/GIS-WORKTABLE/blob/main/LICENSE">MIT License ↗</a></div></footer>
+</body>
+</html>

@@ -977,6 +977,7 @@ function scrollMessages() {
             quoted: quotedSnapshot ? quotedSnapshot.text : undefined,
             task_id: quotedSnapshot ? quotedSnapshot.task_id : undefined,
             read_only_location_analysis: readOnlyLocationAnalysis,
+            privacy_mode: !!(displayOpt && displayOpt.privacyMode),
           }),
         });
         if (!streamRes.ok) {
@@ -1099,7 +1100,7 @@ function scrollMessages() {
           console.warn('[GIS Chat] 流式接口失败，降级到普通 API:', streamErr);
           result = await GIS.api.chat(
             text, currentSessionId, sendProv, forceSkills, window.GIS.chat.getMode(),
-            requestId, abortController && abortController.signal,
+            requestId, abortController && abortController.signal, !!(displayOpt && displayOpt.privacyMode),
           );
         }
       }
@@ -1124,6 +1125,7 @@ function scrollMessages() {
         window._currentTaskId = null;
         var _executionStatus = result.execution_status || 'success';
         var taskUpdate = {
+          privacyMode: result.privacy_mode === true,
           status: _executionStatus === 'timeout' ? 'failed'
             : _executionStatus === 'cancelled' ? 'cancelled' : 'success',
         };
@@ -1141,7 +1143,7 @@ function scrollMessages() {
 
         // 提取 AI 回复中的代码块作为执行代码
         var codeMatch = result.response && result.response.match(/```(?:python)?\s*([\s\S]*?)```/);
-        if (codeMatch) {
+        if (codeMatch && !result.privacy_mode) {
           taskUpdate.code = codeMatch[1].trim();
         }
         // 提取前 300 字作为摘要
@@ -1202,9 +1204,19 @@ function scrollMessages() {
       removePendingActionBars();   // 新一轮结果出来，清掉旧按钮
       const msgEl = addMessage(result.response || '(空响应)', 'ai', {
         mode: result.mode || 'full',
+        noMarkdown: result.privacy_mode === true,
+        privacyMode: result.privacy_mode === true,
         tokenUsage: result.token_usage || null,
         task_id: result.task_id || '',
       });
+      if (result.privacy_mode && msgEl) {
+        var privacyLabel = document.createElement('div');
+        privacyLabel.className = 'chat-privacy-label';
+        privacyLabel.textContent = GIS.i18n && GIS.i18n.isEnglish()
+          ? 'Protected layer mode · Local GIS operations' : '敏感图层模式 · 本地 GIS 操作';
+        var privacyBubble = msgEl.querySelector('.message-bubble') || msgEl;
+        privacyBubble.insertBefore(privacyLabel, privacyBubble.firstChild);
+      }
 
       // 折叠「思考过程」块：reasoning 开启时后端在 done 事件带 reasoning（不进正文）
       if (result.reasoning && msgEl) {
@@ -1504,6 +1516,9 @@ function scrollMessages() {
               return item._registeredName === layerName || item.filename === layerName;
             }) : null;
           if (existingLayer && window.GIS.layers.syncLayerData) {
+            existingLayer.sensitive = true;
+            var sharedLayer = GIS.state && GIS.state.getLayer ? GIS.state.getLayer(existingLayer.layer_id) : null;
+            if (sharedLayer) sharedLayer.sensitive = existingLayer.sensitive;
             const mapName = existingLayer._rawName || existingLayer.layer_id;
             if (GIS.map && GIS.map.loadGeoJSON) {
               GIS.map.loadGeoJSON(geojson, mapName, existingLayer.style || layer.style || {}, { fitBounds: false });
@@ -1519,6 +1534,7 @@ function scrollMessages() {
               style: layer.style || null,
               source: 'ai',
               provenance: layer.provenance || null,
+              sensitive: true,
               registry_name: layer.registry_name || null,
               registration_token: layer.registration_token || null,
             });
@@ -1543,6 +1559,7 @@ function scrollMessages() {
               visible: true,
               source: 'ai',
               provenance: layer.provenance || null,
+              sensitive: true,
               _registeredName: layer.registry_name || null,
               _registrationTokens: layer.registry_name && layer.registration_token
                 ? { [layer.registry_name]: layer.registration_token } : undefined,
@@ -2283,7 +2300,7 @@ function scrollMessages() {
       content.textContent = String(text == null ? '' : text);
     }
     // AI 消息：自动为输出文件路径添加「打开 / 下载」跳转按钮
-    if (type === 'ai') _attachOutputButtons(content);
+    if (type === 'ai' && !options.privacyMode) _attachOutputButtons(content);
     bubble.appendChild(content);
 
     // 用户消息：在气泡底部显示 skill chip 标签
@@ -2606,6 +2623,9 @@ function scrollMessages() {
         }) : null;
       if (existingLayer && GIS.layers.syncLayerData) {
         existingLayer._registeredName = registryName;
+        existingLayer.sensitive = true;
+        var existingStateLayer = GIS.state && GIS.state.getLayer ? GIS.state.getLayer(existingLayer.layer_id) : null;
+        if (existingStateLayer) existingStateLayer.sensitive = existingLayer.sensitive;
         if (layer.registration_token) {
           const tokens = existingLayer._registrationTokens || (existingLayer._registrationTokens = Object.create(null));
           tokens[registryName] = layer.registration_token;
@@ -2625,6 +2645,7 @@ function scrollMessages() {
         style: layer.style || null,
         source: 'manual',
         provenance: layer.provenance || null,
+        sensitive: true,
         registry_name: layer.registry_name || null,
         registration_token: layer.registration_token || null,
       });
