@@ -171,6 +171,43 @@ def test_e2e_raster_resample_output_real(dem_registered):
     assert source.headers.get("content-type", "").startswith("image/tiff")
 
 
+def test_e2e_history_rerun_preserves_previous_raster_result(dem_registered, tmp_path):
+    history_service.set_history_file(str(tmp_path / "history.json"))
+    try:
+        first = _invoke("raster_resample", {
+            "layer_name": dem_registered, "scale_factor": 2.0, "method": "bilinear",
+        })
+        result_name = f"{dem_registered}_重采样"
+        original_info = tool_service._registered_layers[result_name]
+        original_path = original_info["raster_source_path"]
+        with open(original_path, "rb") as original_file:
+            original_bytes = original_file.read()
+        entry = next(
+            item for item in history_service.list_entries()
+            if item["tool"] == "raster_resample" and item["ok"]
+        )
+
+        response = client.post("/api/history/rerun", json={"index": entry["index"]})
+
+        assert response.status_code == 200
+        rerun = response.json()
+        assert rerun["ok"] is True, rerun
+        with open(original_path, "rb") as original_file:
+            assert original_file.read() == original_bytes
+        current = tool_service._registered_layers[result_name]
+        preserved = tool_service._registered_layers[f"{result_name}_原"]
+        assert current["raster_source_path"] != original_path
+        assert preserved["raster"]["crs"] == original_info["raster"]["crs"]
+        assert preserved["raster_source_path"] == original_path
+        raster_ops = [op for op in rerun["layer_ops"] if op["action"] == "dem_result"]
+        assert [op["layer_name"] for op in raster_ops] == [f"{result_name}_原", result_name]
+        for op in raster_ops:
+            assert client.get(op["url"]).status_code == 200
+            assert client.get(op["raster"]["source_url"]).status_code == 200
+    finally:
+        history_service.set_history_file(None)
+
+
 def test_e2e_spatial_interpolate_registers_reusable_raster():
     name = f"interpolation-{uuid.uuid4().hex[:8]}"
     points = {"type": "FeatureCollection", "features": [
@@ -257,6 +294,40 @@ def test_e2e_history_rerun_exposes_returned_failure(monkeypatch, tmp_path):
 def test_e2e_unknown_tool_404():
     resp = client.post("/api/tools/invoke", json={"name": "no_such_tool", "arguments": {}})
     assert resp.status_code == 404
+
+
+def test_e2e_unique_values_missing_field_is_reported_as_failure():
+    name = f"e2e_unique_missing_field_{uuid.uuid4().hex[:8]}"
+    registered = client.post("/api/layer/register", json={
+        "name": name,
+        "geojson": _poly_fc("zone", 116, 39, 116.01, 39.01, extra={"category": "residential"}),
+    })
+    assert registered.status_code == 200, registered.text
+
+    response = client.post("/api/tools/invoke", json={
+        "name": "spatial_unique_values",
+        "arguments": {"layer_name": name, "field": "missing_category"},
+    })
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert tool_service._tool_result_failed("spatial_unique_values", data["response"]), repr(data["response"])
+    assert data["ok"] is False, data
+    assert "没有字段" in data["response"]
+
+
+def test_e2e_focal_stats_unsupported_window_is_not_claimed_as_corrected(dem_registered):
+    response = client.post("/api/tools/invoke", json={
+        "name": "raster_focal_stats",
+        "arguments": {"layer_name": dem_registered, "size": 8},
+    })
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert not any("已自动调整为 9" in warning for warning in data["param_warnings"])
+    assert any("3/5/7" in warning for warning in data["param_warnings"])
+    assert data["ok"] is False
+    assert "3/5/7" in data["response"]
 
 
 def test_e2e_history_endpoint_shape():

@@ -33,6 +33,7 @@ window.GIS = window.GIS || {};
   let _groupIdCounter = 0;
   let _handleSwipeAction = null;
   let _inspectedRasterLayerId = null;
+  let _currentInspectorLayerId = null;
 
   function _registryResultOk(result) {
     if (Array.isArray(result)) return result.every(_registryResultOk);
@@ -167,6 +168,7 @@ window.GIS = window.GIS || {};
     var features = [];
     if (geojson.type === 'FeatureCollection') features = geojson.features || [];
     else if (geojson.type === 'Feature') features = [geojson];
+
     else if (geojson.type) return geojson.type;
     if (features.length === 0) return '空要素';
     var types = {};
@@ -287,9 +289,10 @@ window.GIS = window.GIS || {};
       return operation.failed ? _runRegistryOperation(operation) : operation.promise;
     })).then(function(results) {
       if (!results.every(_registryResultOk)) throw new Error('同名旧图层尚未完成清理');
+      var registrationToken = layer._registrationTokens && layer._registrationTokens[name];
       return projectContext && projectContext.provided
-        ? window.GIS.api.registerLayer(name, geojson, layer.raster, projectContext.id, layer.sensitive)
-        : window.GIS.api.registerLayer(name, geojson, layer.raster, undefined, layer.sensitive);
+        ? window.GIS.api.registerLayer(name, geojson, layer.raster, projectContext.id, layer.sensitive, registrationToken)
+        : window.GIS.api.registerLayer(name, geojson, layer.raster, undefined, layer.sensitive, registrationToken);
     }).then(function(result) {
       if (!_registryResultOk(result)) throw new Error('后台未确认图层注册成功');
       if (result && typeof result.sensitive === 'boolean') {
@@ -729,7 +732,7 @@ window.GIS = window.GIS || {};
 
   /** 下载 GeoJSON */
   function _downloadGeoJSON(layer, geojson) {
-    var blob = new Blob([JSON.stringify(geojson, null, 2)], { type: 'application/geo+json;charset=utf-8' });
+    var blob = new Blob([_stringifyGeoJSONLossless(geojson, 2)], { type: 'application/geo+json;charset=utf-8' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
@@ -738,6 +741,34 @@ window.GIS = window.GIS || {};
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  }
+
+  function _stringifyGeoJSONLossless(geojson, space) {
+    var data = JSON.parse(JSON.stringify(geojson));
+    var replacements = [];
+    var features = data && data.type === 'FeatureCollection' ? data.features || []
+      : data && data.type === 'Feature' ? [data] : [];
+    features.forEach(function(feature) {
+      var paths = feature && feature._gisworktable_integer_paths;
+      if (!Array.isArray(paths)) return;
+      paths.forEach(function(path) {
+        if (!Array.isArray(path) || !path.length) return;
+        var target = feature.properties;
+        for (var i = 0; i < path.length - 1; i++) {
+          if (!target || typeof target !== 'object') return;
+          target = target[path[i]];
+        }
+        var key = path[path.length - 1];
+        if (!target || typeof target[key] !== 'string' || !/^-?(?:0|[1-9][0-9]*)$/.test(target[key])) return;
+        var token = '__GISWORKTABLE_INTEGER_' + replacements.length + '_' + Math.random().toString(36).slice(2) + '__';
+        replacements.push([JSON.stringify(token), target[key]]);
+        target[key] = token;
+      });
+      delete feature._gisworktable_integer_paths;
+    });
+    var serialized = JSON.stringify(data, null, space);
+    replacements.forEach(function(pair) { serialized = serialized.split(pair[0]).join(pair[1]); });
+    return serialized;
   }
 
   /** 下载 SHP（调后端接口） */
@@ -1570,6 +1601,7 @@ window.GIS = window.GIS || {};
   async function showLayerInspector(layerId, initialTab) {
     var layer = layerData.find(function(l) { return l.layer_id === layerId; });
     if (!layer) return;
+    _currentInspectorLayerId = layerId;
     if (!(layer.geometry_type === 'Raster' && layer.raster)) _inspectedRasterLayerId = null;
 
     var geojson = layer.geojson;
@@ -1655,6 +1687,25 @@ window.GIS = window.GIS || {};
     var features = [];
     if (geojson.type === 'FeatureCollection') features = geojson.features || [];
     else if (geojson.type === 'Feature') features = [geojson];
+
+    // 图层数据体检：共用 _computeLayerDataAudit 统计，不修改源要素。
+    var audit = _computeLayerDataAudit(geojson);
+    var auditRows = audit.fields.length
+      ? audit.fields.map(function(key) {
+          return '<div class="info-row"><span class="info-label">' + escapeHtml(key) + '</span><span class="info-val">' + (audit.nullFields[key] || 0) + '</span></div>';
+        }).join('')
+      : '<div class="info-row"><span class="info-label">无属性字段</span></div>';
+    var auditGeometryRows = Object.keys(audit.geomTypes).sort().map(function(type) {
+      return '<div class="info-row"><span class="info-label">' + escapeHtml(type) + '</span><span class="info-val">' + audit.geomTypes[type] + '</span></div>';
+    }).join('') || '<div class="info-row"><span class="info-label">无有效几何</span></div>';
+    var dataAuditHtml = '<div class="info-group"><div class="info-group-title" style="display:flex;align-items:center;justify-content:space-between;">' +
+      '<span>图层数据体检</span>' +
+      '<button type="button" class="attr-btn attr-btn-sm" data-action="export-audit-csv" data-layer="' + escapeHtml(layerId) + '" title="导出 CSV">导出 CSV</button>' +
+      '</div>' +
+      '<div class="info-row"><span class="info-label">要素总数</span><span class="info-val">' + audit.featureCount + '</span></div>' +
+      '<div class="info-row"><span class="info-label">空几何数量</span><span class="info-val">' + audit.nullGeometryCount + '</span></div>' +
+      '<div class="info-group-title">几何类型分布</div>' + auditGeometryRows +
+      '<div class="info-group-title">各字段空值数量</div>' + auditRows + '</div>';
 
   // ---- 虚拟坐标列 ----
     var virtualKeys = [];
@@ -1841,6 +1892,7 @@ window.GIS = window.GIS || {};
     var tabInfo =
       '<div class="inspector-tab-content" id="tabInfo" style="display:' + (activeTabId === 'info' ? 'block' : 'none') + ';">' +
         '<div class="info-panel">' +
+          dataAuditHtml +
           '<div class="info-group">' +
             '<div class="info-group-title">数据源</div>' +
             '<div class="info-row"><span class="info-label">名称</span><span class="info-val">' + escapeHtml(layer.filename || '未命名') + '</span></div>' +
@@ -2017,6 +2069,8 @@ window.GIS = window.GIS || {};
         document.getElementById('tabAttr').style.display = id === 'attr' ? 'block' : 'none';
       });
     });
+
+    body.querySelector('[data-action="export-audit-csv"]')?.addEventListener('click', function() { exportDataAuditCSV(layerId); });
 
     // ===== 属性表事件 =====
     var attrSection = document.getElementById('tabAttr');
@@ -2527,10 +2581,23 @@ window.GIS = window.GIS || {};
   /** 唯一值渲染 */
   function _applyUniqueValues(layer, gj, features, field, scheme) {
     var values = Object.create(null);
+    var categoryLabels = Object.create(null);
+    var labelCounts = Object.create(null);
+    var noDataCount = 0;
     features.forEach(function(f, idx) {
-      var v = String(f.properties ? f.properties[field] ?? '' : '');
-      if (!values[v]) values[v] = [];
-      values[v].push(idx);
+      var raw = f && f.properties ? f.properties[field] : undefined;
+      if (raw === null || raw === undefined) {
+        noDataCount += 1;
+        return;
+      }
+      var label = String(raw);
+      var key = typeof raw + ':' + label;
+      if (!values[key]) {
+        values[key] = [];
+        categoryLabels[key] = { label: label, type: typeof raw };
+        labelCounts[label] = (labelCounts[label] || 0) + 1;
+      }
+      values[key].push(idx);
     });
     var keys = Object.keys(values);
     var colorMap = Object.create(null);
@@ -2538,8 +2605,10 @@ window.GIS = window.GIS || {};
 
     var styleMap = {};
     features.forEach(function(f, idx) {
-      var v = String(f.properties ? f.properties[field] ?? '' : '');
-      styleMap[idx] = _styleForGeom(f, colorMap[v]);
+      var raw = f && f.properties ? f.properties[field] : undefined;
+      var isNoData = raw === null || raw === undefined;
+      var key = isNoData ? '' : typeof raw + ':' + String(raw);
+      styleMap[idx] = _styleForGeom(f, isNoData ? '#9ca3af' : colorMap[key]);
     });
 
     if (!_applyStyleToMap(layer, gj, styleMap)) return false;
@@ -2551,7 +2620,12 @@ window.GIS = window.GIS || {};
     _symbologyConfig[layer.layer_id].legendData = {
       type: 'unique',
       field: field,
-      items: keys.map(function(k) { return { label: k, color: colorMap[k], count: values[k].length }; }),
+      items: keys.map(function(k) {
+        var category = categoryLabels[k];
+        var label = labelCounts[category.label] > 1 ? category.label + ' (' + category.type + ')' : category.label;
+        return { label: label, color: colorMap[k], count: values[k].length };
+      }).concat(
+        noDataCount ? [{ label: '无数据', color: '#9ca3af', count: noDataCount }] : []),
     };
     _symbologyConfig[layer.layer_id].type = 'unique';
     _symbologyConfig[layer.layer_id].field = field;
@@ -2575,11 +2649,14 @@ window.GIS = window.GIS || {};
     var sorted = values.map(function(v) { return v.val; }).sort(function(a, b) { return a - b; });
     var min = sorted[0], max = sorted[sorted.length - 1];
     var noDataCount = features.length - values.length;
+    fillOpacity = isFinite(Number(fillOpacity)) ? Math.max(0, Math.min(1, Number(fillOpacity))) : 0.35;
     if (min === max) {
       // 所有值相同，用单一颜色
       var styleMap = {};
       features.forEach(function(f, idx) {
-        styleMap[idx] = _styleForGeom(f, isNaN(_numericFieldValue(f, field)) ? noDataColor : scheme[0]);
+        var featureStyle = _styleForGeom(f, isNaN(_numericFieldValue(f, field)) ? noDataColor : scheme[0]);
+        if (f.geometry && /Polygon/.test(f.geometry.type || '')) featureStyle.fillOpacity = fillOpacity;
+        styleMap[idx] = featureStyle;
       });
       if (!_applyStyleToMap(layer, gj, styleMap)) return false;
       _push3dFeatureColors(layer, features, styleMap);
@@ -2615,7 +2692,6 @@ window.GIS = window.GIS || {};
       }
     }
     classes = breaks.length - 1;
-    fillOpacity = isFinite(Number(fillOpacity)) ? Math.max(0, Math.min(1, Number(fillOpacity))) : 0.35;
 
     var styleMap = {};
     features.forEach(function(f, idx) {
@@ -2626,10 +2702,12 @@ window.GIS = window.GIS || {};
         styleMap[idx] = noDataStyle;
         return;
       }
-      var classIdx = 0;
-      for (var j = 0; j < breaks.length - 1; j++) {
-        if (v >= breaks[j] && (v < breaks[j + 1] || (j === breaks.length - 2 && v <= breaks[j + 1]))) {
-          classIdx = j; break;
+      var classIdx = v <= breaks[0] ? 0 : breaks.length - 2;
+      if (v > breaks[0] && v < breaks[breaks.length - 1]) {
+        for (var j = 0; j < breaks.length - 1; j++) {
+          if (v >= breaks[j] && v < breaks[j + 1]) {
+            classIdx = j; break;
+          }
         }
       }
       var color = scheme[Math.min(classIdx, scheme.length - 1)];
@@ -3115,18 +3193,8 @@ window.GIS = window.GIS || {};
       stagedRows.push({ idx: idx, changes: changes, pointCoordinates: pointCoordinates });
     });
 
-    // Validate every row before mutating any properties or geometry.
+    // Validate every row before presenting a confirmation or mutating any data.
     if (stagedRows.length !== rows.length) return;
-    stagedRows.forEach(function(staged) {
-      var feature = features[staged.idx];
-      feature.properties = feature.properties || {};
-      Object.keys(staged.changes).forEach(function(field) { feature.properties[field] = staged.changes[field]; });
-      if (staged.pointCoordinates) {
-        if (!feature.geometry || feature.geometry.type === 'Point') {
-          feature.geometry = { type: 'Point', coordinates: staged.pointCoordinates };
-        }
-      }
-    });
 
     // 弹窗警告空行
     if (emptyRowNums.length > 0) {
@@ -3139,6 +3207,16 @@ window.GIS = window.GIS || {};
     }
 
     function doSave() {
+      stagedRows.forEach(function(staged) {
+        var feature = features[staged.idx];
+        feature.properties = feature.properties || {};
+        Object.keys(staged.changes).forEach(function(field) { feature.properties[field] = staged.changes[field]; });
+        if (staged.pointCoordinates) {
+          if (!feature.geometry || feature.geometry.type === 'Point') {
+            feature.geometry = { type: 'Point', coordinates: staged.pointCoordinates };
+          }
+        }
+      });
       var layer = layerData.find(function(l) { return l.layer_id === layerId; });
       if (layer && GIS.map && GIS.map.loadGeoJSON) {
         GIS.map.loadGeoJSON(gj, layer._rawName || layer.layer_id, { color: layer.color });
@@ -3620,16 +3698,7 @@ window.GIS = window.GIS || {};
     var keys = Object.keys(features[0].properties || {});
     if (!keys.length) return;
 
-    var csv = keys.join(',') + '\n';
-    features.forEach(function(f) {
-      csv += keys.map(function(k) {
-        var v = f.properties ? f.properties[k] : null;
-        var s = (v === null || v === undefined) ? '' : String(v);
-        return (s.includes(',') || s.includes('"') || s.includes('\n'))
-          ? '"' + s.replace(/"/g, '""') + '"'
-          : s;
-      }).join(',') + '\n';
-    });
+    var csv = _generateAttributeCSV(features, keys);
 
     var bom = '\ufeff';
     var blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
@@ -3641,10 +3710,138 @@ window.GIS = window.GIS || {};
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    return csv;
+  }
+
+  function _generateAttributeCSV(features, keys) {
+    var rows = [keys];
+    features.forEach(function(feature) {
+      rows.push(keys.map(function(key) {
+        return feature.properties ? feature.properties[key] : null;
+      }));
+    });
+    return rows.map(function(row) { return row.map(_escapeCSVField).join(','); }).join('\r\n') + '\r\n';
+  }
+
+  /** CSV 特殊字符与引号转义 (RFC 4180) 及公式注入防御 (OWASP CSV Injection Tab Prefixing) */
+  function _escapeCSVField(val) {
+    if (val === null || val === undefined) return '';
+    var str = String(val);
+    var isFormulaRisk = /^\s*[=+\-@＝＋－＠]/.test(str) || /^[\t\r\n]/.test(str);
+    if (isFormulaRisk) {
+      str = '\t' + str;
+    }
+    if (isFormulaRisk || str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }
+
+  /** 计算图层体检指标：要素总数、空几何数量、几何类型分布、各字段空值数量 */
+  function _computeLayerDataAudit(geojson) {
+    var features = [];
+    if (geojson) {
+      if (geojson.type === 'FeatureCollection') features = geojson.features || [];
+      else if (geojson.type === 'Feature') features = [geojson];
+    }
+    var auditGeomTypes = Object.create(null);
+    var auditNullGeometry = 0;
+    var auditFieldNames = Object.create(null);
+    features.forEach(function(feature) {
+      var geometry = feature && feature.geometry;
+      if (!geometry || !geometry.type) {
+        auditNullGeometry += 1;
+      } else {
+        auditGeomTypes[geometry.type] = (auditGeomTypes[geometry.type] || 0) + 1;
+      }
+      var properties = feature && feature.properties;
+      if (!properties || typeof properties !== 'object' || Array.isArray(properties)) properties = {};
+      Object.keys(properties).forEach(function(key) {
+        if (key === '_fid') return; // 内部稳定标识不作为用户属性统计
+        auditFieldNames[key] = true;
+      });
+    });
+    var auditFields = Object.keys(auditFieldNames).sort();
+    var auditNullFields = Object.create(null);
+    auditFields.forEach(function(key) {
+      auditNullFields[key] = features.reduce(function(count, feature) {
+        var properties = feature && feature.properties;
+        var value = properties && typeof properties === 'object' && !Array.isArray(properties) ? properties[key] : undefined;
+        return count + (value === null || value === undefined || value === '' ? 1 : 0);
+      }, 0);
+    });
+    return {
+      featureCount: features.length,
+      nullGeometryCount: auditNullGeometry,
+      geomTypes: auditGeomTypes,
+      fields: auditFields,
+      nullFields: auditNullFields
+    };
+  }
+
+  /** 生成体检 CSV 内容，使用 CRLF 换行 */
+  function _generateDataAuditCSV(layer, geojson) {
+    var audit = _computeLayerDataAudit(geojson);
+    var rows = [
+      ['分类', '项目', '统计值'],
+      ['图层数据体检', '要素总数', audit.featureCount],
+      ['图层数据体检', '空几何数量', audit.nullGeometryCount]
+    ];
+
+    var geomKeys = Object.keys(audit.geomTypes).sort();
+    if (geomKeys.length > 0) {
+      geomKeys.forEach(function(type) {
+        rows.push(['几何类型分布', type, audit.geomTypes[type]]);
+      });
+    } else {
+      rows.push(['几何类型分布', '无有效几何', 0]);
+    }
+
+    if (audit.fields.length > 0) {
+      audit.fields.forEach(function(field) {
+        rows.push(['各字段空值数量', field, audit.nullFields[field] || 0]);
+      });
+    } else {
+      rows.push(['各字段空值数量', '无属性字段', 0]);
+    }
+
+    return rows.map(function(row) {
+      return row.map(_escapeCSVField).join(',');
+    }).join('\r\n') + '\r\n';
+  }
+
+  /** 导出图层数据体检为 CSV (Excel 友好 UTF-8 BOM，严格反映当前图层当下数据) */
+  function exportDataAuditCSV(layerId) {
+    var targetId = layerId || _currentInspectorLayerId;
+    if (!targetId) return null;
+    var layer = layerData.find(function(l) { return l.layer_id === targetId; });
+    if (!layer) return null;
+    var gj = getLayerGeoJSON(targetId);
+    if (!gj) return null;
+
+    var csvString = _generateDataAuditCSV(layer, gj);
+    var bom = '\ufeff';
+    if (typeof Blob !== 'undefined' && typeof URL !== 'undefined' && typeof document !== 'undefined') {
+      var blob = new Blob([bom + csvString], { type: 'text/csv;charset=utf-8;' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = (layer.filename || '图层') + '_数据体检.csv';
+      if (document.body) {
+        document.body.appendChild(a);
+      }
+      a.click();
+      if (document.body && a.parentNode === document.body) {
+        document.body.removeChild(a);
+      }
+      URL.revokeObjectURL(url);
+    }
+    return csvString;
   }
 
   /** 关闭图层检查器 */
   function closeInspector() {
+    _currentInspectorLayerId = null;
     var panel = document.getElementById('layerInspector');
     if (panel) panel.style.display = 'none';
   }
@@ -3927,7 +4124,9 @@ window.GIS = window.GIS || {};
       if (window.GIS.chat) window.GIS.chat.addMessage('字段「' + field + '」不存在，未修改图层样式', 'system');
       return false;
     }
-    var uniq = features.map(function(f) { return f.properties ? f.properties[field] : null; }).filter(function(v, i, a) { return a.indexOf(v) === i; });
+    var uniq = features.map(function(f) { return f.properties ? f.properties[field] : null; })
+      .filter(function(v) { return v !== null && v !== undefined; })
+      .filter(function(v, i, a) { return a.indexOf(v) === i; });
     var colors = _getColorScheme(scheme || 'scheme', Math.min(uniq.length, 10));
     var previousConfig = _symbologyConfig[layer.layer_id];
     _symbologyConfig[layer.layer_id] = Object.assign({}, previousConfig || {}, {
@@ -3946,7 +4145,11 @@ window.GIS = window.GIS || {};
   GIS.layers = {
     init, renderList, addLayer, removeLayer, clearAll, toggleVisibility, showAll, hideAll, setAllVisibility, downloadLayer,
     getGroupState: getGroupState, setGroupState: setGroupState,
-    analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV,
+    analyzeLayer, showLayerInspector, closeInspector, exportAttrCSV, exportDataAuditCSV,
+    generateDataAuditCSV: _generateDataAuditCSV,
+    generateAttributeCSV: _generateAttributeCSV,
+    stringifyGeoJSONLossless: _stringifyGeoJSONLossless,
+    computeLayerDataAudit: _computeLayerDataAudit,
     syncLayerOrder: _syncLayerOrder,
     syncLayerData: _syncEditedLayerData,
     syncToolLayer: _syncToolLayer,

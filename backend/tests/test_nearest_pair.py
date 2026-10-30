@@ -76,3 +76,22 @@ def test_nearest_pair_supports_two_registered_layers():
     assert "麦当劳东站店" in result
     assert "湖滨医院" in result
     assert "米" in result
+
+
+@pytest.mark.parametrize("coordinates, expected", [
+    ([[179, 10], [-179, 10]], "跨越日期变更线"),
+    ([[0, 10], [8, 10]], "超过 6° 经度"),
+])
+def test_nearest_pair_rejects_ranges_outside_one_local_utm(coordinates, expected):
+    _register_layer("wide_poi", {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"name": str(index)},
+             "geometry": {"type": "Point", "coordinates": point}}
+            for index, point in enumerate(coordinates)
+        ],
+    })
+
+    result = T.nearest_pair.invoke({"layer_name": "wide_poi"})
+
+    assert expected in result

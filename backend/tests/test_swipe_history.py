@@ -15,6 +15,7 @@ from backend.services import tools as T
 from backend.services.tools import (
     tools as TOOL_LIST,
     _register_layer,
+    _register_raster_layer,
     reset_state,
     get_pending_state,
 )
@@ -244,6 +245,64 @@ def test_rerun_history_produces_new_layer_not_overwrite():
     assert len(new_layers) == 1  # 产物作为新图层推送
     # 原图层保留
     assert "测试点_原" in T._registered_layers
+
+
+def test_rerun_history_preserves_replaced_raster_metadata(tmp_path, monkeypatch):
+    reset_state()
+    output_root = str(tmp_path / "raster-output")
+    monkeypatch.setattr(T, "_temp_output_dir", output_root)
+    old_path = os.path.join(output_root, "uploads", "elevation_slope.tif")
+    os.makedirs(os.path.dirname(old_path), exist_ok=True)
+    with open(old_path, "wb") as old_file:
+        old_file.write(b"original-raster")
+    old_raster = {
+        "filename": "elevation.png", "url": "/output/uploads/elevation.png",
+        "source_filename": "elevation.tif", "source_url": "/output/uploads/elevation.tif",
+        "bounds": [0, 0, 1, 1], "width": 10, "height": 10, "crs": "EPSG:4326",
+    }
+    _register_raster_layer("elevation_slope", old_raster, source_path=old_path)
+    generated_paths = []
+
+    class ReplaceRasterTool:
+        def invoke(self, _args):
+            output_dir = T._raster_output_dir()
+            new_path = os.path.join(output_dir, "elevation_slope.tif")
+            os.makedirs(output_dir, exist_ok=True)
+            with open(new_path, "wb") as new_file:
+                new_file.write(b"new-raster")
+            generated_paths.append(new_path)
+            relative = os.path.relpath(new_path, T._temp_output_dir).replace(os.sep, "/")
+            new_url = "/output/" + relative[:-4] + ".png"
+            new_raster = {
+                **old_raster, "filename": "new-slope.png", "url": new_url,
+                "source_filename": "elevation_slope.tif",
+                "source_url": "/output/" + relative,
+            }
+            _register_raster_layer(
+                "elevation_slope", new_raster, source_path=new_path,
+            )
+            T._pending_layer_ops.append({
+                "action": "dem_result", "name": new_raster["filename"], "url": new_url,
+                "bounds": new_raster["bounds"], "layer_name": "elevation_slope",
+                "raster": new_raster, "registration_token": T._registered_layers["elevation_slope"]["registration_token"],
+            })
+            return "坡度分析完成"
+
+    monkeypatch.setitem(T._TOOL_REGISTRY, "raster_slope_fixture", ReplaceRasterTool())
+    index = history_service.record("raster_slope_fixture", {}, True)
+
+    result = _registry()["rerun_history"].invoke({"index": index})
+
+    assert "已重跑" in result
+    preserved = T._registered_layers["elevation_slope_原"]
+    assert preserved["geometry_types"] == ["Raster"]
+    assert preserved["raster"]["filename"] == "elevation.png"
+    assert preserved["raster_source_path"] == old_path
+    with open(old_path, "rb") as old_file:
+        assert old_file.read() == b"original-raster"
+    assert generated_paths and generated_paths[0] != old_path
+    raster_ops = [op for op in get_pending_state()["layer_ops"] if op["action"] == "dem_result"]
+    assert [op["layer_name"] for op in raster_ops] == ["elevation_slope_原", "elevation_slope"]
 
 
 def test_rerun_history_missing_index():

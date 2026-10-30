@@ -234,6 +234,13 @@ test('registry API forwards the registration version and returns the next versio
   assert.ok(request.options.signal instanceof AbortSignal);
 });
 
+test('registry updates forward the token for exact server-side property preservation', async () => {
+  const h = createHarness({}, {}, () => Promise.resolve({ ok: true, json: async () => ({ success: true, registration_token: 'next' }) }));
+  await h.api.registerLayer('demo', { type: 'FeatureCollection', features: [] }, null, undefined, true, 'current');
+  const payload = JSON.parse(h.requests[0].options.body);
+  assert.equal(payload.registration_token, 'current');
+});
+
 test('registry API preserves the project context captured by the layer queue', async () => {
   const h = createHarness({}, {}, () => Promise.resolve({
     ok: true, json: async () => ({ success: true, registration_token: 'context-token' }),

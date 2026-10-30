@@ -204,6 +204,23 @@ test('graduated symbology gives null and non-numeric values a counted no-data st
   assert.deepEqual(JSON.parse(JSON.stringify(legend.at(-1))), { label: '无数据', color: '#9ca3af', count: 2 });
 });
 
+test('graduated symbology assigns a maximum just above the final break to the last class', () => {
+  const minimum = -54247.55574590947;
+  const maximum = 91558.13856151933;
+  const middle = (minimum + maximum) / 2;
+  const source = createLayers([
+    feature('adcode:1', minimum), feature('adcode:2', middle), feature('adcode:3', maximum),
+  ]);
+  const roundedBreaks = [minimum, middle, 91558.13856151931];
+
+  assert.equal(source.layers.applyGraduatedColors(
+    '长沙区县', 'population', 2, 'reds', 'equal_interval', roundedBreaks,
+  ), true);
+
+  const styles = source.applied[0];
+  assert.notEqual(styles[2].color, styles[0].color, 'the maximum must use the last class color');
+});
+
 test('graduated symbology does not parse numeric prefixes from malformed text values', () => {
   const source = createLayers([
     feature('adcode:1', 10), feature('adcode:2', '15'), feature('adcode:3', '20 people'),
@@ -229,6 +246,13 @@ test('graduated symbology keeps no-data separate when valid values are identical
   assert.deepEqual(JSON.parse(JSON.stringify(legend.at(-1))), { label: '无数据', color: '#9ca3af', count: 1 });
 });
 
+test('single-class graduated polygons apply the requested fill opacity', () => {
+  const source = createLayers([feature('adcode:1', 12), feature('adcode:2', 12)]);
+  assert.equal(source.layers.applyGraduatedColors('长沙区县', 'population', 3, 'ylorrd', 'quantile', undefined, 0.12), true);
+  assert.equal(source.applied[0][0].fillOpacity, 0.12);
+  assert.equal(source.applied[0][1].fillOpacity, 0.12);
+});
+
 test('unique-value categories named like object prototype properties retain their styles', () => {
   const features = ['__proto__', 'constructor'].map((value, index) => ({
     type: 'Feature', properties: { _fid: 'kind:' + index, kind: value },
@@ -240,6 +264,35 @@ test('unique-value categories named like object prototype properties retain thei
   assert.deepEqual(saved.legendData.items.map(item => item.label), ['__proto__', 'constructor']);
   assert.ok(saved.featureStyles['fid:kind:0'].color);
   assert.ok(saved.featureStyles['fid:kind:1'].color);
+});
+
+test('unique-value symbology keeps null and missing fields out of categories', () => {
+  const features = [
+    { type: 'Feature', properties: { _fid: 'kind:1', kind: 'urban' }, geometry: { type: 'Polygon', coordinates: [] } },
+    { type: 'Feature', properties: { _fid: 'kind:2', kind: null }, geometry: { type: 'Polygon', coordinates: [] } },
+    { type: 'Feature', properties: { _fid: 'kind:3' }, geometry: { type: 'Polygon', coordinates: [] } },
+  ];
+  const source = createLayers(features);
+  assert.equal(source.layers.applyUniqueValues('长沙区县', 'kind', 'scheme'), true);
+  assert.equal(source.applied[0][1].color, '#9ca3af');
+  assert.equal(source.applied[0][2].color, '#9ca3af');
+  assert.deepEqual(JSON.parse(JSON.stringify(source.layers.getSymbologyState('population-layer').legendData.items)), [
+    { label: 'urban', color: source.applied[0][0].color, count: 1 },
+    { label: '无数据', color: '#9ca3af', count: 2 },
+  ]);
+});
+
+test('unique-value symbology preserves categories with equal text but different types', () => {
+  const features = [
+    { type: 'Feature', properties: { _fid: 'kind:1', kind: 1 }, geometry: { type: 'Polygon', coordinates: [] } },
+    { type: 'Feature', properties: { _fid: 'kind:2', kind: '1' }, geometry: { type: 'Polygon', coordinates: [] } },
+  ];
+  const source = createLayers(features);
+  assert.equal(source.layers.applyUniqueValues('长沙区县', 'kind', 'scheme'), true);
+  assert.notEqual(source.applied[0][0].color, source.applied[0][1].color);
+  assert.deepEqual(JSON.parse(JSON.stringify(source.layers.getSymbologyState('population-layer').legendData.items.map(item => item.label))), [
+    '1 (number)', '1 (string)',
+  ]);
 });
 
 test('duplicate feature IDs fall back to saved feature order for thematic style restoration', () => {

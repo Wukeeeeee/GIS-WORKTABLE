@@ -36,6 +36,10 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.services.ai_service import chat_with_ai, clear_memory, test_key, request_cancel, _TEMP_OUTPUT_DIR
 from backend.services.llm_config import LLMConfig, resolve_llm_config, model_endpoint_transport_error
 from backend.services.tools import _register_layer, _unregister_layer
+from backend.services.geojson_precision import (
+    protect_geojson_property_integers as _protect_geojson_property_integers,
+    restore_registered_integer_properties as _restore_registered_integer_properties,
+)
 from backend.services.layer_service import inspect_geojson
 from backend.services import project_service
 from backend.services.url_security import (
@@ -163,7 +167,10 @@ def _resolve_upload_request(request_id):
         if record["kind"] == "cancelled":
             return {"error": "上传已取消"}
         if record["kind"] == "result":
-            return dict(record["result"])
+            result = dict(record["result"])
+            if isinstance(result.get("geojson"), dict):
+                result["geojson"] = _protect_geojson_property_integers(result["geojson"])
+            return result
         name = record["name"]
         registration_token = record["registration_token"]
         kind = record["kind"]
@@ -175,7 +182,7 @@ def _resolve_upload_request(request_id):
         if not layer or layer.get("registration_token") != registration_token:
             return None
         if kind == "vector" and isinstance(layer.get("geojson"), dict):
-            return {"name": name, "geojson": layer["geojson"],
+            return {"name": name, "geojson": _protect_geojson_property_integers(layer["geojson"]),
                     "registration_token": registration_token, **extra}
         if kind == "raster" and isinstance(layer.get("raster"), dict):
             return {"name": name, "raster_info": dict(layer["raster"]),
@@ -662,10 +669,14 @@ async def chat(request: ChatRequest):
     # 如果有图层
     layers = result.get("layers", [])
     if layers:
-        output["layers"] = layers
+        output["layers"] = [
+            {**layer, "geojson": _protect_geojson_property_integers(layer.get("geojson"))}
+            if isinstance(layer, dict) and isinstance(layer.get("geojson"), dict) else layer
+            for layer in layers
+        ]
         # 兼容旧格式：第一个图层作为 geojson + layerName
         if layers and len(layers) > 0:
-            output["geojson"] = layers[0].get("geojson")
+            output["geojson"] = output["layers"][0].get("geojson")
             output["layerName"] = layers[0].get("name", "")
 
     # 如果有待处理的 AOI 候选列表（兼容新旧格式）
@@ -721,7 +732,11 @@ def _synthetic_done_stream(result: dict):
         "type": "done",
         "response": result.get("response", ""),
         "reasoning": result.get("reasoning"),
-        "layers": result.get("layers", []),
+        "layers": [
+            {**layer, "geojson": _protect_geojson_property_integers(layer.get("geojson"))}
+            if isinstance(layer, dict) and isinstance(layer.get("geojson"), dict) else layer
+            for layer in result.get("layers", [])
+        ],
         "images": result.get("images", []),
         "heatmap": result.get("heatmap"),
         "clear_layers": result.get("clear_layers", False),
@@ -855,6 +870,15 @@ async def chat_stream(request: ChatRequest):
                         _evt = json.loads(line[6:])
                     except Exception:
                         _evt = None
+                    if _evt and _evt.get("type") == "done":
+                        if isinstance(_evt.get("layers"), list):
+                            _evt["layers"] = [
+                                {**layer, "geojson": _protect_geojson_property_integers(layer.get("geojson"))}
+                                if isinstance(layer, dict) and isinstance(layer.get("geojson"), dict) else layer
+                                for layer in _evt["layers"]
+                            ]
+                        if isinstance(_evt.get("geojson"), dict):
+                            _evt["geojson"] = _protect_geojson_property_integers(_evt["geojson"])
                     if _evt and _evt.get("type") == "done" and not _evt.get("busy"):
                         commit_assistant_reply(
                             session_id,
@@ -875,7 +899,10 @@ async def chat_stream(request: ChatRequest):
                             )
                         except Exception:
                             pass
-                yield line
+                if line.startswith("data: ") and _evt and _evt.get("type") == "done":
+                    yield "data: " + json.dumps(_evt, ensure_ascii=False) + "\n\n"
+                else:
+                    yield line
         except GeneratorExit:
             # 客户端断开（用户取消/页面关闭）时，仅标记本会话取消，
             # 不再写全局标志并发中的其他会话不受影响
@@ -1000,35 +1027,38 @@ def _delete_amap_key() -> bool:
 
 
 def _load_user_settings() -> dict:
-    if os.path.exists(_USER_SETTINGS_PATH):
-        try:
-            with open(_USER_SETTINGS_PATH, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            raise HTTPException(
-                status_code=500,
-                detail="用户配置文件无法读取；为避免覆盖现有配置，请检查文件格式和权限后重试。",
-            )
-        if not isinstance(data, dict):
-            raise HTTPException(
-                status_code=500,
-                detail="用户配置文件格式无效；为避免覆盖现有配置，请检查文件内容后重试。",
-            )
-        sanitized = _sanitize_user_settings(data)
-        legacy_amap_key = data.get("amap_key")
-        if legacy_amap_key:
-            if not _save_amap_key(str(legacy_amap_key)):
+    # GET may migrate legacy secrets while POST updates or deletes them.
+    # Serialize the full read/migrate/cleanup transaction with settings writes.
+    with _USER_SETTINGS_LOCK:
+        if os.path.exists(_USER_SETTINGS_PATH):
+            try:
+                with open(_USER_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
                 raise HTTPException(
                     status_code=500,
-                    detail="旧高德密钥未能迁移到加密凭据库，设置文件中的密钥仍可能以明文保存；请检查磁盘空间和文件权限后重试。",
+                    detail="用户配置文件无法读取；为避免覆盖现有配置，请检查文件格式和权限后重试。",
                 )
-        if sanitized != data and not _save_user_settings(sanitized):
-            raise HTTPException(
-                status_code=500,
-                detail="旧设置中的敏感字段未能从设置文件清理，文件中仍可能有明文密钥；请检查磁盘空间和文件权限后重试。",
-            )
-        return sanitized
-    return {}
+            if not isinstance(data, dict):
+                raise HTTPException(
+                    status_code=500,
+                    detail="用户配置文件格式无效；为避免覆盖现有配置，请检查文件内容后重试。",
+                )
+            sanitized = _sanitize_user_settings(data)
+            legacy_amap_key = data.get("amap_key")
+            if legacy_amap_key:
+                if not _save_amap_key(str(legacy_amap_key)):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="旧高德密钥未能迁移到加密凭据库，设置文件中的密钥仍可能以明文保存；请检查磁盘空间和文件权限后重试。",
+                    )
+            if sanitized != data and not _save_user_settings(sanitized):
+                raise HTTPException(
+                    status_code=500,
+                    detail="旧设置中的敏感字段未能从设置文件清理，文件中仍可能有明文密钥；请检查磁盘空间和文件权限后重试。",
+                )
+            return sanitized
+        return {}
 
 
 def _save_user_settings(data: dict) -> bool:
@@ -1102,7 +1132,7 @@ async def list_layers():
     for name, info in snapshot:
         layers.append({
             "name": name,
-            "geojson": info.get("geojson"),
+            "geojson": _protect_geojson_property_integers(info.get("geojson")),
             "bbox": info.get("bbox"),
             "style": info.get("style"),
             "sensitive": info.get("sensitive") is True,
@@ -1415,7 +1445,29 @@ async def cancel_upload(request_id: str):
 @app.post('/api/upload')
 async def upload(file: UploadFile = File(...), request_id: Optional[str] = None):
     if request_id is None:
-        return await _process_uploaded_file(file)
+        # Keep legacy clients reversible too. Shield the worker so cancellation
+        # cannot race its file reads or registration, then remove its exact
+        # outputs after the worker has reached a terminal state.
+        internal_request_id = f"legacy-{uuid.uuid4().hex}"
+        worker = asyncio.create_task(_process_uploaded_file(file, internal_request_id))
+        try:
+            result = await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            try:
+                result = await asyncio.shield(worker)
+            except BaseException:
+                result = None
+            _rollback_upload_request(internal_request_id, result)
+            raise
+        except BaseException:
+            _rollback_upload_request(internal_request_id, None)
+            raise
+        if not isinstance(result, dict) or result.get("error"):
+            _rollback_upload_request(internal_request_id, result)
+        else:
+            with _upload_request_lock:
+                _upload_request_files.pop(internal_request_id, None)
+        return result
     if not _valid_upload_request_id(request_id):
         raise HTTPException(status_code=400, detail="无效的上传请求编号")
 
@@ -1646,7 +1698,7 @@ async def _process_uploaded_file(file: UploadFile, request_id=None):
             except (ValueError, TypeError, AttributeError) as exc:
                 _discard_saved_upload()
                 return {"error": "GeoJSON 格式无效: %s" % exc}
-            return {"geojson": geojson_data, "name": filename, "registration_token": token, "provenance": provenance}
+            return {"geojson": _protect_geojson_property_integers(geojson_data), "name": filename, "registration_token": token, "provenance": provenance}
         # 支持 GeometryCollection → 转 FeatureCollection
         if isinstance(geojson_data, dict) and geojson_data.get('type') == 'GeometryCollection':
             geoms = geojson_data.get('geometries', [])
@@ -1661,7 +1713,7 @@ async def _process_uploaded_file(file: UploadFile, request_id=None):
             except (ValueError, TypeError, AttributeError) as exc:
                 _discard_saved_upload()
                 return {"error": "GeoJSON 格式无效: %s" % exc}
-            return {"geojson": fc, "name": filename, "registration_token": token, "provenance": provenance}
+            return {"geojson": _protect_geojson_property_integers(fc), "name": filename, "registration_token": token, "provenance": provenance}
         _discard_saved_upload()
         return {"error": "文件不是有效的 GeoJSON 格式"}
 
@@ -1737,7 +1789,7 @@ async def _process_uploaded_file(file: UploadFile, request_id=None):
                     name = os.path.splitext(filename)[0]
                     provenance = _uploaded_vector_provenance(filename, source_crs)
                     name, token = await _register_uploaded_vector_async(name, geojson_data, provenance)
-                    return {"geojson": geojson_data, "name": name, "registration_token": token, "provenance": provenance}
+                    return {"geojson": _protect_geojson_property_integers(geojson_data), "name": name, "registration_token": token, "provenance": provenance}
         except zipfile.BadZipFile:
             _discard_saved_upload()
             return {"error": "ZIP 文件损坏或格式无效，请重新压缩后上传"}
@@ -1773,7 +1825,7 @@ async def _process_uploaded_file(file: UploadFile, request_id=None):
             name = os.path.splitext(filename)[0]
             provenance = _uploaded_vector_provenance(filename, source_crs)
             name, token = await _register_uploaded_vector_async(name, geojson_data, provenance)
-            return {"geojson": geojson_data, "name": name, "registration_token": token, "provenance": provenance}
+            return {"geojson": _protect_geojson_property_integers(geojson_data), "name": name, "registration_token": token, "provenance": provenance}
         except Exception as e:
             return {"error": f"无法读取 {ext} 文件: {str(e)[:200]}"}
         finally:
@@ -2068,7 +2120,7 @@ async def _process_uploaded_file(file: UploadFile, request_id=None):
                     source_crs = info.get("crs") if isinstance(info, dict) else None
                     provenance = _uploaded_vector_provenance(filename, source_crs)
                     name, token = await _register_uploaded_vector_async(name, geojson, provenance)
-                    return {"geojson": geojson, "name": name, "registration_token": token, "pmtiles_info": info, "provenance": provenance}
+                    return {"geojson": _protect_geojson_property_integers(geojson), "name": name, "registration_token": token, "pmtiles_info": info, "provenance": provenance}
                 except cn.CloudNativeError:
                     # 栅格 PMTiles：中心瓦片作为影像叠加
                     tile_bytes, bounds, fmt, info = await asyncio.to_thread(cn.pmtiles_raster_tile_bounds, saved_path)
@@ -2106,7 +2158,7 @@ async def _process_uploaded_file(file: UploadFile, request_id=None):
             source_crs = meta.get("crs") if isinstance(meta, dict) else None
             provenance = _uploaded_vector_provenance(filename, source_crs, fmt)
             name, token = await _register_uploaded_vector_async(name, geojson, provenance)
-            return {"geojson": geojson, "name": name, "registration_token": token, "meta": meta, "provenance": provenance}
+            return {"geojson": _protect_geojson_property_integers(geojson), "name": name, "registration_token": token, "meta": meta, "provenance": provenance}
         except cn.CloudNativeError as e:
             _discard_saved_upload()
             return {"error": str(e)}
@@ -2216,6 +2268,9 @@ async def load_project(project_id: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="工程不存在")
+    for layer in result.get("layers", []):
+        if isinstance(layer, dict) and isinstance(layer.get("geojson"), dict):
+            layer["geojson"] = _protect_geojson_property_integers(layer["geojson"])
     return result
 
 @app.get("/api/projects/{project_id}/assets/{filename}")
@@ -2324,6 +2379,7 @@ class RegisterLayerRequest(BaseModel):
     project_context: bool = False
     expected_project_id: Optional[str] = None
     sensitive: Optional[bool] = None
+    registration_token: Optional[str] = None
 
 
 class ActiveProjectResetRequest(BaseModel):
@@ -2376,7 +2432,13 @@ async def register_layer(request: RegisterLayerRequest):
         elif request.geojson is not None:
             from backend.services.tools import _validate_wgs84_geojson
             _validate_wgs84_geojson(request.geojson)
-            token = _register_layer(request.name, request.geojson, group_name=request.group_name,
+            geojson = request.geojson
+            with registry_tools._state_lock:
+                current = registry_tools._registered_layers.get(request.name)
+                if (current and request.registration_token
+                        and current.get("registration_token") == request.registration_token):
+                    geojson = _restore_registered_integer_properties(current.get("geojson"), geojson)
+            token = _register_layer(request.name, geojson, group_name=request.group_name,
                                     sensitive=True if request.sensitive else None)
         else:
             raise ValueError("图层缺少矢量或栅格数据")
@@ -2432,6 +2494,15 @@ class ExportShpRequest(BaseModel):
     geojson: dict
     name: str = "图层"
     crs: str = "EPSG:4326"
+
+
+def _safe_shapefile_name(name: str) -> str:
+    """Return a portable single-component filename for a user supplied layer name."""
+    value = "".join(
+        "_" if ord(char) < 32 or char in '<>:"/\\|?*' else char
+        for char in str(name or "")
+    ).strip(" .")
+    return value or "图层"
 
 # ===== 网络分析 - 吸附端点 =====
 @app.post("/api/network/snap")
@@ -2510,6 +2581,7 @@ def _export_shp_sync(geojson: dict, crs: str, name: str):
     import tempfile, zipfile, shutil
     import geopandas as gpd
 
+    tmp_dir = None
     try:
         gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs=crs)
         if gdf.empty:
@@ -2521,21 +2593,29 @@ def _export_shp_sync(geojson: dict, crs: str, name: str):
             return None, "Shapefile 不支持混合几何类型，请按几何类型拆分图层后导出，或使用 GeoJSON 保留全部要素"
 
         # 字段名截断（Shapefile 限制 10 字符）
+        fields = [col for col in gdf.columns if col != "geometry"]
+        # Reserve every already-valid field before shortening long names. DBF
+        # field names are case-insensitive, so a long field must not steal a
+        # short field's name (or a name differing only by case).
+        used_names = {str(col).casefold() for col in fields if len(str(col)) <= 10}
+        used_names.add("geometry")
         rename_map = {}
-        for col in gdf.columns:
-            if col != "geometry" and len(col) > 10:
-                new_name = col[:10]
+        for col in fields:
+            if len(str(col)) > 10:
+                candidate = str(col)[:10]
                 suffix = 1
-                while new_name in rename_map.values() or new_name == "geometry":
-                    new_name = col[:8] + str(suffix)
+                while candidate.casefold() in used_names:
+                    suffix_text = str(suffix)
+                    candidate = str(col)[:max(1, 10 - len(suffix_text))] + suffix_text
                     suffix += 1
-                rename_map[col] = new_name
+                rename_map[col] = candidate
+                used_names.add(candidate.casefold())
         if rename_map:
             gdf = gdf.rename(columns=rename_map)
 
         # 写入临时目录
         tmp_dir = tempfile.mkdtemp(prefix="shp_export_")
-        shp_base = os.path.join(tmp_dir, name)
+        shp_base = os.path.join(tmp_dir, _safe_shapefile_name(name))
         gdf.to_file(shp_base + ".shp", driver="ESRI Shapefile", encoding="utf-8")
 
         # 打包 zip
@@ -2546,24 +2626,27 @@ def _export_shp_sync(geojson: dict, crs: str, name: str):
                 if os.path.isfile(fpath):
                     zf.write(fpath, fname)
 
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         zip_buf.seek(0)
         return zip_buf, None
     except Exception as e:
         return None, f"SHP 导出失败: {str(e)[:200]}"
+    finally:
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @app.post("/api/layer/export-shp")
 async def export_shp(request: ExportShpRequest):
     """将 GeoJSON 导出为 Shapefile (zip 包)，包含 .shp .shx .dbf .prj .cpg"""
+    safe_name = _safe_shapefile_name(request.name)
     zip_buf, err = await asyncio.to_thread(
-        _export_shp_sync, request.geojson, request.crs, request.name)
+        _export_shp_sync, request.geojson, request.crs, safe_name)
     if err:
         return {"error": err}
     return StreamingResponse(
         zip_buf,
         media_type="application/zip",
-        headers={"Content-Disposition": _attachment_content_disposition(f"{request.name}.zip")},
+        headers={"Content-Disposition": _attachment_content_disposition(f"{safe_name}.zip")},
     )
 
 
@@ -3130,18 +3213,22 @@ async def api_online_load(request: OnlineLoadRequest):
         r = result["result"]
         name = name or "COG影像"
         safe = _re.sub(r'[\\/:*?"<>|]', "_", name)
-        png_name = f"cog_{safe}_{int(_time.time())}.png"
+        png_name = f"cog_{safe}_{int(_time.time())}_{uuid.uuid4().hex[:12]}.png"
         upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
         os.makedirs(upload_dir, exist_ok=True)
         with open(os.path.join(upload_dir, png_name), "wb") as f:
             f.write(r["png_bytes"])
+        processing = "COG 全范围降采样预览；未保存可用于像元分析的原始栅格文件"
         return {
             "raster_info": {
                 "filename": png_name,
                 "url": f"/output/uploads/{png_name}",
                 "bounds": [float(v) for v in r["bounds"]],
+                "preview_only": True,
+                "preview_scope": "resampled_full_extent",
+                "processing": processing,
             },
-            "message": f"已加载 COG 影像: {name}",
+            "message": f"已加载 COG 全范围降采样预览: {name}",
             "name": name,
             "meta": r["meta"],
         }
@@ -3150,18 +3237,22 @@ async def api_online_load(request: OnlineLoadRequest):
         import time as _time
         name = name or "PMTiles栅格"
         safe = _re.sub(r'[\\/:*?"<>|]', "_", name)
-        tile_name = f"pmtiles_{safe}_{int(_time.time())}.{result['fmt']}"
+        tile_name = f"pmtiles_{safe}_{int(_time.time())}_{uuid.uuid4().hex[:12]}.{result['fmt']}"
         upload_dir = os.path.join(_TEMP_OUTPUT_DIR, "uploads")
         os.makedirs(upload_dir, exist_ok=True)
         with open(os.path.join(upload_dir, tile_name), "wb") as f:
             f.write(result["tile_bytes"])
+        processing = "PMTiles 中心单瓦片预览；不代表完整数据覆盖范围"
         return {
             "raster_info": {
                 "filename": tile_name,
                 "url": f"/output/uploads/{tile_name}",
                 "bounds": [float(v) for v in result["bounds"]],
+                "preview_only": True,
+                "preview_scope": "pmtiles_center_tile",
+                "processing": processing,
             },
-            "message": f"已加载栅格 PMTiles: {name}",
+            "message": f"已加载栅格 PMTiles 中心单瓦片预览（不代表完整覆盖范围）: {name}",
             "name": name,
             "meta": result["info"],
         }
@@ -3170,7 +3261,7 @@ async def api_online_load(request: OnlineLoadRequest):
     if not name:
         name = os.path.splitext(os.path.basename(src))[0] or "云原生图层"
     _register_layer(name, geojson)
-    return {"geojson": geojson, "name": name, "meta": result.get("meta") or result.get("info")}
+    return {"geojson": _protect_geojson_property_integers(geojson), "name": name, "meta": result.get("meta") or result.get("info")}
 
 
 # ===== 工具直连执行（手动面板通道：不经 LLM，直接调用注册工具） =====

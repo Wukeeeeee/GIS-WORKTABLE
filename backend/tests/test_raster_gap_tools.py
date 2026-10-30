@@ -18,7 +18,9 @@ from rasterio.transform import from_origin
 from backend.services import tools as T
 from backend.services.tools import (
     tools as TOOL_LIST, _register_layer, reset_state, _pending_layer_ops,
-    raster_reclassify, raster_focal_stats, euclidean_distance,
+    raster_calculator, raster_reclassify, raster_focal_stats,
+    raster_resample, raster_reproject,
+    euclidean_distance,
     raster_extract_by_mask, raster_to_feature, surface_volumes,
     cost_distance, least_cost_path,
 )
@@ -59,6 +61,17 @@ def _make_tif(tmp_path, name, data, res=1.0, nodata=None, origin=(0.0, None), cr
 def _read_out(path):
     with rasterio.open(path) as src:
         return src.read(1)
+
+
+def _latest_result_path(tmp_path):
+    info = _pending_layer_ops[-1]["raster"]
+    return os.path.join(str(tmp_path), "uploads", info["source_filename"])
+
+
+def _latest_result_artifacts(tmp_path):
+    op = _pending_layer_ops[-1]
+    preview_path = os.path.join(str(tmp_path), "uploads", op["raster"]["filename"])
+    return op["layer_name"], _latest_result_path(tmp_path), preview_path
 
 
 def _poly_fc(coords, name="zone"):
@@ -103,7 +116,7 @@ def test_reclassify_mapping_known_values(tmp_path):
     r = raster_reclassify.invoke(
         {"layer_name": name, "mapping": "0-10=1;10-50=2;50+=3", "method": "mapping"})
     assert "重分类完成" in r, r
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "rc_dem_重分类.tif"))
+    out = _read_out(_latest_result_path(tmp_path))
     # 区间左闭右开：5->1, 20->2, 60->3, 9.999->1, 10->2, 49.999->2
     assert out.tolist() == [[1.0, 2.0, 3.0], [1.0, 2.0, 2.0]], out.tolist()
 
@@ -114,7 +127,7 @@ def test_reclassify_equal_interval(tmp_path):
     r = raster_reclassify.invoke(
         {"layer_name": name, "method": "equal_interval", "classes": 4})
     assert "重分类完成" in r, r
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "rc_eq_重分类.tif"))
+    out = _read_out(_latest_result_path(tmp_path))
     assert out.tolist() == [[1.0, 2.0, 3.0, 4.0]], out.tolist()
 
 
@@ -171,9 +184,41 @@ def test_reclassify_preserves_nodata(tmp_path):
     name, _ = _make_tif(tmp_path, "rc_nd", data, nodata=-9999.0)
     r = raster_reclassify.invoke({"layer_name": name, "mapping": "0-10=1;10+=2"})
     assert "重分类完成" in r, r
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "rc_nd_重分类.tif"))
+    out = _read_out(_latest_result_path(tmp_path))
     assert out[0, 0] == 1.0 and out[0, 2] == 2.0
     assert np.isclose(out[0, 1], -9999.0), out.tolist()
+
+
+def test_reclassify_preserves_internal_raster_mask_as_nodata(tmp_path):
+    data = np.arange(100, dtype=np.float32).reshape(10, 10)
+    name, path = _make_tif(tmp_path, "masked_reclass", data)
+    with rasterio.open(path, "r+") as src:
+        mask = np.full((10, 10), 255, dtype=np.uint8)
+        mask[0, 0] = 0
+        src.write_mask(mask)
+
+    result = raster_reclassify.invoke({
+        "layer_name": name, "mapping": "0-50=1;50+=2",
+    })
+
+    assert "重分类完成" in result
+    out = _read_out(_latest_result_path(tmp_path))
+    assert np.isnan(out[0, 0])
+    assert out[1, 1] == 1
+
+
+def test_reclassify_does_not_treat_valid_values_near_nodata_as_nodata(tmp_path):
+    data = np.array([[-9999.0, -9999.05, 0.0]], dtype="float32")
+    name, _ = _make_tif(tmp_path, "rc_near_nd", data, nodata=-9999.0)
+    result = raster_reclassify.invoke({
+        "layer_name": name, "mapping": "-10000--9998=1;0-1=2", "method": "mapping",
+    })
+
+    assert "重分类完成" in result, result
+    out = _read_out(_latest_result_path(tmp_path))
+    assert out[0, 0] == -9999.0
+    assert out[0, 1] == 1.0
+    assert out[0, 2] == 2.0
 
 
 def test_reclassify_uses_registered_layer_name_for_project_asset(tmp_path):
@@ -189,10 +234,35 @@ def test_reclassify_uses_registered_layer_name_for_project_asset(tmp_path):
     result = raster_reclassify.invoke(
         {"layer_name": display_name, "method": "quantile", "classes": 3})
 
-    expected_name = f"{display_name}_重分类"
     assert "重分类完成" in result, result
-    assert os.path.isfile(os.path.join(str(tmp_path), "uploads", expected_name + ".tif"))
-    assert _pending_layer_ops[-1]["layer_name"] == expected_name
+    assert os.path.isfile(_latest_result_path(tmp_path))
+    result_name = _pending_layer_ops[-1]["layer_name"]
+    assert result_name.startswith(f"{display_name}_") and result_name.endswith("_重分类")
+
+
+def test_reclassify_different_class_counts_preserve_previous_rasters(tmp_path):
+    data = np.arange(64, dtype="float32").reshape(8, 8)
+    name, _ = _make_tif(tmp_path, "rc_different_classes", data)
+
+    first = raster_reclassify.invoke({
+        "layer_name": name, "method": "quantile", "classes": 2,
+    })
+    first_name, first_path, first_preview_path = _latest_result_artifacts(tmp_path)
+    first_data = _read_out(first_path).copy()
+    with open(first_preview_path, "rb") as preview_file:
+        first_preview = preview_file.read()
+    second = raster_reclassify.invoke({
+        "layer_name": name, "method": "quantile", "classes": 4,
+    })
+    second_name, second_path, second_preview_path = _latest_result_artifacts(tmp_path)
+
+    assert "重分类完成" in first and "重分类完成" in second
+    assert first_name != second_name and first_path != second_path
+    assert first_preview_path != second_preview_path
+    with open(first_preview_path, "rb") as preview_file:
+        assert preview_file.read() == first_preview
+    assert np.array_equal(_read_out(first_path), first_data)
+    assert not np.array_equal(first_data, _read_out(second_path))
 
 
 # ============================================================
@@ -204,21 +274,57 @@ def test_focal_mean_constant_grid(tmp_path):
     name, _ = _make_tif(tmp_path, "fs_flat", data)
     r = raster_focal_stats.invoke({"layer_name": name, "stat": "mean", "size": 3})
     assert "焦点统计完成" in r, r
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "fs_flat_焦点mean.tif"))
+    out = _read_out(_latest_result_path(tmp_path))
     assert np.allclose(out, 5.0, atol=1e-4), out
+
+
+def test_focal_different_window_sizes_preserve_previous_rasters(tmp_path):
+    data = np.zeros((9, 9), dtype="float32")
+    data[4, 4] = 81.0
+    name, _ = _make_tif(tmp_path, "focal_different_sizes", data)
+
+    first = raster_focal_stats.invoke({"layer_name": name, "stat": "mean", "size": 3})
+    first_name, first_path, first_preview_path = _latest_result_artifacts(tmp_path)
+    first_data = _read_out(first_path).copy()
+    with open(first_preview_path, "rb") as preview_file:
+        first_preview = preview_file.read()
+    second = raster_focal_stats.invoke({"layer_name": name, "stat": "mean", "size": 5})
+    second_name, second_path, second_preview_path = _latest_result_artifacts(tmp_path)
+
+    assert "焦点统计完成" in first and "焦点统计完成" in second
+    assert first_name != second_name and first_path != second_path
+    assert first_preview_path != second_preview_path
+    with open(first_preview_path, "rb") as preview_file:
+        assert preview_file.read() == first_preview
+    assert np.array_equal(_read_out(first_path), first_data)
+    assert not np.array_equal(first_data, _read_out(second_path))
+
+
+def test_focal_mean_ignores_internal_mask(tmp_path):
+    name, path = _make_tif(tmp_path, "focal_internal_mask", np.full((3, 3), 10, dtype="float32"))
+    with rasterio.open(path, "r+") as dataset:
+        mask = np.full((3, 3), 255, dtype="uint8")
+        mask[1, 1] = 0
+        dataset.write_mask(mask)
+
+    result = raster_focal_stats.invoke({"layer_name": name, "stat": "mean", "size": 3})
+
+    assert "焦点统计完成" in result, result
+    out = _read_out(_latest_result_path(tmp_path))
+    assert np.isnan(out[1, 1])
+    assert out[0, 0] == pytest.approx(10.0)
 
 
 def test_focal_max_min_range_spike(tmp_path):
     data = np.full((5, 5), 4.0, dtype="float32")
     data[2, 2] = 8.0
     name, _ = _make_tif(tmp_path, "fs_spike", data)
-    base = os.path.join(str(tmp_path), "uploads")
     raster_focal_stats.invoke({"layer_name": name, "stat": "max", "size": 3})
     raster_focal_stats.invoke({"layer_name": name, "stat": "min", "size": 3})
     raster_focal_stats.invoke({"layer_name": name, "stat": "range", "size": 3})
-    mx = _read_out(os.path.join(base, "fs_spike_焦点max.tif"))
-    mn = _read_out(os.path.join(base, "fs_spike_焦点min.tif"))
-    rg = _read_out(os.path.join(base, "fs_spike_焦点range.tif"))
+    results = [op for op in _pending_layer_ops if op.get("action") == "dem_result"][-3:]
+    paths = [os.path.join(str(tmp_path), "uploads", op["raster"]["source_filename"]) for op in results]
+    mx, mn, rg = [_read_out(path) for path in paths]
     # 3x3 窗口内 max 应为 8（尖峰扩散到 8 邻域），角落 max 仍为 4
     assert mx[2, 2] == 8.0 and mx[1, 1] == 8.0 and mx[0, 0] == 4.0
     assert np.allclose(mn, 4.0), mn
@@ -250,7 +356,7 @@ def test_focal_majority_returns_a_value_from_the_input_raster(tmp_path):
     result = raster_focal_stats.invoke({"layer_name": name, "stat": "majority", "size": 3})
 
     assert "焦点统计完成" in result, result
-    out = _read_out(os.path.join(str(tmp_path), "uploads", f"{name}_焦点majority.tif"))
+    out = _read_out(_latest_result_path(tmp_path))
     assert out[1, 1] == data[1, 1]
 
 
@@ -264,7 +370,7 @@ def test_focal_nodata_uses_exact_sentinel_not_tolerance(tmp_path):
     result = raster_focal_stats.invoke({"layer_name": name, "stat": "mean", "size": 3})
 
     assert "焦点统计完成" in result, result
-    out = _read_out(os.path.join(str(tmp_path), "uploads", f"{name}_焦点mean.tif"))
+    out = _read_out(_latest_result_path(tmp_path))
     assert np.isclose(out[1, 1], (-9998.95 + 0.0) / 2, atol=1e-3)
     assert _pending_layer_ops[-1]["raster"]["valid_pixel_ratio"] == pytest.approx(2 / 9)
 
@@ -283,10 +389,81 @@ def test_focal_output_uses_registered_layer_name_for_project_asset(tmp_path):
         "layer_name": display_name, "stat": "mean", "size": 3,
     })
 
-    expected_name = f"{display_name}_焦点mean"
     assert "焦点统计完成" in result, result
-    assert os.path.isfile(os.path.join(str(tmp_path), "uploads", expected_name + ".tif"))
-    assert _pending_layer_ops[-1]["layer_name"] == expected_name
+    assert os.path.isfile(_latest_result_path(tmp_path))
+    result_name = _pending_layer_ops[-1]["layer_name"]
+    assert result_name.startswith(f"{display_name}_") and result_name.endswith("_焦点mean")
+
+
+def test_resample_different_scales_preserve_previous_rasters(tmp_path):
+    data = np.arange(144, dtype="float32").reshape(12, 12)
+    name, _ = _make_tif(tmp_path, "resample_different_scales", data)
+
+    first = raster_resample.invoke({"layer_name": name, "scale_factor": 2, "method": "nearest"})
+    first_name, first_path, first_preview_path = _latest_result_artifacts(tmp_path)
+    first_data = _read_out(first_path).copy()
+    with open(first_preview_path, "rb") as preview_file:
+        first_preview = preview_file.read()
+    second = raster_resample.invoke({"layer_name": name, "scale_factor": 3, "method": "nearest"})
+    second_name, second_path, second_preview_path = _latest_result_artifacts(tmp_path)
+
+    assert "重采样完成" in first and "重采样完成" in second
+    assert first_name != second_name and first_path != second_path
+    assert first_preview_path != second_preview_path
+    with open(first_preview_path, "rb") as preview_file:
+        assert preview_file.read() == first_preview
+    assert np.array_equal(_read_out(first_path), first_data)
+    assert first_data.shape != _read_out(second_path).shape
+
+
+def test_reproject_different_target_crs_preserve_previous_rasters(tmp_path):
+    data = np.arange(64, dtype="float32").reshape(8, 8)
+    name, _ = _make_tif(
+        tmp_path, "reproject_different_crs", data, res=0.1,
+        origin=(112.0, 29.0), crs="EPSG:4326",
+    )
+
+    first = raster_reproject.invoke({"layer_name": name, "target_crs": "EPSG:3857"})
+    first_name, first_path, first_preview_path = _latest_result_artifacts(tmp_path)
+    with rasterio.open(first_path) as src:
+        first_crs = src.crs
+        first_data = src.read().copy()
+    with open(first_preview_path, "rb") as preview_file:
+        first_preview = preview_file.read()
+    second = raster_reproject.invoke({"layer_name": name, "target_crs": "EPSG:32649"})
+    second_name, second_path, second_preview_path = _latest_result_artifacts(tmp_path)
+
+    assert "重投影完成" in first and "重投影完成" in second
+    assert first_name != second_name and first_path != second_path
+    assert first_preview_path != second_preview_path
+    with open(first_preview_path, "rb") as preview_file:
+        assert preview_file.read() == first_preview
+    with rasterio.open(first_path) as src:
+        assert src.crs == first_crs
+        assert np.array_equal(src.read(), first_data)
+    with rasterio.open(second_path) as src:
+        assert src.crs.to_string() == "EPSG:32649"
+
+
+def test_raster_calculator_different_expressions_preserve_previous_rasters(tmp_path):
+    data = np.arange(1, 17, dtype="float32").reshape(4, 4)
+    name, _ = _make_tif(tmp_path, "calc_different_expressions", data)
+
+    first = raster_calculator.invoke({"layer_name": name, "expression": "B1*2"})
+    first_name, first_path, first_preview_path = _latest_result_artifacts(tmp_path)
+    first_data = _read_out(first_path).copy()
+    with open(first_preview_path, "rb") as preview_file:
+        first_preview = preview_file.read()
+    second = raster_calculator.invoke({"layer_name": name, "expression": "B1*3"})
+    second_name, second_path, second_preview_path = _latest_result_artifacts(tmp_path)
+
+    assert "已执行" in first and "已执行" in second
+    assert first_name != second_name and first_path != second_path
+    assert first_preview_path != second_preview_path
+    with open(first_preview_path, "rb") as preview_file:
+        assert preview_file.read() == first_preview
+    assert np.array_equal(_read_out(first_path), first_data)
+    assert not np.array_equal(first_data, _read_out(second_path))
 
 
 # ============================================================
@@ -589,11 +766,16 @@ def _mask_fixture(tmp_path, name, nodata=None):
     return name
 
 
+def _latest_mask_output_path(tmp_path):
+    info = _pending_layer_ops[-1]["raster"]
+    return os.path.join(str(tmp_path), "uploads", info["source_filename"])
+
+
 def test_extract_by_mask_inside(tmp_path):
     name = _mask_fixture(tmp_path, "em_in")
     r = raster_extract_by_mask.invoke({"raster_layer": name, "zone_layer": "裁剪面", "inside": True})
     assert "按掩膜提取完成" in r, r
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "em_in_掩膜内.tif"))
+    out = _read_out(_latest_mask_output_path(tmp_path))
     # 面覆盖 3x3 像元中心 (1.5..3.5) -> 9 个有效
     assert int((out > 0).sum()) == 9, out
 
@@ -611,9 +793,10 @@ def test_extract_by_mask_preserves_valid_nodata_sentinel_value(tmp_path):
     })
 
     assert "有效像元 9/25" in result, result
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "em_valid_sentinel_掩膜内.tif"))
+    out_path = _latest_mask_output_path(tmp_path)
+    out = _read_out(out_path)
     assert out[2, 2] == -9999.0
-    with rasterio.open(os.path.join(str(tmp_path), "uploads", "em_valid_sentinel_掩膜内.tif")) as output:
+    with rasterio.open(out_path) as output:
         assert np.isnan(output.nodata)
 
 
@@ -630,7 +813,7 @@ def test_extract_by_mask_compares_declared_nodata_exactly(tmp_path):
     })
 
     assert "有效像元 9/25" in result, result
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "em_near_nodata_掩膜内.tif"))
+    out = _read_out(_latest_mask_output_path(tmp_path))
     assert out[2, 2] == pytest.approx(-9998.95, abs=1e-3)
     assert _pending_layer_ops[-1]["raster"]["valid_pixel_ratio"] == pytest.approx(9 / 25)
 
@@ -651,8 +834,38 @@ def test_extract_by_mask_uses_registered_layer_name_for_project_asset(tmp_path):
 
     expected_name = f"{display_name}_掩膜内"
     assert "按掩膜提取完成" in result, result
-    assert os.path.isfile(os.path.join(str(tmp_path), "uploads", expected_name + ".tif"))
-    assert _pending_layer_ops[-1]["layer_name"] == expected_name
+    assert os.path.isfile(_latest_mask_output_path(tmp_path))
+    assert _pending_layer_ops[-1]["layer_name"].startswith(expected_name + "_")
+
+
+def test_extract_by_mask_repeated_runs_preserve_previous_output(tmp_path):
+    name = _mask_fixture(tmp_path, "em_repeat_mask")
+    source_path = os.path.join(str(tmp_path), "uploads", name + ".tif")
+
+    first_result = raster_extract_by_mask.invoke({
+        "raster_layer": name, "zone_layer": "裁剪面", "inside": True,
+    })
+    assert "按掩膜提取完成" in first_result, first_result
+    first_info = dict(_pending_layer_ops[-1]["raster"])
+    first_path = _latest_mask_output_path(tmp_path)
+
+    with rasterio.open(source_path, "r+") as source:
+        source.write(np.full((5, 5), 2, dtype="float32"), 1)
+
+    second_result = raster_extract_by_mask.invoke({
+        "raster_layer": name, "zone_layer": "裁剪面", "inside": True,
+    })
+    assert "按掩膜提取完成" in second_result, second_result
+    second_info = dict(_pending_layer_ops[-1]["raster"])
+    second_path = _latest_mask_output_path(tmp_path)
+
+    assert first_info["source_filename"] != second_info["source_filename"]
+    assert first_info["filename"] != second_info["filename"]
+    assert os.path.isfile(first_path)
+    assert os.path.isfile(second_path)
+    assert int((_read_out(first_path) > 0).sum()) == 9
+    assert np.all(_read_out(first_path)[1:4, 1:4] == 1)
+    assert np.all(_read_out(second_path)[1:4, 1:4] == 2)
 
 
 def test_extract_by_mask_transforms_wgs84_zone_to_projected_raster_crs(tmp_path):
@@ -674,7 +887,7 @@ def test_extract_by_mask_transforms_wgs84_zone_to_projected_raster_crs(tmp_path)
     })
 
     assert "有效像元 9/25" in result, result
-    out_path = os.path.join(upload_dir, "em_projected_掩膜内.tif")
+    out_path = _latest_mask_output_path(tmp_path)
     assert int((_read_out(out_path) > 0).sum()) == 9
     with rasterio.open(out_path) as output:
         assert output.crs.to_string() == "EPSG:3857"
@@ -705,9 +918,34 @@ def test_raster_to_feature_preserves_valid_values_near_nodata(tmp_path, monkeypa
     result = raster_to_feature.invoke({"layer_name": name})
 
     assert "栅格转矢量完成：1 个面" in result
-    fc = T._registered_layers["vectorize_near_nodata_转矢量"]["geojson"]
+    out_name = next(name for name in T._registered_layers if name.startswith("vectorize_near_nodata_转矢量_"))
+    fc = T._registered_layers[out_name]["geojson"]
     assert len(fc["features"]) == 1
     assert fc["features"][0]["properties"]["value"] == pytest.approx(-9998.95)
+
+
+def test_raster_to_feature_parameterized_runs_preserve_previous_result(tmp_path):
+    name, _ = _make_tif(
+        tmp_path,
+        "vectorize_connectivity",
+        np.array([[1, 0], [0, 1]], dtype="uint8"),
+        crs="EPSG:4326",
+    )
+
+    first = raster_to_feature.invoke({"layer_name": name, "connectivity": 4})
+    first_name = first.split("图层「", 1)[1].split("」", 1)[0]
+    first_fc = T._registered_layers[first_name]["geojson"]
+    first_features = [dict(feature) for feature in first_fc["features"]]
+    second = raster_to_feature.invoke({"layer_name": name, "connectivity": 8})
+    second_name = second.split("图层「", 1)[1].split("」", 1)[0]
+
+    assert first_name != second_name
+    assert first_name in T._registered_layers
+    assert second_name in T._registered_layers
+    assert len(first_features) == 2
+    assert len(T._registered_layers[first_name]["geojson"]["features"]) == 2
+    assert T._registered_layers[first_name]["geojson"]["features"] == first_features
+    assert len(T._registered_layers[second_name]["geojson"]["features"]) == 1
 
 
 @pytest.mark.parametrize("connectivity", [0, 6])
@@ -732,7 +970,7 @@ def test_extract_by_mask_outside(tmp_path):
     name = _mask_fixture(tmp_path, "em_out")
     r = raster_extract_by_mask.invoke({"raster_layer": name, "zone_layer": "裁剪面", "inside": False})
     assert "按掩膜提取完成" in r, r
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "em_out_掩膜外.tif"))
+    out = _read_out(_latest_mask_output_path(tmp_path))
     # 25 - 9 = 16 个有效像元
     assert int((out > 0).sum()) == 16, out
 
@@ -802,7 +1040,9 @@ def test_cost_distance_transforms_wgs84_sources_and_preserves_near_nodata_cost(t
     output_path = T._find_uploaded_tif("projected_cost_distance_代价距离")
     assert output_path
     with rasterio.open(output_path) as output:
-        assert np.isfinite(output.read(1)[0, 0])
+        result_cost = output.read(1)
+        assert result_cost[1, 2] == pytest.approx(1000)
+        assert result_cost[0, 0] > 1_000_000
 
 
 def test_cost_distance_sanitizes_user_output_name(tmp_path):
@@ -824,6 +1064,30 @@ def test_cost_graph_rejects_oversized_valid_surface():
         T._cost_graph(np.ones(100_001, dtype="float32").reshape(1, -1))
 
 
+def test_cost_graph_uses_georeferenced_cell_distance_for_rectangular_pixels():
+    from affine import Affine
+    from pyproj import CRS
+
+    graph, idx, _ = T._cost_graph(
+        np.ones((2, 2), dtype="float32"),
+        transform=Affine(100, 0, 0, 0, -1000, 2000), crs="EPSG:3857",
+    )
+
+    assert graph[idx[0, 0], idx[0, 1]] == pytest.approx(100)
+    assert graph[idx[0, 0], idx[1, 0]] == pytest.approx(1000)
+    assert graph[idx[0, 0], idx[1, 1]] == pytest.approx((100**2 + 1000**2) ** 0.5)
+
+    geographic_transform = Affine(1, 0, 0, 0, -1, 81)
+    geographic_graph, geographic_idx, _ = T._cost_graph(
+        np.ones((2, 2), dtype="float32"),
+        transform=geographic_transform, crs="EPSG:4326",
+    )
+    x0, y0 = geographic_transform * (0.5, 0.5)
+    x1, y1 = geographic_transform * (1.5, 0.5)
+    expected = CRS.from_epsg(4326).get_geod().inv(x0, y0, x1, y1)[2]
+    assert geographic_graph[geographic_idx[0, 0], geographic_idx[0, 1]] == pytest.approx(expected)
+
+
 def test_least_cost_path_transforms_wgs84_points_to_projected_raster(tmp_path, monkeypatch):
     import geopandas as gpd
 
@@ -837,6 +1101,7 @@ def test_least_cost_path_transforms_wgs84_points_to_projected_raster(tmp_path, m
     })
 
     assert "最小代价路径完成" in result and "1 条路径" in result, result
+    assert "路径总长 1.00 km" in result, result
     assert "代价源_到_代价终点_代价路径" in T._registered_layers
 
 

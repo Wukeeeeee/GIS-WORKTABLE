@@ -61,6 +61,13 @@ def test_odd_window_autocorrect():
     assert any("奇数" in x for x in w)
 
 
+def test_odd_window_does_not_correct_to_unsupported_size():
+    clean, w = validate_tool_args("raster_focal_stats", {"layer_name": "x", "size": 8})
+    assert clean["size"] == 8
+    assert any("3/5/7" in x for x in w)
+    assert not any("已自动调整" in x for x in w)
+
+
 def test_negative_distance_flagged():
     clean, w = validate_tool_args("spatial_buffer", {"layer_name": "x", "distance": -10})
     assert any("正数" in x for x in w)

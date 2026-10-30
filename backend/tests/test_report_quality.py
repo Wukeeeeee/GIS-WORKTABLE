@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """阶段 C：分析报告生成 + 数据质量检查工具测试"""
 import pytest
+from pathlib import Path
+from backend.services import tools as T
 from backend.services.tools import (
     generate_analysis_report, spatial_fix_geometry, spatial_check_duplicates,
     _register_layer, _registered_layers, _pending_images, reset_state,
@@ -61,6 +63,17 @@ class TestGenerateReport:
         assert "分析报告" in r
         assert "测试多边形图层分析" in r
         assert "统计" in r
+
+    def test_layer_name_cannot_escape_report_directory(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        _setup("../../escaped", _GOOD_POINTS)
+
+        result = generate_analysis_report.invoke({"layer_name": "../../escaped"})
+
+        reported_path = result.splitlines()[0].removeprefix("分析报告已生成并保存：")
+        assert Path(reported_path).resolve().is_relative_to(output_dir.resolve())
 
 
 

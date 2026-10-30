@@ -15,7 +15,7 @@ class Element {
   contains(target) { return target === this; }
 }
 
-function createHarness({ savedRecipe } = {}) {
+function createHarness({ savedRecipe, baseUrl = '' } = {}) {
   const elements = new Map(['connectorBtn', 'connectorPanel', 'connectorClose', 'onlineLoadBtn', 'onlineUrl', 'onlineType', 'openOnlineDataBtn', 'settingsModal', 'arcgisLayerId', 'arcgisFetchMode', 'arcgisWhere', 'arcgisBbox', 'arcgisInspectBtn', 'arcgisCancelBtn', 'arcgisRerunBtn', 'arcgisFetchStatus', 'arcgisFetchResult']
     .map(id => [id, new Element()]));
   elements.get('arcgisFetchMode').value = 'preview';
@@ -23,11 +23,17 @@ function createHarness({ savedRecipe } = {}) {
   const requests = [];
   const layers = [];
   const alerts = [];
+  const toasts = [];
+  const overlays = [];
   const window = { GIS: {
-    api: { BASE_URL: '' },
-    map: { loadGeoJSON() {}, addImageOverlay() {} },
+    api: { BASE_URL: baseUrl },
+    map: {
+      loadGeoJSON() {},
+      addImageOverlay(url, bounds, name, layerId) { overlays.push({ url, bounds, name, layerId }); },
+    },
     layers: { addLayer(layer) { layers.push(layer); } },
     chat: { addMessage() {} },
+    toast: { info(message) { toasts.push(message); } },
   } };
   const document = {
     readyState: 'loading',
@@ -46,7 +52,7 @@ function createHarness({ savedRecipe } = {}) {
   }, { filename: sourcePath });
   window.GIS.connector.init();
   elements.get('onlineUrl').value = 'https://example.test/data.fgb';
-  return { elements, requests, layers, alerts, panel: elements.get('connectorPanel'), connector: window.GIS.connector };
+  return { elements, requests, layers, alerts, toasts, overlays, panel: elements.get('connectorPanel'), connector: window.GIS.connector };
 }
 
 async function flushPromises() {
@@ -203,4 +209,118 @@ test('ArcGIS complete, partial, unknown, and failed results remain distinct', as
   const failed = await runJob({ status: 'failed', error: 'provider unavailable' });
   assert.match(failed.elements.get('arcgisFetchStatus').textContent, /获取失败：provider unavailable/);
   assert.equal(failed.elements.get('arcgisFetchResult').style.display, 'none');
+});
+
+test('online load raster PMTiles retains preview_only, processing, and displays center-tile warning toast', async () => {
+  const h = createHarness();
+  h.elements.get('onlineUrl').value = 'https://example.test/elevation.pmtiles';
+  h.elements.get('onlineLoadBtn').fire('click');
+
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].url, '/api/online/load');
+
+  h.requests[0].resolve({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({
+      name: 'Elevation_Center',
+      raster_info: {
+        url: '/output/uploads/pmtiles_tile.png',
+        bounds: [100.1, 30.1, 100.2, 30.2],
+        preview_only: true,
+        preview_scope: 'pmtiles_center_tile',
+        processing: '仅中心瓦片预览',
+        crs: 'EPSG:3857',
+      },
+      message: '已加载栅格 PMTiles（中心单瓦片预览）: Elevation_Center',
+      meta: {
+        bounds_wgs84: [95.0, 25.0, 105.0, 35.0],
+      },
+    }),
+  });
+  await flushPromises();
+
+  assert.equal(h.layers.length, 1);
+  const layer = h.layers[0];
+  assert.equal(layer.filename, 'Elevation_Center');
+  assert.equal(layer.geometry_type, 'Raster');
+  assert.equal(layer.crs, 'EPSG:3857');
+  assert.equal(layer.preview_only, true);
+  assert.equal(layer.processing, '仅中心瓦片预览');
+  assert.equal(layer.raster.preview_only, true);
+  assert.equal(layer.raster.preview_scope, 'pmtiles_center_tile');
+  assert.equal(layer.raster.processing, '仅中心瓦片预览');
+  assert.deepEqual(layer.raster.dataset_bounds, [95.0, 25.0, 105.0, 35.0]);
+  assert.deepEqual(layer.raster.meta, { bounds_wgs84: [95.0, 25.0, 105.0, 35.0] });
+
+  assert.deepEqual(h.toasts, ['仅中心瓦片预览']);
+  assert.equal(h.elements.get('onlineLoadBtn').disabled, false);
+  assert.equal(h.elements.get('onlineUrl').value, '');
+});
+
+test('online load prefixes relative raster_info.url with BASE_URL for overlay and layer record', async () => {
+  const h = createHarness({ baseUrl: 'https://api.example.test' });
+  h.elements.get('onlineUrl').value = 'https://example.test/remote-layer.tif';
+  h.elements.get('onlineLoadBtn').fire('click');
+
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].url, 'https://api.example.test/api/online/load');
+
+  const bounds = [102.0, 24.0, 103.0, 25.0];
+  h.requests[0].resolve({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({
+      name: 'Relative_Preview',
+      raster_info: {
+        url: '/output/uploads/preview.png',
+        bounds: bounds,
+      },
+    }),
+  });
+  await flushPromises();
+
+  assert.equal(h.overlays.length, 1);
+  const overlay = h.overlays[0];
+  assert.equal(overlay.url, 'https://api.example.test/output/uploads/preview.png');
+  assert.deepEqual(overlay.bounds, bounds);
+  assert.equal(overlay.name, 'Relative_Preview');
+
+  assert.equal(h.layers.length, 1);
+  assert.equal(h.layers[0].raster.url, 'https://api.example.test/output/uploads/preview.png');
+  assert.equal(h.layers[0].raster.url, overlay.url);
+  assert.deepEqual(h.layers[0].raster.bounds, bounds);
+});
+
+test('online load handles GeoJSON feature collection with null first geometry gracefully', async () => {
+  const h = createHarness();
+  h.elements.get('onlineUrl').value = 'https://example.test/parcels.parquet';
+  h.elements.get('onlineLoadBtn').fire('click');
+
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0].url, '/api/online/load');
+
+  h.requests[0].resolve({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({
+      name: 'Null_Geometry_Layer',
+      geojson: {
+        type: 'FeatureCollection',
+        features: [
+          { type: 'Feature', geometry: null, properties: { id: 1 } },
+          { type: 'Feature', geometry: { type: 'Polygon', coordinates: [] }, properties: { id: 2 } },
+        ],
+      },
+    }),
+  });
+  await flushPromises();
+
+  assert.equal(h.layers.length, 1);
+  const layer = h.layers[0];
+  assert.equal(layer.filename, 'Null_Geometry_Layer');
+  assert.equal(layer.geometry_type, '未知');
+  assert.equal(layer.source, 'upload');
+  assert.equal(h.elements.get('onlineLoadBtn').disabled, false);
+  assert.equal(h.elements.get('onlineUrl').value, '');
 });

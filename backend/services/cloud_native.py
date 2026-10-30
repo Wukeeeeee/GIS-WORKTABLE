@@ -467,11 +467,15 @@ def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None =
             if nodata is not None:
                 mask = np.zeros_like(bands[0], dtype=bool)
                 for b in bands:
-                    mask |= np.isclose(b, nodata)
+                    mask |= b == nodata
             else:
                 mask = ~np.isfinite(bands[0])
                 for b in bands[1:]:
                     mask |= ~np.isfinite(b)
+            # Internal TIFF masks are independent of nodata metadata. Include
+            # each displayed band's validity mask in the preview transparency.
+            for index in rgb_indexes:
+                mask |= ds.read_masks(index, out_shape=(out_h, out_w)) == 0
             alpha = ds.dataset_mask(out_shape=(out_h, out_w)) if alpha_band else None
 
             rgb = []
@@ -559,10 +563,10 @@ def _cog_info_impl(source: str, fallback_url: str | None = None) -> dict:
             out_h, out_w = max(1, ds.height // scale), max(1, ds.width // scale)
             stats = []
             for i in range(1, min(ds.count, 6) + 1):
-                b = ds.read(i, out_shape=(out_h, out_w)).astype("float64")
+                b = ds.read(i, masked=True, out_shape=(out_h, out_w)).astype("float64").filled(np.nan)
                 valid = np.isfinite(b)
                 if ds.nodata is not None:
-                    valid &= ~np.isclose(b, ds.nodata)
+                    valid &= b != ds.nodata
                 if valid.any():
                     stats.append({
                         "band": i, "min": round(float(b[valid].min()), 4),

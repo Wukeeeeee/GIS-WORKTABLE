@@ -172,6 +172,31 @@ class TestSpatialMoran:
         # 聚集数据 I 应为正
         assert "聚集" in r or "正空间自相关" in r or "随机" in r  # 小样本可能不显著，但不应报错
 
+    def test_different_thresholds_preserve_previous_local_results(self):
+        import copy
+        import uuid
+
+        source_name = f"moran_repeat_{uuid.uuid4().hex}"
+        _setup(source_name, _CLUSTER_POINTS)
+
+        first_result = spatial_moran.invoke({
+            "layer_name": source_name, "field": "value", "threshold": 0.01,
+        })
+        first_name = next(name for name in _registered_layers if name.startswith(f"{source_name}_MoranI"))
+        first_geojson = copy.deepcopy(_registered_layers[first_name]["geojson"])
+        second_result = spatial_moran.invoke({
+            "layer_name": source_name, "field": "value", "threshold": 0.2,
+        })
+
+        result_names = [name for name in _registered_layers if name.startswith(f"{source_name}_MoranI")]
+        second_geojson = _registered_layers[result_names[-1]]["geojson"]
+        first_local = [feature["properties"]["local_moran"] for feature in first_geojson["features"]]
+        second_local = [feature["properties"]["local_moran"] for feature in second_geojson["features"]]
+        assert first_local != second_local
+        assert len(result_names) == 2
+        assert result_names[0] in first_result
+        assert result_names[1] in second_result
+
     def test_random_data_is_not_systematically_significant(self):
         """回归：方差公式写错时任何数据都会被判成"显著"
 
@@ -253,6 +278,29 @@ class TestSpatialHotspot:
         result_names = [n for n in _registered_layers if "热点" in n]
         assert len(result_names) >= 1
 
+    def test_different_thresholds_preserve_previous_hotspot_results(self):
+        import copy
+        import uuid
+
+        source_name = f"hotspot_repeat_{uuid.uuid4().hex}"
+        _setup(source_name, _CLUSTER_POINTS)
+
+        first_result = spatial_hotspot.invoke({
+            "layer_name": source_name, "field": "value", "threshold": 0.01,
+        })
+        first_name = next(name for name in _registered_layers if name.startswith(f"{source_name}_热点"))
+        first_geojson = copy.deepcopy(_registered_layers[first_name]["geojson"])
+        second_result = spatial_hotspot.invoke({
+            "layer_name": source_name, "field": "value", "threshold": 0.2,
+        })
+
+        result_names = [name for name in _registered_layers if name.startswith(f"{source_name}_热点")]
+        second_geojson = _registered_layers[result_names[-1]]["geojson"]
+        assert first_geojson != second_geojson, "两个距离阈值应产生不同热点统计结果"
+        assert len(result_names) == 2
+        assert result_names[0] in first_result
+        assert result_names[1] in second_result
+
 
 
 
@@ -265,9 +313,10 @@ class TestSpatialHotspot:
 def _kde_layer(grid_size=20, **kw):
     """跑一次 KDE，返回结果 GeoDataFrame"""
     _setup("pts", _KDE_POINTS)
-    spatial_kde.invoke({"layer_name": "pts", "grid_size": grid_size, **kw})
-    names = [n for n in _registered_layers if "KDE" in n]
-    assert names, f"未找到 KDE 结果图层，当前：{list(_registered_layers.keys())}"
+    existing_names = set(_registered_layers)
+    result = spatial_kde.invoke({"layer_name": "pts", "grid_size": grid_size, **kw})
+    names = [n for n in _registered_layers if n not in existing_names]
+    assert len(names) == 1, f"KDE 未创建唯一结果图层：{result}；当前：{list(_registered_layers.keys())}"
     return _registered_layers[names[0]]["geojson"]
 
 
@@ -279,6 +328,33 @@ class TestSpatialKDE:
         assert "KDE" in r or "核密度" in r
         result_names = [n for n in _registered_layers if "KDE" in n]
         assert len(result_names) >= 1, f"未找到 KDE 结果图层，当前：{list(_registered_layers.keys())}"
+
+    def test_different_grid_sizes_preserve_previous_kde_results(self):
+        import uuid
+
+        source_name = f"kde_repeat_{uuid.uuid4().hex}"
+        _setup(source_name, _KDE_POINTS)
+
+        coarse_result = spatial_kde.invoke({
+            "layer_name": source_name, "bandwidth": 0.01, "grid_size": 10,
+        })
+        fine_result = spatial_kde.invoke({
+            "layer_name": source_name, "bandwidth": 0.01, "grid_size": 20,
+        })
+
+        result_names = [name for name in _registered_layers if name.startswith(f"{source_name}_KDE")]
+        assert len(result_names) == 2
+        coarse_points = {
+            tuple(feature["geometry"]["coordinates"])
+            for feature in _registered_layers[result_names[0]]["geojson"]["features"]
+        }
+        fine_points = {
+            tuple(feature["geometry"]["coordinates"])
+            for feature in _registered_layers[result_names[1]]["geojson"]["features"]
+        }
+        assert coarse_points != fine_points
+        assert result_names[0] in coarse_result
+        assert result_names[1] in fine_result
 
     def test_bandwidth_is_in_degrees_not_a_factor(self):
         """回归：bandwidth 曾被当成 scipy 的 bw_method 倍数，实际带宽小 40 倍，

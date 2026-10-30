@@ -49,6 +49,18 @@ def _haversine(p1, p2):
     return 6371000 * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
 
 
+def _validate_wgs84_coordinate(point) -> None:
+    try:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            raise ValueError
+        lon, lat = float(point[0]), float(point[1])
+    except (TypeError, ValueError, OverflowError, IndexError) as exc:
+        raise ValueError("网络分析坐标必须为 EPSG:4326 范围内的有限经纬度") from exc
+    if (not math.isfinite(lon) or not math.isfinite(lat)
+            or not -180 <= lon <= 180 or not -90 <= lat <= 90):
+        raise ValueError("网络分析坐标必须为 EPSG:4326 范围内的有限经纬度")
+
+
 # ============================================================
 # 建图
 # ============================================================
@@ -87,6 +99,8 @@ def build_graph_from_geojson(geojson: dict, weight_field: str = "", respect_onew
 
         for line in lines:
             coords = list(line.coords)
+            for point in coords:
+                _validate_wgs84_coordinate(point)
             for i in range(len(coords) - 1):
                 p1, p2 = coords[i], coords[i+1]
                 d = _haversine(p1, p2)
@@ -118,6 +132,7 @@ def find_nearest_node(graph: nx.DiGraph, point: tuple, max_dist: float = 500) ->
     point: (lng, lat)
     返回: (lng, lat) 或 None
     """
+    _validate_wgs84_coordinate(point)
     if not graph.nodes:
         return None
     nearest = None

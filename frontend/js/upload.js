@@ -703,12 +703,14 @@ window.GIS = window.GIS || {};
           if (!ctrl) return;
           var requestId = _uploadRequestIds.get(uploadId);
           cancelBtn.disabled = true;
+          // Stop sending the file immediately; the server cancellation request
+          // can take several seconds to confirm and roll back its own work.
+          ctrl.abort();
           try {
             var cancelResult = null;
             if (requestId && GIS.api && typeof GIS.api.cancelUpload === 'function') {
               cancelResult = await GIS.api.cancelUpload(requestId);
             }
-            ctrl.abort();
             if (!cancelResult) {
               bubble.innerHTML = '<span style="color:var(--on-surface-variant);font-size:11px;">' +
                 tr('upload.cancel-uncertain', '已停止等待；服务器可能仍在处理，请检查图层列表') + '</span>';

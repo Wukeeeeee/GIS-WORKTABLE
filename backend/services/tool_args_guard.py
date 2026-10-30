@@ -12,7 +12,7 @@
   enum:a|b|c   - 必须在枚举内（自动大小写纠正）
   positive_num - 正数
   nonneg_num   - 非负数
-  odd_int      - 奇数整数（偶数自动 +1 纠正）
+  focal_window - 焦点统计窗口，仅支持 3/5/7；范围内偶数自动调整为下一个奇数
   unit_km_m    - m 或 km（别名自动纠正）
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ PARAM_ROLES = {
     "spatial_centroid":     {"layer_name": "layer"},
     "spatial_cluster":      {"layer_name": "layer", "distance_unit": "enum:degrees|m|km"},
     "surface_volumes":      {"before_layer": "raster_layer", "after_layer": "raster_layer"},
-    "raster_focal_stats":   {"layer_name": "raster_layer", "size": "odd_int"},
+    "raster_focal_stats":   {"layer_name": "raster_layer", "size": "focal_window"},
     "raster_reclassify":    {"layer_name": "raster_layer", "classes": "nonneg_num"},
     "join_field":           {"target_layer": "layer", "join_layer": "layer"},
     "generate_points_along_lines": {"layer_name": "layer", "interval": "positive_num", "unit": "unit_km_m"},
@@ -171,15 +171,17 @@ def validate_tool_args(tool_name: str, args: dict):
             except (OverflowError, TypeError, ValueError):
                 warnings.append("%s: 应为数值，实际得到「%s」" % (pname, val))
 
-        elif role == "odd_int":
+        elif role == "focal_window":
             try:
                 numeric = float(val)
                 if isinstance(val, bool) or not math.isfinite(numeric) or not numeric.is_integer():
                     raise ValueError
                 iv = int(numeric)
-                if iv % 2 == 0:
+                if iv in (2, 4, 6):
                     clean[pname] = iv + 1
                     warnings.append("%s: 窗口应为奇数（3/5/7），已自动调整为 %d" % (pname, iv + 1))
+                elif iv not in (3, 5, 7):
+                    warnings.append("%s: 窗口仅支持 3/5/7，实际得到 %d" % (pname, iv))
             except (OverflowError, TypeError, ValueError):
                 warnings.append("%s: 应为整数，实际得到「%s」" % (pname, val))
 

@@ -65,6 +65,23 @@ class TestSpectralIndices:
         assert "已生成" in r
         assert "有效像元64" in r
 
+    def test_spectral_index_counts_internal_mask_pixels_as_invalid(self, upload_dir):
+        import rasterio
+
+        path = os.path.join(upload_dir, "masked_water.tif")
+        _make_tif(path, [0.3, 0.5, 0.2, 0.1])
+        with rasterio.open(path, "r+") as src:
+            mask = np.full((8, 8), 255, dtype=np.uint8)
+            mask[0, 0] = 0
+            src.write_mask(mask)
+
+        result = ndwi_analysis.invoke({
+            "layer_name": "masked_water", "green_band": 2, "nir_band": 4,
+        })
+
+        assert "已生成" in result
+        assert "有效像元63" in result
+
 
 class TestSpectralIndexValues:
     @staticmethod

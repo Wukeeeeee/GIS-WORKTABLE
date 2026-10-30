@@ -286,12 +286,13 @@ window.GIS = window.GIS || {};
     emit('layer-visible', rec);
   }
 
-  function setStyle(layerId, style) {
+  function setStyle(layerId, style, mapAlreadyUpdated) {
     var rec = findLayer(layerId);
-    if (!rec) return;
+    if (!rec) return false;
     rec.style = Object.assign({}, rec.style || {}, style || {});
-    if (GIS.map && GIS.map.setLayerStyle) GIS.map.setLayerStyle(rec._rawName, rec.style);
+    if (!mapAlreadyUpdated && GIS.map && GIS.map.setLayerStyle) GIS.map.setLayerStyle(rec._rawName, rec.style);
     emit('layer-style', rec);
+    return true;
   }
 
   /** 重命名图层（同步共享状态中的 name 与 _rawName，并发出 layer-renamed 事件） */

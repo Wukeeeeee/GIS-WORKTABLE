@@ -367,6 +367,26 @@ test('canceling an upload prevents a late response from adding map layers', asyn
   assert.match(h.chatMessages.children[0].children[0].innerHTML, /导入已取消/);
 });
 
+test('cancel click aborts the file transfer before waiting for server acknowledgement', async () => {
+  let complete;
+  let acknowledgeCancel;
+  const h = loadUploadModule(false, () => new Promise(resolve => { complete = resolve; }), {
+    cancelUpload: () => new Promise(resolve => { acknowledgeCancel = resolve; }),
+    uploadStatus: () => Promise.resolve({ status: 'cancelled' }),
+  });
+  const pending = h.selectFiles([{ name: 'slow.gpkg', size: 10 }]);
+  await tick();
+
+  const cancelClick = h.chatMessages.children[0].querySelector('.upload-cancel-btn').fire('click');
+  await tick();
+
+  assert.equal(h.requests[0].signal.aborted, true);
+  acknowledgeCancel({ status: 'cancelling' });
+  await cancelClick;
+  complete({ name: 'points', geojson: { type: 'FeatureCollection', features: [] }, registration_token: 'owned' });
+  await pending;
+});
+
 test('CSV conversion uses the returned real path without interrupting an existing AI task', async () => {
   const h = loadUploadModule(false, { csv_info: { filename: 'points.csv', path: 'E:/data/uploads/points.csv' } });
   h.window._aiRunning = true;

@@ -152,7 +152,7 @@ def test_hillshade_preserves_nodata_for_raster_reuse_and_quality_metadata(tmp_pa
 
     follow_up = T.raster_calculator.invoke({"layer_name": op["layer_name"], "expression": "B1*2"})
     assert "可继续分析" in follow_up, follow_up
-    derived_path = T._find_uploaded_tif(op["layer_name"] + "_calc")
+    derived_path = T._find_uploaded_tif(_pending_layer_ops[-1]["layer_name"])
     with rasterio.open(derived_path) as derived:
         assert np.isnan(derived.read(1)[20, 20])
 
@@ -168,6 +168,25 @@ def test_slope_nonzero_on_cone(tmp_path):
     # YlOrRd 灰度近似：取红通道；锥面坡度应 > 0
     gray = arr[c, c + off, 0]
     assert gray > 1, "坡度图出现全零/异常"
+
+
+def test_dem_analysis_preserves_internal_raster_mask_as_nodata(tmp_path):
+    import rasterio
+
+    n = _make_cone(tmp_path, name="masked_cone", n=41)
+    input_path = os.path.join(str(tmp_path), "uploads", "masked_cone.tif")
+    with rasterio.open(input_path, "r+") as src:
+        mask = np.full((n, n), 255, dtype=np.uint8)
+        mask[n // 2, n // 2] = 0
+        src.write_mask(mask)
+
+    result = dem_analysis.invoke({"layer_name": "masked_cone", "analysis": "slope"})
+
+    assert "坡度" in result, result
+    op = next(op for op in _pending_layer_ops if op.get("action") == "dem_result")
+    output_path = T._find_uploaded_tif(op["layer_name"])
+    with rasterio.open(output_path) as output:
+        assert np.isnan(output.read(1)[n // 2, n // 2])
 
 
 def test_geographic_dem_slope_converts_degrees_to_ground_metres(tmp_path):
@@ -286,4 +305,7 @@ def test_analysis_output_is_registered_as_reusable_geotiff(tmp_path):
 
     follow_up = T.raster_calculator.invoke({"layer_name": layer_name, "expression": "B1*2"})
     assert "结果栅格" in follow_up and "已上图" in follow_up
-    assert os.path.isfile(os.path.join(str(tmp_path), "uploads", layer_name + "_calc.tif"))
+    calc_op = _pending_layer_ops[-1]
+    assert os.path.isfile(os.path.join(str(tmp_path), "uploads", calc_op["raster"]["source_filename"]))
+
+

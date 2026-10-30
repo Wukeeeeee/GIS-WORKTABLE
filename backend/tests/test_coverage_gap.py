@@ -25,6 +25,7 @@ export_layer = T.export_layer
 clear_layers = T.clear_layers
 save_file = T.save_file
 create_chart = T.create_chart
+generate_static_map = T.generate_static_map
 feature_to_raster = T.feature_to_raster
 create_fishnet = T.create_fishnet
 
@@ -98,6 +99,165 @@ class TestFieldCalculate:
         assert "double" in props[0]
         assert props[0]["double"] == 2  # val=1 → 2
 
+    def test_calc_refuses_to_overwrite_existing_property_without_mutating_layer(self):
+        import copy
+
+        _setup("field_collision", {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"value": 3, "result": "keep-me"},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }]})
+        before_layer = copy.deepcopy(_registered_layers["field_collision"])
+        before_pending_layers = copy.deepcopy(_pending_layers)
+        before_pending_ops = copy.deepcopy(_pending_layer_ops)
+
+        result = field_calculate.invoke({
+            "layer_name": "field_collision", "expression": "value * 2", "new_field": "result",
+        })
+
+        assert "result" in result and ("已存在" in result or "不能覆盖" in result)
+        assert _registered_layers["field_collision"] == before_layer
+        assert _pending_layers == before_pending_layers
+        assert _pending_layer_ops == before_pending_ops
+
+    def test_calc_preserves_large_integer_properties_when_other_features_are_null(self):
+        exact_large_integer = 2**53 + 1
+        _setup("field_large_integer_null", {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"value": exact_large_integer},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"value": None},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]})
+
+        result = field_calculate.invoke({
+            "layer_name": "field_large_integer_null", "expression": "value", "new_field": "copy",
+        })
+
+        assert "已为图层" in result
+        features = _registered_layers["field_large_integer_null"]["geojson"]["features"]
+        assert features[0]["properties"]["value"] == exact_large_integer
+        assert features[1]["properties"]["value"] is None
+        assert features[0]["properties"]["copy"] == exact_large_integer
+
+    def test_calc_rejects_unsupported_field_type_without_mutating_layer(self):
+        import copy
+
+        _setup("field_invalid_type", {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"value": 3},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }]})
+        before_layer = copy.deepcopy(_registered_layers["field_invalid_type"])
+        before_pending_layers = copy.deepcopy(_pending_layers)
+        before_pending_ops = copy.deepcopy(_pending_layer_ops)
+
+        result = field_calculate.invoke({
+            "layer_name": "field_invalid_type", "expression": "value * 2",
+            "new_field": "result", "field_type": "currency",
+        })
+
+        assert "currency" in result and ("不支持" in result or "仅支持" in result)
+        assert _registered_layers["field_invalid_type"] == before_layer
+        assert _pending_layers == before_pending_layers
+        assert _pending_layer_ops == before_pending_ops
+
+    @pytest.mark.parametrize(("field_type", "canonical_type"), [
+        ("string", "str"), ("integer", "int"), ("number", "float"),
+    ])
+    def test_calc_normalizes_supported_field_type_aliases(self, field_type, canonical_type):
+        layer_name = f"field_type_alias_{canonical_type}"
+        _setup(layer_name, {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"value": 3},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }]})
+
+        result = field_calculate.invoke({
+            "layer_name": layer_name, "expression": "value", "new_field": "copy",
+            "field_type": field_type,
+        })
+
+        assert f"（{canonical_type}，" in result
+
+    def test_calc_rejects_unconvertible_integer_value_without_mutating_layer(self):
+        import copy
+
+        _setup("field_unconvertible_integer", {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"value": "not-a-number"},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }]})
+        before_layer = copy.deepcopy(_registered_layers["field_unconvertible_integer"])
+        before_pending_layers = copy.deepcopy(_pending_layers)
+        before_pending_ops = copy.deepcopy(_pending_layer_ops)
+
+        result = field_calculate.invoke({
+            "layer_name": "field_unconvertible_integer", "expression": "value",
+            "new_field": "as_int", "field_type": "int",
+        })
+
+        assert "字段类型转换失败" in result
+        assert _registered_layers["field_unconvertible_integer"] == before_layer
+        assert _pending_layers == before_pending_layers
+        assert _pending_layer_ops == before_pending_ops
+
+    def test_calc_converts_numeric_string_to_float(self):
+        _setup("field_numeric_string", {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"value": "3.5"},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }]})
+
+        result = field_calculate.invoke({
+            "layer_name": "field_numeric_string", "expression": "value",
+            "new_field": "as_float", "field_type": "float",
+        })
+
+        assert "已为图层" in result
+        value = _registered_layers["field_numeric_string"]["geojson"]["features"][0]["properties"]["as_float"]
+        assert value == pytest.approx(3.5)
+        assert isinstance(value, float)
+
+    def test_missing_input_values_stay_null_instead_of_becoming_zero(self):
+        _setup("field_null_input", {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"value": 4},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"value": None},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]})
+
+        result = field_calculate.invoke({
+            "layer_name": "field_null_input", "expression": "value * 2", "new_field": "double",
+        })
+
+        assert "已为图层" in result
+        values = [feature["properties"]["double"] for feature in _registered_layers["field_null_input"]["geojson"]["features"]]
+        assert values == [8, None]
+
+    def test_string_output_preserves_missing_values(self):
+        _setup("field_string_null", {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"value": 4},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"value": None},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]})
+
+        result = field_calculate.invoke({
+            "layer_name": "field_string_null", "expression": "value", "new_field": "copy",
+            "field_type": "str",
+        })
+
+        assert "已为图层" in result
+        values = [feature["properties"]["copy"] for feature in _registered_layers["field_string_null"]["geojson"]["features"]]
+        assert values == ["4", None]
+
+    def test_cannot_overwrite_stable_feature_id(self):
+        _setup("field_fid", _POINTS)
+        before = [feature["properties"]["_fid"] for feature in _registered_layers["field_fid"]["geojson"]["features"]]
+
+        result = field_calculate.invoke({
+            "layer_name": "field_fid", "expression": "val", "new_field": "_fid",
+        })
+
+        after = [feature["properties"]["_fid"] for feature in _registered_layers["field_fid"]["geojson"]["features"]]
+        assert "_fid" in result and "不能覆盖" in result
+        assert after == before
+
 
 
 
@@ -137,6 +297,15 @@ class TestMeasureDistance:
         r = measure_distance.invoke({"lon1": 116.4, "lat1": 39.9, "lon2": 116.5, "lat2": 39.9})
         assert "距离" in r
         assert "米" in r or "公里" in r
+
+    @pytest.mark.parametrize("coords", [
+        (181, 0, 0, 0), (0, -91, 0, 0), (0, 0, 0, 91),
+        (float("nan"), 0, 0, 0), (0, 0, float("inf"), 0),
+    ])
+    def test_rejects_coordinates_outside_wgs84_bounds(self, coords):
+        result = measure_distance.invoke(dict(zip(("lon1", "lat1", "lon2", "lat2"), coords)))
+
+        assert "坐标" in result and "范围" in result
 
 
 
@@ -192,7 +361,8 @@ class TestFeatureToRaster:
         })
 
         assert "已烧录 1 个像元" in result
-        output_path = T._find_uploaded_tif("zero_values_转栅格")
+        rasterized_name = _pending_layer_ops[-1]["layer_name"]
+        output_path = T._find_uploaded_tif(rasterized_name)
         assert output_path and os.path.isfile(output_path)
         with rasterio.open(output_path) as raster:
             data = raster.read(1)
@@ -202,10 +372,10 @@ class TestFeatureToRaster:
             assert raster.crs.to_string() == "EPSG:4326"
 
         resampled = T.raster_resample.invoke({
-            "layer_name": "zero_values_转栅格", "scale_factor": 0.5, "method": "nearest",
+            "layer_name": rasterized_name, "scale_factor": 0.5, "method": "nearest",
         })
         assert "重采样完成" in resampled
-        resampled_path = T._find_uploaded_tif("zero_values_转栅格_重采样")
+        resampled_path = T._find_uploaded_tif(_pending_layer_ops[-1]["layer_name"])
         with rasterio.open(resampled_path) as raster:
             data = raster.read(1)
             assert math.isnan(raster.nodata)
@@ -213,10 +383,10 @@ class TestFeatureToRaster:
             assert np.isnan(data).any()
 
         reprojected = T.raster_reproject.invoke({
-            "layer_name": "zero_values_转栅格", "target_crs": "EPSG:3857",
+            "layer_name": rasterized_name, "target_crs": "EPSG:3857",
         })
         assert "重投影完成" in reprojected
-        reprojected_path = T._find_uploaded_tif("zero_values_转栅格_重投影")
+        reprojected_path = T._find_uploaded_tif(_pending_layer_ops[-1]["layer_name"])
         with rasterio.open(reprojected_path) as raster:
             data = raster.read(1)
             assert math.isnan(raster.nodata)
@@ -244,7 +414,7 @@ class TestFeatureToRaster:
         result = feature_to_raster.invoke({"layer_name": "single_point", "cell_size": 0.01})
 
         assert "矢量转栅格完成" in result, result
-        output_path = T._find_uploaded_tif("single_point_转栅格")
+        output_path = T._find_uploaded_tif(_pending_layer_ops[-1]["layer_name"])
         with rasterio.open(output_path) as raster:
             assert raster.shape == (1, 1)
             assert raster.res == pytest.approx((0.01, 0.01))
@@ -302,6 +472,23 @@ class TestCreateFishnet:
         assert "4 行 x 4 列 = 16 格" in result
         assert "格尺寸 0.5 x 0.5" in result
 
+    def test_preserves_previous_result_when_output_name_repeats(self):
+        _setup("fishnet_repeat_extent", _SQUARE)
+
+        first = create_fishnet.invoke({
+            "extent_layer": "fishnet_repeat_extent", "rows": 2, "cols": 2,
+            "out_name": "fishnet_repeat",
+        })
+        second = create_fishnet.invoke({
+            "extent_layer": "fishnet_repeat_extent", "rows": 4, "cols": 4,
+            "out_name": "fishnet_repeat",
+        })
+
+        assert "图层「fishnet_repeat」已加载到地图" in first
+        assert "图层「fishnet_repeat_1」已加载到地图" in second
+        assert len(T._registered_layers["fishnet_repeat"]["geojson"]["features"]) == 4
+        assert len(T._registered_layers["fishnet_repeat_1"]["geojson"]["features"]) == 16
+
 
 
 
@@ -315,6 +502,16 @@ class TestCreateHeatmap:
         _setup("hm1", _POINTS)
         r = create_heatmap.invoke({"layer_name": "hm1"})
         assert "热力图" in r or "生成" in r
+
+    def test_requested_missing_weight_field_is_not_silently_ignored(self):
+        _setup("hm_missing_weight", _POINTS)
+
+        result = create_heatmap.invoke({
+            "layer_name": "hm_missing_weight", "weight_field": "typo_weight",
+        })
+
+        assert "权重字段" in result and "不存在" in result
+        assert T._pending_heatmap["latest"] is None
 
 
 
@@ -337,6 +534,93 @@ class TestAddNorthArrow:
 # ============================================================
 
 class TestExportLayer:
+    def test_csv_xy_export_does_not_overwrite_same_named_source_fields(self, tmp_path, monkeypatch):
+        import csv
+        import re
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature",
+            "properties": {"longitude": "source lon", "latitude": "source lat"},
+            "geometry": {"type": "Point", "coordinates": [113.5, 23.1]},
+        }]}
+        _setup("csv_xy_collision", geojson)
+
+        result = export_layer.invoke({"layer_name": "csv_xy_collision", "format": "csv_xy"})
+        filename = re.search(r"/output/([^\s]+\.csv)", result).group(1)
+        with (output_dir / filename).open(encoding="utf-8-sig", newline="") as stream:
+            row = next(csv.DictReader(stream))
+
+        assert row["longitude"] == "source lon"
+        assert row["latitude"] == "source lat"
+        assert row["geometry_longitude"] == "113.5"
+        assert row["geometry_latitude"] == "23.1"
+
+    @pytest.mark.parametrize("export_format", ["csv", "csv_xy", "gpkg", "shp"])
+    def test_export_preserves_unsafe_integer_when_other_rows_are_null(self, tmp_path, monkeypatch, export_format):
+        import csv
+        import re
+        import geopandas as gpd
+        import pandas as pd
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        geojson = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"code": 9007199254740993},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"code": None},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        _setup("large_integer_csv", geojson)
+
+        result = export_layer.invoke({"layer_name": "large_integer_csv", "format": export_format})
+        extension = "zip" if export_format == "shp" else ("gpkg" if export_format == "gpkg" else "csv")
+        filename = re.search(rf"/output/([^\s]+\.{extension})", result).group(1)
+        path = output_dir / filename
+        if export_format in {"csv", "csv_xy"}:
+            with path.open(encoding="utf-8-sig", newline="") as stream:
+                exported = list(csv.DictReader(stream))
+            assert exported[0]["code"] == "9007199254740993"
+            assert exported[1]["code"] == ""
+        else:
+            exported = gpd.read_file(f"zip://{path}" if export_format == "shp" else path)
+            assert int(exported.iloc[0]["code"]) == 9007199254740993
+            assert pd.isna(exported.iloc[1]["code"])
+
+    def test_repeated_exports_with_same_second_do_not_overwrite_prior_download(self, tmp_path, monkeypatch):
+        import datetime
+        import re
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        fixed_time = T.datetime.datetime(2026, 10, 30, 12, 0, 0)
+
+        class FixedDatetime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_time
+
+        monkeypatch.setattr(T.datetime, "datetime", FixedDatetime)
+        _setup("same_second_export", _POINTS)
+
+        first_result = export_layer.invoke({"layer_name": "same_second_export", "format": "geojson"})
+        first_name = re.search(r"/output/([^\s]+\.geojson)", first_result).group(1)
+        first_path = output_dir / first_name
+        first_document = json.loads(first_path.read_text(encoding="utf-8"))
+
+        replacement = json.loads(json.dumps(_POINTS))
+        replacement["features"][0]["properties"]["id"] = 999
+        T._registered_layers["same_second_export"]["geojson"] = replacement
+        second_result = export_layer.invoke({"layer_name": "same_second_export", "format": "geojson"})
+        second_name = re.search(r"/output/([^\s]+\.geojson)", second_result).group(1)
+
+        assert second_name != first_name
+        assert json.loads(first_path.read_text(encoding="utf-8")) == first_document
+
     def test_export_csv(self):
         _setup("ex1", _POINTS)
         r = export_layer.invoke({"layer_name": "ex1", "format": "csv"})
@@ -441,6 +725,46 @@ class TestSaveFile:
         r = save_file.invoke({"filename": "test.txt", "content": "Hello World"})
         assert "已保存" in r
 
+    def test_rejects_output_symlink_that_targets_outside_directory(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        outside_file = tmp_path / "outside.txt"
+        outside_file.write_text("original", encoding="utf-8")
+        link = output_dir / "alias.txt"
+        try:
+            link.symlink_to(outside_file)
+        except OSError as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+
+        result = save_file.invoke({"filename": "alias.txt", "content": "overwritten"})
+
+        assert "错误" in result
+        assert outside_file.read_text(encoding="utf-8") == "original"
+
+    def test_same_second_html_saves_keep_distinct_files(self, tmp_path, monkeypatch):
+        import datetime
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        fixed_time = datetime.datetime(2026, 10, 30, 12, 0, 0)
+
+        class FixedDatetime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_time
+
+        monkeypatch.setattr(T.datetime, "datetime", FixedDatetime)
+        save_file.invoke({"filename": "report.html", "content": "first"})
+        save_file.invoke({"filename": "report.html", "content": "second"})
+        save_file.invoke({"filename": "report.html", "content": "third"})
+
+        paths = list(output_dir.glob("*report.html"))
+        assert len(paths) == 3
+        assert {path.read_text(encoding="utf-8") for path in paths} == {"first", "second", "third"}
+        assert len({item["url"] for item in T._pending_images}) == 3
+
 
 
 
@@ -453,6 +777,113 @@ class TestCreateChart:
         _setup("ch1", _POINTS)
         r = create_chart.invoke({"layer_name": "ch1", "chart_type": "bar", "field": "val"})
         assert "图表" in r or "生成" in r
+
+    def test_chart_outputs_created_in_same_second_keep_distinct_files(self, tmp_path, monkeypatch):
+        import datetime
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        fixed_time = T.datetime.datetime(2026, 10, 30, 12, 0, 0)
+
+        class FixedDatetime(datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_time
+
+        monkeypatch.setattr(T.datetime, "datetime", FixedDatetime)
+        _setup("chart_same_second", _POINTS)
+
+        create_chart.invoke({"layer_name": "chart_same_second", "title": "first chart"})
+        first_path = next(output_dir.glob("chart_*.html"))
+        first_content = first_path.read_text(encoding="utf-8")
+        create_chart.invoke({"layer_name": "chart_same_second", "title": "second chart"})
+        paths = list(output_dir.glob("chart_*.html"))
+
+        assert len(paths) == 2
+        assert first_path.read_text(encoding="utf-8") == first_content
+
+    def test_untrusted_chart_title_and_category_cannot_break_out_of_script(self, tmp_path, monkeypatch):
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        payload = "</script><script>window.__chart_injected=true</script><script>"
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"label": payload},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }]}
+        _setup("chart_injection_layer", geojson)
+
+        result = create_chart.invoke({
+            "layer_name": "chart_injection_layer", "chart_type": "bar",
+            "field": "label", "title": payload,
+        })
+        chart_path = next(output_dir.glob("chart_*.html"))
+        html = chart_path.read_text(encoding="utf-8")
+
+        assert payload not in html
+        assert html.count("</script>") == 2
+        assert "&lt;/script&gt;" in html
+        assert r"\u003c/script\u003e" in html
+        assert "图表已生成" in result
+
+
+class TestGenerateStaticMap:
+    def test_output_name_cannot_escape_chart_directory(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _setup("static_map_path", _POINTS)
+
+        result = generate_static_map.invoke({
+            "layer_ids": "static_map_path", "output_name": "../../escaped",
+        })
+
+        assert "静态地图已生成" in result
+        assert (tmp_path / "cache" / "charts" / "escaped.png").exists()
+        assert not (tmp_path / "escaped.png").exists()
+
+    def test_empty_layers_are_not_reported_as_successfully_drawn(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _setup("static_map_empty", {"type": "FeatureCollection", "features": []})
+
+        result = generate_static_map.invoke({"layer_ids": "static_map_empty"})
+
+        assert "没有可绘制的要素" in result
+        assert not list((tmp_path / "cache" / "charts").glob("*.png"))
+
+    def test_scale_bar_uses_ground_distance_at_layer_latitude(self, tmp_path, monkeypatch):
+        import matplotlib.axes
+        from pyproj import Geod
+
+        monkeypatch.chdir(tmp_path)
+        _setup("static_map_high_lat", {
+            "type": "FeatureCollection", "features": [
+                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [0, 60]}},
+                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [10, 60]}},
+            ],
+        })
+        observed = {}
+        original_plot = matplotlib.axes.Axes.plot
+        original_text = matplotlib.axes.Axes.text
+
+        def capture_plot(ax, *args, **kwargs):
+            if len(args) >= 2 and len(args[0]) == 2 and len(args[1]) == 2 and args[1][0] == args[1][1]:
+                observed["line"] = (list(args[0]), list(args[1]))
+            return original_plot(ax, *args, **kwargs)
+
+        def capture_text(ax, x, y, text, *args, **kwargs):
+            if isinstance(text, str) and text.endswith(" km"):
+                observed["label_km"] = float(text.removesuffix(" km"))
+            return original_text(ax, x, y, text, *args, **kwargs)
+
+        monkeypatch.setattr(matplotlib.axes.Axes, "plot", capture_plot)
+        monkeypatch.setattr(matplotlib.axes.Axes, "text", capture_text)
+
+        result = generate_static_map.invoke({"layer_ids": "static_map_high_lat", "show_scale_bar": True})
+
+        assert "静态地图已生成" in result
+        x_values, y_values = observed["line"]
+        expected_km = abs(Geod(ellps="WGS84").inv(x_values[0], y_values[0], x_values[1], y_values[1])[2]) / 1000
+        assert observed["label_km"] == round(expected_km)
 
 
 # ============================================================

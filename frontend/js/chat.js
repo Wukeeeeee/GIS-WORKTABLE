@@ -1704,7 +1704,7 @@ function scrollMessages() {
                 var colorApplied = GIS.map && GIS.map.setLayerColor &&
                   GIS.map.setLayerColor(target._rawName || target.layer_id, op.color) === true;
                 if (colorApplied) {
-                  target.color = op.color;
+                  _syncLayerStyleState(target, { color: op.color, fillColor: op.color });
                   window.GIS.layers.renderList();
                 } else {
                   addMessage('地图未能应用图层颜色，请检查图层是否仍可显示后重试。', 'system');
@@ -1719,7 +1719,7 @@ function scrollMessages() {
                 if (_unrestoredNames.indexOf(op.name) < 0) {
                   addMessage('地图未能应用图层样式，请检查图层是否仍可显示后重试。', 'system');
                 }
-              }
+              } else _syncLayerStyleState(target, op.style || {});
               break;
             case 'clear_symbology':
               if (target && window.GIS.layers && window.GIS.layers.clearSymbology) {
@@ -1963,10 +1963,15 @@ function scrollMessages() {
         (function loadHeatmapWithRetry(attempt) {
           if (!GIS.map || !GIS.map.loadHeatmap) {
             if (attempt < 10) { setTimeout(function() { loadHeatmapWithRetry(attempt + 1); }, 300); return; }
+            addMessage('热力图无法显示：地图尚未就绪，未能加载热力图图层。', 'system');
             return;
           }
           const uniqueName = (result.heatmap.name || 'heatmap') + '_' + Date.now();
-          GIS.map.loadHeatmap(result.heatmap.points, uniqueName, result.heatmap.options || {});
+          const heatLayer = GIS.map.loadHeatmap(result.heatmap.points, uniqueName, result.heatmap.options || {});
+          if (!heatLayer) {
+            addMessage('热力图无法显示：热力图插件未加载，请检查网络后重试。', 'system');
+            return;
+          }
           if (window.GIS.layers && window.GIS.layers.addLayer) {
             GIS.layers.addLayer({
               layer_id: 'heat_' + Date.now(),
@@ -2321,9 +2326,19 @@ function scrollMessages() {
       var layerInfo = options.attachLayer;
       var attachRow = document.createElement('div');
       attachRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin-top:8px;padding:6px 10px;border:1px solid var(--ui-gray-200);border-radius:2px;background:var(--ui-gray-50,#f8f9fa);';
-      attachRow.innerHTML =
-        "<span class=\"ui-icon\" aria-hidden=\"true\" style=\"flex-shrink:0;;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-4575ae6edd83.png')\"></span><span style=\"font-size:12px;font-weight:600;color:var(--ui-gray-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;\">" + (layerInfo.name || '图层') + '</span>' +
-        '<span style="font-size:11px;color:var(--ui-gray-300);margin-left:auto;">' + (layerInfo.type || '') + (layerInfo.count !== undefined ? ' · ' + layerInfo.count + ' 要素' : '') + '</span>';
+      var attachIcon = document.createElement('span');
+      attachIcon.className = 'ui-icon';
+      attachIcon.setAttribute('aria-hidden', 'true');
+      attachIcon.style.cssText = "flex-shrink:0;width:16px;height:16px;--ui-icon-image:url('/assets/ui-icons/icon-4575ae6edd83.png')";
+      var attachName = document.createElement('span');
+      attachName.style.cssText = 'font-size:12px;font-weight:600;color:var(--ui-gray-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;';
+      attachName.textContent = String(layerInfo.name || '图层');
+      var attachMeta = document.createElement('span');
+      attachMeta.style.cssText = 'font-size:11px;color:var(--ui-gray-300);margin-left:auto;';
+      attachMeta.textContent = String(layerInfo.type || '') + (layerInfo.count !== undefined ? ' · ' + layerInfo.count + ' 要素' : '');
+      attachRow.appendChild(attachIcon);
+      attachRow.appendChild(attachName);
+      attachRow.appendChild(attachMeta);
       bubble.appendChild(attachRow);
     }
 
@@ -2602,6 +2617,17 @@ function scrollMessages() {
     return true;
   }
 
+  function _syncLayerStyleState(layer, style) {
+    if (!layer || !style || typeof style !== 'object') return;
+    layer.style = Object.assign({}, layer.style || {}, style);
+    if (typeof style.color === 'string') layer.color = style.color;
+    var state = window.GIS && window.GIS.state;
+    if (state && typeof state.getLayer === 'function' && typeof state.setStyle === 'function'
+        && state.getLayer(layer.layer_id)) {
+      state.setStyle(layer.layer_id, style, true);
+    }
+  }
+
   /** 直连工具结果上图（手动面板通道）：与聊天返回同构，走共享状态与既有 op 逻辑 */
   function applyToolResult(result) {
     if (!result) return;
@@ -2667,10 +2693,23 @@ function scrollMessages() {
           if (GIS.map.setView && op.center) GIS.map.setView([op.center[1], op.center[0]], op.zoom || 13);
           break;
         case 'set_color':
-          if (GIS.map.setLayerColor) GIS.map.setLayerColor(op.name, op.color);
+          if (GIS.map.setLayerColor && GIS.map.setLayerColor(op.name, op.color) === true) {
+            const target = (GIS.layers.getLayers() || []).find(l => l._rawName === op.name || l.filename === op.name || l.layer_id === op.name);
+            if (target) {
+              _syncLayerStyleState(target, { color: op.color, fillColor: op.color });
+              if (GIS.layers.renderList) GIS.layers.renderList();
+              hasVectorLayerChanges = true;
+            }
+          }
           break;
         case 'set_style':
-          if (GIS.map.setLayerStyle) GIS.map.setLayerStyle(op.name, op.style || {});
+          if (GIS.map.setLayerStyle && GIS.map.setLayerStyle(op.name, op.style || {}) === true) {
+            const target = (GIS.layers.getLayers() || []).find(l => l._rawName === op.name || l.filename === op.name || l.layer_id === op.name);
+            if (target) {
+              _syncLayerStyleState(target, op.style || {});
+              hasVectorLayerChanges = true;
+            }
+          }
           break;
         case 'clear_symbology':
           if (GIS.layers && GIS.layers.clearSymbology) GIS.layers.clearSymbology(op.name);
@@ -2733,7 +2772,14 @@ function scrollMessages() {
       }
     });
     if (result.heatmap && result.heatmap.points && result.heatmap.points.length > 0 && GIS.map && GIS.map.loadHeatmap) {
-      GIS.map.loadHeatmap(result.heatmap.points, result.heatmap.name || '热力图', result.heatmap.options || {});
+      const heatLayer = GIS.map.loadHeatmap(result.heatmap.points, result.heatmap.name || '热力图', result.heatmap.options || {});
+      if (!heatLayer && window.GIS.chat && window.GIS.chat.addMessage) {
+        window.GIS.chat.addMessage('热力图无法显示：热力图插件未加载，请检查网络后重试。', 'system');
+      }
+    } else if (result.heatmap && result.heatmap.points && result.heatmap.points.length > 0) {
+      if (window.GIS.chat && window.GIS.chat.addMessage) {
+        window.GIS.chat.addMessage('热力图无法显示：地图尚未就绪，未能加载热力图图层。', 'system');
+      }
     }
     if ((hasVectorLayerChanges || hasRasterLayerChanges) && GIS.project && typeof GIS.project.autoSave === 'function') {
       GIS.project.autoSave();

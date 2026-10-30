@@ -1,4 +1,5 @@
-import os, json, hashlib, gzip, shutil, uuid, datetime, zipfile, io, re, stat, math, threading, tempfile, atexit
+import os, json, hashlib, gzip, shutil, uuid, datetime, zipfile, io, re, stat, math, threading, tempfile, atexit, zlib
+from cryptography.exceptions import InvalidTag
 from functools import wraps
 from contextlib import contextmanager
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
@@ -191,7 +192,7 @@ def _is_windows_reserved_path_component(component: str) -> bool:
     stem = component.split(".", 1)[0].rstrip(" .").casefold()
     return stem in _WINDOWS_RESERVED_DEVICE_NAMES
 
-# 内存引用计数（启动时从 index.json 重建）
+# 内存引用计数缓存（写入时累加，删除时经 _blob_remove 回退到磁盘检查，避免模块导入期访问加密存储）
 _blob_refcount = {}
 
 
@@ -325,13 +326,18 @@ def _raster_source_path(raster: dict) -> str | None:
         return _materialize_project_asset(source_pid, asset, path)
     url_path = unquote(urlsplit(str(raster.get("url") or "")).path)
     prefix = "/output/uploads/"
-    filename = url_path[len(prefix):] if url_path.startswith(prefix) else ""
-    if not filename or os.path.basename(filename) != filename:
+    relative_path = url_path[len(prefix):].replace("\\", "/") if url_path.startswith(prefix) else ""
+    parts = relative_path.split("/")
+    if not relative_path or any(part in {"", ".", ".."} for part in parts):
         return None
     from backend.services.ai_service import _TEMP_OUTPUT_DIR
-    path = os.path.realpath(os.path.join(_TEMP_OUTPUT_DIR, "uploads", filename))
+    path = os.path.realpath(os.path.join(_TEMP_OUTPUT_DIR, "uploads", *parts))
     uploads_dir = os.path.realpath(os.path.join(_TEMP_OUTPUT_DIR, "uploads"))
-    return path if os.path.normcase(os.path.commonpath([uploads_dir, path])) == os.path.normcase(uploads_dir) and os.path.isfile(path) else None
+    try:
+        inside_uploads = os.path.normcase(os.path.commonpath([uploads_dir, path])) == os.path.normcase(uploads_dir)
+    except ValueError:
+        inside_uploads = False
+    return path if inside_uploads and os.path.isfile(path) else None
 
 def _raster_original_path(raster: dict) -> str | None:
     """Resolve only managed project/upload sources, never arbitrary local paths."""
@@ -454,6 +460,7 @@ def _extract_project_archive(zf: zipfile.ZipFile, target_dir: str):
     normalized_members = set()
     file_marker = object()
     path_tree = {}
+    extraction_targets = []
     windows_name_translation = str.maketrans(':<>|"?*', '_' * 7)
     for member in members:
         name = member.filename
@@ -498,7 +505,21 @@ def _extract_project_archive(zf: zipfile.ZipFile, target_dir: str):
             raise ValueError("导入的工程文件包含不安全路径") from error
         if common_root != root:
             raise ValueError("导入的工程文件包含不安全路径")
-    zf.extractall(root)
+        extraction_targets.append((member, destination))
+
+    # Do not use extractall's "wb" writes: on Windows, an 8.3 short-name
+    # alias can resolve to a file already extracted under its long name.
+    # Exclusive creation makes the filesystem itself reject such aliases.
+    for member, destination in extraction_targets:
+        if member.is_dir():
+            os.makedirs(destination, exist_ok=True)
+            continue
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        try:
+            with zf.open(member, "r") as source, open(destination, "xb") as target:
+                shutil.copyfileobj(source, target)
+        except FileExistsError as error:
+            raise ValueError("导入的工程文件包含重复的文件路径") from error
 
 
 class _ProjectArchiveLimitError(ValueError):
@@ -813,6 +834,30 @@ def save_project(
         for asset in _raster_asset_names(raster)
     }
 
+    # The browser cannot represent every Python integer exactly. When a layer
+    # still carries the active registration token, save the canonical server
+    # GeoJSON instead of a rounded UI copy.
+    from backend.services import tools as registry_tools
+    with registry_tools._state_lock:
+        registered_snapshot = dict(registry_tools._registered_layers)
+    canonical_layers = []
+    for layer in layers:
+        if not isinstance(layer, dict):
+            canonical_layers.append(layer)
+            continue
+        item = dict(layer)
+        tokens = item.get("_registrationTokens")
+        aliases = [item.get("_registeredName"), item.get("filename"), item.get("name")]
+        for alias in aliases:
+            registered = registered_snapshot.get(alias) if isinstance(alias, str) else None
+            token = tokens.get(alias) if isinstance(tokens, dict) and isinstance(alias, str) else None
+            if (registered and token and token == registered.get("registration_token")
+                    and isinstance(registered.get("geojson"), dict)):
+                item["geojson"] = registered["geojson"]
+                break
+        canonical_layers.append(item)
+    layers = canonical_layers
+
     # 存储图层 → CAS blob
     layer_refs = []
     raster_assets = set()
@@ -1035,10 +1080,28 @@ def load_project(pid: str) -> dict | None:
     proj = _sanitize_project_service_layers(proj)
     # 解析 blob → 完整图层
     resolved_layers = []
+    unavailable_layers = []
+    from backend.services.local_encryption import is_encrypted_file
+    encrypted_project = is_encrypted_file(_project_path(pid))
     for layer in proj.get("layers", []):
         blob = layer.get("blob")
         if blob:
-            geojson = _blob_get(blob)
+            from backend.services.local_encryption import LocalEncryptionUnavailable
+            try:
+                geojson = _blob_get(blob)
+            except LocalEncryptionUnavailable:
+                raise
+            except InvalidTag:
+                # A successfully decrypted encrypted project proves the local
+                # key is valid; only then treat this blob's failed tag as local
+                # corruption instead of a key mismatch.
+                if not encrypted_project:
+                    raise
+                geojson = None
+            except (OSError, EOFError, ValueError, zlib.error):
+                geojson = None
+            if geojson is None:
+                unavailable_layers.append(layer.get("name") or "图层")
         else:
             geojson = None
         raster = layer.get("raster")
@@ -1053,6 +1116,8 @@ def load_project(pid: str) -> dict | None:
             "raster": raster,
         })
     result = {**proj, "layers": resolved_layers}
+    if unavailable_layers:
+        result["registration_warnings"] = unavailable_layers
     return result
 
 
@@ -1077,10 +1142,12 @@ def _activate_project_data(pid: str, data: dict, session_id: str = None) -> dict
     from backend.services.ai_service import conversation_history
     from backend.services import tools as registry
     layers = data.get("layers", [])
-    skipped_layers = []
+    skipped_layers = list(data.get("registration_warnings", []))
     restorable_layers = []
     for layer in layers:
         geojson = layer.get("geojson") or layer.get("geojson_data") if isinstance(layer, dict) else None
+        if isinstance(layer, dict) and layer.get("blob") and geojson is None:
+            continue
         if geojson:
             try:
                 _validate_project_vector_coordinates(geojson)
@@ -1426,6 +1493,17 @@ def import_project(zip_bytes) -> dict:
                     parsed_blob = json.load(source)
                 if not isinstance(parsed_blob, dict):
                     raise ValueError("矢量 Blob 根节点必须是对象")
+                from backend.services.tools import _normalize_geojson, _valid_registration_geometry
+                feature_collection = _normalize_geojson(parsed_blob)
+                if (not isinstance(feature_collection, dict)
+                        or not isinstance(feature_collection.get("features"), list)
+                        or any(not isinstance(feature, dict)
+                               or (feature.get("geometry") is not None
+                                   and not _valid_registration_geometry(feature["geometry"]))
+                               for feature in feature_collection["features"])):
+                    raise ValueError("矢量 Blob GeoJSON 结构无效")
+                if feature_collection["features"]:
+                    _validate_project_vector_coordinates(feature_collection)
             except Exception as exc:
                 shutil.rmtree(target_dir, ignore_errors=True)
                 raise ValueError("导入的工程文件包含无效矢量图层数据") from exc
@@ -1768,6 +1846,3 @@ def auto_save(
         layers=layers,
         layer_groups=layer_groups if layer_groups is not None else (existing_proj or {}).get("layerGroups", []),
     )
-
-# 启动时重建引用计数
-_rebuild_refcount()

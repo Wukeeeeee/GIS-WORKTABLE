@@ -195,8 +195,7 @@ def test_failed_task_creation_does_not_publish_an_active_task(monkeypatch):
 def test_task_creation_retries_an_existing_id_without_touching_its_directory(monkeypatch):
     existing_id = task_manager.create_task("必须保留的任务", "existing-session")
     existing_path = task_manager._task_json_path(existing_id)
-    with open(existing_path, "r", encoding="utf-8") as source:
-        existing_json = source.read()
+    existing_json = task_manager._read_text(existing_path)
     generated_ids = iter([existing_id, "fresh-task-001"])
 
     def deterministic_task(goal, session_id):
@@ -218,8 +217,7 @@ def test_task_creation_retries_an_existing_id_without_touching_its_directory(mon
     fresh_id = task_manager.create_task("新任务", "new-session")
 
     assert fresh_id == "fresh-task-001"
-    with open(existing_path, "r", encoding="utf-8") as source:
-        assert source.read() == existing_json
+    assert task_manager._read_text(existing_path) == existing_json
     assert task_manager.get_task(existing_id)["user_goal"] == "必须保留的任务"
 
 

@@ -27,3 +27,46 @@ def test_mixed_geometry_export_rejects_feature_loss():
     result, error = _export_shp_sync(data, 'EPSG:4326', 'mixed')
     assert result is None
     assert '混合几何' in error
+
+
+def test_shapefile_export_name_cannot_escape_temporary_directory():
+    import zipfile
+
+    data = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {"type": "Point", "coordinates": [113.0, 23.0]},
+        }],
+    }
+    result, error = _export_shp_sync(data, "EPSG:4326", "../../outside\\layer")
+    assert error is None
+    with zipfile.ZipFile(result) as archive:
+        assert archive.testzip() is None
+        assert archive.namelist()
+        assert all("/" not in member and "\\" not in member for member in archive.namelist())
+        assert all(member.startswith("_.._outside_layer.") for member in archive.namelist())
+
+
+def test_shapefile_export_removes_temporary_directory_after_write_failure(tmp_path, monkeypatch):
+    import geopandas as gpd
+    import tempfile
+
+    export_dir = tmp_path / "shp_export_test"
+    monkeypatch.setattr(tempfile, "mkdtemp", lambda **_kwargs: (export_dir.mkdir(), str(export_dir))[1])
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("write failed")))
+    data = {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {},
+            "geometry": {"type": "Point", "coordinates": [113.0, 23.0]},
+        }],
+    }
+
+    result, error = _export_shp_sync(data, "EPSG:4326", "roads")
+
+    assert result is None
+    assert "write failed" in error
+    assert not export_dir.exists()

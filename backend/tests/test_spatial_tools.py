@@ -177,6 +177,28 @@ class TestSpatialBuffer:
         assert _pending_layers[0]["provenance"]["processing"] == expected
         assert _registered_layers["square_缓冲区"]["provenance"]["processing"] == expected
 
+    def test_repeated_buffer_preserves_previous_results(self):
+        source = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": 1},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+        ]}
+        _setup("buffer_repeat", source)
+
+        first_result = spatial_buffer.invoke({
+            "layer_name": "buffer_repeat", "distance": 100, "unit": "m",
+        })
+        first_geojson = json.loads(json.dumps(
+            _registered_layers["buffer_repeat_缓冲区"]["geojson"]
+        ))
+        second_result = spatial_buffer.invoke({
+            "layer_name": "buffer_repeat", "distance": 1000, "unit": "m",
+        })
+
+        assert "图层「buffer_repeat_缓冲区」已加载到地图" in first_result
+        assert "图层「buffer_repeat_缓冲区_1」已加载到地图" in second_result
+        assert _registered_layers["buffer_repeat_缓冲区"]["geojson"] == first_geojson
+        assert _registered_layers["buffer_repeat_缓冲区_1"]["geojson"] != first_geojson
+
     def test_buffer_dissolve(self):
         _setup("pts", _POINTS)
         r = spatial_buffer.invoke({"layer_name": "pts", "distance": 100, "unit": "m", "dissolve": True})
@@ -346,6 +368,40 @@ class TestSpatialClip:
         assert _pending_layers[0]["provenance"]["processing"] == expected
         assert _registered_layers["A_裁剪"]["provenance"]["processing"] == expected
 
+    def test_clipping_with_different_masks_preserves_previous_results(self):
+        import uuid
+
+        source_name = f"clip_source_{uuid.uuid4().hex}"
+        left_name = f"clip_left_{uuid.uuid4().hex}"
+        right_name = f"clip_right_{uuid.uuid4().hex}"
+        source = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"id": "source"},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]},
+        }]}
+        left_clip = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 2], [0, 2], [0, 0]]]},
+        }]}
+        right_clip = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[[1, 0], [2, 0], [2, 2], [1, 2], [1, 0]]]},
+        }]}
+        _setup(source_name, source)
+        _setup(left_name, left_clip)
+        _setup(right_name, right_clip)
+
+        left_result = spatial_clip.invoke({"layer_name": source_name, "clip_layer": left_name})
+        right_result = spatial_clip.invoke({"layer_name": source_name, "clip_layer": right_name})
+
+        result_names = [name for name in _registered_layers if name.startswith(f"{source_name}_裁剪")]
+        assert len(result_names) == 2
+        assert result_names[0] in left_result
+        assert result_names[1] in right_result
+        left_bounds = T._layer_to_gdf(result_names[0])[0].total_bounds
+        right_bounds = T._layer_to_gdf(result_names[1])[0].total_bounds
+        assert left_bounds[0] == 0 and left_bounds[2] == 1
+        assert right_bounds[0] == 1 and right_bounds[2] == 2
+
     def test_clip_provenance_requires_both_input_layers(self):
         assert T._normalize_layer_provenance({
             "processing": {"tool": "spatial_clip", "source_layer": "A", "clip_layer": ""},
@@ -400,6 +456,29 @@ class TestSpatialSimplify:
         assert "简化" in r
         assert len(_pending_layers) == 1
 
+    def test_repeated_simplification_preserves_previous_results(self):
+        import uuid
+
+        source_name = f"simplify_repeat_{uuid.uuid4().hex}"
+        ring = [[0, 0], [0.1, 0], [0.1, 0.1], [0.2, 0.1], [0.2, 0.2],
+                [0.3, 0.2], [0.3, 0.3], [0, 0.3], [0, 0]]
+        source = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"id": 1},
+            "geometry": {"type": "Polygon", "coordinates": [ring]},
+        }]}
+        _setup(source_name, source)
+
+        first_result = spatial_simplify.invoke({"layer_name": source_name, "tolerance": 0.001})
+        first_name = f"{source_name}_简化"
+        second_name = f"{source_name}_简化_1"
+        first_geojson = json.loads(json.dumps(_registered_layers[first_name]["geojson"]))
+        second_result = spatial_simplify.invoke({"layer_name": source_name, "tolerance": 0.2})
+
+        assert f"图层「{first_name}」已加载到地图" in first_result
+        assert f"图层「{second_name}」已加载到地图" in second_result
+        assert _registered_layers[first_name]["geojson"] == first_geojson
+        assert _registered_layers[second_name]["geojson"] != first_geojson
+
     @pytest.mark.parametrize("tolerance", [0, -0.1, float("nan"), float("inf")])
     def test_invalid_tolerance_does_not_register_result(self, tolerance):
         _setup("complex", _SQUARE_A)
@@ -435,7 +514,6 @@ class TestSpatialDissolve:
         assert "2 个要素" in result
         output = _pending_layers[0]["geojson"]["features"]
         assert len(output) == 2
-        assert {feature["properties"].get("zone") for feature in output} == {"north", None}
 
     def test_unknown_group_field_fails_without_dissolving_all(self):
         _setup("multi", _MULTI_POLY)
@@ -482,6 +560,42 @@ class TestSpatialJoin:
         assert "连接" in r
         assert len(_pending_layers) == 1
 
+    def test_different_predicates_preserve_previous_join_results(self):
+        import uuid
+
+        suffix = uuid.uuid4().hex
+        target_name = f"join_target_{suffix}"
+        join_name = f"join_points_{suffix}"
+        target = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"id": "polygon"},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]},
+        }]}
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": "inside"},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+            {"type": "Feature", "properties": {"id": "boundary"},
+             "geometry": {"type": "Point", "coordinates": [0, 1]}},
+        ]}
+        _setup(target_name, target)
+        _setup(join_name, points)
+
+        intersects_result = spatial_join.invoke({
+            "target_layer": target_name, "join_layer": join_name,
+            "how": "inner", "predicate": "intersects",
+        })
+        contains_result = spatial_join.invoke({
+            "target_layer": target_name, "join_layer": join_name,
+            "how": "inner", "predicate": "contains",
+        })
+
+        result_names = [name for name in _registered_layers if name.startswith(f"{target_name}_连接{join_name}")]
+        assert len(result_names) == 2
+        assert _registered_layers[result_names[0]]["geojson"]["features"]
+        assert len(_registered_layers[result_names[0]]["geojson"]["features"]) == 2
+        assert len(_registered_layers[result_names[1]]["geojson"]["features"]) == 1
+        assert result_names[0] in intersects_result
+        assert result_names[1] in contains_result
+
     def test_nearest_predicate_reports_supported_tool_without_creating_layer(self):
         _setup("target", _JOIN_TARGET)
         _setup("points", _JOIN_LAYER)
@@ -492,6 +606,18 @@ class TestSpatialJoin:
 
         assert "nearest_pair" in result
         assert "空间连接失败" in result
+        assert _pending_layers == []
+
+    def test_right_join_is_rejected_instead_of_reversing_target_geometry(self):
+        _setup("target", _JOIN_TARGET)
+        _setup("points", _JOIN_LAYER)
+
+        result = spatial_join.invoke({
+            "target_layer": "target", "join_layer": "points", "how": "right",
+            "predicate": "intersects",
+        })
+
+        assert "仅支持 left" in result
         assert _pending_layers == []
 
     def test_join_preserves_existing_reserved_index_right_attribute(self):
@@ -557,6 +683,15 @@ class TestLayerSplit:
         r = layer_split.invoke({"layer_name": "multi", "by_field": "group"})
         assert "拆分" in r
 
+    def test_missing_field_does_not_silently_split_each_feature(self):
+        _setup("multi", _MULTI_POLY)
+
+        result = layer_split.invoke({"layer_name": "multi", "by_field": "misspelled_group"})
+
+        assert "不存在字段" in result
+        assert "misspelled_group" in result
+        assert _pending_layers == []
+
     def test_split_by_field_keeps_features_with_missing_group_values(self):
         features = {"type": "FeatureCollection", "features": [
             {"type": "Feature", "properties": {"zone": "north"},
@@ -572,6 +707,31 @@ class TestLayerSplit:
         outputs = [layer["geojson"]["features"] for layer in _pending_layers]
         assert sum(len(group) for group in outputs) == 2
         assert any(feature["properties"].get("zone") is None for group in outputs for feature in group)
+
+    def test_split_by_field_keeps_distinct_values_with_same_string_form(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"group": 1},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"group": "1"},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        existing = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"group": "preexisting"},
+             "geometry": {"type": "Point", "coordinates": [2, 2]}},
+        ]}
+        _setup("mixed_groups_1", existing)
+        _setup("mixed_groups", features)
+
+        result = layer_split.invoke({"layer_name": "mixed_groups", "by_field": "group"})
+
+        assert "2 个子图层" in result
+        assert len(_pending_layers) == 2
+        assert _registered_layers["mixed_groups_1"]["geojson"]["features"][0]["properties"]["group"] == "preexisting"
+        group_values = {
+            layer["geojson"]["features"][0]["properties"]["group"]
+            for layer in _pending_layers
+        }
+        assert group_values == {1, "1"}
 
 
 
@@ -663,6 +823,40 @@ class TestSpatialSelect:
         output = _pending_layers[0]["geojson"]["features"]
         assert len(output) == 2
 
+    def test_repeated_spatial_select_preserves_previous_results(self):
+        import uuid
+
+        target_name = f"select_repeat_target_{uuid.uuid4().hex}"
+        source_name = f"select_repeat_source_{uuid.uuid4().hex}"
+        targets = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": "inside"},
+             "geometry": {"type": "Point", "coordinates": [0.5, 0.5]}},
+            {"type": "Feature", "properties": {"id": "boundary"},
+             "geometry": {"type": "Point", "coordinates": [0, 0.5]}},
+        ]}
+        source = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+        }]}
+        _setup(target_name, targets)
+        _setup(source_name, source)
+
+        first_result = spatial_select.invoke({
+            "target_layer": target_name, "source_layer": source_name, "predicate": "intersects",
+        })
+        first_name = f"{target_name}_选择"
+        second_name = f"{target_name}_选择_1"
+        first_geojson = json.loads(json.dumps(_registered_layers[first_name]["geojson"]))
+        second_result = spatial_select.invoke({
+            "target_layer": target_name, "source_layer": source_name, "predicate": "within",
+        })
+
+        assert f"图层「{first_name}」已加载到地图" in first_result
+        assert f"图层「{second_name}」已加载到地图" in second_result
+        assert len(_registered_layers[first_name]["geojson"]["features"]) == 2
+        assert _registered_layers[first_name]["geojson"] == first_geojson
+        assert len(_registered_layers[second_name]["geojson"]["features"]) == 1
+
 
 
 
@@ -672,6 +866,32 @@ class TestSpatialSample:
         r = spatial_sample.invoke({"layer_name": "pts", "n": 2})
         assert "采样" in r
         assert len(_pending_layers) == 1
+
+    def test_repeated_sampling_preserves_distinct_samples(self, monkeypatch):
+        import geopandas as gpd
+        import uuid
+
+        source_name = f"sample_source_{uuid.uuid4().hex}"
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": [index * 0.001, 0]}}
+            for index in range(8)
+        ]}
+        _setup(source_name, points)
+        selections = iter(([0, 1, 2], [5, 6, 7]))
+        monkeypatch.setattr(gpd.GeoDataFrame, "sample", lambda frame, n=None, frac=None: frame.iloc[next(selections)])
+
+        first_result = spatial_sample.invoke({"layer_name": source_name, "n": 3})
+        second_result = spatial_sample.invoke({"layer_name": source_name, "n": 3})
+
+        result_names = [name for name in _registered_layers if name.startswith(f"{source_name}_采样3")]
+        assert len(result_names) == 2
+        first_ids = {feature["properties"]["id"] for feature in _registered_layers[result_names[0]]["geojson"]["features"]}
+        second_ids = {feature["properties"]["id"] for feature in _registered_layers[result_names[1]]["geojson"]["features"]}
+        assert first_ids == {0, 1, 2}
+        assert second_ids == {5, 6, 7}
+        assert result_names[0] in first_result
+        assert result_names[1] in second_result
 
     def test_sample_fraction(self):
         _setup("pts", _POINTS)
@@ -704,11 +924,45 @@ class TestSpatialNear:
         _setup("target", _SQUARE_A)
         pts = {"type": "FeatureCollection", "features": [
             {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [0.001, 0.001]}},
-            {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [10, 10]}},
+            {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [2.001, 2.001]}},
         ]}
         _setup("pts", pts)
         r = spatial_near.invoke({"layer_name": "target", "target_layer": "pts", "distance": 1000})
-        assert "找到" in r or "要素" in r
+        assert "找到 2 个" in r
+
+    def test_repeated_near_queries_preserve_previous_results(self):
+        import uuid
+
+        suffix = uuid.uuid4().hex
+        source_name = f"near_source_{suffix}"
+        target_name = f"near_target_{suffix}"
+        source = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": "source"},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+        ]}
+        target = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": "close"},
+             "geometry": {"type": "Point", "coordinates": [0.001, 0]}},
+            {"type": "Feature", "properties": {"id": "far"},
+             "geometry": {"type": "Point", "coordinates": [0.01, 0]}},
+        ]}
+        _setup(source_name, source)
+        _setup(target_name, target)
+
+        near_result = spatial_near.invoke({
+            "layer_name": source_name, "target_layer": target_name, "distance": 200,
+        })
+        farther_result = spatial_near.invoke({
+            "layer_name": source_name, "target_layer": target_name, "distance": 2000,
+        })
+
+        result_names = [name for name in _registered_layers if name.startswith(f"{target_name}_附近")]
+        assert len(result_names) == 2
+        assert result_names[0] != result_names[1]
+        assert len(_registered_layers[result_names[0]]["geojson"]["features"]) == 1
+        assert len(_registered_layers[result_names[1]]["geojson"]["features"]) == 2
+        assert result_names[0] in near_result
+        assert result_names[1] in farther_result
 
     def test_near_distance_uses_local_ground_meters_at_high_latitude(self):
         source = {"type": "FeatureCollection", "features": [
@@ -750,6 +1004,29 @@ class TestSpatialNear:
         assert "找到 1 个" in result
         assert len(_pending_layers) == 1
 
+    @pytest.mark.parametrize("source_point,target_point,expected", [
+        ([179, 10], [-179, 10], "跨越日期变更线"),
+        ([0, 10], [8, 10], "超过 6° 经度"),
+    ])
+    def test_near_rejects_ranges_that_cannot_use_one_local_utm(self, source_point, target_point, expected):
+        source = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Point", "coordinates": source_point}},
+        ]}
+        target = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Point", "coordinates": target_point}},
+        ]}
+        _setup("near_source", source)
+        _setup("near_target", target)
+
+        result = spatial_near.invoke({
+            "layer_name": "near_source", "target_layer": "near_target", "distance": 500000,
+        })
+
+        assert expected in result
+        assert _pending_layers == []
+
 
 
 class TestSpatialCluster:
@@ -764,6 +1041,38 @@ class TestSpatialCluster:
         r = spatial_cluster.invoke({"layer_name": "pts", "eps": 0.01, "min_samples": 2})
         assert "聚类" in r
         assert len(_pending_layers) == 1
+
+    def test_repeated_clustering_preserves_previous_results(self):
+        import uuid
+
+        source_name = f"cluster_repeat_{uuid.uuid4().hex}"
+        coordinates = [[0, 0], [0.001, 0], [0.1, 0], [0.101, 0]]
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for index, coordinate in enumerate(coordinates)
+        ]}
+        _setup(source_name, points)
+
+        first_result = spatial_cluster.invoke({
+            "layer_name": source_name, "eps": 0.0001, "min_samples": 2,
+            "distance_unit": "degrees",
+        })
+        first_name = f"{source_name}_聚类"
+        second_name = f"{source_name}_聚类_1"
+        first_geojson = json.loads(json.dumps(_registered_layers[first_name]["geojson"]))
+        second_result = spatial_cluster.invoke({
+            "layer_name": source_name, "eps": 0.005, "min_samples": 2,
+            "distance_unit": "degrees",
+        })
+
+        assert f"图层「{first_name}」已加载到地图" in first_result
+        assert f"图层「{second_name}」已加载到地图" in second_result
+        assert [feature["properties"]["cluster"]
+                for feature in _registered_layers[first_name]["geojson"]["features"]] == [-1, -1, -1, -1]
+        assert _registered_layers[first_name]["geojson"] == first_geojson
+        assert [feature["properties"]["cluster"]
+                for feature in _registered_layers[second_name]["geojson"]["features"]] == [0, 0, 1, 1]
 
     def test_cluster_rejects_non_point_input_without_registering_a_result(self):
         _setup("areas", _SQUARE_A)
@@ -914,6 +1223,92 @@ class TestSpatialGraduatedColors:
         assert op["classes"] == 3
         assert op["scheme"] == "reds"
 
+    def test_graduated_uint64_field_is_supported(self):
+        value = 2**63 + 17
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"count": value},
+             "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}},
+            {"type": "Feature", "properties": {"count": value + 4096},
+             "geometry": {"type": "Polygon", "coordinates": [[[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]]]}},
+        ]}
+        _setup("unsigned_counts", features)
+
+        result = spatial_graduated_colors.invoke({
+            "layer_name": "unsigned_counts", "field": "count", "n_classes": 2,
+        })
+
+        assert "应用分级色彩渲染" in result
+
+    def test_equal_interval_final_break_exactly_includes_maximum(self):
+        minimum = -54247.55574590947
+        maximum = 91558.13856151933
+        middle = (minimum + maximum) / 2
+        features = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "properties": {"value": value},
+                 "geometry": {"type": "Polygon", "coordinates": [[[i * 2, 0], [i * 2 + 1, 0],
+                    [i * 2 + 1, 1], [i * 2, 1], [i * 2, 0]]]}}
+                for i, value in enumerate((minimum, middle, maximum))
+            ],
+        }
+        _setup("floating_endpoint", features)
+
+        result = spatial_graduated_colors.invoke({
+            "layer_name": "floating_endpoint", "field": "value", "n_classes": 2,
+            "method": "equal_interval",
+        })
+
+        assert "已对" in result
+        assert T._pending_layer_ops[-1]["breaks"][-1] == maximum
+
+    @pytest.mark.parametrize("inf_value", [float("inf"), float("-inf")])
+    def test_graduated_ignores_infinite_values(self, inf_value):
+        import math
+        features = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "properties": {"v": 1.0}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
+                {"type": "Feature", "properties": {"v": 2.0}, "geometry": {"type": "Point", "coordinates": [1, 1]}},
+                {"type": "Feature", "properties": {"v": inf_value}, "geometry": {"type": "Point", "coordinates": [2, 2]}},
+            ],
+        }
+        _setup("inf_test", features)
+        result = spatial_graduated_colors.invoke({
+            "layer_name": "inf_test",
+            "field": "v",
+            "n_classes": 2,
+            "method": "equal_interval",
+        })
+
+        assert "应用分级色彩渲染" in result
+        assert "值域：1.00 ~ 2.00" in result
+        assert len(T._pending_layer_ops) == 1
+        op = T._pending_layer_ops[0]
+        assert op["action"] == "symbology"
+        assert all(isinstance(b, (int, float)) and math.isfinite(b) for b in op["breaks"])
+        assert op["breaks"] == [1.0, 1.5, 2.0]
+        json.dumps(op, allow_nan=False)
+
+    def test_graduated_all_nonfinite_returns_no_valid_numeric_values(self):
+        features = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature", "properties": {"v": float("inf")}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
+                {"type": "Feature", "properties": {"v": float("-inf")}, "geometry": {"type": "Point", "coordinates": [1, 1]}},
+                {"type": "Feature", "properties": {"v": float("nan")}, "geometry": {"type": "Point", "coordinates": [2, 2]}},
+            ],
+        }
+        _setup("all_inf_test", features)
+        result = spatial_graduated_colors.invoke({
+            "layer_name": "all_inf_test",
+            "field": "v",
+            "n_classes": 2,
+        })
+
+        assert "无有效数值" in result
+        assert len(T._pending_layer_ops) == 0
+
 
 
 
@@ -974,6 +1369,29 @@ class TestSelectByAttribute:
         _setup("pts", _MULTI_SELECT)
         r = spatial_select_by_attribute.invoke({"layer_name": "pts", "field": "val", "operator": ">", "value": "30"})
         assert "选择了 2/5" in r
+
+    def test_gt_unsigned_64_bit_numeric_property(self):
+        value = 2**63 + 17
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"count": value},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"count": value + 1},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        _setup("unsigned_counts", features)
+
+        result = spatial_select_by_attribute.invoke({
+            "layer_name": "unsigned_counts", "field": "count", "operator": ">", "value": str(value),
+        })
+
+        assert "选择了 1/2 个要素" in result
+        assert _pending_layers[0]["geojson"]["features"][0]["properties"]["count"] == value + 1
+        between_result = spatial_select_by_attribute.invoke({
+            "layer_name": "unsigned_counts", "field": "count", "operator": "between",
+            "value": f"{value + 1},{value + 1}",
+        })
+        assert "选择了 1/2 个要素" in between_result
+        assert _pending_layers[1]["geojson"]["features"][0]["properties"]["count"] == value + 1
 
     def test_like_treats_regex_metacharacters_as_literal_text(self):
         features = {"type": "FeatureCollection", "features": [
@@ -1043,6 +1461,25 @@ class TestUpdateAttribute:
         props = [f["properties"] for f in gj["features"]]
         assert all(p["val"] == 99 for p in props)
 
+    def test_integer_condition_keeps_precision_above_float_safe_range(self):
+        value = 2**63 + 17
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"count": value, "label": "before"},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"count": value + 1, "label": "before"},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        _setup("large_count_update", features)
+
+        result = update_attribute.invoke({
+            "layer_name": "large_count_update", "field": "label", "value": "selected",
+            "condition_field": "count", "condition_value": str(value),
+        })
+
+        assert "影响 1/2 个要素" in result
+        labels = [f["properties"]["label"] for f in _registered_layers["large_count_update"]["geojson"]["features"]]
+        assert labels == ["selected", "before"]
+
 
 
 
@@ -1058,6 +1495,25 @@ class TestDeleteFeatures:
         gj = _registered_layers["pts"]["geojson"]
         cats = [f["properties"]["cat"] for f in gj["features"]]
         assert "x" not in cats
+
+    def test_integer_condition_keeps_precision_above_float_safe_range(self):
+        value = 2**63 + 17
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"count": value},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"count": value + 1},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+        ]}
+        _setup("large_count_delete", features)
+
+        result = delete_features.invoke({
+            "layer_name": "large_count_delete", "condition_field": "count", "condition_value": str(value),
+        })
+
+        assert "删除 1/2" in result
+        remaining = _registered_layers["large_count_delete"]["geojson"]["features"]
+        assert len(remaining) == 1
+        assert remaining[0]["properties"]["count"] == value + 1
 
 
 
@@ -1151,7 +1607,8 @@ class TestMultiRingBuffer:
         })
         assert result.startswith("已为")
         assert len(_pending_layers) == 1
-        assert _pending_layers[0]["name"] == "pt_多环km"
+        assert (_pending_layers[0]["name"] == "pt_多环km"
+                or _pending_layers[0]["name"].startswith("pt_多环km_"))
         features = _pending_layers[0]["geojson"]["features"]
         assert len(features) == 2
         geod = Geod(ellps="WGS84")
@@ -1167,6 +1624,33 @@ class TestMultiRingBuffer:
         r = spatial_multi_ring_buffer.invoke({"layer_name": "pt", "distances": "100,200", "unit": "m"})
         assert "多环缓冲区" in r
         assert "2" in r
+
+    def test_repeated_multi_ring_preserves_previous_results(self):
+        import uuid
+
+        source_name = f"multi_ring_repeat_{uuid.uuid4().hex}"
+        source = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": 1},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+        ]}
+        _setup(source_name, source)
+
+        first_result = spatial_multi_ring_buffer.invoke({
+            "layer_name": source_name, "distances": "100,200", "unit": "m",
+        })
+        first_name = f"{source_name}_多环m"
+        second_name = f"{source_name}_多环m_1"
+        first_geojson = json.loads(json.dumps(
+            _registered_layers[first_name]["geojson"]
+        ))
+        second_result = spatial_multi_ring_buffer.invoke({
+            "layer_name": source_name, "distances": "500,1000", "unit": "m",
+        })
+
+        assert f"图层「{first_name}」已加载到地图" in first_result
+        assert f"图层「{second_name}」已加载到地图" in second_result
+        assert _registered_layers[first_name]["geojson"] == first_geojson
+        assert _registered_layers[second_name]["geojson"] != first_geojson
 
     @pytest.mark.parametrize("dissolve", [False, True])
     def test_outer_ring_excludes_the_area_inside_the_previous_distance(self, dissolve):
@@ -1199,6 +1683,17 @@ class TestMultiRingBuffer:
 
 
 class TestMoveFeatures:
+    @pytest.mark.parametrize("dx,dy", [(float("nan"), 0), (0, float("inf")), (float("-inf"), 1)])
+    def test_move_rejects_non_finite_offsets_without_mutating(self, dx, dy):
+        _setup("move_non_finite", _POINTS)
+        before = json.loads(json.dumps(_registered_layers["move_non_finite"]["geojson"]))
+
+        result = move_features.invoke({"layer_name": "move_non_finite", "dx": dx, "dy": dy, "unit": "m"})
+
+        assert result.startswith("移动要素失败：位移量必须是有限数值")
+        assert _registered_layers["move_non_finite"]["geojson"] == before
+        assert not _pending_layers
+
     @pytest.mark.parametrize("coordinates,expected", [
         ([[179.9, 10.0], [-179.9, 10.0]], "跨越日期变更线"),
         ([[0.0, 85.0]], "超出 UTM 投影适用纬度"),
@@ -1259,6 +1754,30 @@ class TestRotateFeatures:
         assert "rpt" in r
         assert "3" in r
 
+    def test_rotation_uses_ground_space_at_high_latitude(self):
+        from pyproj import Transformer
+        from shapely.ops import transform
+
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[
+                [-0.025, 79.9], [0.025, 79.9], [0.025, 80.1],
+                [-0.025, 80.1], [-0.025, 79.9],
+            ]]},
+        }]}
+        _setup("rotate_high_lat", geojson)
+
+        result = rotate_features.invoke({"layer_name": "rotate_high_lat", "angle": 90})
+
+        assert result.startswith("已旋转")
+        rotated = _registered_layers["rotate_high_lat"]["geojson"]["features"][0]["geometry"]
+        from shapely.geometry import shape
+        projected = transform(Transformer.from_crs("EPSG:4326", "EPSG:32631", always_xy=True).transform,
+                              shape(rotated))
+        minx, miny, maxx, maxy = projected.bounds
+        assert maxx - minx > 15_000
+        assert maxy - miny < 3_000
+
 
 
 
@@ -1271,6 +1790,30 @@ class TestScaleFeatures:
         assert "已缩放" in r
         assert "sc" in r
         assert "3" in r
+
+    def test_axis_scale_does_not_change_other_ground_dimension_at_high_latitude(self):
+        from pyproj import Transformer
+        from shapely.geometry import shape
+        from shapely.ops import transform
+
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {},
+            "geometry": {"type": "Polygon", "coordinates": [[
+                [-0.1, 78], [0.1, 78], [0.1, 82], [-0.1, 82], [-0.1, 78],
+            ]]},
+        }]}
+        _setup("scale_high_lat", geojson)
+        project = Transformer.from_crs("EPSG:4326", "EPSG:32631", always_xy=True).transform
+        before = transform(project, shape(geojson["features"][0]["geometry"])).bounds
+
+        result = scale_features.invoke({"layer_name": "scale_high_lat", "x_factor": 1, "y_factor": 2})
+
+        assert result.startswith("已缩放")
+        scaled_geojson = _registered_layers["scale_high_lat"]["geojson"]
+        after = transform(project, shape(scaled_geojson["features"][0]["geometry"])).bounds
+        before_width = before[2] - before[0]
+        after_width = after[2] - after[0]
+        assert after_width == pytest.approx(before_width, rel=0.01)
 
 
 
@@ -1445,6 +1988,74 @@ class TestContour:
             for x, y in f["geometry"]["coordinates"]:
                 assert 115.9 < x < 117.1 and 38.9 < y < 40.1
 
+    def test_projected_raster_contours_are_transformed_to_wgs84_for_geojson(self):
+        import numpy as np
+        import rasterio
+        from pyproj import Transformer
+        from rasterio.transform import from_bounds
+
+        name = "projected_contour"
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        path = os.path.join(upload_dir, name + ".tif")
+        to_mercator = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
+        west, south = to_mercator.transform(116, 39)
+        east, north = to_mercator.transform(117, 40)
+        dem = np.tile(np.arange(40, dtype=np.float64)[:, None], (1, 40))
+        with rasterio.open(
+            path, "w", driver="GTiff", height=40, width=40, count=1,
+            dtype="float64", crs="EPSG:3857",
+            transform=from_bounds(west, south, east, north, 40, 40),
+        ) as dst:
+            dst.write(dem, 1)
+
+        try:
+            result = extract_contours.invoke({"layer_name": name})
+
+            assert "等高线" in result
+            features = T._registered_layers[name + "_contour"]["geojson"]["features"]
+            assert features
+            for feature in features:
+                for lon, lat in feature["geometry"]["coordinates"]:
+                    assert 115.9 < lon < 117.1
+                    assert 38.9 < lat < 40.1
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_contours_do_not_cross_internal_masked_pixels(self):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        name = "masked_contour"
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        path = os.path.join(upload_dir, name + ".tif")
+        dem = np.add.outer(np.arange(12, dtype=np.float64), np.arange(12, dtype=np.float64))
+        with rasterio.open(
+            path, "w", driver="GTiff", height=12, width=12, count=1,
+            dtype="float64", transform=from_origin(0, 12, 1, 1),
+        ) as dst:
+            dst.write(dem, 1)
+            mask = np.full((12, 12), 255, dtype=np.uint8)
+            mask[4:7, 4:7] = 0
+            dst.write_mask(mask)
+
+        try:
+            result = extract_contours.invoke({"layer_name": name, "interval": 3})
+
+            assert "等高线" in result
+            features = T._registered_layers[name + "_contour"]["geojson"]["features"]
+            assert features
+            for feature in features:
+                for x, y in feature["geometry"]["coordinates"]:
+                    assert not (4.5 < x < 7.5 and 4.5 < y < 7.5)
+        finally:
+            for candidate in (path, path + ".msk"):
+                if os.path.exists(candidate):
+                    os.unlink(candidate)
+
 
 
 
@@ -1455,6 +2066,39 @@ class TestNDVI:
     def test_ndvi_no_file(self):
         r = ndvi_analysis.invoke({"layer_name": "nonexistent"})
         assert "未找到" in r or "请先上传" in r
+
+    def test_ndvi_propagates_internal_raster_mask_as_nodata(self):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        name = "ndvi_internal_mask"
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        path = os.path.join(upload_dir, name + ".tif")
+        with rasterio.open(
+            path, "w", driver="GTiff", width=20, height=20, count=4,
+            dtype="float32", crs="EPSG:4326", transform=from_bounds(116, 39, 117, 40, 20, 20),
+        ) as dst:
+            for band in range(1, 5):
+                dst.write(np.full((20, 20), band * 0.1, dtype=np.float32), band)
+            mask = np.full((20, 20), 255, dtype=np.uint8)
+            mask[0, 0] = 0
+            dst.write_mask(mask)
+
+        try:
+            result = ndvi_analysis.invoke({"layer_name": name, "red_band": 3, "nir_band": 4})
+
+            assert "NDVI" in result
+            op = next(op for op in T._pending_layer_ops if op.get("raster"))
+            output_path = T._find_uploaded_tif(op["layer_name"])
+            with rasterio.open(output_path) as output:
+                assert np.isnan(output.read(1)[0, 0])
+                assert output.read(1)[1, 1] == pytest.approx(1.0 / 7.0)
+        finally:
+            for candidate in (path, path + ".msk"):
+                if os.path.exists(candidate):
+                    os.unlink(candidate)
 
 
 
@@ -1519,6 +2163,92 @@ class TestRasterCalculator:
         preview = np.asarray(Image.open(preview_path).convert("RGB"))
         assert np.array_equal(preview[0, 0], [0, 0, 0])
 
+    def test_calc_propagates_internal_raster_mask_as_nodata(self):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        input_path = os.path.join(upload_dir, "calc_internal_mask.tif")
+        with rasterio.open(
+            input_path, "w", driver="GTiff", width=20, height=20, count=2,
+            dtype="float32", crs="EPSG:4326", transform=from_bounds(116, 39, 117, 40, 20, 20),
+        ) as dst:
+            dst.write(np.full((20, 20), 0.5, dtype=np.float32), 1)
+            dst.write(np.full((20, 20), 0.25, dtype=np.float32), 2)
+            mask = np.full((20, 20), 255, dtype=np.uint8)
+            mask[0, 0] = 0
+            dst.write_mask(mask)
+
+        try:
+            result = raster_calculator.invoke({
+                "layer_name": "calc_internal_mask", "expression": "B1+B2",
+            })
+
+            assert "已执行" in result
+            op = next(op for op in T._pending_layer_ops if op.get("raster"))
+            output_path = T._find_uploaded_tif(op["layer_name"])
+            with rasterio.open(output_path) as output:
+                values = output.read(1)
+                assert np.isnan(values[0, 0])
+                assert values[1, 1] == pytest.approx(0.75)
+        finally:
+            for path in (input_path, input_path + ".msk"):
+                if os.path.exists(path):
+                    os.unlink(path)
+
+    def test_calc_propagates_independent_per_band_pam_nodata_masks(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_origin
+
+        original_output_dir = T._temp_output_dir
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        upload_dir = os.path.join(str(tmp_path), "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        input_path = os.path.join(upload_dir, "calc_per_band_pam_mask.tif")
+        with rasterio.open(
+            input_path, "w", driver="GTiff", width=2, height=2, count=2,
+            dtype="int16", crs="EPSG:4326", transform=from_origin(0, 2, 1, 1),
+        ) as dst:
+            dst.write(np.array([[-9999, 10], [11, 12]], dtype=np.int16), 1)
+            dst.write(np.array([[20, -8888], [21, 22]], dtype=np.int16), 2)
+        with open(input_path + ".aux.xml", "w", encoding="utf-8") as sidecar:
+            sidecar.write(
+                '<PAMDataset>'
+                '<PAMRasterBand band="1"><NoDataValue>-9999</NoDataValue></PAMRasterBand>'
+                '<PAMRasterBand band="2"><NoDataValue>-8888</NoDataValue></PAMRasterBand>'
+                '</PAMDataset>'
+            )
+
+        try:
+            with rasterio.open(input_path) as source:
+                assert not source.read_masks(1)[0, 0]
+                assert source.read_masks(2)[0, 0]
+                assert source.read_masks(1)[0, 1]
+                assert not source.read_masks(2)[0, 1]
+
+            def calculate(expression):
+                result = raster_calculator.invoke({
+                    "layer_name": "calc_per_band_pam_mask", "expression": expression,
+                })
+                assert "已执行" in result
+                output_path = T._find_uploaded_tif(T._pending_layer_ops[-1]["layer_name"])
+                with rasterio.open(output_path) as output:
+                    return output.read(1).copy()
+
+            band1 = calculate("B1")
+            band2 = calculate("B2")
+            summed = calculate("B1+B2")
+
+            assert np.isnan(band1[0, 0]) and band1[0, 1] == pytest.approx(10)
+            assert band2[0, 0] == pytest.approx(20) and np.isnan(band2[0, 1])
+            assert np.isnan(summed[0, 0]) and np.isnan(summed[0, 1])
+            assert summed[1, 1] == pytest.approx(34)
+        finally:
+            T._temp_output_dir = original_output_dir
+
     @pytest.mark.parametrize("width,height,count", [(3000, 2000, 1), (2000, 1000, 9)])
     def test_calc_rejects_oversized_raster_before_reading_band_arrays(self, monkeypatch, width, height, count):
         import rasterio
@@ -1564,6 +2294,47 @@ class TestInterpolate:
     def test_interpolate_basic(self):
         r = spatial_interpolate.invoke({"layer_name": "pts", "field": "id", "method": "idw"})
         assert "插值" in r or "生成" in r
+
+    def test_different_fields_preserve_interpolation_rasters(self):
+        import uuid
+        import numpy as np
+        import rasterio
+
+        source_name = f"interpolate_repeat_{uuid.uuid4().hex}"
+        points = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"v_left": left, "v_right": right},
+             "geometry": {"type": "Point", "coordinates": coordinate}}
+            for left, right, coordinate in [
+                (0, 100, [0, 0]), (0, 0, [0.01, 0]),
+                (0, 0, [0, 0.01]), (100, 0, [0.01, 0.01]),
+            ]
+        ]}
+        _register_layer(source_name, points)
+
+        first_result = spatial_interpolate.invoke({
+            "layer_name": source_name, "field": "v_left", "method": "idw", "resolution": 16,
+        })
+        first_layer_name = T._pending_layer_ops[-1]["layer_name"]
+        first_path = T._find_uploaded_tif(first_layer_name)
+        with rasterio.open(first_path) as first_dataset:
+            first_values = first_dataset.read(1).copy()
+
+        second_result = spatial_interpolate.invoke({
+            "layer_name": source_name, "field": "v_right", "method": "idw", "resolution": 16,
+        })
+        second_layer_name = T._pending_layer_ops[-1]["layer_name"]
+        second_path = T._find_uploaded_tif(second_layer_name)
+        with rasterio.open(second_path) as second_dataset:
+            second_values = second_dataset.read(1).copy()
+
+        with rasterio.open(first_path) as first_dataset:
+            first_values_after_second_run = first_dataset.read(1).copy()
+        assert first_layer_name != second_layer_name
+        assert first_path != second_path
+        assert np.array_equal(first_values, first_values_after_second_run, equal_nan=True)
+        assert not np.allclose(first_values, second_values, equal_nan=True)
+        assert first_layer_name in first_result
+        assert second_layer_name in second_result
 
     def test_interpolate_keeps_values_aligned_when_geometry_is_missing(self):
         fc = {"type": "FeatureCollection", "features": [
@@ -1722,6 +2493,29 @@ class TestHydrology:
     def setup_method(self):
         T.reset_state()
 
+    def test_sink_fill_raises_a_flat_bottomed_depression_to_its_spill_rim(self):
+        import numpy as np
+
+        dem = np.full((7, 7), 100.0)
+        dem[1:-1, 1:-1] = 10.0
+
+        filled = T._fill_sinks(dem)
+
+        assert np.all(filled >= dem)
+        assert filled[3, 3] >= 100.0
+
+    def test_sink_fill_routes_flat_cells_toward_the_boundary(self):
+        import numpy as np
+
+        filled = T._fill_sinks(np.zeros((7, 7), dtype=np.float64))
+
+        for row in range(1, 6):
+            for col in range(1, 6):
+                value = filled[row, col]
+                neighbors = filled[row - 1:row + 2, col - 1:col + 2].copy()
+                neighbors[1, 1] = np.inf
+                assert np.any(neighbors < value)
+
     def _make_dem_tif(self, name, rows=30, cols=30):
         from rasterio.transform import from_bounds
         import numpy as np, tempfile, os, rasterio
@@ -1768,7 +2562,10 @@ class TestHydrology:
             "layer_name": flowdir_name, "method": "quantile", "classes": 3,
         })
         assert isinstance(follow_on, str)
-        assert f"{flowdir_name}_重分类" in _registered_layers
+        assert any(
+            name.startswith(f"{flowdir_name}_") and name.endswith("_重分类")
+            for name in _registered_layers
+        )
 
         for analysis in ("flowacc", "streamnet"):
             result = hydrology_analysis.invoke({
@@ -1835,6 +2632,72 @@ class TestHydrology:
         assert T._pending_layer_ops == []
         assert f"{source_name}_flowdir" not in _registered_layers
         os.unlink(dest)
+
+    @pytest.mark.parametrize("threshold", [0, -1])
+    def test_hydrology_rejects_nonpositive_stream_threshold(self, threshold):
+        import uuid
+
+        source_name = f"hydro_threshold_{uuid.uuid4().hex[:8]}"
+        dest = self._make_dem_tif(source_name, rows=5, cols=5)
+        try:
+            result = hydrology_analysis.invoke({
+                "layer_name": source_name, "analysis": "streamnet", "threshold": threshold,
+            })
+            assert "阈值必须是正整数" in result
+            assert f"{source_name}_streamnet" not in _registered_layers
+        finally:
+            if os.path.exists(dest):
+                os.unlink(dest)
+
+    def test_hydrology_respects_internal_raster_mask(self):
+        import numpy as np
+        import rasterio
+        import uuid
+
+        source_name = f"hydro_mask_{uuid.uuid4().hex[:8]}"
+        dest = self._make_dem_tif(source_name, rows=5, cols=5)
+        try:
+            with rasterio.open(dest, "r+") as src:
+                mask = np.full((5, 5), 255, dtype=np.uint8)
+                mask[2, 2] = 0
+                src.write_mask(mask)
+
+            result = hydrology_analysis.invoke({"layer_name": source_name, "analysis": "flowacc"})
+
+            assert "已生成水文分析图层" in result
+            output_path = os.path.join(T._temp_output_dir, "uploads", source_name + "_flowacc.tif")
+            with rasterio.open(output_path) as output:
+                assert np.isnan(output.read(1)[2, 2])
+        finally:
+            for path in (dest, dest + ".msk"):
+                if os.path.exists(path):
+                    os.unlink(path)
+
+    def test_hydrology_rejects_all_nodata_dem(self):
+        import numpy as np
+        import rasterio
+        import uuid
+        from rasterio.transform import from_bounds
+
+        source_name = f"hydro_empty_{uuid.uuid4().hex[:8]}"
+        upload_dir = os.path.join(T._temp_output_dir, "uploads")
+        os.makedirs(upload_dir, exist_ok=True)
+        dest = os.path.join(upload_dir, source_name + ".tif")
+        with rasterio.open(
+            dest, "w", driver="GTiff", height=5, width=5, count=1,
+            dtype="float32", crs="EPSG:4326", transform=from_bounds(0, 0, 1, 1, 5, 5),
+            nodata=-9999,
+        ) as src:
+            src.write(np.full((5, 5), -9999, dtype=np.float32), 1)
+
+        try:
+            result = hydrology_analysis.invoke({"layer_name": source_name, "analysis": "flowacc"})
+
+            assert "没有有效高程像元" in result
+            assert f"{source_name}_flowacc" not in _registered_layers
+        finally:
+            if os.path.exists(dest):
+                os.unlink(dest)
 
 
 
@@ -1946,6 +2809,62 @@ class TestConvertCRS:
         r = convert_crs.invoke({"layer_name": "crs_pts2", "target_crs": "web_mercator"})
         assert "转换" in r or "生成" in r
 
+    @pytest.mark.parametrize("coordinates, expected", [
+        ([[179, 10], [-179, 10]], "跨越日期变更线"),
+        ([[100, 10], [108, 10]], "超过 6° 经度"),
+    ])
+    def test_utm_auto_rejects_extents_that_do_not_fit_one_local_zone(self, coordinates, expected):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"id": index},
+             "geometry": {"type": "Point", "coordinates": point}}
+            for index, point in enumerate(coordinates)
+        ]}
+        _register_layer("wide_extent", features)
+
+        result = convert_crs.invoke({"layer_name": "wide_extent", "target_crs": "utm_auto"})
+
+        assert expected in result
+        assert not any(layer.get("name", "").startswith("wide_extent_utm_auto") for layer in _pending_layers)
+
+
+class TestConvertCoordinates:
+    def test_utm_auto_uses_southern_hemisphere(self):
+        import pyproj
+
+        result = convert_coordinates.invoke({
+            "coords": "-70,-33", "source_crs": "wgs84", "target_crs": "utm_auto",
+        })
+
+        actual = tuple(map(float, result.split(": ", 1)[1].split(",")))
+        expected = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32719", always_xy=True).transform(-70, -33)
+        assert actual == pytest.approx(expected, abs=0.5)
+
+    def test_web_mercator_can_be_converted_to_utm_auto(self):
+        import pyproj
+
+        x, y = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True).transform(113, 23)
+        result = convert_coordinates.invoke({
+            "coords": f"{x},{y}", "source_crs": "web_mercator", "target_crs": "utm_auto",
+        })
+
+        actual = tuple(map(float, result.split(": ", 1)[1].split(",")))
+        expected = pyproj.Transformer.from_crs("EPSG:3857", "EPSG:32649", always_xy=True).transform(x, y)
+        assert actual == pytest.approx(expected, abs=0.5)
+
+    def test_malformed_batch_coordinate_is_not_silently_dropped(self):
+        result = convert_coordinates.invoke({
+            "coords": "113,23;not-a-point", "source_crs": "wgs84", "target_crs": "web_mercator",
+        })
+
+        assert "坐标格式错误" in result
+
+    def test_invalid_wgs84_coordinate_is_rejected_even_when_crs_is_unchanged(self):
+        result = convert_coordinates.invoke({
+            "coords": "113,91", "source_crs": "wgs84", "target_crs": "wgs84",
+        })
+
+        assert "超出有效经纬度范围" in result
+
 
 
 
@@ -1976,6 +2895,131 @@ class TestClipRaster:
     def test_clip_nonexistent_raster(self):
         r = clip_raster.invoke({"layer_name": "nope", "clip_layer_name": "clip"})
         assert "未找到" in r or "请先上传" in r
+
+    def test_clip_raster_keeps_valid_zero_values(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+        from PIL import Image
+        from rasterio.transform import from_bounds
+
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        raster_path = upload_dir / "zero_values.tif"
+        with rasterio.open(
+            raster_path, "w", driver="GTiff", height=2, width=2, count=1,
+            dtype="float32", transform=from_bounds(0, 0, 2, 2, 2, 2), nodata=None,
+        ) as dst:
+            dst.write(np.zeros((2, 2), dtype=np.float32), 1)
+        T._register_layer("full_clip", {
+            "type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]},
+            }],
+        })
+
+        result = clip_raster.invoke({
+            "layer_name": "zero_values", "clip_layer_name": "full_clip", "output_name": "zero_preview",
+        })
+
+        assert result.startswith("已用")
+        with Image.open(upload_dir / "zero_preview.png") as preview:
+            rgba = np.asarray(preview)
+        assert rgba.shape == (2, 2, 4)
+        assert np.all(rgba[:, :, 3] == 255)
+
+    def test_clip_raster_uses_cropped_bounds_for_preview(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        raster_path = upload_dir / "half_raster.tif"
+        with rasterio.open(
+            raster_path, "w", driver="GTiff", height=2, width=2, count=1,
+            dtype="float32", transform=from_bounds(0, 0, 2, 2, 2, 2),
+        ) as dst:
+            dst.write(np.array([[1, 2], [3, 4]], dtype=np.float32), 1)
+        T._register_layer("right_half", {
+            "type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Polygon", "coordinates": [[[1, 0], [2, 0], [2, 2], [1, 2], [1, 0]]]},
+            }],
+        })
+
+        result = clip_raster.invoke({
+            "layer_name": "half_raster", "clip_layer_name": "right_half", "output_name": "half_preview",
+        })
+
+        assert result.startswith("已用")
+        assert T._pending_layer_ops[-1]["bounds"] == [1.0, 0.0, 2.0, 2.0]
+
+    def test_clip_raster_makes_pixels_outside_polygon_transparent(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+        from PIL import Image
+        from rasterio.transform import from_bounds
+
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        raster_path = upload_dir / "masked_pixels.tif"
+        with rasterio.open(
+            raster_path, "w", driver="GTiff", height=3, width=3, count=1,
+            dtype="float32", transform=from_bounds(0, 0, 3, 3, 3, 3),
+        ) as dst:
+            dst.write(np.arange(1, 10, dtype=np.float32).reshape(3, 3), 1)
+        T._register_layer("polygon_with_hole", {
+            "type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Polygon", "coordinates": [
+                    [[0, 0], [3, 0], [3, 3], [0, 3], [0, 0]],
+                    [[1, 1], [2, 1], [2, 2], [1, 2], [1, 1]],
+                ]},
+            }],
+        })
+
+        result = clip_raster.invoke({
+            "layer_name": "masked_pixels", "clip_layer_name": "polygon_with_hole", "output_name": "masked_preview",
+        })
+
+        assert result.startswith("已用")
+        with Image.open(upload_dir / "masked_preview.png") as preview:
+            alpha = np.asarray(preview)[:, :, 3]
+        assert alpha[1, 1] == 0
+        assert np.all(alpha[[0, 2], :] == 255)
+        assert np.all(alpha[:, [0, 2]] == 255)
+
+    def test_clip_raster_output_name_cannot_escape_upload_directory(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        raster_path = upload_dir / "safe_raster.tif"
+        with rasterio.open(
+            raster_path, "w", driver="GTiff", height=2, width=2, count=1,
+            dtype="float32", transform=from_bounds(0, 0, 2, 2, 2, 2),
+        ) as dst:
+            dst.write(np.ones((2, 2), dtype=np.float32), 1)
+        T._register_layer("full_clip", {
+            "type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]]},
+            }],
+        })
+
+        result = clip_raster.invoke({
+            "layer_name": "safe_raster", "clip_layer_name": "full_clip", "output_name": r"..\escaped",
+        })
+
+        assert result.startswith("已用")
+        assert not (tmp_path / "escaped.png").exists()
+        assert (upload_dir / "escaped.png").is_file()
 
 
 

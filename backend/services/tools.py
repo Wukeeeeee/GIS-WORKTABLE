@@ -237,6 +237,7 @@ _exec_call_count: int = 0       # Python 执行次数计数，每次请求重置
 _exec_log: list = []            # 执行日志：记录每次execute_python的用途和结果
 _temp_output_dir: str = ""          # 在 reset_state 时设置
 _workspace_dir: str = ""
+_raster_output_scope = threading.local()
 _registered_layers: dict = {}       # 已注册的图层信息
 _active_project_id = None
 _current_task_id: str = ""          # 当前任务 ID（由 graph.py 设置）
@@ -773,6 +774,27 @@ def _unicode_layer_name_conflict(name: str) -> str | None:
     normalized_name = unicodedata.normalize("NFC", name)
     return next((existing for existing in _registered_layers
                  if existing != name and unicodedata.normalize("NFC", existing) == normalized_name), None)
+
+
+def _disambiguate_layer_name(base_name: str) -> str:
+    """Return an unused registered or pending layer name, preserving its extension."""
+    raw = base_name.strip() if isinstance(base_name, str) and base_name.strip() else "fishnet"
+
+    def _taken(candidate: str) -> bool:
+        return (
+            candidate in _registered_layers
+            or any(isinstance(item, dict) and item.get("name") == candidate for item in _pending_layers)
+            or _unicode_layer_name_conflict(candidate) is not None
+        )
+
+    with _state_lock:
+        if not _taken(raw):
+            return raw
+        stem, extension = os.path.splitext(raw)
+        suffix = 1
+        while _taken(f"{stem}_{suffix}{extension}"):
+            suffix += 1
+        return f"{stem}_{suffix}{extension}"
 
 
 def _register_layer(name: str, geojson: dict, group_name: str = None, provenance: dict = None,
@@ -1478,7 +1500,20 @@ def save_file(filename: str, content: str) -> str:
 
     output_dir = _temp_output_dir
     os.makedirs(output_dir, exist_ok=True)
-    path = os.path.join(output_dir, filename)
+    output_name = filename
+    if filename.endswith('.html'):
+        ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+        output_name = f"{ts}_{uuid.uuid4().hex}_{filename}"
+    path = os.path.join(output_dir, output_name)
+    resolved_output_dir = os.path.realpath(output_dir)
+    resolved_path = os.path.realpath(path)
+    try:
+        inside_output = os.path.commonpath([resolved_output_dir, resolved_path]) == resolved_output_dir
+    except ValueError:
+        inside_output = False
+    if os.path.islink(path) or not inside_output:
+        return f"错误：文件名 '{filename}' 指向输出目录之外或符号链接（已拒绝）"
+    path = resolved_path
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
@@ -1496,14 +1531,7 @@ def save_file(filename: str, content: str) -> str:
 
     # HTML → 自动显示在前端
     if filename.endswith('.html'):
-        try:
-            ts = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-            new_name = f"{ts}_{filename}"
-            new_path = os.path.join(output_dir, new_name)
-            os.rename(path, new_path)
-            _add_pending_item(f"/output/{new_name}", new_path)
-        except Exception:
-            _add_pending_item(f"/output/{filename}")
+        _add_pending_item(f"/output/{output_name}", path)
 
     return f"文件已保存：{path}"
 
@@ -2631,6 +2659,9 @@ def create_heatmap(layer_name: str, weight_field: str = "", radius: int = 20, gr
         pg = gdf[gdf.geometry.type.isin(["Point", "MultiPoint"])]
         if pg.empty:
             return "没有点要素，无法生成热力图"
+        if weight_field and weight_field not in pg.columns:
+            available_fields = [str(column) for column in pg.columns if column != "geometry"][:12]
+            return f"权重字段「{weight_field}」不存在，可用字段：{available_fields or '无'}"
         pts = []
         for _, r in pg.iterrows():
             g = r.geometry
@@ -2800,6 +2831,12 @@ def measure_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> str:
     WGS84 坐标系。返回米和公里。"""
     try:
         import math
+        lon1, lat1, lon2, lat2 = map(float, (lon1, lat1, lon2, lat2))
+        if not all(math.isfinite(value) for value in (lon1, lat1, lon2, lat2)):
+            return "输入坐标必须是有限数值，范围为经度 -180～180、纬度 -90～90"
+        if not (-180 <= lon1 <= 180 and -180 <= lon2 <= 180
+                and -90 <= lat1 <= 90 and -90 <= lat2 <= 90):
+            return "输入坐标超出 WGS-84 范围：经度 -180～180、纬度 -90～90"
         R = 6371000  # 地球半径（米）
         phi1 = math.radians(lat1)
         phi2 = math.radians(lat2)
@@ -2824,20 +2861,50 @@ def measure_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> str:
 
 @tool
 def field_calculate(layer_name: str, expression: str, new_field: str, field_type: str = "float") -> str:
-    """计算并添加新字段到指定图层。expression 写 Python 表达式（如"面积*0.0015"），直接引用字段名。支持 abs/round/int/float/str/len/min/max/sum/pow。自动更新地图。"""
+    """计算并添加新字段到指定图层。field_type 可选 str/int/float（及 string/text/integer/double/number 别名）。expression 写 Python 表达式（如"面积*0.0015"），直接引用字段名。支持 abs/round/int/float/str/len/min/max/sum/pow。自动更新地图。"""
     try:
         layer_name, info, error = _get_exact_registered_layer(layer_name)
         if error:
             return error
+        if not isinstance(new_field, str) or not new_field.strip():
+            return "字段计算失败：新字段名不能为空"
+        if not isinstance(field_type, str):
+            return f"字段计算失败：不支持字段类型「{field_type}」，请选择 str、int 或 float"
+        field_type = field_type.lower().strip()
+        if field_type in ("string", "text"):
+            field_type = "str"
+        elif field_type == "integer":
+            field_type = "int"
+        elif field_type in ("double", "number"):
+            field_type = "float"
+        if field_type not in ("str", "int", "float"):
+            return f"字段计算失败：不支持字段类型「{field_type}」，请选择 str、int 或 float"
+        if new_field == "_fid":
+            return "字段计算失败：_fid 是要素稳定标识，不能覆盖"
+        if new_field == "geometry":
+            return "字段计算失败：geometry 是几何列，不能覆盖"
 
         import geopandas as gpd
         import pandas as pd
         import numpy as np
         import json
 
-        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        gdf = _geojson_to_export_gdf(info["geojson"])
         if gdf.empty:
             return f"图层 {layer_name} 为空"
+        if new_field in gdf.columns:
+            return f"字段计算失败：字段「{new_field}」已存在，不能覆盖；请使用新的字段名"
+
+        eval_gdf = gdf.copy(deep=True)
+        for column in eval_gdf.columns:
+            if column == "geometry":
+                continue
+            values = eval_gdf[column].tolist()
+            eval_gdf[column] = pd.Series(
+                [np.nan if pd.isna(value) else value for value in values],
+                index=eval_gdf.index,
+                dtype=object,
+            )
 
         safe_globals = {"__builtins__": {}}
         safe_locals = {
@@ -2848,30 +2915,50 @@ def field_calculate(layer_name: str, expression: str, new_field: str, field_type
         try:
             _fc_tree = ast.parse(expression, mode="eval")
             _validate_field_calculation_ast(
-                _fc_tree, set(gdf.columns) - {"geometry"}
+                _fc_tree, set(eval_gdf.columns) - {"geometry"}
             )
         except Exception as e:
             return f"表达式计算失败：{str(e)[:200]}"
 
         _fc_code = compile(_fc_tree, "<safe>", "eval")
         try:
-            result = gdf.eval(expression, local_dict=safe_locals, global_dict=safe_globals)
+            result = eval_gdf.eval(expression, local_dict=safe_locals, global_dict=safe_globals)
             gdf[new_field] = result
         except Exception:
             try:
-                result = gdf.apply(lambda row: eval(_fc_code, safe_globals, {**safe_locals, **row.to_dict()}), axis=1)
+                result = eval_gdf.apply(lambda row: eval(_fc_code, safe_globals, {**safe_locals, **row.to_dict()}), axis=1)
                 gdf[new_field] = result
             except Exception as e2:
                 return f"表达式计算失败：{str(e2)[:200]}"
 
-        if field_type == "int":
-            gdf[new_field] = gdf[new_field].astype(int, errors="ignore")
-        elif field_type == "str":
-            gdf[new_field] = gdf[new_field].astype(str)
+        if field_type in ("int", "float"):
+            def convert_field_value(value):
+                if value is None or pd.isna(value):
+                    return None
+                if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+                    return None
+                if field_type == "int":
+                    return int(value)
+                # Keep Python integers exact; converting values above 2**53 to
+                # float would silently corrupt GIS attributes during export.
+                if isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_)):
+                    return int(value)
+                return float(value)
 
-        # 类型转换保底
+            try:
+                gdf[new_field] = pd.Series(
+                    [convert_field_value(value) for value in gdf[new_field].tolist()],
+                    index=gdf.index,
+                    dtype=object,
+                )
+            except (TypeError, ValueError, OverflowError) as conversion_error:
+                return f"字段类型转换失败：无法将字段「{new_field}」转换为 {field_type}（{str(conversion_error)[:160]}）"
+        elif field_type == "str":
+            gdf[new_field] = gdf[new_field].map(lambda value: None if pd.isna(value) else str(value))
+
+        # 将非有限结果编码为 GeoJSON null，保留原有缺失值；不能把无效计算改写成有效的 0。
         try:
-            gdf[new_field] = gdf[new_field].replace([np.inf, -np.inf], np.nan).fillna(0)
+            gdf[new_field] = gdf[new_field].replace([np.inf, -np.inf], np.nan)
         except Exception:
             pass
 
@@ -3065,6 +3152,40 @@ def _safe_layer_export_stem(layer_name: str) -> str:
     return (stem[:100] or "layer")
 
 
+def _json_script_value(value) -> str:
+    """Serialize JSON embedded in a script element without raw HTML delimiters."""
+    return (json.dumps(value, ensure_ascii=False)
+            .replace("&", r"\u0026")
+            .replace("<", r"\u003c")
+            .replace(">", r"\u003e")
+            .replace("\u2028", r"\u2028")
+            .replace("\u2029", r"\u2029"))
+
+
+def _geojson_to_export_gdf(geojson: dict):
+    """Build a WGS-84 GeoDataFrame without pandas coercing mixed property values."""
+    import geopandas as gpd
+    import pandas as pd
+
+    features = geojson["features"]
+    gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+    property_rows = [
+        feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        for feature in features
+    ]
+    property_keys = list(dict.fromkeys(
+        key for properties in property_rows for key in properties
+        if key != "geometry"
+    ))
+    for key in property_keys:
+        gdf[key] = pd.Series(
+            [properties.get(key) for properties in property_rows],
+            index=gdf.index,
+            dtype=object,
+        )
+    return gdf
+
+
 @tool
 def export_layer(layer_name: str, format: str = "geojson") -> str:
     """导出指定矢量图层并提供下载链接。format 可选 geojson、shp、gpkg、csv、csv_xy；csv 只导出属性，csv_xy 导出属性及经纬度且仅支持 Point 要素。栅格图层当前不支持此导出工具。"""
@@ -3090,7 +3211,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
         # 直接保存 GeoJSON
         import datetime
         ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        fname = f"{safe_name}_{ts}.geojson"
+        fname = f"{safe_name}_{ts}_{uuid.uuid4().hex}.geojson"
         init_temp_dir()
         path = os.path.join(_temp_output_dir, fname)
         with open(path, "w", encoding="utf-8") as f:
@@ -3127,7 +3248,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             import tempfile, zipfile, shutil
             import datetime
 
-            gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+            gdf = _geojson_to_export_gdf(geojson)
             if gdf.empty:
                 return "图层为空，无法导出"
 
@@ -3151,7 +3272,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
                 gdf = gdf.rename(columns=rename_map)
 
             ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-            fname = f"{safe_name}_{ts}.zip"
+            fname = f"{safe_name}_{ts}_{uuid.uuid4().hex}.zip"
 
             tmp_dir = tempfile.mkdtemp(prefix="shp_export_")
             shp_base = os.path.join(tmp_dir, safe_name)
@@ -3196,12 +3317,12 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             import geopandas as gpd
             import datetime
 
-            gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+            gdf = _geojson_to_export_gdf(geojson)
             if gdf.empty:
                 return "图层为空，无法导出"
 
             ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-            fname = f"{safe_name}_{ts}.gpkg"
+            fname = f"{safe_name}_{ts}_{uuid.uuid4().hex}.gpkg"
 
             init_temp_dir()
             path = os.path.join(_temp_output_dir, fname)
@@ -3237,12 +3358,12 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             import pandas as pd
             import datetime
 
-            gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+            gdf = _geojson_to_export_gdf(geojson)
             if gdf.empty:
                 return "图层为空，无法导出"
 
             ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-            fname = f"{safe_name}_{ts}.csv"
+            fname = f"{safe_name}_{ts}_{uuid.uuid4().hex}.csv"
 
             init_temp_dir()
             path = os.path.join(_temp_output_dir, fname)
@@ -3279,20 +3400,33 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             import pandas as pd
             import datetime
 
-            gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs="EPSG:4326")
+            gdf = _geojson_to_export_gdf(geojson)
             if gdf.empty:
                 return "图层为空，无法导出"
             if not gdf.geometry.geom_type.eq("Point").all():
                 return "CSV坐标导出仅支持 Point 点要素；线或面请使用 GeoJSON、Shapefile 或 GeoPackage 格式"
 
             ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-            fname = f"{safe_name}_{ts}.csv"
+            fname = f"{safe_name}_{ts}_{uuid.uuid4().hex}.csv"
 
             init_temp_dir()
             path = os.path.join(_temp_output_dir, fname)
 
-            gdf["longitude"] = gdf.geometry.x
-            gdf["latitude"] = gdf.geometry.y
+            longitude_field = "longitude"
+            latitude_field = "latitude"
+            for field_name, base_name in ((longitude_field, "longitude"), (latitude_field, "latitude")):
+                if field_name in gdf.columns:
+                    candidate = "geometry_" + base_name
+                    suffix = 2
+                    while candidate in gdf.columns:
+                        candidate = f"geometry_{base_name}_{suffix}"
+                        suffix += 1
+                    if base_name == "longitude":
+                        longitude_field = candidate
+                    else:
+                        latitude_field = candidate
+            gdf[longitude_field] = gdf.geometry.x
+            gdf[latitude_field] = gdf.geometry.y
             attr_df = gdf.drop(columns=["geometry"], errors="ignore")
             attr_df.to_csv(path, index=False, encoding="utf-8-sig")
 
@@ -3317,7 +3451,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
                 return "CSV导出验证失败: " + "; ".join(_verr)
             record_tool_artifact(fname, path, artifact_type="file")
             return (f"CSV（含坐标）已生成：/output/{fname}"
-                    f"（{len(attr_df.columns)}列, {len(attr_df)}行，含longitude/latitude）")
+                    f"（{len(attr_df.columns)}列, {len(attr_df)}行，含{longitude_field}/{latitude_field}坐标列）")
         except Exception as e:
             return f"CSV 导出失败: {str(e)[:200]}"
 
@@ -3334,6 +3468,8 @@ def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
     """从图层属性数据生成 ECharts 统计图表。用户要看统计图表/分布时优先用本工具。
     chart_type 可选: bar(柱状图) pie(饼图) histogram(直方图) scatter(散点图) line(折线图)
     单字段统计传 field，双字段对比传 x_field+y_field。"""
+    if chart_type not in {"bar", "pie", "histogram", "scatter", "line"}:
+        return "图表生成失败：chart_type 仅支持 bar、pie、histogram、scatter、line"
     info = _registered_layers.get(layer_name)
     if not info:
         matches = [n for n in _registered_layers.keys() if layer_name in n]
@@ -3453,12 +3589,20 @@ def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
                 x_data_cfg = json.dumps(labels, ensure_ascii=False)
                 y_name_cfg = "数值"
 
+        import html as html_module
+        safe_title_html = html_module.escape(chart_title, quote=True)
+        chart_title_js = _json_script_value(chart_title)
+        chart_type_js = _json_script_value(chart_type)
+        y_name_js = _json_script_value(y_name_cfg)
+        series_cfg = _json_script_value(json.loads(series_cfg))
+        x_data_cfg = _json_script_value(json.loads(x_data_cfg))
+
         echarts_html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{chart_title}</title>
+<title>{safe_title_html}</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -3540,8 +3684,8 @@ def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
   var chart = echarts.init(document.getElementById('chart'), null, {{ renderer: 'svg' }});
   var seriesRaw = {series_cfg};
   var xData = {x_data_cfg};
-  var chartType = '{chart_type}';
-  var yAxisName = '{y_name_cfg}';
+  var chartType = {chart_type_js};
+  var yAxisName = {y_name_js};
 
   // 系列美化与渐变
   seriesRaw.forEach(function(s) {{
@@ -3587,7 +3731,7 @@ def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
     backgroundColor: 'transparent',
     color: colors.palette,
     title: {{
-      text: '{chart_title}',
+      text: {chart_title_js},
       left: 10,
       top: 8,
       textStyle: {{
@@ -3674,7 +3818,7 @@ def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
 
         # 保存 HTML 并推送到前端
         init_temp_dir()
-        fname = f"chart_{now_ts}.html"
+        fname = f"chart_{now_ts}_{uuid.uuid4().hex}.html"
         fpath = os.path.join(_temp_output_dir, fname)
         with open(fpath, "w", encoding="utf-8") as f:
             f.write(echarts_html)
@@ -4139,7 +4283,7 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
         if dissolve:
             gdf_utm = gpd.GeoDataFrame({"geometry": [gdf_utm.union_all()]}, geometry="geometry", crs=crs_utm)
         gdf_wgs = gdf_utm.to_crs("EPSG:4326")
-        result_name = f"{name}_缓冲区"
+        base_result_name = f"{name}_缓冲区"
         provenance = {
             "provider": "gis_worktable",
             "kind": "analysis_result",
@@ -4149,12 +4293,14 @@ def spatial_buffer(layer_name: str, distance: float, unit: str = "m", dissolve: 
                 "parameters": {"distance": float(distance), "unit": unit, "dissolve": bool(dissolve)},
             },
         }
-        _gdf_to_layer(gdf_wgs, result_name, style={
-            "color": "#2563eb", "fillColor": "#60a5fa",
-            "weight": 2, "opacity": 0.9, "fillOpacity": 0.06,
-        }, provenance=provenance)
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(gdf_wgs, result_name, style={
+                "color": "#2563eb", "fillColor": "#60a5fa",
+                "weight": 2, "opacity": 0.9, "fillOpacity": 0.06,
+            }, provenance=provenance)
         _note = robust_note(rstats, tier, _cstats)
-        return f"已为「{name}」创建{distance}{unit}缓冲区，{len(gdf_wgs)} 个要素，已加载到地图{_note}"
+        return f"已为「{name}」创建{distance}{unit}缓冲区，{len(gdf_wgs)} 个要素，图层「{result_name}」已加载到地图{_note}"
     except Exception as e:
         import traceback
         return f"缓冲区分析失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
@@ -4236,11 +4382,13 @@ def spatial_multi_ring_buffer(layer_name: str, distances: str, unit: str = "m", 
         merged = merged.to_crs("EPSG:4326")
 
         dist_str = "、".join(str(d) for d in dist_list)
-        result_name = f"{name}_多环{unit}"
-        _gdf_to_layer(merged, result_name)
+        base_result_name = f"{name}_多环{unit}"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(merged, result_name)
 
         return (f"已为「{name}」创建 {len(dist_list)} 个多环缓冲区：{dist_str} {unit}，"
-                f"共 {len(merged)} 个要素，已加载到地图")
+                f"共 {len(merged)} 个要素，图层「{result_name}」已加载到地图")
     except Exception as e:
         import traceback
         return f"多环缓冲区失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
@@ -4256,6 +4404,7 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
     unit 可选 m(米) 或 km(公里)。自动 UTM 投影保证距离精确。"""
     try:
         import geopandas as gpd
+        import math
         import warnings
 
         layer_name, info, error = _get_exact_registered_layer(layer_name)
@@ -4265,6 +4414,13 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
         gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
         if gdf.empty:
             return f"图层「{layer_name}」为空"
+
+        try:
+            dx, dy = float(dx), float(dy)
+        except (TypeError, ValueError, OverflowError):
+            return "移动要素失败：位移量必须是有限数值"
+        if not math.isfinite(dx) or not math.isfinite(dy):
+            return "移动要素失败：位移量必须是有限数值"
 
         if dx == 0 and dy == 0:
             return "位移量 dx 和 dy 不能同时为 0"
@@ -4332,7 +4488,7 @@ def rotate_features(layer_name: str, angle: float = 90) -> str:
     """旋转指定图层的所有要素。angle 为旋转角度（度），正数=逆时针，负数=顺时针。旋转中心为图层所有要素的几何中心。"""
     try:
         import geopandas as gpd
-        from shapely import affinity
+        import numpy as np
         import warnings
 
         layer_name, info, error = _get_exact_registered_layer(layer_name)
@@ -4343,20 +4499,36 @@ def rotate_features(layer_name: str, angle: float = 90) -> str:
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
+        try:
+            angle = float(angle)
+        except (TypeError, ValueError, OverflowError):
+            return "旋转要素失败：角度必须是有限数值"
+        if not np.isfinite(angle):
+            return "旋转要素失败：角度必须是有限数值"
+
+        bounds = gdf.total_bounds
+        extent_error = _local_utm_extent_error(bounds)
+        if extent_error:
+            return f"旋转要素失败: {extent_error}；未修改图层"
+        lon, lat = (bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2
+        metric_crs = _get_utm_crs(lon, lat)
+        gdf_metric = gdf.to_crs(metric_crs)
+
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            center = gdf.dissolve().centroid.iloc[0]
+            center = gdf_metric.dissolve().centroid.iloc[0]
 
-        gdf.geometry = gdf.geometry.rotate(angle, origin=(center.x, center.y), use_radians=False)
+        gdf_metric.geometry = gdf_metric.geometry.rotate(angle, origin=(center.x, center.y), use_radians=False)
+        gdf_result = gdf_metric.to_crs("EPSG:4326")
 
-        geojson_data = gdf.__geo_interface__
+        geojson_data = gdf_result.__geo_interface__
         geojson_data["name"] = layer_name
         _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         direction = "逆时针" if angle > 0 else "顺时针"
         return (f"已旋转图层「{layer_name}」{abs(angle)}°（{direction}），"
-                f"{len(gdf)} 个要素，已同步地图")
+                f"{len(gdf_result)} 个要素，已同步地图")
     except Exception as e:
         import traceback
         return f"旋转要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
@@ -4371,7 +4543,7 @@ def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) ->
     """缩放指定图层的所有要素。x_factor 为 X 轴缩放倍数，y_factor 为 Y 轴缩放倍数。缩放中心为图层几何中心。大于 1 放大，小于 1 缩小。"""
     try:
         import geopandas as gpd
-        from shapely import affinity
+        import math
         import warnings
 
         layer_name, info, error = _get_exact_registered_layer(layer_name)
@@ -4382,14 +4554,26 @@ def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) ->
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
-        if x_factor <= 0 or y_factor <= 0:
+        try:
+            x_factor, y_factor = float(x_factor), float(y_factor)
+        except (TypeError, ValueError, OverflowError):
+            return "缩放倍数必须是有限且大于 0 的数值"
+        if not math.isfinite(x_factor) or not math.isfinite(y_factor) or x_factor <= 0 or y_factor <= 0:
             return "缩放倍数必须大于 0"
 
+        bounds = gdf.total_bounds
+        extent_error = _local_utm_extent_error(bounds)
+        if extent_error:
+            return f"缩放要素失败: {extent_error}；未修改图层"
+        lon, lat = (bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2
+        gdf_metric = gdf.to_crs(_get_utm_crs(lon, lat))
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
-            center = gdf.dissolve().centroid.iloc[0]
+            center = gdf_metric.dissolve().centroid.iloc[0]
 
-        gdf.geometry = gdf.geometry.scale(xfact=x_factor, yfact=y_factor, origin=(center.x, center.y))
+        gdf_metric.geometry = gdf_metric.geometry.scale(
+            xfact=x_factor, yfact=y_factor, origin=(center.x, center.y))
+        gdf = gdf_metric.to_crs("EPSG:4326")
 
         geojson_data = gdf.__geo_interface__
         geojson_data["name"] = layer_name
@@ -4669,12 +4853,14 @@ def spatial_clip(layer_name: str, clip_layer: str) -> str:
             result = gpd.clip(gdf, clip_gdf)
         if result.empty:
             return f"裁剪后无剩余要素（「{name}」不在「{clip_name}」范围内）"
-        result_name = f"{name}_裁剪"
-        _gdf_to_layer(result, result_name, provenance={
-            "provider": "gis_worktable",
-            "kind": "analysis_result",
-            "processing": {"tool": "spatial_clip", "source_layer": name, "clip_layer": clip_name},
-        })
+        base_result_name = f"{name}_裁剪"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(result, result_name, provenance={
+                "provider": "gis_worktable",
+                "kind": "analysis_result",
+                "processing": {"tool": "spatial_clip", "source_layer": name, "clip_layer": clip_name},
+            })
         has_polygonal_result = result.geometry.geom_type.isin(["Polygon", "MultiPolygon"]).all()
         res_area = _gdf_area_km2(result) if has_polygonal_result else None
         src_area = _gdf_area_km2(gdf) if has_polygonal_result else None
@@ -4731,9 +4917,11 @@ def spatial_simplify(layer_name: str, tolerance: float = 0.001) -> str:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None: return name
         gdf["geometry"] = gdf.geometry.simplify(tolerance, preserve_topology=True)
-        result_name = f"{name}_简化"
-        _gdf_to_layer(gdf, result_name)
-        return f"已简化「{name}」（容差 {tolerance}），{len(gdf)} 个要素，已加载到地图"
+        base_result_name = f"{name}_简化"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(gdf, result_name)
+        return f"已简化「{name}」（容差 {tolerance}），{len(gdf)} 个要素，图层「{result_name}」已加载到地图"
     except Exception as e:
         return f"简化失败: {str(e)[:300]}"
 
@@ -4784,9 +4972,11 @@ def spatial_select(target_layer: str, source_layer: str, predicate: str = "inter
         result = result.loc[~result.index.duplicated(keep="first")]
         if result.empty:
             return f"没有要素满足「{predicate}」关系"
-        result_name = f"{name_t}_选择"
-        _gdf_to_layer(result, result_name)
-        return f"按「{predicate}」选择了 {len(result)}/{len(gdf_t)} 个要素，已加载到地图"
+        base_result_name = f"{name_t}_选择"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(result, result_name)
+        return f"按「{predicate}」选择了 {len(result)}/{len(gdf_t)} 个要素，图层「{result_name}」已加载到地图"
     except Exception as e:
         return f"空间选择失败: {str(e)[:300]}"
 
@@ -4818,9 +5008,11 @@ def spatial_sample(layer_name: str, n: int = 0, frac: float = 0) -> str:
             return "请指定 n（数量）或 frac（比例）"
         if sampled.empty:
             return "采样结果为空"
-        result_name = f"{name}_采样{n or frac}"
-        _gdf_to_layer(sampled, result_name)
-        return f"已随机采样 {len(sampled)}/{len(gdf)} 个要素，已加载到地图"
+        base_result_name = f"{name}_采样{n or frac}"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(sampled, result_name)
+        return f"已随机采样 {len(sampled)}/{len(gdf)} 个要素，图层「{result_name}」已加载到地图"
     except Exception as e:
         return f"采样失败: {str(e)[:300]}"
 
@@ -4850,6 +5042,9 @@ def spatial_near(layer_name: str, target_layer: str, distance: float = 1000) -> 
             geometry="geometry",
             crs=gdf.crs,
         )
+        extent_error = _local_utm_extent_error(combined.total_bounds)
+        if extent_error:
+            return f"近邻查找失败: {extent_error}"
         metric_crs = combined.estimate_utm_crs()
         if metric_crs is None:
             return "近邻查找失败: 无法根据两个图层范围确定局部米制投影"
@@ -4863,9 +5058,11 @@ def spatial_near(layer_name: str, target_layer: str, distance: float = 1000) -> 
         if hits.empty:
             return f"「{name_t}」中未找到距离「{name}」{distance}m 以内的要素"
         result = gdf_t.iloc[hits.index.unique()].copy()
-        result_name = f"{name_t}_附近"
-        _gdf_to_layer(result, result_name)
-        return f"找到 {len(result)} 个距离{distance}m 以内的要素，已加载到地图"
+        base_result_name = f"{name_t}_附近"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(result, result_name)
+        return f"找到 {len(result)} 个距离{distance}m 以内的要素，图层「{result_name}」已加载到地图"
     except Exception as e:
         return f"近邻查找失败: {str(e)[:300]}"
 
@@ -4931,6 +5128,9 @@ def nearest_pair(
             geometry="geometry",
             crs=left.crs,
         )
+        extent_error = _local_utm_extent_error(combined.total_bounds)
+        if extent_error:
+            return f"无法计算最近距离: {extent_error}"
         metric_crs = combined.estimate_utm_crs()
         if metric_crs is None:
             return "无法确定用于距离计算的局部投影坐标系"
@@ -5033,9 +5233,10 @@ def spatial_cluster(
         gdf["cluster"] = clustering.labels_.tolist()
         n_clusters = len(set(clustering.labels_)) - (1 if -1 in clustering.labels_ else 0)
         noise = list(clustering.labels_).count(-1)
-        result_name = f"{name}_聚类"
-        _gdf_to_layer(gdf, result_name)
-        return f"聚类完成：{n_clusters} 个簇，{noise} 个噪声点（eps={eps:g}{distance_unit}），已加载到地图（含 cluster 字段）"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(f"{name}_聚类")
+            _gdf_to_layer(gdf, result_name)
+        return f"聚类完成：{n_clusters} 个簇，{noise} 个噪声点（eps={eps:g}{distance_unit}），图层「{result_name}」已加载到地图（含 cluster 字段）"
     except Exception as e:
         return f"聚类失败: {str(e)[:300]}"
 
@@ -5046,7 +5247,10 @@ def spatial_cluster(
 
 @tool
 def spatial_voronoi(layer_name: str) -> str:
-    """根据点图层生成泰森多边形（Voronoi 图）。覆盖范围由输入点的凸包决定。"""
+    """根据点图层生成泰森多边形（Voronoi 图）。
+    输出面由 Shapely 根据输入点自动扩展的外包络范围裁切，并不等于输入点凸包；
+    如需限制到实际研究区，请再用研究区面执行空间相交或裁剪。
+    """
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None: return name
@@ -5203,6 +5407,8 @@ def spatial_join(target_layer: str, join_layer: str, how: str = "left", predicat
     - predicate: 空间拓扑谓词，例如 'intersects'(默认相交) / 'within'(在内部) / 'contains'(包含) / 'touches'(边界接触)。"""
     if predicate == "nearest":
         return "空间连接失败：nearest 不是可用的拓扑谓词。如需查找两图层最近的一对要素，请使用 nearest_pair。"
+    if how not in ("left", "inner"):
+        return "空间连接失败：how 仅支持 left（保留全部目标要素）或 inner（仅保留匹配要素）。"
     try:
         import geopandas as gpd
         gdf_t, name_t = _layer_to_gdf(target_layer)
@@ -5218,9 +5424,11 @@ def spatial_join(target_layer: str, join_layer: str, how: str = "left", predicat
                     suffix += 1
                 frame.rename(columns={"index_right": column}, inplace=True)
         result = gpd.sjoin(gdf_t, gdf_j, how=how, predicate=predicate)
-        result_name = f"{name_t}_连接{name_j}"
-        _gdf_to_layer(result, result_name)
-        return f"空间连接完成：{len(result)} 个要素，已加载到地图"
+        base_result_name = f"{name_t}_连接{name_j}"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(result, result_name)
+        return f"空间连接完成：{len(result)} 个要素，图层「{result_name}」已加载到地图"
     except Exception as e:
         return f"空间连接失败: {str(e)[:300]}"
 
@@ -5268,19 +5476,34 @@ def layer_split(layer_name: str, by_field: str = "") -> str:
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None: return name
-        if by_field and by_field in gdf.columns:
+
+        def register_part(group, base_name):
+            with _state_lock:
+                occupied_names = set(_registered_layers)
+                occupied_names.update(
+                    item.get("name") for item in _pending_layers
+                    if isinstance(item.get("name"), str)
+                )
+                result_name = base_name
+                suffix = 1
+                while result_name in occupied_names:
+                    result_name = f"{base_name}_{suffix}"
+                    suffix += 1
+                _gdf_to_layer(group, result_name)
+
+        if by_field and by_field not in gdf.columns:
+            return f"图层「{name}」不存在字段「{by_field}」，可用字段：{', '.join(map(str, gdf.columns))}"
+        if by_field:
             groups = gdf.groupby(by_field, dropna=False)
             count = 0
             for val, group in groups:
-                sub_name = f"{name}_{val}"
-                _gdf_to_layer(group, sub_name)
+                register_part(group, f"{name}_{val}")
                 count += 1
             return f"按字段「{by_field}」拆分为 {count} 个子图层（共 {len(gdf)} 个要素），已加载到地图"
         else:
             for i in range(len(gdf)):
                 sub = gdf.iloc[[i]].copy()
-                sub_name = f"{name}_{i}"
-                _gdf_to_layer(sub, sub_name)
+                register_part(sub, f"{name}_{i}")
             return f"已拆分为 {len(gdf)} 个独立要素图层，已加载到地图"
     except Exception as e:
         return f"图层拆分失败: {str(e)[:300]}"
@@ -5375,6 +5598,7 @@ def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, co
     method: 分级方法 equal_interval(等间距，默认) 或 quantile(分位数)；fill_opacity: 面填充透明度（0-1，默认0.35）。"""
     try:
         import geopandas as gpd
+        import numpy as np
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
@@ -5382,11 +5606,12 @@ def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, co
         if field not in gdf.columns:
             return f"图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
 
-        if not gdf[field].dtype.kind in ('i', 'f'):
+        if gdf[field].dtype.kind not in ('i', 'u', 'f'):
             return f"字段「{field}」不是数值类型（{gdf[field].dtype}），分级色彩仅支持数值字段"
 
         n_classes = max(2, min(20, n_classes if n_classes else 5))
         values = gdf[field].dropna()
+        values = values[np.isfinite(values.to_numpy(dtype=float, na_value=np.nan))]
         if values.empty:
             return f"字段「{field}」无有效数值"
 
@@ -5415,6 +5640,9 @@ def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, co
         else:
             step = (vmax - vmin) / n_classes
             breaks = [vmin + i * step for i in range(n_classes + 1)]
+        # Floating-point step accumulation can leave the final break a few
+        # ulps below vmax, causing the browser to assign the maximum to no class.
+        breaks[0], breaks[-1] = vmin, vmax
         try:
             fill_opacity = max(0.0, min(1.0, float(fill_opacity)))
         except (TypeError, ValueError):
@@ -5579,7 +5807,7 @@ def update_attribute(layer_name: str, field: str, value: str, condition_field: s
             cond_kind = gdf[condition_field].dtype.kind
             try:
                 if cond_kind in ('i', 'u', 'f'):
-                    cond_value = float(condition_value)
+                    cond_value = _parse_numeric_condition(condition_value, cond_kind)
                 elif cond_kind == 'b':
                     normalized = str(condition_value).strip().casefold()
                     cond_value = normalized == "true" if normalized in ("true", "false") else condition_value
@@ -5640,7 +5868,7 @@ def delete_features(layer_name: str, condition_field: str = "", condition_value:
         cond_kind = gdf[condition_field].dtype.kind
         try:
             if cond_kind in ('i', 'u', 'f'):
-                cond_val = float(condition_value)
+                cond_val = _parse_numeric_condition(condition_value, cond_kind)
             elif cond_kind == 'b':
                 normalized = str(condition_value).strip().casefold()
                 cond_val = normalized == "true" if normalized in ("true", "false") else condition_value
@@ -5774,6 +6002,13 @@ def delete_field(layer_name: str, field_name: str) -> str:
 # 工具: spatial_select_by_attribute — 按属性选择
 # ============================================================
 
+def _parse_numeric_condition(value, dtype_kind):
+    text = str(value).strip()
+    if dtype_kind in ("i", "u") and re.fullmatch(r"[+-]?\d+", text):
+        return int(text)
+    return float(text)
+
+
 @tool
 def spatial_select_by_attribute(layer_name: str, field: str, operator: str, value: str) -> str:
     """按属性条件选择要素。支持操作符：=(等于) / !=(不等于) / >(大于) / >=(大于等于) / <(小于) / <=(小于等于) / like(包含) / between(介于,值格式"min,max")。
@@ -5802,7 +6037,7 @@ def spatial_select_by_attribute(layer_name: str, field: str, operator: str, valu
             return f"不支持的操作符「{operator}」，支持：= != > >= < <= like between"
 
         field_data = gdf[field]
-        is_numeric = field_data.dtype.kind in ('i', 'f')
+        is_numeric = field_data.dtype.kind in ('i', 'u', 'f')
 
         if op_norm == "like":
             mask = field_data.astype(str).str.contains(value, case=False, na=False, regex=False)
@@ -5811,7 +6046,7 @@ def spatial_select_by_attribute(layer_name: str, field: str, operator: str, valu
             if len(parts) != 2:
                 return "between 格式为「min,max」，如「0,100」"
             try:
-                vmin, vmax = float(parts[0]), float(parts[1])
+                vmin, vmax = (_parse_numeric_condition(part, field_data.dtype.kind) for part in parts)
             except ValueError:
                 return f"between 值必须为数字，当前：{value}"
             if not is_numeric:
@@ -5820,7 +6055,7 @@ def spatial_select_by_attribute(layer_name: str, field: str, operator: str, valu
         else:
             if is_numeric:
                 try:
-                    v = float(value)
+                    v = _parse_numeric_condition(value, field_data.dtype.kind)
                 except ValueError:
                     return f"字段「{field}」为数值类型，但条件值「{value}」无法转为数字"
                 if op_norm == "eq":
@@ -5991,10 +6226,8 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
         from PIL import Image
         out_name = f"{layer_name}_{analysis}"
         with rasterio.open(tif_path) as src:
-            dem = src.read(1).astype(np.float64)
-            nodata = src.nodata
-            if nodata is not None:
-                dem[dem == nodata] = np.nan
+            dem = src.read(1, masked=True).astype(np.float64).filled(np.nan)
+            dem[~np.isfinite(dem)] = np.nan
             transform = src.transform
             source_crs = src.crs
             source_width, source_height = src.width, src.height
@@ -6065,7 +6298,7 @@ def dem_analysis(layer_name: str, analysis: str = "slope") -> str:
         # gradient in ground coordinates before calculating slope or aspect.
         dzdx = (y_row * dzdcol - y_col * dzdrow) / determinant
         dzdy = (-x_row * dzdcol + x_col * dzdrow) / determinant
-        valid = np.isfinite(dzdx) & np.isfinite(dzdy)
+        valid = np.isfinite(dzdx) & np.isfinite(dzdy) & np.isfinite(dem)
         if analysis == "slope":
             data = np.degrees(np.arctan(np.sqrt(dzdx**2 + dzdy**2)))
             data[~valid] = np.nan
@@ -6170,12 +6403,10 @@ def ndvi_analysis(layer_name: str, red_band: int = 3, nir_band: int = 4) -> str:
         with rasterio.open(tif_path) as src:
             if src.count < max(red_band, nir_band):
                 return f"文件只有{src.count}个波段，无法读取波段{max(red_band, nir_band)}"
-            red = src.read(red_band).astype(np.float64)
-            nir = src.read(nir_band).astype(np.float64)
-            nodata = src.nodata
-            if nodata is not None:
-                red[red == nodata] = np.nan
-                nir[nir == nodata] = np.nan
+            red = src.read(red_band, masked=True).astype(np.float64).filled(np.nan)
+            nir = src.read(nir_band, masked=True).astype(np.float64).filled(np.nan)
+            red[~np.isfinite(red)] = np.nan
+            nir[~np.isfinite(nir)] = np.nan
             source_tags = {key.upper(): value for key, value in src.tags().items()}
             source_label = source_tags.get("SOURCE_LABEL") or source_tags.get("SOURCE")
             bounds = list(src.bounds)
@@ -6242,10 +6473,8 @@ def raster_calculator(layer_name: str, expression: str) -> str:
                         "超过单次处理上限（400 万像元或 1600 万波段像元）；请先裁剪或重采样")
             bands = {}
             for i in range(1, src.count + 1):
-                b = src.read(i).astype(np.float64)
-                nodata = src.nodata
-                if nodata is not None:
-                    b[b == nodata] = np.nan
+                b = src.read(i, masked=True).astype(np.float64).filled(np.nan)
+                b[~np.isfinite(b)] = np.nan
                 bands[f"B{i}"] = b
             source_tags = {key.upper(): value for key, value in src.tags().items()}
             source_label = source_tags.get("SOURCE_LABEL") or source_tags.get("SOURCE")
@@ -6290,7 +6519,7 @@ def raster_calculator(layer_name: str, expression: str) -> str:
             if np.any(nan_mask):
                 rgb[nan_mask] = 0
         img = Image.fromarray(rgb)
-        out_name = f"{layer_name}_calc"
+        out_name = f"{layer_name}_calc_{uuid.uuid4().hex}"
         raster_path = _write_raster_output(tif_path, out_name, result, metadata={
             "SOURCE_LAYER": layer_name, "SOURCE_LABEL": source_label or "GIS WorkTable 栅格分析",
             "PROCESSING": f"栅格计算: {expression}",
@@ -6439,7 +6668,11 @@ def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
         import rasterio
         from rasterio.transform import from_bounds
         transform = from_bounds(xmin - pad_x, ymin - pad_y, xmax + pad_x, ymax + pad_y, resolution, resolution)
-        out_name = os.path.basename(f"{name}_{method}")
+        base_out_name = os.path.basename(f"{name}_{method}")
+        # Use a per-run unique namespace before writing. Both output paths derive
+        # from this name, so concurrent calls cannot share their TIFF or PNG.
+        with _state_lock:
+            out_name = _disambiguate_layer_name(f"{base_out_name}_{uuid.uuid4().hex}")
         raster_path = os.path.join(_raster_output_dir(), out_name + ".tif")
         raster_values = np.where(np.isfinite(z), z, np.nan).astype("float32")
         with rasterio.open(
@@ -6456,7 +6689,7 @@ def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
                 source_layer=name, source_label="空间插值",
                 quality_warnings=["范围为样本点外接区域扩展 5%；区域外结果属于外推，解释时请谨慎"],
             )
-        return (f"已生成并注册 {method.upper()} 插值栅格（{resolution}×{resolution}），"
+        return (f"已生成并注册 {method.upper()} 插值栅格「{out_name}」（{resolution}×{resolution}），"
                 f"值范围 [{vmin:.2f}, {vmax:.2f}]；字段单位未提供")
     except Exception as e:
         import traceback
@@ -6467,37 +6700,46 @@ def spatial_interpolate(layer_name: str, field: str, method: str = "idw",
 # 工具: hydrology_analysis — 水文分析
 # ============================================================
 
-def _fill_sinks(dem, max_iter: int = 500):
-    """填洼：迭代抬升局部洼地，使每个单元都有下坡去处（水文分析前置步骤）。
+def _fill_sinks(dem):
+    """Priority-Flood 填洼，只抬升高程并为平地建立微小排水坡度。
 
-    约定（与原实现的关键区别）：
-    - 只抬高、绝不降低任何栅格值——原地不低于邻域的单元保持不变；
-      原实现用 `filled[i,j] > min_nbr` 判定，会把高于邻域的单元降到最低邻域，
-      等价于反复做 3x3 最小值滤波（形态学腐蚀），会把 DEM 整体抹平到全局最低点。
-    - 边界与 nodata 不参与抬升：边界视为出水口，nodata 视为屏障。
-
-    返回 float64 数组（nodata 位置保持 NaN）。
+    有效栅格外边界及 NoData 洞边缘作为局部出水边界；不把 NoData 像元纳入
+    排水路径。返回 float64 数组，NoData 位置保持 NaN。
     """
     import numpy as np
+    import heapq
     filled = dem.astype(np.float64).copy()
     ny, nx = filled.shape
-    if ny < 3 or nx < 3:
-        return filled
-    EPS = 1e-6
-    for _ in range(max_iter):
-        prev = filled.copy()
-        inner = filled[1:-1, 1:-1]
-        neigh = np.stack([
-            filled[:-2, 1:-1], filled[2:, 1:-1], filled[1:-1, :-2], filled[1:-1, 2:],
-            filled[:-2, :-2], filled[:-2, 2:], filled[2:, :-2], filled[2:, 2:],
-        ])
-        neigh = np.where(np.isfinite(neigh), neigh, np.inf)
-        min_nbr = neigh.min(axis=0)
-        # 仅抬升"低于最低邻域"的洼地单元
-        raise_mask = np.isfinite(inner) & np.isfinite(min_nbr) & (inner < min_nbr)
-        filled[1:-1, 1:-1] = np.where(raise_mask, min_nbr + EPS, inner)
-        if np.allclose(filled, prev, atol=1e-9, equal_nan=True):
-            break
+    valid = np.isfinite(filled)
+    visited = np.zeros((ny, nx), dtype=bool)
+    frontier = []
+    neighbors = ((-1, -1), (-1, 0), (-1, 1), (0, -1),
+                 (0, 1), (1, -1), (1, 0), (1, 1))
+
+    # Seed all valid cells on the raster edge and around NoData barriers.
+    for row, col in np.argwhere(valid):
+        row, col = int(row), int(col)
+        boundary = row == 0 or row == ny - 1 or col == 0 or col == nx - 1
+        if not boundary:
+            boundary = any(not valid[row + dy, col + dx] for dy, dx in neighbors)
+        if boundary:
+            visited[row, col] = True
+            heapq.heappush(frontier, (filled[row, col], row, col))
+
+    while frontier:
+        elevation, row, col = heapq.heappop(frontier)
+        increment = max(1e-6, abs(elevation) * np.finfo(np.float64).eps)
+        next_elevation = elevation + increment
+        if next_elevation <= elevation:
+            next_elevation = np.nextafter(elevation, np.inf)
+        for dy, dx in neighbors:
+            nr, nc = row + dy, col + dx
+            if (nr < 0 or nr >= ny or nc < 0 or nc >= nx
+                    or visited[nr, nc] or not valid[nr, nc]):
+                continue
+            visited[nr, nc] = True
+            filled[nr, nc] = max(float(dem[nr, nc]), float(next_elevation))
+            heapq.heappush(frontier, (filled[nr, nc], nr, nc))
     return filled
 
 
@@ -6510,6 +6752,12 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
     layer_name为上传DEM时创建的图层名。"""
     try:
         import numpy as np
+        if analysis not in {"flowdir", "flowacc", "streamnet"}:
+            return f"不支持的analysis类型: {analysis}，可选: flowdir/flowacc/streamnet"
+        if analysis == "streamnet" and (
+            isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1
+        ):
+            return "河网提取失败: threshold 阈值必须是正整数"
         upload_dir = _raster_output_dir()
         tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
@@ -6521,11 +6769,11 @@ def hydrology_analysis(layer_name: str, analysis: str = "flowacc",
                 return "水文分析要求输入 GeoTIFF 带有有效 CRS；请先定义 CRS 后重新上传"
             src_crs = src.crs
             transform = src.transform
-            dem = src.read(1).astype(np.float64)
-            nodata = src.nodata
-            if nodata is not None:
-                dem[dem == nodata] = np.nan
+            dem = src.read(1, masked=True).astype(np.float64).filled(np.nan)
+            dem[~np.isfinite(dem)] = np.nan
         ny, nx = dem.shape
+        if not np.isfinite(dem).any():
+            return "水文分析失败: DEM 没有有效高程像元"
         filled = _fill_sinks(dem)
         # D8 流向编码（1=E,2=NE,4=N,8=NW,16=W,32=SW,64=S,128=SE）
         # 使用简化编码: 0=E,1=NE,2=N,3=NW,4=W,5=SW,6=S,7=SE
@@ -6785,10 +7033,8 @@ def view_3d_terrain(layer_name: str, exaggeration: float = 2.0) -> str:
         from rasterio.warp import transform_bounds
         import numpy as np
         with rasterio.open(tif_path) as src:
-            dem = src.read(1).astype(np.float64)
-            nodata = src.nodata
-            if nodata is not None:
-                dem[dem == nodata] = np.nan
+            dem = src.read(1, masked=True).astype(np.float64).filled(np.nan)
+            dem[~np.isfinite(dem)] = np.nan
             transform = src.transform
             bounds_wgs84 = list(src.bounds)
             if src.crs and src.crs.to_string() != 'EPSG:4326':
@@ -7015,10 +7261,8 @@ def terrain_profile(layer_name: str, line_coords: str) -> str:
         distances = np.array(distances)
         # 从DEM采样高程
         with rasterio.open(tif_path) as src:
-            dem = src.read(1).astype(np.float64)
-            nodata = src.nodata
-            if nodata is not None:
-                dem[dem == nodata] = np.nan
+            dem = src.read(1, masked=True).astype(np.float64).filled(np.nan)
+            dem[~np.isfinite(dem)] = np.nan
             transform = src.transform
         elevations = []
         for pt in sample_pts:
@@ -7194,29 +7438,36 @@ def extract_contours(layer_name: str, interval: float = 0) -> str:
         import numpy as np
         from skimage import measure
         with rasterio.open(tif_path) as src:
-            dem = src.read(1).astype(np.float64)
-            nodata = src.nodata
-            if nodata is not None:
-                dem[dem == nodata] = np.nan
+            dem = src.read(1, masked=True).astype(np.float64).filled(np.nan)
+            dem[~np.isfinite(dem)] = np.nan
             transform = src.transform
             bounds = list(src.bounds)
+            to_wgs84 = None
             if src.crs and src.crs.to_string() != 'EPSG:4326':
+                from pyproj import Transformer
+                to_wgs84 = Transformer.from_crs(src.crs, "EPSG:4326", always_xy=True)
                 bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
+        if not np.isfinite(dem).any():
+            return "等高线提取失败: DEM 没有有效高程像元"
         ny, nx = dem.shape
         vmin, vmax = np.nanmin(dem), np.nanmax(dem)
         drange = vmax - vmin
         if interval <= 0:
             interval = max(round(drange / 15, -1), 1) if drange > 10 else drange / 15
+        if not math.isfinite(interval) or interval <= 0 or not math.isfinite(drange) or drange <= 0:
+            return "等高线提取失败: DEM 没有有效起伏，无法生成等高线"
         levels = np.arange(vmin, vmax + interval, interval)
         features = []
         for level in levels:
-            for seg in measure.find_contours(dem, level):
+            for seg in measure.find_contours(dem, level, mask=np.isfinite(dem)):
                 if len(seg) < 2:
                     continue
                 coords = []
                 for row, col in seg:
                     x = transform[2] + (col + 0.5) * transform[0] + (row + 0.5) * transform[1]
                     y = transform[5] + (col + 0.5) * transform[3] + (row + 0.5) * transform[4]
+                    if to_wgs84 is not None:
+                        x, y = to_wgs84.transform(x, y)
                     coords.append([round(x, 6), round(y, 6)])
                 features.append({
                     "type": "Feature",
@@ -7275,14 +7526,16 @@ def convert_crs(layer_name: str, target_crs: str = "wgs84") -> str:
             "mercator": "EPSG:3857",
             "gcj02": "EPSG:4326",  # 本系统全面使用WGS84，GCJ02暂不做偏移转换
         }
-        target = epsg_map.get(target_crs.lower(), target_crs)
-        if target.startswith("utm"):
-            pts = gdf.geometry.representative_point()
-            avg_lon = pts.x.mean()
-            avg_lat = pts.y.mean()
-            zone = int((avg_lon + 180) / 6) + 1
-            epsg = 32600 if avg_lat >= 0 else 32700
-            target = f"EPSG:{epsg + zone}"
+        target_key = target_crs.strip().lower()
+        target = epsg_map.get(target_key, target_crs.strip())
+        if target_key in ("utm_auto", "utm"):
+            extent_error = _local_utm_extent_error(gdf.total_bounds)
+            if extent_error:
+                return f"坐标系转换失败: {extent_error}"
+            bounds = gdf.total_bounds
+            center_lon = (bounds[0] + bounds[2]) / 2
+            center_lat = (bounds[1] + bounds[3]) / 2
+            target = _get_utm_crs(center_lon, center_lat)
         if gdf.crs and gdf.crs.to_string() == target:
             return f"图层 '{name}' 已经是 {target_crs} 坐标系"
         if not gdf.crs and target == "EPSG:4326":
@@ -7305,52 +7558,72 @@ def convert_coordinates(coords: str, source_crs: str = "wgs84",
     source_crs/target_crs支持: wgs84, web_mercator, utm_auto。
     返回转换后的坐标对。"""
     try:
+        import math
         import pyproj
 
-        def _resolve_crs(name: str, first_lng=None) -> str:
-            """CRS 别名 → EPSG；utm_auto 按第一个点经度落带"""
+        def _resolve_crs(name: str) -> str:
+            """CRS 别名 → EPSG；源 UTM 必须提供明确分带。"""
             n = str(name).lower().strip()
             m = {"wgs84": "EPSG:4326", "mercator": "EPSG:3857",
                  "web_mercator": "EPSG:3857", "gcj02": "EPSG:4326"}
             if n in m:
                 return m[n]
             if n in ("utm_auto", "utm"):
-                if first_lng is None:
-                    raise ValueError("utm_auto 需要至少一个坐标来推算投影带")
-                zone = int((first_lng + 180) / 6) + 1
-                return f"EPSG:{32600 + zone}"   # 北半球 UTM
-            return name
+                raise ValueError("源坐标为 UTM 时需指定 EPSG 分带（例如 EPSG:32719），不能使用 utm_auto")
+            return str(name).strip()
 
-        parts_raw = coords.replace("，", ",").replace("；", ";").split(";")
-        first_lng = None
-        for part in parts_raw:
-            xy = part.strip().split(",")
-            if len(xy) == 2:
-                try:
-                    v0, v1 = float(xy[0]), float(xy[1])
-                    if -180 <= v0 <= 180 and -90 <= v1 <= 90:
-                        first_lng = v0
-                        break
-                except ValueError:
-                    continue
-        p1 = _resolve_crs(source_crs, first_lng)
-        p2 = _resolve_crs(target_crs, first_lng)
-        if p1 == p2:
-            return f"源和目标CRS相同: {source_crs} = {target_crs}, 无需转换"
-        transformer = pyproj.Transformer.from_crs(p1, p2, always_xy=True)
-        results = []
+        parts_raw = str(coords or "").replace("，", ",").replace("；", ";").split(";")
+        parsed = []
         for part in parts_raw:
             xy = part.strip().split(",")
             if len(xy) != 2:
-                continue
+                raise ValueError("坐标格式错误，请输入 lng,lat 或 lng1,lat1;lng2,lat2")
             try:
-                lng, lat = float(xy[0].strip()), float(xy[1].strip())
-                x2, y2 = transformer.transform(lng, lat)
-                results.append(f"{x2:.6f},{y2:.6f}")
-            except Exception:
-                continue
-        if not results:
-            return "坐标格式错误，请输入 lng,lat 或 lng1,lat1;lng2,lat2"
+                x, y = float(xy[0].strip()), float(xy[1].strip())
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("坐标格式错误，请输入有效数字坐标") from exc
+            if not math.isfinite(x) or not math.isfinite(y):
+                raise ValueError("坐标必须是有限数值")
+            parsed.append((x, y))
+
+        p1 = _resolve_crs(source_crs)
+        source_definition = pyproj.CRS.from_user_input(p1)
+        if source_definition.is_geographic and any(
+            not -180 <= x <= 180 or not -90 <= y <= 90 for x, y in parsed
+        ):
+            raise ValueError("源坐标超出有效经纬度范围（经度 -180°–180°，纬度 -90°–90°）")
+        target_key = str(target_crs).lower().strip()
+        if target_key in ("utm_auto", "utm"):
+            to_wgs84 = pyproj.Transformer.from_crs(p1, "EPSG:4326", always_xy=True)
+            geographic = [to_wgs84.transform(x, y, errcheck=True) for x, y in parsed]
+            if any(not math.isfinite(lon) or not math.isfinite(lat)
+                   or not -180 <= lon <= 180 or not -90 <= lat <= 90
+                   for lon, lat in geographic):
+                raise ValueError("坐标转换后超出 WGS84 经纬度有效范围")
+            bounds = (
+                min(point[0] for point in geographic), min(point[1] for point in geographic),
+                max(point[0] for point in geographic), max(point[1] for point in geographic),
+            )
+            extent_error = _local_utm_extent_error(bounds)
+            if extent_error:
+                raise ValueError(extent_error)
+            center_lon = (bounds[0] + bounds[2]) / 2
+            center_lat = (bounds[1] + bounds[3]) / 2
+            p2 = _get_utm_crs(center_lon, center_lat)
+        else:
+            p2 = _resolve_crs(target_crs)
+        if p1 == p2:
+            return f"源和目标CRS相同: {source_crs} = {target_crs}, 无需转换"
+        transformer = pyproj.Transformer.from_crs(p1, p2, always_xy=True)
+        target_is_geographic = pyproj.CRS.from_user_input(p2).is_geographic
+        results = []
+        for x, y in parsed:
+            x2, y2 = transformer.transform(x, y, errcheck=True)
+            if not math.isfinite(x2) or not math.isfinite(y2):
+                raise ValueError("转换结果包含非有限坐标")
+            if target_is_geographic and (not -180 <= x2 <= 180 or not -90 <= y2 <= 90):
+                raise ValueError("目标经纬度超出有效范围")
+            results.append(f"{x2:.6f},{y2:.6f}")
         return f"{source_crs}→{target_crs}: {'; '.join(results)}"
     except Exception as e:
         return f"坐标转换失败: {str(e)[:200]}"
@@ -7375,6 +7648,7 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
         import geopandas as gpd
         import rasterio
         from rasterio.mask import mask as rio_mask
+        from rasterio.transform import array_bounds
         from rasterio.warp import transform_bounds
         import numpy as np
         from PIL import Image
@@ -7403,10 +7677,6 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
             return "裁剪面必须是面要素"
 
         with rasterio.open(tif_path) as src:
-            bounds = list(src.bounds)
-            if src.crs and src.crs.to_string() != 'EPSG:4326':
-                bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
-
             # 将裁剪面转为栅格 CRS
             if src.crs and src.crs.to_string() != 'EPSG:4326':
                 clip_gdf_proj = clip_gdf.to_crs(src.crs)
@@ -7417,43 +7687,66 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
             geoms = [g for g in clip_gdf_proj.geometry.values if not g.is_empty]
 
             try:
-                out_image, out_transform = rio_mask(src, geoms, crop=True, nodata=0)
+                out_image, out_transform = rio_mask(src, geoms, crop=True, filled=False)
             except Exception:
                 return f"裁剪失败：裁剪面与栅格无重叠或几何无效"
 
             if out_image.shape[1] == 0 or out_image.shape[2] == 0:
                 return "裁剪结果为空：裁剪面与栅格无重叠区域"
 
+            bounds = list(array_bounds(out_image.shape[1], out_image.shape[2], out_transform))
+            if src.crs and src.crs.to_string() != 'EPSG:4326':
+                bounds = list(transform_bounds(src.crs, 'EPSG:4326', *bounds))
+
             # 处理波段
             if out_image.shape[0] == 1:
-                data = out_image[0].astype(np.float64)
-                valid = data > 0
+                masked_band = np.ma.asarray(out_image[0])
+                data = np.asarray(masked_band.data, dtype=np.float64)
+                valid = ~np.ma.getmaskarray(masked_band) & np.isfinite(data)
                 if not np.any(valid):
                     return "裁剪结果为空"
                 vmin, vmax = np.nanmin(data[valid]), np.nanmax(data[valid])
                 import matplotlib
                 cmap_obj = matplotlib.colormaps['viridis']
-                norm_data = np.clip((data - vmin) / (vmax - vmin + 1e-10), 0, 1)
+                if vmax > vmin:
+                    norm_data = np.clip((data - vmin) / (vmax - vmin), 0, 1)
+                else:
+                    norm_data = np.full(data.shape, 0.5, dtype=np.float64)
                 norm_data[~valid] = 0
                 rgba = cmap_obj(norm_data)
-                rgb = (rgba[:,:,:3] * 255).astype(np.uint8)
+                rgba[:, :, 3] = valid.astype(np.float64)
+                rgb = (rgba[:, :, :3] * 255).astype(np.uint8)
+                alpha = (valid.astype(np.uint8) * 255)
             else:
                 # 多波段：取前3波段合成RGB
                 bands = []
+                band_validity = []
                 for i in range(min(3, out_image.shape[0])):
-                    b = out_image[i].astype(np.float64)
-                    p2, p98 = np.percentile(b[b > 0], [2, 98]) if np.any(b > 0) else (0, 1)
+                    masked_band = np.ma.asarray(out_image[i])
+                    b = np.asarray(masked_band.data, dtype=np.float64)
+                    valid_band = ~np.ma.getmaskarray(masked_band) & np.isfinite(b)
+                    band_validity.append(valid_band)
+                    p2, p98 = np.percentile(b[valid_band], [2, 98]) if np.any(valid_band) else (0, 1)
                     if p98 > p2:
                         b = np.clip((b - p2) / (p98 - p2) * 255, 0, 255).astype(np.uint8)
                     else:
                         b = np.zeros_like(b, dtype=np.uint8)
+                    b[~valid_band] = 0
                     bands.append(b)
                 while len(bands) < 3:
                     bands.append(np.zeros_like(bands[0], dtype=np.uint8))
                 rgb = np.stack(bands, axis=-1)
+                alpha = (np.logical_and.reduce(band_validity).astype(np.uint8) * 255)
 
-            img = Image.fromarray(rgb)
-            out_name = output_name or f"{layer_name}_clip_{clip_layer_name}"
+            rgba_image = np.dstack((rgb, alpha))
+            img = Image.fromarray(rgba_image)
+            if output_name:
+                out_name = os.path.basename(str(output_name).replace("\\", "/"))
+                out_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', out_name).strip(' .')
+                if not out_name:
+                    return "输出图层名称无效"
+            else:
+                out_name = f"{layer_name}_clip_{clip_layer_name}"
             out_path = os.path.join(upload_dir, f"{out_name}.png")
             img.save(out_path)
 
@@ -7916,11 +8209,13 @@ def spatial_moran(layer_name: str, field: str, weight_type: str = "distance",
                     cluster.append("NS")
             gdf["local_moran"] = np.round(local_I, 6)
             gdf["cluster_type"] = cluster
-            result_name = f"{name}_MoranI"
-            _gdf_to_layer(gdf, result_name)
+            base_result_name = f"{name}_MoranI"
+            with _state_lock:
+                result_name = _disambiguate_layer_name(base_result_name)
+                _gdf_to_layer(gdf, result_name)
             hh = cluster.count("HH"); ll = cluster.count("LL")
             hl = cluster.count("HL"); lh = cluster.count("LH")
-            return summary + f"\n局部 LISA 已加载到地图：HH热点={hh}，LL冷点={ll}，HL异常={hl}，LH异常={lh}"
+            return summary + f"\n局部 LISA 结果图层「{result_name}」已加载到地图：HH热点={hh}，LL冷点={ll}，HL异常={hl}，LH异常={lh}"
         return summary
     except Exception as e:
         return f"Moran's I 分析失败: {str(e)[:300]}"
@@ -8002,10 +8297,12 @@ def spatial_hotspot(layer_name: str, field: str, threshold: float = 0.01,
         gdf["gi_z"] = np.round(gi_z, 4)
         gdf["gi_p"] = np.round(gi_p, 6)
         gdf["hotspot_type"] = htype
-        result_name = f"{name}_热点"
-        _gdf_to_layer(gdf, result_name)
+        base_result_name = f"{name}_热点"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(gdf, result_name)
         hot = htype.count("热点"); cold = htype.count("冷点")
-        return f"Getis-Ord Gi* 热点分析完成：热点={hot} 个，冷点={cold} 个，不显著={n-hot-cold} 个。已加载到地图（含 gi_z / gi_p / hotspot_type 字段）"
+        return f"Getis-Ord Gi* 热点分析完成：热点={hot} 个，冷点={cold} 个，不显著={n-hot-cold} 个。结果图层「{result_name}」已加载到地图（含 gi_z / gi_p / hotspot_type 字段）"
     except Exception as e:
         return f"热点分析失败: {str(e)[:300]}"
 
@@ -8116,8 +8413,10 @@ def spatial_kde(layer_name: str, bandwidth: float = 0.0, grid_size: int = 50,
         )
         if metric_mode:
             grid_gdf = grid_gdf.to_crs("EPSG:4326")
-        result_name = f"{name}_KDE"
-        _gdf_to_layer(grid_gdf, result_name)
+        base_result_name = f"{name}_KDE"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(grid_gdf, result_name)
         _cell = (xi[-1] - xi[0]) / max(grid_size - 1, 1)
         if metric_mode:
             bandwidth_text = f"{h / 1000:.2f} km"
@@ -8170,9 +8469,8 @@ def _calc_spectral_index(layer_name: str, formula_name: str, calc_fn, cmap_name:
             bands = {}
             for bname, bidx in band_map.items():
                 if src.count >= bidx:
-                    arr = src.read(bidx).astype(np.float64)
-                    if src.nodata is not None:
-                        arr[arr == src.nodata] = np.nan
+                    arr = src.read(bidx, masked=True).astype(np.float64).filled(np.nan)
+                    arr[~np.isfinite(arr)] = np.nan
                     bands[bname] = arr
             bounds = list(src.bounds)
             if src.crs and src.crs.to_string() != "EPSG:4326":
@@ -8381,7 +8679,9 @@ def generate_analysis_report(layer_name: str, analysis_summary: str = "",
         try:
             import io as _io
             import datetime as _dt2
-            fname = f"{name}_分析报告_{_dt2.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+            safe_layer_name = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', '_', name).strip(' .') or 'layer'
+            fname = (f"{safe_layer_name}_分析报告_"
+                     f"{_dt2.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex}.md")
             out_path = os.path.join(_temp_output_dir, "reports", fname)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             with _io.open(out_path, "w", encoding="utf-8") as f:
@@ -9433,6 +9733,7 @@ def generate_static_map(
 
         fig, ax = plt.subplots(1, 1, figsize=(10, 8))
         colors = plt.cm.Set2.colors
+        drawn_layer_count = 0
         for i, (lid, ldata) in enumerate(layers_to_draw):
             geojson = ldata.get("geojson") or ldata
             if not geojson:
@@ -9444,8 +9745,13 @@ def generate_static_map(
                 color = colors[i % len(colors)]
                 gdf.plot(ax=ax, facecolor=color, edgecolor="black",
                          linewidth=0.5, alpha=0.7, label=lid)
+                drawn_layer_count += 1
             except Exception:
                 continue
+
+        if drawn_layer_count == 0:
+            plt.close(fig)
+            return "没有可绘制的要素：所选图层为空或无法转换"
 
         ax.set_title(title, fontsize=14, fontweight="bold", pad=15)
         ax.set_xlabel("经度")
@@ -9468,14 +9774,17 @@ def generate_static_map(
 
         if show_scale_bar:
             try:
+                from pyproj import Geod
+
                 xlim = ax.get_xlim()
                 ylim = ax.get_ylim()
                 sx = xlim[0] + (xlim[1] - xlim[0]) * 0.05
                 sy = ylim[0] + (ylim[1] - ylim[0]) * 0.05
                 width = (xlim[1] - xlim[0]) * 0.1
+                ground_distance_km = abs(Geod(ellps="WGS84").inv(sx, sy, sx + width, sy)[2]) / 1000
                 ax.plot([sx, sx + width], [sy, sy], "k-", linewidth=3)
                 ax.text(sx + width / 2, sy + (ylim[1] - ylim[0]) * 0.01,
-                        f"{width * 111:.0f} km", ha="center", fontsize=9)
+                        f"{ground_distance_km:.0f} km", ha="center", fontsize=9)
             except Exception:
                 pass
 
@@ -9484,7 +9793,9 @@ def generate_static_map(
 
         out_dir = os.path.join(os.getcwd(), "cache", "charts")
         os.makedirs(out_dir, exist_ok=True)
-        fname = f"{output_name}.png"
+        safe_output_name = os.path.basename(str(output_name or "static_map").replace("\\", "/"))
+        safe_output_name = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', '_', safe_output_name).strip(' .') or 'static_map'
+        fname = f"{safe_output_name}.png"
         out_path = os.path.join(out_dir, fname)
         fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor="white")
         plt.close(fig)
@@ -9498,7 +9809,7 @@ def generate_static_map(
             "type": "png",
         })
 
-        return f"静态地图已生成：{out_path}（{dpi} DPI，含{len(layers_to_draw)}个图层）"
+        return f"静态地图已生成：{out_path}（{dpi} DPI，含{drawn_layer_count}个图层）"
     except Exception as e:
         return f"静态地图生成失败: {str(e)[:200]}"
 
@@ -10091,11 +10402,9 @@ def zonal_statistics(raster_layer: str, zone_layer: str, stat: str = "mean") -> 
                 try:
                     out_img, _ = rio_mask(src, [geom_src], crop=True, filled=False)
                     arr = out_img[0]
-                    nodata = src.nodata
-                    mask = np.isfinite(arr) if arr.dtype.kind == 'f' else np.ones_like(arr, dtype=bool)
-                    if nodata is not None:
-                        mask &= ~np.isclose(arr, nodata)
-                    vals = arr[mask].astype("float64")
+                    arr_data = np.ma.getdata(arr)
+                    mask = ~np.ma.getmaskarray(arr) & np.isfinite(arr_data)
+                    vals = arr_data[mask].astype("float64")
                 except Exception:
                     vals = np.array([])
                 props = dict(row.drop(labels="geometry").items()) if hasattr(row, "drop") else {}
@@ -10242,19 +10551,25 @@ def _find_uploaded_tif(layer_name: str):
             return source if source and os.path.isfile(source) else None
         if _active_project_id:
             return None
-    upload_dir = _raster_output_dir()
-    if os.path.isdir(upload_dir):
-        for f in os.listdir(upload_dir):
-            if f.lower().endswith(('.tif', '.tiff')):
-                base = os.path.splitext(f)[0]
-                if base == layer_name:
-                    return os.path.join(upload_dir, f)
+    upload_dirs = list(dict.fromkeys((
+        _raster_output_dir(), os.path.join(_temp_output_dir, 'uploads'),
+    )))
+    for upload_dir in upload_dirs:
+        if os.path.isdir(upload_dir):
+            for f in os.listdir(upload_dir):
+                if f.lower().endswith(('.tif', '.tiff')):
+                    base = os.path.splitext(f)[0]
+                    if base == layer_name:
+                        return os.path.join(upload_dir, f)
     return None
 
 
 def _raster_output_dir():
     init_temp_dir()
     path = os.path.join(_temp_output_dir, 'uploads')
+    scope = getattr(_raster_output_scope, "value", "")
+    if scope:
+        path = os.path.join(path, scope)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -10422,8 +10737,12 @@ def _raster_preview_op(src, data, out_name: str, label: str, preview_image=None,
     with rasterio.open(raster_path, "r+") as output_src:
         output_src.update_tags(**{key: str(value) for key, value in output_tags.items() if value is not None})
     img.save(png_path)
-    preview_url = "/output/uploads/" + quote(png_name, safe="")
-    source_url = "/output/uploads/" + quote(os.path.basename(raster_path), safe="")
+    def _output_url(path):
+        relative = os.path.relpath(path, _temp_output_dir).replace(os.sep, "/")
+        return "/output/" + quote(relative, safe="/")
+
+    preview_url = _output_url(png_path)
+    source_url = _output_url(raster_path)
     layer_name = os.path.splitext(os.path.basename(raster_path))[0]
     raster_info = {
         "filename": png_name, "url": preview_url,
@@ -10477,6 +10796,7 @@ def raster_resample(layer_name: str, scale_factor: float = 2.0, method: str = "b
     """栅格重采样：按倍数缩放栅格分辨率（scale_factor>1 缩小/更粗，<1 放大/更细），
     method 可选 nearest / bilinear / cubic。结果 GeoTIFF 落盘并出预览叠加图层。"""
     try:
+        import numpy as np
         import rasterio
         from rasterio.enums import Resampling
 
@@ -10485,21 +10805,24 @@ def raster_resample(layer_name: str, scale_factor: float = 2.0, method: str = "b
             return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
         resampling = {"nearest": Resampling.nearest, "bilinear": Resampling.bilinear,
                       "cubic": Resampling.cubic}.get(str(method).lower(), Resampling.bilinear)
-        out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_重采样"
+        out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_{uuid.uuid4().hex}_重采样"
         out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
         with rasterio.open(tif_path) as src:
             scale = max(0.05, min(32.0, float(scale_factor)))
             new_w = max(1, int(src.width / scale))
             new_h = max(1, int(src.height / scale))
-            data = src.read(out_shape=(src.count, new_h, new_w), resampling=resampling)
+            data = src.read(masked=True, out_shape=(src.count, new_h, new_w), resampling=resampling)
             profile = src.profile.copy()
             profile.update(width=new_w, height=new_h,
                            transform=src.transform * src.transform.scale(
                                src.width / new_w, src.height / new_h))
             with rasterio.open(out_path, "w", **profile) as dst:
-                dst.write(data)
+                dst.write(data.filled(src.nodata if src.nodata is not None else 0))
+                # GeoTIFF dataset masks are shared across bands; preserve every
+                # invalid location so downstream tools do not treat it as data.
+                dst.write_mask((~np.ma.getmaskarray(data).any(axis=0)).astype("uint8") * 255)
             note = _raster_preview_op(
-                src, data, out_name, f"栅格重采样 x{scale} ({method})",
+                src, data.filled(np.nan), out_name, f"栅格重采样 x{scale} ({method})",
                 **_raster_preview_context(layer_name),
             )
         return (f"重采样完成：{scale}x → {new_w}x{new_h} 像元，method={method}，"
@@ -10521,21 +10844,25 @@ def raster_reproject(layer_name: str, target_crs: str = "EPSG:4326") -> str:
         tif_path = _find_uploaded_tif(layer_name)
         if tif_path is None:
             return f"未找到栅格文件「{layer_name}」，请先上传 GeoTIFF"
-        out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_重投影"
+        out_name = f"{os.path.splitext(os.path.basename(tif_path))[0]}_{uuid.uuid4().hex}_重投影"
         out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
         with rasterio.open(tif_path) as src:
             transform, width, height = calculate_default_transform(
                 src.crs, target_crs, src.width, src.height, *src.bounds)
             profile = src.profile.copy()
-            profile.update(crs=target_crs, transform=transform, width=width, height=height)
+            profile.update(crs=target_crs, transform=transform, width=width, height=height,
+                           dtype="float64", nodata=float("nan"))
             bands = []
             for i in range(1, src.count + 1):
-                dst_arr = np.zeros((height, width), dtype=src.dtypes[i - 1])
+                source = src.read(i, masked=True).astype("float64").filled(np.nan)
+                source[~np.isfinite(source)] = np.nan
+                dst_arr = np.full((height, width), np.nan, dtype="float64")
                 rio_reproject(
-                    source=rasterio.band(src, i),
+                    source=source,
                     destination=dst_arr,
                     src_transform=src.transform, src_crs=src.crs,
                     dst_transform=transform, dst_crs=target_crs,
+                    src_nodata=np.nan, dst_nodata=np.nan,
                     resampling=Resampling.bilinear)
                 bands.append(dst_arr)
             stacked = np.stack(bands)
@@ -10642,14 +10969,26 @@ def rerun_history(index: int) -> str:
     # 重跑后被同名覆盖的旧图层以「_原」后缀重新注册保留
     snapshot = dict(_registered_layers)
     _t0 = time.time()
+    previous_raster_scope = getattr(_raster_output_scope, "value", None)
+    _raster_output_scope.value = os.path.join("history-reruns", uuid.uuid4().hex)
     try:
-        out = tool_obj.invoke(entry.get("args") or {})
-        ok = not _tool_result_failed(tool_name, out)
-        err = "" if ok else str(out)[:200]
-    except Exception as e:
-        out = f"重跑失败: {str(e)[:200]}"
-        ok, err = False, str(e)
-    new_layers = [n for n in _registered_layers if n not in snapshot]
+        try:
+            out = tool_obj.invoke(entry.get("args") or {})
+            ok = not _tool_result_failed(tool_name, out)
+            err = "" if ok else str(out)[:200]
+        except Exception as e:
+            out = f"重跑失败: {str(e)[:200]}"
+            ok, err = False, str(e)
+    finally:
+        if previous_raster_scope is None:
+            try:
+                del _raster_output_scope.value
+            except AttributeError:
+                pass
+        else:
+            _raster_output_scope.value = previous_raster_scope
+    new_layers = [n for n, info in _registered_layers.items()
+                  if n not in snapshot or info is not snapshot[n]]
     restored = []
     for name, old in snapshot.items():
         if name in _registered_layers and _registered_layers[name] is not old:
@@ -10658,7 +10997,35 @@ def rerun_history(index: int) -> str:
             while suffix_name in _registered_layers:
                 seq += 1
                 suffix_name = f"{name}_原{seq}"
-            _register_layer(suffix_name, old.get("geojson", {}))
+            if isinstance(old.get("raster"), dict):
+                old_raster = copy.deepcopy(old["raster"])
+                token = _register_raster_layer(
+                    suffix_name, old_raster, source_path=old.get("raster_source_path"),
+                )
+                preserved = _registered_layers[suffix_name]
+                for key in ("group_name", "provenance", "style"):
+                    if key in old:
+                        preserved[key] = copy.deepcopy(old[key])
+                restored_raster_op = {
+                    "action": "dem_result",
+                    "name": f"{suffix_name}.png",
+                    "url": old_raster.get("url"),
+                    "bounds": old_raster.get("bounds"),
+                    "label": old_raster.get("processing") or "历史栅格结果",
+                    "layer_name": suffix_name,
+                    "raster": old_raster,
+                    "registration_token": token,
+                    "crs": old_raster.get("crs"),
+                }
+                # Replaying a raster operation fits the map to every image.
+                # Restore the old layer before its replacement so the final
+                # viewport remains focused on the newly generated result.
+                insert_at = next((index for index, op in enumerate(_pending_layer_ops)
+                                  if op.get("action") == "dem_result"
+                                  and op.get("layer_name") == name), len(_pending_layer_ops))
+                _pending_layer_ops.insert(insert_at, restored_raster_op)
+            else:
+                _register_layer(suffix_name, old.get("geojson", {}))
             restored.append(suffix_name)
     _hs.record(
         tool_name, entry.get("args") or {}, ok, new_layers,
@@ -10992,11 +11359,13 @@ def raster_reclassify(layer_name: str, mapping: str = "", method: str = "mapping
         if method_key not in supported_methods:
             return "重分类失败：method 必须是 mapping、equal_interval 或 quantile"
         with rasterio.open(tif_path) as src:
-            data = src.read(1).astype("float64")
+            data = src.read(1, masked=True).astype("float64").filled(np.nan)
+            data[~np.isfinite(data)] = np.nan
             nodata = src.nodata
             valid = np.isfinite(data)
             if nodata is not None:
-                valid &= ~np.isclose(data, nodata)
+                # GeoTIFF NoData 是显式哨兵值；容差比较会吞掉其附近的合法数据。
+                valid &= data != nodata
             if not valid.any():
                 return f"栅格「{layer_name}」没有有效像元，无法重分类"
             vals = data[valid]
@@ -11045,7 +11414,7 @@ def raster_reclassify(layer_name: str, mapping: str = "", method: str = "mapping
             arr = np.where(np.isfinite(out), out, out_nodata)
             # The stored GeoTIFF may use a project asset hash as its filename;
             # keep the derived layer tied to the user-visible input layer name.
-            out_name = f"{_safe_layer_export_stem(layer_name)}_重分类"
+            out_name = f"{_safe_layer_export_stem(layer_name)}_{uuid.uuid4().hex}_重分类"
             out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
             with rasterio.open(out_path, "w", **_raster_out_profile(src, out_nodata)) as dst:
                 dst.write(arr.astype("float32"), 1)
@@ -11090,7 +11459,7 @@ def raster_focal_stats(layer_name: str, stat: str = "mean", size: int = 3) -> st
         if key not in ("mean", "median", "min", "max", "std", "range", "majority"):
             return f"未知统计量 stat: {stat}，可选 mean/median/min/max/std/range/majority"
         with rasterio.open(tif_path) as src:
-            data = src.read(1).astype("float64")
+            data = src.read(1, masked=True).astype("float64").filled(np.nan)
             nodata = src.nodata
             valid = np.isfinite(data)
             if nodata is not None:
@@ -11137,7 +11506,7 @@ def raster_focal_stats(layer_name: str, stat: str = "mean", size: int = 3) -> st
                 return f"焦点统计失败: 窗口 {s}x{s} 内没有有效像元"
             out_nodata = nodata if nodata is not None else np.nan
             arr = np.where(np.isfinite(res), res, out_nodata)
-            out_name = f"{_safe_layer_export_stem(layer_name)}_焦点{key}"
+            out_name = f"{_safe_layer_export_stem(layer_name)}_{uuid.uuid4().hex}_焦点{key}"
             out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
             with rasterio.open(out_path, "w", **_raster_out_profile(src, out_nodata)) as dst:
                 dst.write(arr.astype("float32"), 1)
@@ -11190,7 +11559,7 @@ def euclidean_distance(layer_name: str, source_value: float = None, out_name: st
             else:
                 distance_units = "栅格单位（CRS 未定义）"
                 distance_warnings = ["源栅格缺少 CRS；欧氏距离按栅格坐标单位计算，地面距离含义未验证"]
-            data = src.read(1).astype("float64")
+            data = src.read(1, masked=True).astype("float64").filled(np.nan)
             nodata = src.nodata
             valid = np.isfinite(data)
             if nodata is not None:
@@ -11283,7 +11652,7 @@ def raster_extract_by_mask(raster_layer: str, zone_layer: str, inside: bool = Tr
             if not np.isnan(out_nodata):
                 invalid |= band == out_nodata
             keep = int((~invalid).sum())
-            out_name = f"{_safe_layer_export_stem(raster_layer)}_掩膜{'内' if inside else '外'}"
+            out_name = f"{_safe_layer_export_stem(raster_layer)}_掩膜{'内' if inside else '外'}_{uuid.uuid4().hex[:8]}"
             out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
             with rasterio.open(out_path, "w",
                                **_raster_out_profile(src, out_nodata, count=arr.shape[0])) as dst:
@@ -11361,7 +11730,7 @@ def surface_volumes(before_layer: str, after_layer: str, reference: float = -999
                 return f"未找到栅格文件「{after_layer}」，请先上传 GeoTIFF（或改用 reference 参考高程）"
 
         with rasterio.open(before_path) as src_b:
-            before = src_b.read(1).astype("float64")
+            before = src_b.read(1, masked=True).astype("float64").filled(np.nan)
             vb = np.isfinite(before)
             if src_b.nodata is not None:
                 vb &= before != src_b.nodata
@@ -11393,7 +11762,7 @@ def surface_volumes(before_layer: str, after_layer: str, reference: float = -999
                         return "填挖方失败: 两个 DEM 地理变换不一致（不是共配准栅格），请先重投影/重采样到同一网格"
                     if str(crs_b) != str(src_a.crs):
                         return f"填挖方失败: 两个 DEM 坐标系不一致（{crs_b} vs {src_a.crs}），请先统一坐标系"
-                    after = src_a.read(1).astype("float64")
+                    after = src_a.read(1, masked=True).astype("float64").filled(np.nan)
                     va = np.isfinite(after)
                     if src_a.nodata is not None:
                         va &= after != src_a.nodata
@@ -11561,8 +11930,10 @@ def join_field(target_layer: str, join_layer: str, target_field: str, join_field
         if join_field != target_field and join_field in result.columns:
             result = result.drop(columns=[join_field])
 
-        result_name = f"{name_t}_连接{name_j}"
-        _gdf_to_layer(result, result_name)
+        base_result_name = f"{name_t}_连接{name_j}"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(base_result_name)
+            _gdf_to_layer(result, result_name)
         collision_note = ""
         if rename:
             collision_note = "；冲突字段已重命名：" + ", ".join(f"{k}->{v}" for k, v in rename.items())
@@ -11653,8 +12024,10 @@ def geometry_attributes(layer_name: str, metrics: str = "area,length,perimeter,c
                 out[bn] = b[col].astype(float)
                 added.append(bn)
 
-        out_name = f"{name}_几何属性"
-        _gdf_to_layer(out, out_name)
+        base_out_name = f"{name}_几何属性"
+        with _state_lock:
+            out_name = _disambiguate_layer_name(base_out_name)
+            _gdf_to_layer(out, out_name)
         return (f"几何属性计算完成（{crs_note}）：新增字段 {', '.join(added)}，"
                 f"结果图层「{out_name}」已上图")
     except Exception as e:
@@ -12831,8 +13204,11 @@ def raster_to_feature(layer_name: str, connectivity: int = 8, simplify: float = 
         with rasterio.open(tif_path) as src:
             if src.crs is None:
                 return "栅格转矢量失败：输入栅格缺少 CRS，无法可靠定位矢量结果；请先为栅格定义正确的坐标系"
-            arr = src.read(1)
-            mask = np.isfinite(arr) if arr.dtype.kind == "f" else np.ones_like(arr, dtype=bool)
+            band = src.read(1, masked=True)
+            arr = np.asarray(band.data)
+            mask = ~np.ma.getmaskarray(band)
+            if arr.dtype.kind == "f":
+                mask &= np.isfinite(arr)
             if src.nodata is not None:
                 mask &= arr != src.nodata
             geoms = []
@@ -12847,7 +13223,9 @@ def raster_to_feature(layer_name: str, connectivity: int = 8, simplify: float = 
             gdf = gpd.GeoDataFrame({"value": vals}, geometry=geoms, crs=src.crs)
         if simplify_value > 0:
             gdf["geometry"] = gdf.geometry.simplify(simplify_value, preserve_topology=True)
-        out_name = f"{layer_name}_转矢量"
+        # Preserve prior parameterized results instead of replacing the same
+        # registered layer when connectivity or simplify changes.
+        out_name = f"{layer_name}_转矢量_{uuid.uuid4().hex[:8]}"
         _gdf_to_layer(gdf, out_name)
         utm = gdf.estimate_utm_crs()
         areas_km2 = gdf.to_crs(utm).geometry.area.sum() / 1e6 if utm is not None else float("nan")
@@ -12921,9 +13299,10 @@ def create_fishnet(extent_layer: str = "", cell_size: float = 0.0, rows: int = 0
                 feats.append({"type": "Feature", "properties": {"row": r, "col": c},
                               "geometry": box(x0, y0, x1, y1).__geo_interface__})
         out = {"type": "FeatureCollection", "features": feats}
-        final_name = out_name or "fishnet"
-        _push_layer(final_name, out, {"color": "#555", "weight": 1, "fillOpacity": 0.05})
-        _register_layer(final_name, out)
+        with _state_lock:
+            final_name = _disambiguate_layer_name(out_name)
+            _push_layer(final_name, out, {"color": "#555", "weight": 1, "fillOpacity": 0.05})
+            _register_layer(final_name, out)
         cs_txt = f"{w / ncols:.6g} x {h / nrows:.6g}"
         return (f"渔网创建完成：{nrows} 行 x {ncols} 列 = {nrows * ncols} 格，格尺寸 {cs_txt}，"
                 f"范围 {w:.4g} x {h:.4g}。图层「{final_name}」已加载到地图")
@@ -12931,11 +13310,26 @@ def create_fishnet(extent_layer: str = "", cell_size: float = 0.0, rows: int = 0
         return f"渔网创建失败: {str(e)[:300]}"
 
 
-def _cost_graph(cost_arr):
-    """cost_distance / least_cost_path 共用的 8 邻域代价图。返回 (csr_graph, node_index)。
-    节点 = 有效像元；边权 = 平均代价  像元距离（4 邻 = 1，对角 = sqrt(2)）。"""
+def _cost_graph(cost_arr, transform=None, crs=None):
+    """cost_distance / least_cost_path 共用的 8 邻域代价图。
+    生产调用传入栅格仿射变换和 CRS，边权为平均代价 × 相邻像元中心的地面距离（米）。"""
     import numpy as np
     from scipy.sparse import csr_matrix
+    if (transform is None) != (crs is None):
+        raise ValueError("计算地面距离需要同时提供栅格 transform 和 CRS")
+    geodesic = None
+    unit_to_meters = None
+    if transform is not None:
+        from pyproj import CRS
+        raster_crs = CRS.from_user_input(crs)
+        if raster_crs.is_geographic:
+            geodesic = raster_crs.get_geod()
+        elif raster_crs.is_projected and raster_crs.axis_info:
+            unit_to_meters = raster_crs.axis_info[0].unit_conversion_factor
+            if not unit_to_meters or not math.isfinite(unit_to_meters):
+                raise ValueError("栅格 CRS 的线性单位无法换算为米")
+        else:
+            raise ValueError("代价栅格 CRS 必须是地理或投影坐标系")
     h, w = cost_arr.shape
     valid = np.isfinite(cost_arr) & (cost_arr > 0)
     valid_count = int(valid.sum())
@@ -12944,19 +13338,28 @@ def _cost_graph(cost_arr):
     idx = np.full((h, w), -1, dtype=np.int64)
     idx[valid] = np.arange(valid_count)
     rows_l, cols_l, vals = [], [], []
-    nb = [(-1, 0, 1.0), (1, 0, 1.0), (0, -1, 1.0), (0, 1, 1.0),
-          (-1, -1, 2 ** 0.5), (-1, 1, 2 ** 0.5), (1, -1, 2 ** 0.5), (1, 1, 2 ** 0.5)]
+    nb = [(-1, 0), (1, 0), (0, -1), (0, 1),
+          (-1, -1), (-1, 1), (1, -1), (1, 1)]
     ca = cost_arr
     for r in range(h):
         for c in range(w):
             if not valid[r, c]:
                 continue
             u = idx[r, c]
-            for dr, dc, dist in nb:
+            for dr, dc in nb:
                 rr, cc = r + dr, c + dc
                 if 0 <= rr < h and 0 <= cc < w and valid[rr, cc]:
+                    if transform is None:
+                        distance = math.hypot(dc, dr)
+                    else:
+                        x0, y0 = transform * (c + 0.5, r + 0.5)
+                        x1, y1 = transform * (cc + 0.5, rr + 0.5)
+                        if geodesic is not None:
+                            distance = geodesic.inv(x0, y0, x1, y1)[2]
+                        else:
+                            distance = math.hypot(x1 - x0, y1 - y0) * unit_to_meters
                     rows_l.append(u); cols_l.append(idx[rr, cc])
-                    vals.append((float(ca[r, c]) + float(ca[rr, cc])) * 0.5 * dist)
+                    vals.append((float(ca[r, c]) + float(ca[rr, cc])) * 0.5 * distance)
     n = valid_count
     g = csr_matrix((vals, (rows_l, cols_l)), shape=(n, n))
     return g, idx, valid
@@ -12971,7 +13374,7 @@ def cost_distance(cost_layer: str, source_layer: str, out_name: str = "") -> str
     - cost_layer: 代价栅格（上传的 GeoTIFF，值>0，越大越难通行；nodata/非正值为不可通行）。
     - source_layer: 源要素图层（会烧录到代价栅格网格上作为源像元）。
     - out_name: 输出栅格名。
-    输出累积代价 GeoTIFF + 预览图层，并报告可达/不可达像元数。"""
+    输出累积代价 GeoTIFF + 预览图层，并报告可达/不可达像元数。代价按相邻像元中心的实际地面距离（米）累计。"""
     try:
         import numpy as np
         import rasterio
@@ -12985,7 +13388,7 @@ def cost_distance(cost_layer: str, source_layer: str, out_name: str = "") -> str
                 return f"代价栅格「{cost_layer}」缺少 CRS，无法可靠对齐源图层"
             if src.width * src.height > 1_000_000:
                 return "代价距离失败：栅格超过单次处理上限（100 万像元）；请先裁剪或重采样"
-            cost = src.read(1).astype("float64")
+            cost = src.read(1, masked=True).astype("float64").filled(np.nan)
             transform = src.transform
             crs = src.crs
             nodata = src.nodata
@@ -13004,7 +13407,7 @@ def cost_distance(cost_layer: str, source_layer: str, out_name: str = "") -> str
         src_nodes = np.argwhere(src_r == 1)
         if src_nodes.size == 0:
             return "源图层与代价栅格范围不相交，没有源像元"
-        graph, idx, valid = _cost_graph(cost)
+        graph, idx, valid = _cost_graph(cost, transform=transform, crs=crs)
         flat_src = [idx[r, c] for r, c in src_nodes if idx[r, c] >= 0]
         if not flat_src:
             return "源图层落在代价栅格的 NoData 或非正值区域，没有可通行的源像元"
@@ -13023,7 +13426,7 @@ def cost_distance(cost_layer: str, source_layer: str, out_name: str = "") -> str
             note = _raster_preview_op(_src_preview, out, out_name, "代价距离面（累积代价）")
         fin = out[np.isfinite(out)]
         return (f"代价距离完成（8 邻域 Dijkstra）：可达 {reachable} 像元，不可达 {unreachable} 像元，"
-                f"代价范围 {fin.min():.3f}~{fin.max():.3f}（单位=代价栅格值像元距离）。"
+                f"代价范围 {fin.min():.3f}~{fin.max():.3f}（单位=代价栅格值·米）。"
                 f"结果已保存 {out_name}.tif；{note}")
     except Exception as e:
         return f"代价距离计算失败: {str(e)[:300]}"
@@ -13037,7 +13440,7 @@ def least_cost_path(cost_layer: str, source_layer: str, destination_layer: str) 
     """最小代价路径：在代价栅格上求源到目的地的最小累积代价路径（与 cost_distance 共用同一图与算法）。
     - cost_layer: 代价栅格（GeoTIFF）。
     - source_layer / destination_layer: 源/目的地点图层。
-    输出路径线图层（含累积代价属性），并报告总代价与像素步数。"""
+    输出路径线图层（含累积代价属性），并报告总代价与路径长度。累计代价按实际地面距离（米）计算。"""
     try:
         import numpy as np
         import rasterio
@@ -13053,7 +13456,7 @@ def least_cost_path(cost_layer: str, source_layer: str, destination_layer: str) 
                 return f"代价栅格「{cost_layer}」缺少 CRS，无法可靠对齐源/目的地图层"
             if src.width * src.height > 1_000_000:
                 return "最小代价路径失败：栅格超过单次处理上限（100 万像元）；请先裁剪或重采样"
-            cost = src.read(1).astype("float64")
+            cost = src.read(1, masked=True).astype("float64").filled(np.nan)
             transform = src.transform
             crs = src.crs
             nodata = src.nodata
@@ -13062,7 +13465,7 @@ def least_cost_path(cost_layer: str, source_layer: str, destination_layer: str) 
             valid0 &= cost != nodata
         cost = np.where(valid0, cost, np.nan)
         h, w = cost.shape
-        graph, idx, valid = _cost_graph(cost)
+        graph, idx, valid = _cost_graph(cost, transform=transform, crs=crs)
         gdf_s, sname = _layer_to_gdf(source_layer)
         if gdf_s is None: return sname
         gdf_d, dname = _layer_to_gdf(destination_layer)
@@ -13114,10 +13517,18 @@ def least_cost_path(cost_layer: str, source_layer: str, destination_layer: str) 
         gdf = gpd.GeoDataFrame({"total_cost": costs}, geometry=lines, crs=crs)
         out_name = f"{sname}_到_{dname}_代价路径"
         _gdf_to_layer(gdf, out_name)
-        utm = gdf.estimate_utm_crs()
-        len_km = gdf.to_crs(utm).geometry.length.sum() / 1000.0 if utm is not None else float("nan")
+        from pyproj import CRS
+        raster_crs = CRS.from_user_input(crs)
+        if raster_crs.is_geographic:
+            length_m = sum(raster_crs.get_geod().geometry_length(line) for line in lines)
+            length_method = "椭球测地线"
+        else:
+            unit_to_meters = raster_crs.axis_info[0].unit_conversion_factor
+            length_m = sum(line.length for line in lines) * unit_to_meters
+            length_method = "栅格投影单位换算"
+        len_km = length_m / 1000.0
         return (f"最小代价路径完成（与 cost_distance 共用 8 邻域图）：{len(lines)} 条路径，"
-                f"总代价 {min(costs):.3f}~{max(costs):.3f}，路径总长 {len_km:.2f} km（UTM 投影计算）。"
+                f"总代价 {min(costs):.3f}~{max(costs):.3f}，路径总长 {len_km:.2f} km（{length_method}）。"
                 f"图层「{out_name}」已加载到地图")
     except Exception as e:
         return f"最小代价路径计算失败: {str(e)[:300]}"
@@ -13323,6 +13734,8 @@ _TOOL_FAILURE_MARKERS = {
     "datav_boundary": ("工具执行失败:", "找到多个匹配：", "未找到", "获取失败:", "查询失败:"),
     "create_swipe": ("未找到图层", "卷帘对比需要两个不同的图层"),
     "spatial_graduated_colors": ("分级色彩渲染失败:", "图层「", "不是数值类型", "无有效数值", "不支持该分级方法", "无法分级", "找到多个匹配"),
+    "spatial_unique_values": ("唯一值渲染失败:", "未找到图层", "找到多个匹配", "图层「", "字段「"),
+    "raster_focal_stats": ("未找到栅格文件", "窗口大小", "未知统计量", "没有有效像元"),
     "layer_control": ("未知操作:", "未找到图层"),
 }
 

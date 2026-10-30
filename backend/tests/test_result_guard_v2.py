@@ -4,13 +4,22 @@
 覆盖：Claim ↔ Registry ↔ Filesystem 的所有组合
 """
 import sys, os, tempfile, shutil, time
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backend.services import result_guard as RG
 from backend.services import task_manager
+from backend.services import storage_service
 
 
 OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "gis_worktable_output")
+
+
+@pytest.fixture(autouse=True)
+def isolate_storage_service_db(tmp_path, monkeypatch):
+    """Keep run artifact tests out of the user's persistent workspace ledger."""
+    monkeypatch.setattr(storage_service, "_CUSTOM_DB_PATH", [str(tmp_path / "result_guard_test.db")])
+    storage_service.init_db()
 
 
 def _create_file(filename, content="hello"):

@@ -53,7 +53,7 @@ def test_cross_site_multipart_upload_is_rejected_before_processing(monkeypatch, 
 
 
 def test_loopback_frontend_can_still_post_mutations(monkeypatch):
-    async def fake_upload(_file):
+    async def fake_upload(_file, request_id=None):
         return {"success": True}
 
     monkeypatch.setattr(main, "_process_uploaded_file", fake_upload)

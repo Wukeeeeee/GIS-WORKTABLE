@@ -396,6 +396,38 @@ def test_cancel_before_upload_route_starts_blocks_processing(client, monkeypatch
     assert asyncio.run(main.upload_status(request_id)) == {'status': 'cancelled'}
 
 
+def test_task_cancellation_without_request_id_removes_saved_upload(client, tmp_path, monkeypatch):
+    from starlette.datastructures import UploadFile as StarletteUploadFile
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_read = main._read_uploaded_bytes
+
+    def delayed_read(path):
+        entered.set()
+        release.wait(3)
+        return original_read(path)
+
+    monkeypatch.setattr(main, '_read_uploaded_bytes', delayed_read)
+
+    async def run_cancel():
+        task = asyncio.create_task(main.upload(
+            StarletteUploadFile(file=BytesIO(b'{"type":"FeatureCollection","features":[]}'),
+                                filename='cancel-without-id.geojson'),
+        ))
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    try:
+        asyncio.run(run_cancel())
+    finally:
+        release.set()
+
+    assert not (tmp_path / 'uploads' / 'cancel-without-id.geojson').exists()
+
+
 def test_cancel_after_server_completion_removes_result_before_client_handoff(client, tmp_path):
     content = json.dumps({'type': 'Feature', 'properties': {'value': 1},
                           'geometry': {'type': 'Point', 'coordinates': [-122.3, 47.6]}})
@@ -476,6 +508,45 @@ def test_lost_raster_pmtiles_upload_response_does_not_create_duplicate_tiles(cli
     assert {path.name for path in (tmp_path / 'uploads').iterdir()} == {'basemap.pmtiles', 'pmtiles_basemap.png'}
 
 
+def test_online_raster_previews_do_not_collide_within_one_second(client, tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, 'time', lambda: 1234567890)
+    cog_previews = iter((b'first cog preview', b'second cog preview'))
+    monkeypatch.setattr(cloud_native, 'read_cog', lambda *_args, **_kwargs: {
+        'png_bytes': next(cog_previews), 'bounds': [0, 0, 1, 1], 'meta': {},
+    })
+    cog_responses = [client.post('/api/online/load', json={
+        'source': f'https://example.test/{index}.tif', 'type': 'cog', 'layer_name': 'same',
+    }).json() for index in range(2)]
+    assert all(response['raster_info']['preview_only'] is True for response in cog_responses)
+    assert all(response['raster_info']['preview_scope'] == 'resampled_full_extent'
+               for response in cog_responses)
+
+    pmtiles_previews = iter((b'first pmtiles preview', b'second pmtiles preview'))
+    def reject_vector(_source):
+        raise cloud_native.CloudNativeError('raster fixture')
+    monkeypatch.setattr(cloud_native, 'pmtiles_vector_to_geojson', reject_vector)
+    monkeypatch.setattr(cloud_native, 'pmtiles_raster_tile_bounds', lambda _source: (
+        next(pmtiles_previews), [0, 0, 1, 1], 'png', {'tile_type': 'png'},
+    ))
+    pmtiles_responses = [client.post('/api/online/load', json={
+        'source': f'https://example.test/{index}.pmtiles', 'type': 'pmtiles', 'layer_name': 'same',
+    }).json() for index in range(2)]
+    assert all(response['raster_info']['preview_only'] is True for response in pmtiles_responses)
+    assert all(response['raster_info']['preview_scope'] == 'pmtiles_center_tile'
+               for response in pmtiles_responses)
+    assert all('中心单瓦片' in response['message'] for response in pmtiles_responses)
+
+    for responses, expected in (
+        (cog_responses, [b'first cog preview', b'second cog preview']),
+        (pmtiles_responses, [b'first pmtiles preview', b'second pmtiles preview']),
+    ):
+        paths = [tmp_path / 'uploads' / response['raster_info']['filename'] for response in responses]
+        assert paths[0] != paths[1]
+        assert [path.read_bytes() for path in paths] == expected
+
+
 def test_disk_full_during_upload_returns_actionable_error_and_removes_partial_file(client, tmp_path, monkeypatch):
     class DiskFullWriter:
         def __init__(self, wrapped):
@@ -530,7 +601,8 @@ def test_geotiff_upload_keeps_source_and_can_feed_the_raster_calculator(client, 
     assert source.read_bytes() == data.getvalue()
     calculated = tools.raster_calculator.invoke({'layer_name': result['name'], 'expression': 'B1*2'})
     assert '已执行' in calculated
-    assert (tmp_path / 'uploads' / 'elevation#1_calc.png').exists()
+    calc_op = tools._pending_layer_ops[-1]
+    assert (tmp_path / 'uploads' / calc_op['raster']['filename']).exists()
 
 
 def test_geotiff_rgba_upload_preserves_alpha_in_map_preview(client, tmp_path):

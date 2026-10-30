@@ -561,24 +561,46 @@
     if (result.raster_info) {
       var info = result.raster_info;
       var layerId = 'raster_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      var overlayUrl = (typeof info.url === 'string' && (info.url.indexOf('http://') === 0 || info.url.indexOf('https://') === 0))
+        ? info.url
+        : apiUrl(info.url || '');
       if (window.GIS.map && GIS.map.addImageOverlay) {
-        GIS.map.addImageOverlay(info.url, info.bounds, name, layerId);
+        GIS.map.addImageOverlay(overlayUrl, info.bounds, name, layerId);
       }
       if (window.GIS.layers && GIS.layers.addLayer) {
+        var rasterMeta = Object.assign({}, info, {
+          url: overlayUrl,
+        });
+        if (info.preview_only !== undefined) rasterMeta.preview_only = info.preview_only;
+        if (info.preview_scope !== undefined) rasterMeta.preview_scope = info.preview_scope;
+        if (info.processing !== undefined) rasterMeta.processing = info.processing;
+        if (result.meta && !rasterMeta.meta) rasterMeta.meta = result.meta;
+        if (result.meta && result.meta.bounds_wgs84 && !rasterMeta.dataset_bounds) {
+          rasterMeta.dataset_bounds = result.meta.bounds_wgs84;
+        }
+
         GIS.layers.addLayer({
           layer_id: layerId,
           _rawName: layerId,
           filename: name,
           geometry_type: 'Raster',
-          crs: 'WGS-84',
+          crs: info.crs || 'WGS-84',
           source: 'upload',
-          raster: info,
+          raster: rasterMeta,
+          preview_only: rasterMeta.preview_only,
+          processing: rasterMeta.processing,
         }, true);
+      }
+
+      if (info.preview_scope === 'pmtiles_center_tile' && info.processing &&
+          window.GIS && window.GIS.toast && typeof window.GIS.toast.info === 'function') {
+        window.GIS.toast.info(info.processing);
       }
     } else if (result.geojson && window.GIS.map) {
       var gj = result.geojson;
       var gtype = gj.type === 'FeatureCollection' && gj.features && gj.features.length
-        ? gj.features[0].geometry.type : (gj.geometry ? gj.geometry.type : '未知');
+        ? (gj.features[0] && gj.features[0].geometry ? gj.features[0].geometry.type : '未知')
+        : (gj.geometry ? gj.geometry.type : '未知');
       if (typeof GIS.map.loadGeoJSON === 'function') GIS.map.loadGeoJSON(gj, result.name || name);
       if (window.GIS.layers && GIS.layers.addLayer) {
         GIS.layers.addLayer({

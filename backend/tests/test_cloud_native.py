@@ -356,6 +356,94 @@ def test_cog_info_local(local_tif):
     assert info["stats_sampled"][0]["min"] is not None
 
 
+def test_cog_info_keeps_valid_values_close_to_nodata(tmp_path):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "near-nodata-stats.tif"
+    data = np.array([[-9999.0, -9999.05], [0.0, 10.0]], dtype="float32")
+    with rasterio.open(path, "w", driver="GTiff", width=2, height=2, count=1,
+                       dtype="float32", crs="EPSG:4326", nodata=-9999.0,
+                       transform=from_origin(0, 2, 1, 1)) as dataset:
+        dataset.write(data, 1)
+
+    info = cn._cog_info_impl(str(path))
+    assert info["stats_sampled"][0]["min"] == pytest.approx(-9999.05, abs=0.01)
+
+
+def test_cog_info_excludes_internal_mask_from_sampled_stats(tmp_path):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "internal-mask-stats.tif"
+    data = np.arange(16, dtype="float32").reshape(4, 4)
+    data[0, 0] = 9999
+    with rasterio.open(path, "w", driver="GTiff", width=4, height=4, count=1,
+                       dtype="float32", crs="EPSG:4326",
+                       transform=from_origin(0, 4, 1, 1)) as dataset:
+        dataset.write(data, 1)
+        mask = np.full((4, 4), 255, dtype="uint8")
+        mask[0, 0] = 0
+        dataset.write_mask(mask)
+
+    info = cn._cog_info_impl(str(path))
+
+    assert info["stats_sampled"][0]["max"] == 15
+
+
+def test_cog_preview_masks_internal_invalid_pixels(tmp_path):
+    import io
+    import numpy as np
+    import rasterio
+    from PIL import Image
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "internal-mask-preview.tif"
+    data = np.stack([np.arange(16, dtype="uint8").reshape(4, 4) + offset for offset in (20, 40, 60)])
+    with rasterio.open(path, "w", driver="GTiff", width=4, height=4, count=3,
+                       dtype="uint8", crs="EPSG:4326",
+                       transform=from_origin(0, 4, 1, 1)) as dataset:
+        dataset.write(data)
+        mask = np.full((4, 4), 255, dtype="uint8")
+        mask[0, 0] = 0
+        dataset.write_mask(mask)
+
+    result = cn._read_cog_impl(str(path), max_size=256)
+    with Image.open(io.BytesIO(result["png_bytes"])) as preview:
+        image = np.asarray(preview.convert("RGB"))
+
+    assert np.all(image[0, 0] == 0)
+    assert np.any(image[3, 3] > 0)
+
+
+def test_cog_preview_does_not_mask_rgb_pixel_near_nodata(tmp_path):
+    import io
+    import numpy as np
+    import rasterio
+    from PIL import Image
+    from rasterio.enums import ColorInterp
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "near-nodata-preview.tif"
+    data = np.array([
+        [[-9999.0, -9999.05], [0.0, 10.0]],
+        [[-9999.0, 200.0], [0.0, 10.0]],
+        [[-9999.0, 300.0], [0.0, 10.0]],
+    ], dtype="float32")
+    with rasterio.open(path, "w", driver="GTiff", width=2, height=2, count=3,
+                       dtype="float32", crs="EPSG:4326", nodata=-9999.0,
+                       transform=from_origin(0, 2, 1, 1)) as dataset:
+        dataset.write(data)
+        dataset.colorinterp = (ColorInterp.red, ColorInterp.green, ColorInterp.blue)
+
+    result = cn._read_cog_impl(str(path), max_size=256)
+    with Image.open(io.BytesIO(result["png_bytes"])) as preview:
+        red, green, blue = preview.convert("RGB").getpixel((1, 0))
+    assert green > 100 and blue > 100
+
+
 def test_read_cog_preview(local_tif):
     r = cn.read_cog(local_tif, max_size=256)
     assert r["png_bytes"][:8] == b"\x89PNG\r\n\x1a\n"

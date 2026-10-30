@@ -3,8 +3,22 @@
 import os
 import sys
 import json
+import pytest
+from cryptography.fernet import Fernet
+
+from backend.services import credential_store
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
+@pytest.fixture(autouse=True)
+def isolate_credential_store(tmp_path, monkeypatch):
+    """Never let credential tests read or mutate a developer's local store/keyring."""
+    monkeypatch.setattr(credential_store, "_CRED_DIR", str(tmp_path / "credentials"))
+    monkeypatch.setattr(credential_store, "_KEY_FILE", str(tmp_path / "credentials" / ".key"))
+    monkeypatch.setattr(credential_store, "_CRED_FILE", str(tmp_path / "credentials" / "credentials.enc"))
+    fernet = Fernet(Fernet.generate_key())
+    monkeypatch.setattr(credential_store, "_get_fernet", lambda: fernet)
 
 
 class TestCredentialSecurity:

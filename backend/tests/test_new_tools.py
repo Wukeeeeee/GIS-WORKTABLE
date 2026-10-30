@@ -89,6 +89,30 @@ def test_zonal_statistics_basic(dem_tif_uploaded):
     assert all(out[k] is not None for k in ("zonal_sum", "zonal_min", "zonal_max"))
 
 
+def test_zonal_statistics_keeps_valid_values_close_to_nodata(tmp_path, monkeypatch):
+    import rasterio
+    from rasterio.transform import from_origin
+
+    monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    data = np.array([[-9999.0, -9999.05], [0.0, 10.0]], dtype="float32")
+    with rasterio.open(uploads / "near_nodata_zonal.tif", "w", driver="GTiff",
+                       width=2, height=2, count=1, dtype="float32", crs="EPSG:4326",
+                       nodata=-9999.0, transform=from_origin(0, 2, 1, 1)) as dataset:
+        dataset.write(data, 1)
+    _reg("near_nodata_zone", _poly_fc(0, 0, 2, 2, "whole_raster"))
+
+    result = _registry()["zonal_statistics"].invoke({
+        "raster_layer": "near_nodata_zonal", "zone_layer": "near_nodata_zone",
+    })
+
+    assert "分区统计完成" in result, result
+    props = T._registered_layers["near_nodata_zone_分区统计"]["geojson"]["features"][0]["properties"]
+    assert props["zonal_count"] == 3
+    assert props["zonal_min"] == pytest.approx(-9999.05, abs=0.01)
+
+
 def test_zonal_statistics_zone_outside_raster(dem_tif_uploaded):
     """分区不在栅格范围内 → zonal_count=0，工具不崩且给出落区计数"""
     reg = _registry()
@@ -294,13 +318,35 @@ def test_raster_resample(dem_tif_uploaded):
     r = reg["raster_resample"].invoke({"layer_name": dem_tif_uploaded, "scale_factor": 2.0})
     assert "重采样完成" in r and "5x5" in r
     upload_dir = os.path.join(T._temp_output_dir, "uploads")
-    out_path = os.path.join(upload_dir, "dem_重采样.tif")
+    state = get_pending_state()
+    op = next(op for op in state["layer_ops"] if op.get("action") == "dem_result")
+    out_path = os.path.join(upload_dir, op["raster"]["source_filename"])
     assert os.path.exists(out_path)
     with rasterio.open(out_path) as ds:
         assert ds.width == 5 and ds.height == 5
     # dem_result 叠加 op 已推送
-    ops = get_pending_state()["layer_ops"]
-    assert any(op["action"] == "dem_result" and "重采样" in op["name"] for op in ops)
+    ops = state["layer_ops"]
+    assert any(op["action"] == "dem_result" for op in ops)
+
+
+def test_raster_resample_preserves_internal_mask(dem_tif_uploaded):
+    import rasterio, shutil
+    upload_dir = os.path.join(T._temp_output_dir, "uploads")
+    source = os.path.join(upload_dir, "masked_resample.tif")
+    shutil.copy(os.path.join(upload_dir, "dem.tif"), source)
+    with rasterio.open(source, "r+") as dataset:
+        mask = np.full((dataset.height, dataset.width), 255, dtype="uint8")
+        mask[:, :5] = 0
+        dataset.write_mask(mask)
+
+    result = _registry()["raster_resample"].invoke({"layer_name": "masked_resample", "scale_factor": 2})
+
+    assert "重采样完成" in result, result
+    state = get_pending_state()
+    op = next(op for op in state["layer_ops"] if op.get("action") == "dem_result")
+    with rasterio.open(os.path.join(upload_dir, op["raster"]["source_filename"])) as output:
+        assert np.all(output.dataset_mask()[:, :2] == 0)
+        assert np.all(output.dataset_mask()[:, 2:] == 255)
 
 
 def test_raster_resample_missing():
@@ -316,10 +362,34 @@ def test_raster_reproject(dem_tif_uploaded):
         {"layer_name": dem_tif_uploaded, "target_crs": "EPSG:32650"})
     assert "重投影完成" in r
     upload_dir = os.path.join(T._temp_output_dir, "uploads")
-    out_path = os.path.join(upload_dir, "dem_重投影.tif")
+    state = get_pending_state()
+    op = next(op for op in state["layer_ops"] if op.get("action") == "dem_result")
+    out_path = os.path.join(upload_dir, op["raster"]["source_filename"])
     assert os.path.exists(out_path)
     with rasterio.open(out_path) as ds:
         assert ds.crs.to_epsg() == 32650
+
+
+def test_raster_reproject_preserves_internal_mask(dem_tif_uploaded):
+    import rasterio, shutil
+    upload_dir = os.path.join(T._temp_output_dir, "uploads")
+    source = os.path.join(upload_dir, "masked_reproject.tif")
+    shutil.copy(os.path.join(upload_dir, "dem.tif"), source)
+    with rasterio.open(source, "r+") as dataset:
+        mask = np.full((dataset.height, dataset.width), 255, dtype="uint8")
+        mask[:, :5] = 0
+        dataset.write_mask(mask)
+
+    result = _registry()["raster_reproject"].invoke({
+        "layer_name": "masked_reproject", "target_crs": "EPSG:32650",
+    })
+
+    assert "重投影完成" in result, result
+    op = next(op for op in get_pending_state()["layer_ops"] if op.get("action") == "dem_result")
+    with rasterio.open(os.path.join(upload_dir, op["raster"]["source_filename"])) as output:
+        mask = output.dataset_mask()
+        assert np.any(mask == 0)
+        assert np.any(mask == 255)
 
 
 # ============================================================

@@ -1714,3 +1714,778 @@
 - **流程与结果：**在隔离项目目录及隔离服务端口中，通过浏览器打开旧工程，点击顶部“新建工程”并在确认框点“确定”；等待前后端工程身份均为空后，使用页面中的 `GIS.api.registerLayer` 注册新会话图层，再删除旧工程。注册接口返回 200，删除返回 200，删除后 `/api/layers` 仍含 `confirmed-ui-new-session-layer`，活动工程 ID 为 null。
 - **排除的误报：**先前一次浏览器探测只触发了确认弹窗，没有确认，因此没有执行 `clearSession`；该结果不作为复现证据。
 - **边界：**真实浏览器执行了界面按钮、确认框、前端 API 和隔离后端调用；外网 Leaflet CDN 在当前环境不可达，为继续测试会话链路，仅对 `GIS.map.getState` 提供默认中心/缩放桩，地图未渲染，不能视为完整地图端到端验收。隔离服务随后停止；截图保存在 `backend/tests/.browser-acceptance-new-session-20261028/confirmed-new-project-flow.png`。
+
+### 2026-10-30 矢量检查器数据体检 CSV 与公式注入
+
+- **复核范围：**`frontend/js/layers.js` 图层检查器数据体检、当前图层数据读取与 CSV 导出；`frontend/tests/vector_inspector_units.test.cjs` 对应回归。
+- **确认并修复：**GeoJSON 字段名会作为 CSV 单元格内容。原实现仅做 RFC 4180 转义，`=1+1` 等用户导入字段会被原样输出，可被电子表格当作公式。先加测试确认原始公式单元格；现针对 ASCII 与全角 `= + - @` 前缀，以及前导空白、TAB、CR、LF 触发符，在值前加 TAB 并强制 CSV 双引号。修复后新断言通过。单引号策略不保证 Excel 保存/重开后仍安全，不能描述为普遍强制文本。
+- **验证：**GPT 独立运行 `node --test frontend/tests/vector_inspector_units.test.cjs`，**14/14 通过**；`git diff --check` 通过。仅两个目标文件有未提交修改；未提交/推送。
+- **边界：**按 OWASP CSV Injection 建议处理；TAB 会成为字段实际内容，可能影响之后的程序化导入。未运行真实 Excel/LibreOffice/Numbers，不能声称这些软件端到端已验收，也没有普遍适用于所有电子表格的无损方案。
+- **交接阻塞：**本次 sidecar 对话实际挂在 `codex-client-bridge` 项目，元数据 `workspaces: []`；Antigravity 侧栏该项目显示“没有对话”。Gemini 后台有执行记录，但这不等于用户可在 GIS WorkTable 项目侧栏看到。下一批前需切回正确且可见的 GIS WorkTable Antigravity 对话入口。GIS 工具其余函数族、真实外部服务及完整桌面端验收仍按既有清单继续。
+### 2026-10-30 Antigravity 会话路由与客户端启动复核
+
+- **确认的路由：**历史中用于 GIS 扫描的 Antigravity 会话 `273d6ff5-9e4e-4038-920e-d6e78e0bbcd2` 元数据绑定项目 `Gis-WorkTable` 与 workspace `E:\my_repo\Gis-WorkTable`；可见项目与 bridge 项目区分明确。已将完整重启交接发送到这条正确会话，记录中出现重启说明与 Gemini 对现有清单/提交的读取动作。
+- **当前阻塞：**后续对正确会话发送状态催办时，sidecar 返回 `spawnSync ...\resources\bin\language_server.exe ENOENT`。Antigravity 进程不在运行；已安装目录中的 `Antigravity.exe` 存在，但 UI 启动两次均超时且未出现窗口。已确认 `resources\bin` 中无 `language_server.exe`。没有进一步重试、没有改客户端文件或设置，也没有因此产生新的代码改动。
+- **下一步：**等待 Antigravity/sidecar 客户端恢复后，从上述绑定 workspace 的可见会话继续，并先核对工作区再检查清单下一模块。当前 CSV 改动与进度记录均保留；不提交、不推送。
+- **工具分支检查进展：**覆盖缺口中的 `spatial_graduated_colors` 已继续追踪：`backend/services/tools.py` 生成的 `breaks` 经 `chat.js` 传给 `layers.js` 分类并生成图例；本轮发现并修复了浮点末端断点问题，详见下方记录。GIS 工具仍有其他函数未逐项审查。
+- **协作状态：**本轮新任务下发因 Antigravity sidecar 获取模型时连接拒绝而未创建；当前代码由 GPT 实施并记录，仍待 Antigravity 独立复核。
+
+### 2026-10-30 分级设色单一数值的填充透明度
+
+- **复现与修复：**沿 `spatial_graduated_colors` → `_pending_layer_ops` → `chat.js` → `applyGraduatedColors` 检查参数链路。当前要素均为同一有效值时，前端进入单色分支；该分支保存了 `fillOpacity`，却没有将其应用到面要素样式，地图仍使用 `_styleForGeom` 默认的 `0.35`。新增回归用例请求 `0.12`，修复前稳定得到 `0.35`；现统一先规范化透明度，并在单色分支为面要素设置该值。
+- **验证：**`node --test frontend/tests/layer_symbology_persistence.test.cjs`，22/22 通过；`git diff --check` 通过。
+- **边界与进度：**覆盖受控地图替身及前端样式状态；未在真实浏览器测量 Leaflet/3D 实际像素透明效果。GIS 工具模块仍有大量函数未逐项审查，本记录只标记分级设色此分支已修复，不代表工具模块完成。
+- **工作区保护：**本轮开始时保留 `CHANGELOG.md`、`backend/requirements.txt`、`docs/validation/module-scan-progress.md`、`frontend/js/layers.js`、`frontend/tests/vector_inspector_units.test.cjs` 的既有修改；本项新增修改仅限本记录、符号化函数及其专项测试。未提交/推送。
+
+### 2026-10-30 唯一值渲染的 null/缺失值处理
+
+- **复现与修复：**后端 `spatial_unique_values` 使用 `dropna()`，不把 null 或缺失字段计入普通类别；前端原实现将两者映射为空字符串并分配类别颜色。新增前端回归后，修复前 null 要素颜色为色带色（`#c0392b`），而非无数据灰色。现将 null/缺失值样式设为灰色 `#9ca3af`，图例单独显示“无数据”及计数；真实空字符串仍保留为普通类别。
+- **验证：**`node --test frontend/tests/layer_symbology_persistence.test.cjs`，23/23 通过；`git diff --check` 通过。测试覆盖 null、缺失字段、原型同名类别和相关符号化持久化回归。
+- **边界与进度：**使用前端地图替身验证样式和图例数据，未做真实浏览器渲染。本次仅完成唯一值渲染对 null/缺失值这一分支；混合类型同文本值、超大类别图层和真实地图效果仍未覆盖。GIS 工具模块继续逐项审查。
+
+### 2026-10-30 唯一值渲染的混合属性类型
+
+- **复现与修复：**以 GeoJSON 数值 `1` 和文本 `"1"` 为例，确认 `GeoDataFrame.from_features(...)[field].unique()` 保留 `[1, '1']` 两类；原前端按 `String(value)` 建键，导致两类共享一个样式并只显示一个图例项。现以值类型加显示文本建立类别键；仅当显示文本冲突时，在图例标签补充 `(number)` / `(string)` 类型提示。
+- **验证：**新增同文本异类型类别测试，修复前稳定出现相同颜色、合并图例；`node --test frontend/tests/layer_symbology_persistence.test.cjs` 24/24 通过；Python GeoPandas 探针确认后端保留类型差异；`git diff --check` 通过。
+- **边界与进度：**测试使用前端地图替身；未在真实浏览器及实际导入的混合类型文件上验收。当前仅覆盖简单标量类型，不代表任意嵌套 JSON 属性可作为唯一值字段。GIS 工具模块继续逐项审查。
+
+### 2026-10-30 手动唯一值渲染错误被标记为成功
+
+- **复现与修复：**沿 `/api/tools/invoke` → `spatial_unique_values` → `_tool_result_failed` → API 与历史结果状态检查。对已注册图层请求不存在的字段时，工具明确返回错误，但失败检测器只对前缀做匹配，且该工具此前没有专用前缀集合，导致 API 返回 `ok: true`。新增端到端回归在修复前复现；现在识别唯一值工具以“图层「”或“字段「”开头的参数/数据错误，以及未找到图层、歧义和渲染失败前缀。
+- **验证：**`python -m pytest backend/tests/test_direct_invoke_e2e.py::test_e2e_unique_values_missing_field_is_reported_as_failure -q --disable-warnings --tb=short` 修复前失败、修复后通过。`git diff --check` 通过。
+- **边界与进度：**端到端测试覆盖 FastAPI TestClient、实际注册图层和实际工具调用；没有检查所有工具的失败文案与检测器映射。手动工具 API/参数保护仍需继续审查，GIS 工具模块未完成。
+
+### 2026-10-30 焦点统计窗口自动校正超出支持范围
+
+- **复现与修复：**追踪 `/api/tools/invoke` 参数守卫到 `raster_focal_stats`。工具只接受 3/5/7，但原 `odd_int` 守卫把 8 改成 9 并显示“已自动调整”，工具随后仍拒绝该值。现改用专用窗口规则：2/4/6 可调整为下一个受支持奇数；其他范围外整数不伪称校正，明确提示支持范围。工具拒绝时原本也缺少失败标记，已补充窗口错误前缀。
+- **验证：**新增守卫单元测试与真实 TestClient/临时 GeoTIFF 端到端用例；`python -m pytest backend/tests/test_tool_args_guard.py backend/tests/test_direct_invoke_e2e.py::test_e2e_focal_stats_unsupported_window_is_not_claimed_as_corrected -q --disable-warnings --tb=short`，11/11 通过。`git diff --check` 通过。
+- **边界与进度：**覆盖指定整数边界、上传栅格定位、参数提示和失败响应；未穷举浮点、字符串、布尔输入与全部栅格工具参数。手动工具 API/参数保护继续审查。
+
+### 2026-10-30 栅格重分类误判近似 NoData 值
+
+- **复现与修复：**合成 float32 GeoTIFF 声明 NoData 为 `-9999`，并包含有效值 `-9999.05`。原 `np.isclose(data, nodata)` 默认相对容差把该合法值与哨兵一并屏蔽，输出栅格丢失该像元。改为对 GeoTIFF 明确 NoData 值精确比较；NaN 仍由 `np.isfinite` 排除。
+- **验证：**新回归修复前失败（有效像元输出 `-9999`），修复后 `python -m pytest backend/tests/test_raster_gap_tools.py -q --disable-warnings --tb=short`，69/69 通过；`git diff --check` 通过。
+- **边界与进度：**验证范围为 `raster_reclassify` 与其定向栅格测试。代码中 zonal statistics 与 cloud-native 读取还存在容差式 NoData 检查，语义及其相关测试尚待分别审查；不能据此标记整个栅格模块完成。
+
+### 2026-10-30 COG 与分区统计误屏蔽近似 NoData 的合法像元
+
+- **复现与修复：**为 COG 元信息和预览、zonal statistics 分别构造声明 `-9999` 为 NoData、同时包含合法 `-9999.05` 的 float32 栅格。COG 元信息原最小值错误为 `0`；分区统计漏掉合法值；COG RGB 预览会把该像元整个屏蔽。COG 读取现精确匹配明确哨兵值；zonal statistics 使用 `rasterio.mask(..., filled=False)` 返回的显式掩码，并结合有限值筛选，避免 NoData 与近似有效值混淆。
+- **验证：**新增 COG 统计、COG 预览和分区统计回归；含现有本地读写/alpha/色彩解释用例的定向测试 9/9 通过；`backend/tests/test_new_tools.py` 全文件 24/24 通过。`python -m pytest backend/tests/test_cloud_native.py backend/tests/test_new_tools.py -k "not test_integration" -q --disable-warnings --tb=short`，84/84 通过（4 个远程 slow 集成用例排除）。`git diff --check` 通过。
+- **未完成验证：**此前尝试组合运行 87 项时，长时间无输出且一个测试报告失败，随后中断；没有最终 traceback，不能将其归因于本次改动。4 个公开 URL slow 集成仍未完成验收，整个云原生模块在线路径仍未全量验证。
+- **审查进度：**本次处理了扫描记录里 zonal statistics 与 cloud-native 读取剩余的 NoData 容差比较；后续仍须复核其他栅格工具、云原生服务边界以及真实服务/浏览器差异，栅格模块未标记完成。
+
+### 2026-10-30 工程归档导入接受无效 GeoJSON Blob
+
+- **复现与修复：**构造哈希正确、JSON 可解析但 `features` 为字符串的归档 Blob。原导入只要求 Blob 根节点是对象，因此错误工程被登记成功，直到恢复阶段才会跳过/报错。现导入时先规范化并检查 FeatureCollection、features 列表及几何结构；非空要素继续校验坐标范围，空 FeatureCollection 保持兼容。新增回归修复前确认未抛错，修复后拒绝坏归档并清理暂存工程。
+- **验证：**新用例与“有效 JSON 但语法损坏”已有用例通过，2/2。`test_project_raster_persistence.py` 整体 41/46；另外 5 项失败涉及测试直接读取加密工程 JSON、期待解密栅格仍位于工程目录、以及 Windows symlink 替换响应状态，和本次 GeoJSON 校验改动无关。单独重跑加密栅格导入用例仍失败（解密资产位于私有临时目录而非工程目录），记录为需独立核查的测试/路径契约，不据此归因为本次修复。
+- **审查进度：**工程 ZIP 路径冲突、Blob 哈希/JSON、缺失矢量数据与本次 GeoJSON 结构有定向覆盖；项目 messages/map_state 的导入结构、复杂旧格式兼容和真实浏览器导入恢复仍未全面审查。当前进度账本和此前工作区修改均保留；未提交/推送。
+
+### 2026-10-30 工程持久化回归与打开并发复核
+
+- **本轮范围：**工程加密 JSON/Blob、栅格资产导入和 HTTP 资产读取、单项/批量删除异常输入、项目打开代次和共享 GIS 状态锁。沿 `/api/projects/{id}` → `project_service.open_project` → `load_project`/`_activate_project_data` 检查请求取消、被更新请求取代和共享状态锁等待后的重检。
+- **测试夹具校正：**4 项旧测试仍按加密迁移前的明文工程 JSON及“解密资源位于工程目录”假设读写，导致失败；另一个竞态测试替换了现已不直接服务的加密原件路径。调整为经项目服务读写加密 JSON、断言资源位于应用私有解密目录，并替换实际返回给文件响应的资源路径。调整后测试仍保留原有删除韧性、资源隔离和符号链接竞态断言。
+- **验证：**`python -m pytest backend/tests/test_project_raster_persistence.py -q --disable-warnings --tb=short`，46/46 通过；`python -m pytest backend/tests/test_project_open_race.py -q --disable-warnings --tb=short`，7/7 通过；`git diff --check` 通过。
+- **状态与边界：**工程归档矢量 Blob 结构、资源路径和打开请求并发关键路径已审并有针对性回归；messages/map_state 的旧版结构兼容、真实浏览器导入后交互恢复及多进程同时打开/删除尚未审完。本轮仅校正过时测试契约，不改生产代码的资产存储位置或竞态防护策略。工程持久化模块仍为“审查中”，不能标记整个模块完成。
+
+### 2026-10-30 工程归档导入与浏览器恢复复查
+
+- **审查范围与结论：**重新核对 `.giswork` 的压缩/解压限额、ZIP 路径和别名拒绝、工程 JSON 与 GeoJSON Blob 校验、矢量/栅格资源落盘、Blob 迁移失败回滚、前端消息/图层/分组/地图视图恢复，以及项目切换与删除时的取消/自动保存队列。本轮没有确认新的产品缺陷；地图视图对无效经纬度/缩放安全忽略，孤立图层分组 ID 按未分组显示。
+- **测试契约校正：**组合测试首次运行 77/80；3 个失败均来自当前实现契约更新后的旧夹具：Blob 现经加密暂存和原子替换，坏 GeoJSON 不能再通过 `save_project` 构造，导出校验错误对外统一包装。更新测试为在当前写入点注入失败、直接构造历史损坏 Blob 状态，以及断言公开错误信息；没有改动生产代码。
+- **验证：**`python -m pytest backend/tests/test_layer_group_persistence.py backend/tests/test_project_open_race.py -q --disable-warnings --tb=short -p no:cacheprovider`，80/80 通过；工程前端恢复/保存/删除竞态测试 42/42 通过；`git diff --check` 通过。
+- **状态与边界：**归档核心校验、资源迁移/失败清理以及浏览器工程恢复/竞态主要路径已有针对性验证；旧式复杂消息与 map_state 兼容矩阵、真实浏览器导入后交互、多进程同时删除/打开尚未完整覆盖。工程持久化模块保持“审查中”。
+
+### 2026-10-30 旧式上传任务取消遗留文件
+
+- **复现与修复：**直接调用仍受支持的 `/api/upload` 且不带 `request_id`，在 GeoJSON 已写入磁盘、后台读取尚未结束时取消请求。修复前测试稳定发现 `uploads/cancel-without-id.geojson` 被遗留。现在为旧式请求分配内部追踪编号并 shield 后台处理；取消时等待工作线程到达终态，再按该请求追踪到的文件和注册令牌回滚；成功时只移除追踪记录并保留上传数据。
+- **验证：**新增取消竞态回归；`python -m pytest backend/tests/test_upload_handoff.py::test_task_cancellation_without_request_id_removes_saved_upload backend/tests/test_upload_vector.py backend/tests/test_upload_raster.py backend/tests/test_upload_handoff.py backend/tests/test_upload_safety.py -q --disable-warnings --tb=short`，82/82 通过（5 warnings）。
+- **模块进度：**上传解析、请求编号恢复/取消、图层注册回滚和 ZIP 安全已有 82 项组合回归；未覆盖 Electron/浏览器真实断网中断、跨进程请求恢复，以及全部文件格式的超大文件内存曲线。上传模块仍需继续审查客户端进度/UI 状态和 CRS/格式边界。
+
+### 2026-10-30 上传前端恢复状态机复核
+
+- **审查范围与状态：**追踪 `upload.js` → `api.js` 的请求编号、状态轮询、超时恢复、取消确认、结果回收及图层/面板桥接失败清理；配合上面的 82 项后端上传回归和本次前端状态机测试。该模块主要本地流程标记为“已修复并验证”。
+- **验证与结果：**`node --test frontend/tests/upload_preview.test.cjs`，25/25 通过，覆盖重复确认防重传、未知回执不自动重传、成功结果恢复、上传取消后的迟到响应抑制和前后端交接回滚；该范围未发现新的已证实缺陷。
+- **未覆盖：**真实浏览器断网/页面关闭、反向代理中断后的长时间轮询，以及多进程部署时进程内上传回执共享；这些需要不同运行环境或跨进程设计验证，不能由当前测试替代。
+
+### 2026-10-30 设置与凭据迁移竞态
+
+- **复现与修复：**并发执行旧版 `user_settings.json` 中明文高德 Key 的 GET 迁移与 POST 删除。测试暂停 GET 在写入加密凭据前，允许删除请求执行，再恢复 GET；修复前删除后凭据仍存在，确认旧值被迁移逻辑复活。现 `_load_user_settings` 用与 POST 相同的可重入锁包住读取、旧 Key 迁移和明文清理的完整事务，避免迁移与更新交错。
+- **测试隔离：**发现 `test_credential_security.py` 直接使用仓库默认凭据文件和系统密钥库，且忽略保存失败状态；改为每个测试用例使用临时凭据目录及临时 Fernet 实例，避免读取或改动开发者凭据。
+- **验证：**`python -m pytest backend/tests/test_credential_security.py backend/tests/test_geo_credential_delete.py backend/tests/test_user_settings_provider_keys.py -q --disable-warnings --tb=short`，16/16 通过；前端 `node --test frontend/tests/settings_geo_credentials.test.cjs`，7/7 通过。
+- **状态与边界：**设置增量保存、Provider Key 脱敏、高德 Key 明文迁移/失败、加密保存、删除竞态和地理凭据删除 API 的主要本地路径已审并验证，模块标记为“已修复并验证”。系统密钥库在不同 Windows 账户/机器上的可用性及应用升级迁移尚未实测；本次凭据测试不再依赖或触碰真实系统密钥库。
+
+### 2026-10-30 数据发现与 GeoSource 本地链路复核
+
+- **审查范围与状态：**追踪 GeoSource 目录搜索/详情/认证、共享 HTTP 安全重定向、ArcGIS URL 检查与异步获取、进度/取消/结果/历史记录，以及 WMS/XYZ/在线图层进入工作区的前端交接。主要本地路径标记为“已审查（未发现新确认缺陷）”。
+- **验证：**`python -m pytest backend/tests/test_url_gis.py backend/tests/test_geosource_proxy_redaction.py backend/tests/test_geosource.py backend/tests/test_data_discovery.py backend/tests/test_data_provider_storage.py -q --disable-warnings --tb=short`，147/147 通过；`node --test frontend/tests/geosource_pagination_retry.test.cjs frontend/tests/geosource_layer_capacity.test.cjs frontend/tests/connector_online_load.test.cjs`，28/28 通过。
+- **未覆盖：**没有对真实第三方 ArcGIS、WMS/XYZ、GeoSource 目录运行凭据或下载请求；在线服务行为、提供方数据准确性和真实网络中断仍需真实目标/网络条件才能验收。相关风险不作为已确认缺陷。
+
+### 2026-10-30 任务与执行历史状态复核
+
+- **审查范围与状态：**检查 task_manager 创建/加密落盘/缓存恢复/归档/恢复/删除，GIS 执行上下文与失败记录；检查 history 服务持久化错误、清空/重跑，以及前端取消态、重载后的中断恢复和迟到请求处理。主要本地生命周期标记为“已审查（未发现新的已证实产品缺陷）”。
+- **测试夹具校正：**任务创建 ID 冲突用例仍把 `task.json` 当明文读取，而任务元数据现已加密。改为通过服务的 `_read_text` 读取后比较原字节对应的明文快照，仍验证冲突 ID 的已有目录没有被覆盖。
+- **验证：**`python -m pytest backend/tests/test_task_manager.py backend/tests/test_swipe_history.py backend/tests/test_direct_invoke_e2e.py -q --disable-warnings --tb=short`，46/46 通过；`node --test frontend/tests/task_cancelled_status.test.cjs frontend/tests/history_race.test.cjs frontend/tests/chat_send_lifecycle.test.cjs`，59/59 通过。
+- **未覆盖：**真实模型选择/重试行为、浏览器 localStorage 配额耗尽、进程崩溃时任务/历史双写一致性尚未进行端到端或故障注入验证；不将这些边界描述为已证实缺陷。
+
+### 2026-10-30 本机 API 与输出文件安全边界复核
+
+- **审查范围与状态：**复核 CORS 与 Fetch Metadata 中间件对跨站 multipart 和工程切换请求的限制、`/output` realpath/文件描述符与 Range 响应，以及 execute_python 子进程环境中常见凭据过滤。覆盖范围标记为“已审查（未发现新确认缺陷）”。
+- **测试适配：**无请求编号上传现会给内部处理函数传递内部追踪编号；更新 CORS 测试中的处理函数替身，保持端到端路由用例与生产函数签名一致。
+- **验证：**`python -m pytest backend/tests/test_local_cors_policy.py backend/tests/test_output_file_safety.py backend/tests/test_execute_python_credentials.py -q --disable-warnings --tb=short`，24/24 通过。
+- **边界：**Origin/Fetch Metadata 不认证本机原生客户端；execute_python 不是操作系统沙箱；未进行独立浏览器渗透测试或任意代码文件/网络/资源隔离。此处记录是实现范围边界，不是已确认缺陷。
+
+### 2026-10-30 启动器、桌面主进程与 MCP 生命周期复核
+
+- **审查范围与状态：**复核 launcher 进程启动/探活/超时清理/停止结果，Electron 环境选择、重复启动实例锁、窗口载入失败与关闭子进程树，以及 MCP stdio 协议、工具反射和路径约束。当前自动化覆盖范围标记为“已审查（未发现新确认缺陷）”。
+- **验证：**`python -m pytest backend/tests/test_launcher.py backend/tests/test_mcp_server.py -q --disable-warnings --tb=short`，49/49 通过；`node --test desktop/tests/main.test.cjs`，29/29 通过，包括 Windows 实例 IPC/父子进程关闭用例。
+- **未覆盖：**未构建和安装发行包，未在干净 Windows 账户上验证依赖安装、Electron 完整 GUI/WebView 和 MCP 外部宿主互操作；测试不能替代这些部署环境检查。
+
+### 2026-10-30 地图与图层共享状态复核
+
+- **审查范围与状态：**检查共享图层身份/FID、注册令牌、图层重命名与属性更新、2D 显隐与清理、样式持久化，以及 Cesium 初始加载、状态变化中的样式更新、失败警告与清除时未完成加载的取消。该覆盖范围未发现新确认缺陷，地图与图层模块仍保留真实浏览器并发渲染盲区。
+- **验证：**8 个定向前端测试文件 `node --test ...`，106/106 通过；`python -m pytest backend/tests/test_layer_service.py backend/tests/layered/test_layer4_map_integration.py -q --disable-warnings --tb=short`，8/8 通过。首次命令误写集成测试目录，未执行测试；按实际路径补跑成功。
+- **未覆盖：**真实 Leaflet/Cesium 浏览器渲染、WebGL 资源压力、快速连续工程切换下的物理设备帧时序未在本轮验证；现有替身测试只证明状态和异步回调契约。
+
+### 2026-10-30 AI 对话、Agent 流式事件与 Workflow 状态复核
+
+- **审查范围与状态：**复核新旧流式入口与普通聊天回退的请求身份/取消信号，Agent 重试安全，Workflow DAG 节点开始/成功/失败/跳过事件，以及前端执行卡与后端工具结果对齐。当前模拟与本地集成路径标记为“已审查（未发现新确认缺陷）”。
+- **验证：**`python -m pytest backend/tests/test_stream_step_events.py backend/tests/test_agent_retry_safety.py backend/tests/test_workflow.py backend/tests/test_materialize_workflow.py -q --disable-warnings --tb=short`，56/56 通过；前端 chat lifecycle、workflow 执行卡用例，62/62 通过。
+- **未覆盖：**真实模型服务的工具选择、provider SSE 断流/重连、真实浏览器和真实地图联动未覆盖；当前结论只限本地模拟和集成路径。
+
+### 2026-10-30 属性选择忽略 uint64 并丢失大整数精度
+
+- **复现与修复：**以真实注册 GeoJSON 的 `2^63+17` 和 `2^63+18` 两个整数构造 GeoPandas 图层。原 `spatial_select_by_attribute` 只把 `i/f` dtype 视为数值，`uint64` 列的 `>` 和 `between` 会错误报“不支持”；即使纳入数值，原先把阈值转 `float` 也会让相邻大整数精度合并。现把 `u` dtype 纳入数值，并对整数文本精确解析为 Python `int`，仅小数/科学计数输入沿浮点路径处理。
+- **验证：**新增用例修复前失败、修复后 `>` 与闭区间 `between` 均只选择预期要素；`python -m pytest backend/tests/test_spatial_tools.py::TestSelectByAttribute -q --disable-warnings --tb=short`，5/5；全文件 `python -m pytest backend/tests/test_spatial_tools.py -q --disable-warnings --tb=short`，193/193 通过。
+- **审查进度：**GIS 工具模块仍有多种工具未逐项复核；本项只标记属性选择数值 dtype 这一分支已修复，不代表 GIS 工具模块完成。
+
+### 2026-10-30 大整数属性条件的更新/删除误匹配及 uint64 分级设色
+
+- **复现与修复：**继续沿整数属性在工具链中的调用检查，发现 `update_attribute` 和 `delete_features` 都把整数筛选条件转成 float。用 `2^63+17` 与相邻的 `+1` 两条记录复现：原更新误影响 2/2 条，删除则因误判会删除全部记录而拒绝。现与属性选择共用精确整数字符串解析器；小数/科学计数输入仍按浮点解析。另验证分级设色将合法 `uint64` 字段拒绝为文本，现允许无符号整数列。
+- **验证：**更新、删除、`>`/`between` 属性选择及 `uint64` 分级设色专项 11/11；`python -m pytest backend/tests/test_spatial_tools.py -q --disable-warnings --tb=short`，196/196 通过。
+- **审查进度：**整数属性条件和分级数值类型这些相关分支已修复；GIS 工具其余未审查函数族及更广的 GeoParquet/nullable dtype 边界仍待逐项检查。
+
+### 2026-10-30 Web 工作区启动与停靠状态复核
+
+- **审查范围与状态：**检查 app DOM-ready 初始化幂等性、停靠标签/关闭/宽度持久化、工作区工具取消后的锁状态、数据搜索跳转、样例加载身份和最近工程卡片不可信文本渲染。当前本地模拟路径标记为“已审查（未发现新确认缺陷）”。
+- **验证：**`node --test frontend/tests/workspace_dock_state.test.cjs frontend/tests/app_init_idempotence.test.cjs`，9/9 通过。
+- **未覆盖：**未覆盖真实浏览器小窗口布局、localStorage 被禁用或配额耗尽的 UI 反馈、移动触屏指针拖动和 Electron WebView 的真实重载时序。
+
+### 2026-10-30 网络分析坐标未校验 WGS-84 范围
+
+- **复现与修复：**`/api/network/solve` 和网络服务没有 CRS 入参，实际将所有坐标当作 EPSG:4326；提交 `[181,0]` 到 `[182,0]` 的路网/起点时，原实现仍返回合法路线和距离。现网络建图验证每个路网顶点，`find_nearest_node` 验证路线/设施/吸附点；拒绝非有限坐标及超出经纬度范围的坐标，并由 API 以错误对象返回，不产生路径结果。
+- **验证：**新增越界路网、越界路线点和实际 API 回归；`python -m pytest backend/tests/test_network.py -q --disable-warnings --tb=short`，17/17；`node --test frontend/tests/network_request_lifecycle.test.cjs`，6/6。
+- **模块进度：**本地路由、单行方向、最近设施/吸附错误和服务区近似边界已有定向回归，标记为“已修复并验证”。真实 OSM 路网、超大图性能和复杂多部件路网仍需真实数据/基准，未作结论。
+
+### 2026-10-30 Shapefile 导出文件名、字段名和临时资源
+
+- **复现与修复：**导出函数把请求中的图层名直接连接到临时目录；含 `../` 或反斜线的名称可改变输出路径。现清理跨平台路径分隔符、控制字符和 Windows 非法字符，并对空名/尾随点空格兜底，内部文件和下载使用同名。写出/打包异常原会遗留临时目录，现由 `finally` 清理。进一步用现有字段冲突回归场景真实写出，发现长字段截断名与原有短字段撞名，GeoPandas 报重复列名导致整包失败；现先预留既有短字段名，并按 DBF 大小写不敏感规则选唯一的截断名。
+- **验证：**隔离执行生产导出函数：恶意名称 ZIP 5 个成员均为单层路径；写出失败后临时目录移除；字段冲突 ZIP 回读保留短字段 `abcdefghij=short-value` 和长字段 `abcdefghi1=long-value`。`py_compile`、`git diff --check` 通过。正式 pytest 收集仍因 `.venv` 缺少 `keyring`、导入时项目索引重建失败而受阻；未读写真实凭据或项目索引。
+- **模块进度：**文件名、DBF 字段冲突与临时资源问题已在真实 GeoPandas 导出函数上复现并修复；API 层测试、CRS 声明一致性、其它字段类型及大图层行为仍待继续审查。
+
+### 2026-10-30 空间连接接受未声明的 right 模式
+
+- **复现与修复：**`spatial_join` 文档只承诺 left（保留目标图层）和 inner，但直接把调用者传入的 `how` 交给 GeoPandas；其 `right` 合法，会改为保留 join 图层记录及几何，结果层却仍按 target→join 命名。现对 `how` 显式限制为文档支持的 left/inner，并在非法值时不注册产物。
+- **验证：**`python -m pytest backend/tests/test_spatial_tools.py::TestSpatialJoin -q`，4/4 通过；新增 right 拒绝且不产生图层的回归。
+- **模块进度：**空间连接 left/inner 结果、冲突索引列和错误模式已覆盖；GIS 工具其他函数族仍在逐项审查。
+
+### 2026-10-30 图层拆分字段拼错时静默切换模式
+
+- **复现与修复：**`layer_split` 对非空 `by_field` 仅在字段存在时才按字段拆分；字段拼错会进入 `else` 分支，静默按每个要素各建一个图层并报告成功。现在非空但不存在的字段返回可用字段提示，不创建结果；省略字段仍保留按要素拆分的设计。
+- **验证：**`python -m pytest backend/tests/test_spatial_tools.py::TestLayerSplit backend/tests/test_spatial_tools.py::TestSpatialJoin -q`，7/7 通过。
+- **模块进度：**空间连接 left/inner、空间索引属性和错误模式，以及按字段拆分与拼写错误边界已覆盖；GIS 工具其他函数族仍在逐项审查。
+
+### 2026-10-30 图层拆分同名结果覆盖数据
+
+- **复现与修复：**属性分组值 `1`（数字）和 `"1"`（文本）在 Pandas 中是两个不同组，但原实现都用字符串拼接生成同一个结果名；第二组覆盖第一组，且可能覆盖同名的用户已有图层。回归测试修复前失败，只有一个结果层且值为文本组。现注册每个拆分结果时，在状态锁内同时检查已注册层和待发送层，并分配可用唯一名称。
+- **验证：**`python -m pytest backend/tests/test_spatial_tools.py::TestLayerSplit -q`，4/4；随后 `python -m pytest backend/tests/test_spatial_tools.py -q`，199/199 通过（包含空间连接和拆分全部用例）。回归包含异型分组名碰撞并确认既有图层数据不变。
+- **模块进度：**按字段拆分的缺字段反馈、null 分组、同名结果碰撞及既有图层保护已覆盖；GIS 工具其他函数族仍在逐项审查。
+
+### 2026-10-30 自动 UTM 转换接受不适合单带的范围
+
+- **复现与修复：**`convert_crs(target_crs="utm_auto")` 原先对每个图层求代表点经度算术平均并直接计算 UTM EPSG。跨日期变更线的 `179°E/-179°W` 两点会被平均到 0°附近，跨度超过一带的数据也会被强行投到单一 UTM CRS，仍返回成功但坐标失真。现在先复用局部 UTM 范围校验，拒绝跨日期变更线、经度跨度超过 6°、超 WGS84/UTM 纬度范围等情况，再由范围中心和 `_get_utm_crs` 统一选择 EPSG，避免经度 180° 得到非法 61 带。
+- **验证：**`python -m pytest backend/tests/test_spatial_tools.py::TestConvertCRS -q`，4/4；完整 `python -m pytest backend/tests/test_spatial_tools.py -q`，201/201 通过。回归覆盖日期变更线两侧和 8°跨度输入，不会生成结果层。
+- **模块进度：**CRS 常见别名、WGS84/3857 转换、自动 UTM 范围错误和原图层保留已检查；GIS 工具其他分析函数族及更广 CRS 源数据契约仍在审查中。
+
+### 2026-10-30 单点/批量坐标转换 UTM 半球与输入漏项
+
+- **复现与修复：**`convert_coordinates` 的 `utm_auto` 总生成北半球 EPSG:326xx；南纬 33° 实际输出北向坐标为负且相差 10,000 km。它还从输入坐标原始 x 值推分带，导致 Web Mercator 米制坐标无法转 UTM；批处理会跳过坏点后仍报告部分成功；同 CRS 快速返回会放过纬度 91°。现先将任意源 CRS 坐标转换到 WGS84 后确定 UTM 带和南北半球，对不适合单一 UTM 带的批量范围报错，使用 EPSG:327xx 覆盖南半球；严格解析全部输入点、拒绝非有限/越界 WGS84 点，禁止猜测源 `utm_auto` 分带，并要求转换结果有限且经纬度目标范围有效。
+- **验证：**修复前新增南半球、Web Mercator→UTM 和坏点批次三个用例均失败；修复后坐标转换专项 7/7，通过完整 `python -m pytest backend/tests/test_spatial_tools.py -q`，205/205。`py_compile` 和 `git diff --check` 通过。
+- **模块进度：**`convert_crs` 图层转换与 `convert_coordinates` 单点/批量路径的 CRS 别名、半球、边界和错误输出已复核；输入 CRS 范围、跨分带边界和其他 GIS 工具族仍需继续审查。
+
+### 2026-10-30 近邻分析在大范围使用单一 UTM 距离
+
+- **复现与修复：**`spatial_near` 把源/目标联合范围交给 `estimate_utm_crs()` 后直接按米缓冲，但不像缓冲、聚类和新修复的 CRS 转换那样检查局部 UTM 适用范围。两点位于日期变更线两侧时，旧实现仍按一个投影返回“找到”要素；跨 8° 范围时也会正常回答“未找到”，没有说明测距超出局部投影适用范围。现估算 CRS 前用 `_local_utm_extent_error` 校验联合 bounds，错误时不计算也不创建结果层。原近邻成功测试含 0° 到 10° 的不适用范围，现将远点调整到 2.001°，使其符合本工具文档的局部分析范围并继续测试真实成功路径。
+- **验证：**修复前新增的日期变更线与 8°范围测试均未得到预期拒绝；修复后 `python -m pytest backend/tests/test_spatial_tools.py::TestSpatialNear -q`，9/9 通过，覆盖拒绝、无结果副作用、局部命中和无效距离。随后完整 `python -m pytest backend/tests/test_spatial_tools.py -q`，207/207 通过。
+- **模块进度：**近邻距离单位、局部投影域和筛选结果创建已覆盖；GIS 工具剩余函数族继续审查。
+
+### 2026-10-30 最近要素对分析的局部投影边界
+
+- **审查范围与修复：**沿最近要素对算法检查同层/跨层筛选、代表点、局部 UTM 距离和结果文本。发现 `nearest_pair` 与 `spatial_near` 一样会对任意范围直接 `estimate_utm_crs()`，全球/跨带输入仍给出米制“最近”结果。现也对筛选后的联合范围使用局部 UTM 校验，超界时停止给出误导性距离。
+- **验证：**新增最近要素对在日期变更线两侧和跨 8° 范围的错误路径；`python -m pytest backend/tests/test_nearest_pair.py backend/tests/test_spatial_tools.py::TestSpatialNear -q`，14/14 通过，含局部同层、跨层、属性过滤和近邻命中。
+- **模块进度：**近邻筛选、代表点距离、局部范围错误与近邻结果生成有测试覆盖；大型/全球距离需支持测地线计算时应另行设计，当前工具明确按局部 UTM 工作。
+
+### 2026-10-30 泰森多边形范围说明与实现不一致
+
+- **审查范围与发现：**对照 `spatial_voronoi` docstring 的“输入点凸包范围”和 Shapely 实际生成结果。用三角形顶点（凸包面积 2）复现，默认 Voronoi cells union 面积为 36、边界扩至 (-2,-2,4,4)，明显不是凸包。现有算法使用 Shapely 的自动外包络裁切，不传入凸包/研究区；这属于会影响用户对输出面边界理解的文档错误，已更正文档并提示需用研究区图层再裁剪。
+- **验证：**运行时范围复现如上；`python -m pytest backend/tests/test_spatial_tools.py::TestSpatialVoronoi -q`，5/5 通过，另 `py_compile` 与 `git diff --check` 通过。计算算法保持现有输出，研究区裁剪是独立后续空间操作。
+- **模块进度：**点几何类型、重复站点、米制投影和自动裁切范围说明已核对；若产品要采用凸包/行政区等确定边界，需要新增明确的 extent 输入设计。
+
+### 2026-10-30 空间插值数据对齐与栅格输出复核
+
+- **审查范围与状态：**追踪点/多点展开、值字段与每个点位置配对、有效观测筛选、局部 UTM 单位、IDW/RBF 栅格朝北行序、GeoTIFF transform/NoData、预览图和 raster layer op 注册；结合非对称南北值、MultiPoint、极区/广域、批次内存预算和无效字段测试复核。当前涵盖的本地合成数据路径未发现新确认缺陷。
+- **验证：**`python -m pytest backend/tests/test_interpolation.py -q`，9/9；IDW/RBF 数据和 CRS 边界用例随 `test_spatial_tools.py` 全量 207 项通过。随后合并复验 `python -m pytest backend/tests/test_spatial_tools.py backend/tests/test_nearest_pair.py backend/tests/test_interpolation.py -q`，221/221 通过；`py_compile`、`git diff --check` 通过。
+- **未覆盖：**没有真实业务采样点/已知地面基准面来验证统计精度；真实 GIS 客户端读取导出 GeoTIFF 和远程瓦片缓存未在本项验收。
+- **模块进度：**只标记插值这一分支已审；GIS 工具模块其他函数族仍在审查。
+
+### 2026-10-30 水文分析 NoData 掩膜与河网阈值
+
+- **复现与修复：**逐像元追踪 GeoTIFF→填洼→D8→汇流累积→河网阈值和栅格注册。先发现 `src.read(1)` 忽略 GeoTIFF 内部 mask、`streamnet` 的 0/负阈值把所有有效像元判为河网、全 NoData 栅格生成空白成功结果；现用 masked read 并将非有限值统一为 NoData，拒绝全无效输入，analysis 提前校验，阈值须为正整数。进一步构造平底盆地（边缘高程 100、内部 10）与零高程平地，旧迭代填洼中心仍为 10、平地所有单元都没有低邻居；现以 Priority-Flood 抬升至最近有效外边界/NoData 洞边界溢流高程，并在平地引入至少 `1e-6` 的微小坡度以形成可计算的 D8 排水路径。
+- **验证：**上述 mask、阈值、全 NoData 和两种填洼回归修复前失败，修复后水文专项 `TestHydrology` 9/9 通过。与 GIS 工具、近邻及插值集合并复验 `python -m pytest backend/tests/test_spatial_tools.py backend/tests/test_nearest_pair.py backend/tests/test_interpolation.py -q`，227/227；语法和 diff 检查通过。
+- **模块进度：**水文输入掩膜、无效输入、Priority-Flood 填洼/平地排水和流程栅格注册分支已修复验证；真实 DEM 水文基准、复杂 NoData 隔断区域、Priority-Flood 大栅格性能未验证。
+
+### 2026-10-30 栅格计算器忽略内部有效数据掩膜
+
+- **审查范围与复现：**追踪 GeoTIFF 多波段读取、表达式白名单求值、NaN 传播、结果 GeoTIFF 写出和 preview/layer-op 注册。创建无 nodata 元数据、但内部 mask 屏蔽左上像元的两波段 TIFF，执行 `B1+B2`；修复前左上屏蔽像元仍输出 0.75，说明 `src.read(i)` 没使用 mask。
+- **修复与验证：**逐波段改用 `read(masked=True)`，并将 masked 与所有非有限值统一转成 NaN，使表达式和结果写出保持 NoData。`python -m pytest backend/tests/test_spatial_tools.py::TestRasterCalculator -q`，5/5 通过，包含 mask、除零像元、超大尺寸提前拒绝。随后 GIS 工具、近邻、水文和插值集合并回归 228/228；语法及 diff 检查通过。
+- **模块进度：**表达式白名单、NoData 传播、输出 CRS/栅格元数据、资源上限已在合成 TIFF 路径检查；多波段分别有效掩膜、实际云优化栅格/远程存储行为仍待审。
+
+### 2026-10-30 栅格分析工具内部掩膜一致性
+
+- **审查范围与修复：**沿 GeoTIFF 读取点继续检查 DEM 分析、NDVI/光谱指数、等值线、重分类、焦点统计、欧氏距离、代价距离/路径、填挖方、栅格转矢量、地形剖面和重采样/重投影。多个工具此前只按 NoData 哨兵值过滤，忽略 TIFF 内部有效数据 mask；现改为 masked read 或显式使用掩膜，避免掩膜区参与统计、路径/源像元和矢量化。重采样输出保留有效数据 mask，重投影将掩膜区设为 NaN NoData。另发现投影 CRS 等值线直接将投影坐标写入 GeoJSON，现转换至 WGS84。
+- **验证：**新增焦点均值、重采样、重投影内部 mask 回归；合并运行 `python -m pytest -q backend/tests/test_raster_gap_tools.py backend/tests/test_spectral_indices.py backend/tests/test_dem_analysis.py backend/tests/test_spatial_tools.py::TestNDVI backend/tests/test_spatial_tools.py::TestContour backend/tests/test_new_tools.py`，121/121 通过。
+- **模块进度：**本轮覆盖的消费者路径经定向测试；仍需继续检查栅格预览和其他读取分支的 mask 传播，不能视为栅格模块审查完成。
+
+### 2026-10-30 COG 预览和统计内部掩膜
+
+- **复现与修复：**检查远程/本地 COG 降采样预览与波段统计，发现两处直接 `read(out_shape=...)` 只按 nodata 元数据筛选，忽略内部 TIFF mask。现将每个显示波段的 `read_masks` 合并进预览无效区，并让 COG 抽样统计使用 masked read。
+- **验证：**新增内部 mask 极值统计和预览像元回归；`python -m pytest -q backend/tests/test_cloud_native.py -k 'not integration'`，62/62 通过、4 项集成用例未运行。全文件运行在末尾集成测试处等待超过 45 秒后手动中断，因此不报告全文件通过。
+
+### 2026-10-30 栅格计算器逐波段 PAM NoData 掩膜
+
+- **复核结论：**使用两波段 GeoTIFF 和 `.aux.xml` PAM sidecar，分别给 band 1/2 声明 NoData `-9999`/`-8888`。Rasterio 打开后两波段掩膜在对角像元上相反；生产 `raster_calculator` 的 `B1`、`B2` 各自仅屏蔽对应无效像元，`B1+B2` 在任一输入无效时传播 NaN，其余像元仍正确相加。未发现生产代码缺陷。
+- **回归与验证：**新增 `TestRasterCalculator.test_calc_propagates_independent_per_band_pam_nodata_masks`，输入、PAM sidecar、GeoTIFF/PNG 结果均位于 pytest `tmp_path`；未改生产代码。`python -m pytest backend/tests/test_spatial_tools.py::TestRasterCalculator -q --disable-warnings --tb=short -p no:cacheprovider`，6/6 通过。`git diff --check -- backend/tests/test_spatial_tools.py` 通过。
+- **协作与边界：**GPT 独立复核最终实际差异。Antigravity 客户端该项运行在返回交接前因执行错误终止，且没有本轮文件写入；因此此回归由 GPT 接手完成，不将其计为 Antigravity 贡献。当前证据只覆盖 PAM per-band NoData 与小型真实 TIFF，未覆盖不同 GDAL 驱动/sidecar 变体或大型影像性能；栅格其他模块仍继续审查。
+
+### 2026-10-30 字段计算静默覆盖已有属性
+
+- **复现与影响：**`field_calculate` 的契约是添加新字段，但执行 `gdf[new_field] = result` 会覆盖同名现有属性。临时注册 GeoJSON 中 `result="keep-me"`，请求 `value * 2` 写入 `result`，旧行为返回成功并将值改成 `6`，造成无提示数据丢失。
+- **修复与回归：**计算前检查目标字段是否已在 GeoDataFrame 列中；重名时返回明确错误，且不改注册数据或待推送图层/操作。新增冲突测试比较调用前后注册图层与推送状态。修复前新测试失败并实际复现覆盖。
+- **验证：**`python -m pytest backend/tests/test_coverage_gap.py::TestFieldCalculate -q --disable-warnings --tb=short -p no:cacheprovider`，5/5 通过；`python -m py_compile backend/services/tools.py backend/tests/test_coverage_gap.py` 与 `git diff --check -- backend/services/tools.py backend/tests/test_coverage_gap.py` 通过。
+- **协作与边界：**Antigravity 新任务在执行前因客户端错误终止，无本轮文件写入；GPT 接手实现并独立验证。现有新字段、null/字符串转换和 `_fid` 保护回归通过；测试只使用临时注册图层，未验证超大属性表性能。GIS 工具模块仍继续逐项审查。
+
+### 2026-10-30 字段计算混合 null 使大整数精度丢失
+
+- **复现与影响：**`field_calculate` 原以 `GeoDataFrame.from_features` 构造属性表；同列含 `9007199254740993` 与 `null` 时 pandas 推断为 `float64`，一次计算新字段会把原属性改成 `9007199254740992.0`，并让新字段也基于舍入值，造成静默数据损坏。新增真实注册 GeoJSON 回归修复前失败并复现该精度丢失。
+- **修复：**使用已有 `_geojson_to_export_gdf` 按 object dtype 保留原属性；表达式在独立副本上处理 null 为 NaN，同时维持 object dtype，使缺失值按既有规则传播，源属性与可精确计算的大整数不受联动转换影响。字符串化整数保留其整数文本（`4`），不再受偶发的 float 推断影响。
+- **验证：**`python -m pytest backend/tests/test_coverage_gap.py::TestFieldCalculate -q --disable-warnings --tb=short -p no:cacheprovider`，6/6 通过；包含已有字段名拒绝、混合 null 的大整数原值与新计算值、null/字符串行为和 `_fid` 保护。`python -m py_compile backend/services/tools.py backend/tests/test_coverage_gap.py` 与 `git diff --check -- backend/services/tools.py backend/tests/test_coverage_gap.py` 通过。
+- **边界与协作：**输入为本地小型合成 GeoJSON，未测复杂 AST 函数与大表性能。Antigravity 本轮前置任务继续因客户端执行错误终止；代码由 GPT 在确认可复现后完成并验证。GIS 工具族继续审查。
+
+### 2026-10-30 字段计算接受未支持的 field_type
+
+- **复现与影响：**工具只对 `int`/`str` 做特殊处理，其余文本都沿默认分支执行。`field_type="currency"` 原会成功计算并把 `currency` 写入成功提示，实际结果仍为原数值类型，使请求的类型与提示不可信。
+- **修复与回归：**仅接受 `str/int/float` 与 `add_field` 已支持的 `string/text/integer/double/number` 别名，统一转为规范名；其他值在读取/写回之前拒绝。新增未知类型失败且注册图层/待推送状态不变的回归，以及三个别名规范化测试。
+- **验证：**未知类型测试修复前失败、返回成功；修复后 `python -m pytest backend/tests/test_coverage_gap.py::TestFieldCalculate -q --disable-warnings --tb=short -p no:cacheprovider`，10/10 通过。源文件语法与 diff 检查随后复核。
+- **边界与协作：**只覆盖类型名校验/别名，不重新定义整数转换、非整数截断或缺失值类型推断语义；这些转换规则仍待审。Antigravity 近几轮任务都在执行前客户端终止，本项由 GPT 实现并独立验证。字段计算之外的工具族继续审查。
+- **模块进度：**COG 本地读取、预览与抽样统计路径已覆盖；远程真实 COG、COG 内部 mask 与 Alpha 组合仍需单独验证。
+- **合并复验：**栅格工具、COG（排除需外部网络的集成用例）和新增工具集合并运行 183/183 通过；`py_compile` 与 `git diff --check` 通过。
+
+### 2026-10-30 空间随机采样参数契约抽查
+
+- **审查范围与结论：**检查 `spatial_sample` 的数量/比例分支、互斥条件、上限和空样本反馈，并沿 StructuredTool 参数 schema 到 `/api/tools/invoke` 的异常回包路径核对小数/非有限的 `n`。Pydantic 工具 schema 会在函数执行前拒绝小数和 NaN/Inf，直连 API 捕获执行异常并记录失败；未发现新确认缺陷。
+- **验证：**`python -m pytest backend/tests/test_spatial_tools.py::TestSpatialSample -q`，8/8 通过，覆盖数量、比例、非法值及冲突参数。
+- **模块进度：**此记录只覆盖随机采样参数和返回分支，不代表 GIS 工具模块完成。
+
+### 2026-10-30 前端共享图层状态与后端注册生命周期
+
+- **审查范围与结论：**追踪 `gis_state.addLayer/removeLayer/clearAll` 与 `layers.js` 面板桥接、重复名称处理、图层重命名/删除、注册版本 token、失败重试屏障，以及 Cesium 异步加载/删除版本隔离和工程保存读取共享样式。检查删除时 map 清理异常、后端取消注册等待保存、注册失败、项目切换时排队注册上下文等关键失败路径；本轮检查路径没有发现新的已证实缺陷。
+- **验证：**`node --test frontend/tests/gis_state_fid_identity.test.cjs frontend/tests/project_load_race.test.cjs frontend/tests/layer_panel_rename.test.cjs`，67/67 通过，覆盖状态唯一 ID、共享同步、重命名/重复名、注册失败与重试、工程切换/恢复及删除。
+- **模块进度：**共享矢量图层身份和注册/删除/保存屏障主路径已审查；真实浏览器下 2D/3D 同时运行时的渲染一致性仍需浏览器级验证。下一步检查 AI 工具结果到图层操作的 SSE 生命周期和异步排序。
+
+### 2026-10-30 AI/手动样式操作未同步工程状态
+
+- **复现与修复：**沿 `chat.js` `set_color`/`set_style` 图层操作到 `gis_state`、面板数据和 `project._collectLayers` 追踪。此前地图样式成功变更后仅更新地图（设色还更新面板 `color` 字段），共享状态 `style` 仍保留旧值；工程保存时共享样式覆盖面板样式，重载会恢复旧颜色/符号。手动工具通道也缺少样式变更后的自动保存。现成功应用后同步面板与共享样式并发出状态事件；手动通道将样式变化纳入自动保存条件。
+- **验证：**新增手动 `set_color` + `set_style` 回归，断言共享状态、面板状态和自动保存；先运行新增测试确认修复前在共享颜色断言失败，再验证修复通过。`node --test frontend/tests/chat_send_lifecycle.test.cjs frontend/tests/gis_state_fid_identity.test.cjs frontend/tests/project_load_race.test.cjs`，72/72 通过。
+- **模块进度：**确认并修复 AI/手动成功样式操作的数据同步与保存路径；继续核对了 SSE 的增量地图操作与最终 `done` 操作身份，后端以相同 `_stream_id`/`_step_id` 重复携带，前端按应用结果去重/重试。错误后局部结果处理仍在检查。
+- **验证补充：**新增并通过最终 `done` 与 `layer_ops_delta` 操作 ID 一致断言，单测 1/1。完整 `test_stream_step_events.py` 有 4 项因本地 `.venv` 缺 `keyring`、加密任务存储初始化失败；目标 SSE 用例通过测试内 task-store 隔离后通过。前端图层状态、工程恢复与聊天生命周期集合并 72/72；两个修改 JS 文件 `node --check` 和 `git diff --check` 通过。
+
+### 2026-10-30 手动工具直连 API 契约与入口
+
+- **审查范围与结论：**检查 `/api/tools/invoke` 工具注册表解析、对象参数校验、参数守卫、共享工作区非阻塞锁、执行/失败结果结构、待推送图层产物消费和 `finally` 释放锁；追踪前端 `invokeTool`、工具面板禁用/反馈和项目切换 generation 检查。代码路径上失败/忙碌使用 `ok:false` 并由面板展示为未完成，未确认新产品缺陷。
+- **验证阻塞：**目标 E2E 文件无法收集：当前 `.venv` 缺少 `keyring`，导入 `backend.main` 时加密的工程索引初始化失败；没有改动密钥后端或读取用户加密数据来绕过。直接 E2E 用例因此未运行。仅从源码和既有调用测试得出结论，不能标为完整已审查。
+- **模块进度：**入口主路径静态检查中；仍需在可用的隔离密钥测试环境验证忙碌锁、失败结果、待处理产物、历史记录及工程切换交互。该环境限制不阻塞其他模块继续审查。
+
+### 2026-10-30 2D/3D 图层渲染同步路径
+
+- **审查范围与结论：**追踪共享可见性/样式事件到 Leaflet 和 Cesium、Cesium GeoJSON 异步载入与版本失效、删除/清空期间迟到载入、失败后的相机飞行、样式更新重载，以及同名 raster/vector 替换和比例尺显隐。本轮覆盖的关键状态路径未发现新的已证实缺陷。
+- **验证：**`node --test frontend/tests/renderer_cesium_style.test.cjs frontend/tests/renderer_cesium_clear.test.cjs frontend/tests/map_layer_visibility.test.cjs`，30/30 通过。
+- **模块进度：**渲染状态与异步清理关键分支已由测试覆盖；真实浏览器 Cesium/WebGL、多种数据几何的视觉正确性和 GPU 设备差异仍未验证。
+
+### 2026-10-30 工程保存/自动保存路径继续检查
+
+- **审查范围与结论：**静态追踪前端串行保存队列、session/project generation 失效、自动保存前图层注册屏障、图层 assignment 对后端 registry/blob/raster 资产合并、保存前图层一致性校验及删除旧 Blob 的先后。当前阅读范围未确认新缺陷；前几轮已修过的 archive GeoJSON、加密 raster 资产和 open generation 竞态按现有记录保留，不重复实现。
+- **验证边界：**未运行工程 E2E；当前 `.venv` 缺 `keyring`，导入 `backend.main`/`project_service` 时现存加密工程索引读取失败。此处只有源码追踪，模块仍为审查中；后续转向无需该本机加密状态的模块。
+
+### 2026-10-30 Electron 客户端与启动器
+
+- **审查范围与结论：**追踪桌面端 Python 解释器探测、端口校验/服务身份复用、同实例 IPC、启动等待与意外退出、只终止本客户端进程、窗口关闭清理；同时查看 Windows 启动器 bootstrap 锁、运行时依赖修复、launcher 端口选择与服务探测。该路径本轮未发现新的已证实缺陷。
+- **验证：**`npm test`（`desktop/`），29/29；`python -m pytest -q backend/tests/test_launcher.py`，38/38。
+- **模块进度：**桌面进程所有权与命令行 launcher 关键错误/竞争分支已审；真实用户环境首次安装网络、Windows Defender/权限策略和发布安装包升级路径仍未实机验证。
+
+### 2026-10-30 模型 Provider Key 与凭据调用链复核
+
+- **审查范围与结论：**追踪 Provider Key 从设置表单与浏览器存储，到聊天/测速请求、LLMConfig、模型客户端及后端设置同步；检查 HTML 属性转义、设置接口脱敏、连通性错误归一和凭据加密读写。未发现新的可复现缺陷。Provider Key 会按设计发送给用户配置的模型服务，使用远程 WorkTable 后端时也会发送给该后端；界面已有相应说明。
+- **验证：**`python -m pytest backend/tests/test_credential_security.py backend/tests/test_user_settings_provider_keys.py -q --disable-warnings --tb=short`，14/14；`node --test frontend/tests/api_provider_key_storage.test.cjs frontend/tests/settings_geo_credentials.test.cjs`，34/34。
+- **模块进度：**本地存储/同步与主要错误反馈路径已复核；未对真实模型服务发请求。系统密钥库跨 Windows 账户与升级迁移的边界沿用既有记录，尚未实测。
+
+### 2026-10-30 属性表 CSV 公式注入与转义复核
+
+- **发现并修复：**属性表“导出 CSV”原先只在值含逗号、双引号或 LF 时加引号，字段名完全不转义，也未中和以 `= + - @`、全角变体或控制字符开头的字段和值。将恶意属性表交给 Excel 等电子表格软件打开时，内容可能作为公式执行。现复用已有 CSV 公式前缀防护，对表头和值统一转义并采用 CRLF 行分隔；导出函数返回实际 CSV 文本便于回归验证。
+- **验证：**新增 Unicode、逗号、双引号、嵌入换行、公式字段名/值及前导 Tab 回归；`node --test frontend/tests/vector_inspector_units.test.cjs frontend/tests/layer_panel_rename.test.cjs`，52/52；`node --check frontend/js/layers.js` 与 `git diff --check` 通过。测试输出中的离线注册/地图清理日志来自已有故障注入用例，断言均通过。
+- **模块进度：**属性表 CSV 注入与格式转义已覆盖；编辑数值精度、CSV 导入类型推断和真实 Excel 兼容性作为下一轮检查点。
+
+### 2026-10-30 属性表空行确认取消仍提交编辑
+
+- **发现并修复：**属性表保存时，先把暂存值写入原 GeoJSON，再弹出“完全空行”确认框。点击取消会关闭提示但无法回滚对象，未确认的字段/坐标修改仍留在共享内存中，之后任意保存可能将其持久化。现在验证所有行后只保留暂存变更；用户确认后才写入 GeoJSON、刷新地图并同步工程。
+- **复现与验证：**新增确认框交互回归：保存一行全空编辑触发警告，取消后断言属性原值不变且地图未刷新。`node --test frontend/tests/layer_panel_rename.test.cjs frontend/tests/vector_inspector_units.test.cjs`，53/53 通过；`node --check frontend/js/layers.js` 与 `git diff --check` 通过。
+- **模块进度：**属性表 CSV 导出注入与空行确认事务已修复；编辑数值精度、CSV 导入类型推断和真实 Excel 兼容性仍待继续审查。
+
+### 2026-10-30 CSV 上传预览与后端首屏类型推断抽查
+
+- **审查范围与结论：**检查浏览器端 BOM、逗号/双引号/嵌入换行、显式空记录、HTML 转义、取消/读取失败流程，以及后端分块计行、跨块混合类型回退和 CSV 原文件保留。预览仅作展示；最终 AI 转换仍读取服务器保存的原 CSV。此路径未发现新的可复现缺陷。
+- **验证：**`node --test frontend/tests/upload_preview.test.cjs`，25/25 通过。后端已有 CSV 跨块类型与行数回归记录，本轮未重跑会导入 `backend.main` 的测试。
+- **后续发现：**该 JSON 精度边界在下一模块追踪到 AI 图层注册与工程保存后，确认并修复；见下方“GeoJSON unsafe integer 跨 API 精度丢失”。
+
+### 2026-10-30 GeoJSON unsafe integer 跨 API 精度丢失
+
+- **发现并修复：**证实 SSE `done.layers`、非流式聊天、矢量上传和工程恢复把 Python 任意精度整数输出为 JSON number，浏览器解析超过 `2^53-1` 后会静默舍入。聊天收到新图层还会把舍入副本再次注册，属性表编辑和手动保存工程也会把错误值持久化。现在出站 GeoJSON 属性将不安全整数编码为十进制文本并带 Feature 级字段路径标记；属性编辑注册请求携带版本令牌，后端对未改变的 IEEE-754 舍入副本恢复原值，对前端传回的精确十进制文本按原整数类型恢复；打开工程时传递注册令牌，手动保存优先取令牌匹配的后端图层；GeoJSON 下载按标记把文本还原成未舍入的数字字面量。
+- **测试：**新增 `test_geojson_precision.py`，覆盖正/负大整数、嵌套属性、坐标不变、舍入副本恢复、精确编辑文本恢复和令牌匹配的手动工程保存；4/4。前端 `vector_inspector_units`、`layer_panel_rename`、`api_provider_key_storage` 共 83/83，覆盖大整数传输回读/GeoJSON 导出、注册令牌透传和编辑路径。`node --check`（layers/api/project）、`py_compile`（precision/project_service/main）及 `git diff --check` 通过。
+- **验证边界：**没有运行真实 FastAPI/工程保存 E2E：当前仓库 Python 环境里 `backend.main` 导入会触发本机加密工程索引/密钥库路径，继续沿用隔离要求，不用实际用户密钥库绕过。已做后端 helper 单测与路由/服务静态追踪；需要隔离 keyring、临时项目索引的 API 集成回归仍应补跑。真实浏览器属性表、模型输出及 GIS 客户端读取也未实机验证。
+- **模块进度：**主要 AI/上传/工程往返链路已修复并由单元/前端契约测试覆盖；后端 API 组合验证未完成，模块状态为“修复中，等待隔离 API 集成验证”。
+
+### 2026-10-30 聊天附加图层卡片与产物渲染复核
+
+- **审查范围与结论：**追踪用户消息中的附加图层名/类型/要素数到聊天 DOM；复核 AI Markdown 链接/图片策略、AI HTML/SVG 产物 iframe 沙箱、下载状态码与对象 URL 生命周期。发现并修复附加图层卡片的 DOM 注入：名称、类型和计数原先直接拼入 `innerHTML`，上传文件名可注入标记；现改为创建节点并用 `textContent` 写入。AI HTML 产物仍置于仅 `allow-scripts` 的 opaque-origin iframe；该路径未发现新问题。
+- **复现与验证：**新增恶意图层名、类型、计数字段回归；修改前测试失败并显示原始 `<img>/<svg>/<b>` 标记被写入 `innerHTML`，修改后全部作为文字展示。`node --test frontend/tests/chat_send_lifecycle.test.cjs`，43/43 通过；`node --check frontend/js/chat.js` 与 `git diff --check` 通过。
+- **模块进度：**聊天消息、附件卡片、产物卡片和 HTML iframe 关键显示路径已检查；真实浏览器 CSP 行为与第三方产物内容未实机验证。
+
+### 2026-10-30 Workflow DAG 重跑状态复核
+
+- **发现并修复：**工作流首次运行失败时会设置顶层 `error`；执行器重跑虽清空节点输出和节点错误，但未清空顶层错误。若后续重跑成功，结果会同时显示 `status=success` 和上次的失败说明。现每次有效执行在进入 `running` 前清除旧顶层错误。
+- **复现与验证：**新增同一个工作流第一次抛错、第二次成功的回归；修复前测试失败，成功结果保留“1 个节点失败”，修复后 `error` 为 `None`。Workflow 和历史物化测试共 30/30 通过；`git diff --check` 通过。
+- **审查范围与限制：**覆盖 schema 校验、循环检测、拓扑执行、上游失败跳过、模板解析、结果图层副作用与历史物化既有用例；未做超大 DAG 性能压测、真实 GIS 服务或浏览器执行卡端到端检查。工作流执行器模块继续扫描。
+
+### 2026-10-30 路网分析服务复查
+
+- **审查范围与结论：**追踪 GeoJSON 路网到有向图、单行方向、最近节点吸附、最短路、服务区与最近设施结果；复核 WGS-84 校验、零长度路径表达、不可达/未吸附分类、图缓存键和自定义权重启发式。未发现新的可复现产品缺陷。服务区仍是可达节点凸包估算，已由既有代码、属性及 UI 文案明确披露，不能视为精确等时圈。
+- **验证：**`python -m pytest backend/tests/test_network.py -q --disable-warnings --tb=short -p no:cacheprovider`，17/17 通过。组合执行 `test_network.py` 与 `test_integration_e2e_v4.py` 时网络测试通过；后者两项凭据存储测试因当前环境凭据后端不可用而失败，与路网代码无调用关系，不计入网络模块结论。网络请求 UI 生命周期测试已有记录，本轮未重跑。
+- **边界与进度：**没有真实道路数据对照、超大路网性能基准或真实地图端到端验收；这些限制不作为已确认缺陷。网络分析本地计算路径已审，外部 API/真实地图集成仍需后续模块批次覆盖。
+
+### 2026-10-30 上传取消确认延迟时仍继续传输
+
+- **复现与修复：**上传 UI 的取消按钮先等待 `/api/upload/cancel/{request_id}` 返回再中止上传请求；后端取消确认请求可能等待至 5 秒超时，期间浏览器仍继续发送大文件。新增延迟取消确认回归，修复前确认信号未中止；现在点击后立即 abort 文件传输，同时异步等待服务端状态/回滚确认，再按现有逻辑提示成功或不确定状态。
+- **验证：**`node --test frontend/tests/upload_preview.test.cjs`，26/26 通过，包含取消后迟到响应清理；`node --check frontend/js/upload.js` 与目标 `git diff --check` 通过。
+- **模块进度：**确认取消响应慢时的客户端传输缺陷已修复。上传 CRS/各格式实际转换契约、Electron 断网和大文件性能仍待继续审查；没有把现有 Node 仿真结果扩大成浏览器端到端结论。
+
+### 2026-10-30 上传矢量 CRS 转换契约复查
+
+- **审查范围与结论：**沿上传格式分支复核 GeoJSON（RFC 7946 默认 CRS 与旧式声明 CRS 转换）、Shapefile ZIP、GPKG/KML/KMZ/GPX/DXF 到 EPSG:4326 的转换、注册范围校验、source CRS provenance，以及前端图层 CRS 标签。浏览器 `crs: WGS-84` 对应的是服务端重投影后的实际坐标；来源 CRS 独立保存在 provenance。本轮未发现新的可复现数据错误。现有专项已覆盖 EPSG:3857 GeoPackage/Shapefile 重投影及缺失 CRS 拒绝。
+- **验证与边界：**参考既有上传专项 `test_upload_vector.py`、上传 CRS provenance 验证记录；本轮没有重新导入 `backend.main` 执行可能触及本机加密项目索引/密钥库的 API 测试。旧式 GeoJSON CRS 变体矩阵、真实外部坐标文件与浏览器地图显示仍需单独验收；上传模块仍在审查中。
+
+### 2026-10-30 同秒矢量导出覆盖前一个下载文件
+
+- **复现与修复：**导出 GeoJSON、SHP、GPKG、CSV、CSV+坐标统一使用清理图层名和秒级时间戳；同一图层同一秒内再次导出会复用目标路径，覆盖先前已经返回给聊天/工具调用的下载文件。固定时钟回归先确认两次 GeoJSON 文件名和路径相同、第二份内容替换第一份；现五种格式均在时间戳后追加 UUID，保留独立下载文件。
+- **验证：**`python -m pytest backend/tests/test_coverage_gap.py::TestExportLayer -q --disable-warnings --tb=short -p no:cacheprovider`，15/15 通过，覆盖固定时间重复导出、实际 SHP 写出/回读、各格式栅格拒绝和产物登记。
+- **模块进度：**导出命名/路径、字段截断、CRS 输出（GeoJSON 注册坐标和 GPKG/SHP 4326 声明）以及 CSV 属性/点坐标边界已有定向检查；超大图层内存/耗时、完整业务字段类型回读和真实浏览器下载仍未验收。
+
+### 2026-10-30 矢量文件导出将空值大整数舍入
+
+- **复现与修复：**注册含 `9007199254740993` 与 `null` 的两条点要素。`GeoDataFrame.from_features` 将混合 int/null 属性推断为 `float64`，实际 CSV 输出 `9007199254740992.0`，SHP/GPKG 也在文件写出前已丢失原精度。新增导出 GeoDataFrame 构造器：几何仍由 GeoPandas 建立，但每个属性列按原始 GeoJSON 值以 object dtype 回填，避免 NumPy/Pandas 浮点化。
+- **验证：**修复前 CSV 回归失败，明确读到舍入值；修复后 CSV、CSV+坐标、SHP、GPKG 均从实际落盘文件验证原整数精确保留、空值仍为空。`python -m pytest backend/tests/test_coverage_gap.py::TestExportLayer -q --disable-warnings --tb=short -p no:cacheprovider`，19/19；`py_compile` 和 `git diff --check` 通过。
+- **模块进度：**已覆盖重复导出文件名碰撞、大整数属性及空值、SHP 字段截断冲突、格式 CRS/结构回读和结果产物登记。其它日期/时间、嵌套属性、超大图层性能与真实 GIS 软件兼容仍待继续审查。
+
+### 2026-10-30 CSV+坐标导出覆盖同名属性字段
+
+- **复现与修复：**点图层原始属性包含 `longitude`、`latitude` 时，`csv_xy` 直接给 GeoDataFrame 写同名几何坐标列，导致两项原属性不可恢复。新增实际 CSV 回读回归，修复前确认源属性被替换成坐标；现在有冲突时保留原字段，并选择 `geometry_longitude` / `geometry_latitude` 作为坐标字段，候选名也冲突时继续加序号。成功提示显示最终坐标列名。
+- **验证：**`python -m pytest backend/tests/test_coverage_gap.py::TestExportLayer -q --disable-warnings --tb=short -p no:cacheprovider`，20/20 通过，包含源字段冲突、大整数精度、同秒文件名、SHP/GPKG 写出及产物台账；`py_compile`、`git diff --check` 通过。
+- **模块进度：**本轮三项已确认导出缺陷（同秒覆盖、大整数舍入、CSV+坐标字段覆盖）均修复并验证；其他复杂属性与超大数据量仍需继续审查。
+
+### 2026-10-30 工具产物下载路由复查
+
+- **审查范围与结论：**复核 `/output/{filename:path}` 的规范化路径、符号链接目标约束、文件打开后 inode 重检、Content-Disposition、主动内容 CSP、单/多段 Range 解析和文件描述符关闭。本轮未发现新的可复现路由缺陷。
+- **测试夹具校正：**安全测试要求响应文件名必须保留 `%0D%0A` 编码，但当前框架会先移除控制字符；两种行为都可安全，测试的真实不变量是无原始 CR/LF 且不能注入独立响应头。已将断言改为检查 `x-injected` 响应头不存在，不再要求某一种安全编码实现。
+- **验证：**`python -m pytest backend/tests/test_output_file_safety.py -q --disable-warnings --tb=short -p no:cacheprovider`，11/11 通过；包含文件范围请求、符号链接替换和危险下载名。目标 `git diff --check` 通过。
+- **边界与进度：**本地 TestClient 覆盖路径安全和 HTTP 响应；真实代理/浏览器 Range 请求、并发大量下载及输出目录在多进程部署时的权限隔离未实测。导出与输出下载模块仍在审查中。
+
+### 2026-10-30 统计图表 HTML 内联脚本注入
+
+- **复现与修复：**`create_chart` 将用户指定标题、字段分类值和轴名称拼入 HTML/内联 JavaScript；构造 `</script><script>window.__chart_injected=true</script><script>` 后，生成的聊天 HTML 图表中原样出现了可打断脚本元素的序列。聊天图表 iframe 允许脚本运行，因此可执行。现标题按 HTML 文本转义；图表配置、标题及轴名称作为 JSON 字面量序列化并转义 `<`、`>`、`&` 与 JS 行分隔符；图表类型先限制为文档支持的枚举。
+- **复查发现：**固定时间连续生成两张图表可复现同秒文件名碰撞，第二次写入覆盖第一次下载文件。文件名增加 UUID 后缀。
+- **验证：**新增生成真实 HTML 文件的恶意标题和分类值回归，以及固定时钟的同秒双产物回归；两项均能在修复前复现。修复后 `python -m pytest backend/tests/test_coverage_gap.py::TestCreateChart -q --disable-warnings --tb=short -p no:cacheprovider`，3/3 通过；`py_compile` 与 `git diff --check` 通过。
+- **模块进度：**图表的标题、分类数据、轴名称、类型关键输入和同秒重复生成路径已覆盖；真实浏览器中第三方 ECharts CDN 与 CSP 组合未实机验证。
+
+### 2026-10-30 save_file 符号链接越界写入
+
+- **复现与修复：**`save_file` 的 basename/`..` 检查不能阻止输出目录内预置的符号链接。构造 `output/alias.txt → ../outside.txt` 后调用工具，会跟随链接并覆盖输出目录外目标。现写入前解析输出目录与目标路径，拒绝符号链接和规范化后越界的路径。
+- **验证：**新增目录外目标保持原文的符号链接回归，修复前失败、修复后通过；`python -m pytest backend/tests/test_coverage_gap.py::TestSaveFile -q --disable-warnings --tb=short -p no:cacheprovider`，2/2 通过；`py_compile`、`git diff --check` 通过。
+- **边界与进度：**覆盖静态符号链接与路径规范化；未模拟本机并发进程在路径检查和打开之间替换目录项的竞态。`save_file` 的 HTML 重名/登记路径继续审查。
+- **后续发现：**同一秒连续三次保存同名 HTML 时，首份按时间戳改名，后续请求回退到原始文件名；第三次会覆盖第二份内容，已登记 URL 也不再对应稳定内容。现 HTML 在写入前分配带 UUID 的最终文件名，并以该文件登记预览。
+- **验证：**新增固定时钟下连续三次写同名 HTML 的回归，修复前两条文件路径承载不了三份独立内容，修复后每份文件和预览 URL 均唯一。`python -m pytest backend/tests/test_coverage_gap.py::TestSaveFile -q --disable-warnings --tb=short -p no:cacheprovider`，3/3 通过；`py_compile`、`git diff --check` 通过。
+- **模块进度：**`save_file` 的普通文本、静态符号链接路径和同秒 HTML 内容/预览登记已验证；并发竞态及真实浏览器内 HTML 预览仍未实测。
+
+### 2026-10-30 GIS 分析报告文件名路径穿越
+
+- **复现与修复：**`generate_analysis_report` 把注册图层名拼入 `output/reports` 路径。注册 `../../escaped` 图层后，报告文件实际写到 `output` 外。现落盘文件名过滤 Windows/POSIX 路径及非法字符、清除首尾点空格，并加入 UUID；报告正文仍保留原图层名。
+- **验证：**新增临时输出目录回归，修复前解析出的报告路径位于 output 外，修复后落在 output 内；`python -m pytest backend/tests/test_report_quality.py::TestGenerateReport -q --disable-warnings --tb=short -p no:cacheprovider`，2/2 通过；`py_compile`、`git diff --check` 通过。
+- **边界与进度：**路径验证覆盖图层名越界和同秒重名避免覆盖；报告 Markdown 在前端的实际呈现及复杂 Unicode 名称的兼容性未实测。其它报告统计和质量检查边界仍待审查。
+
+### 2026-10-30 前端地图图片/PDF 导出路径复核
+
+- **审查范围：**从 Agent `export_map`/`export_pdf` 操作进入 `chat.js`，追踪到 `map.js` 导出实现；检查格式归一、Canvas 合成/下载、打印弹窗失败路径、旋转角归一、PDF 标题转义、图层/专题图例嵌入及打印完成前恢复原地图图例显示。
+- **结论：**本轮未发现可复现产品缺陷。前端导出回归覆盖 SVG/Canvas 叠放、经纬网、PNG/JPEG MIME/扩展名、下载状态反馈、PDF 图例、旋转布局和失败时的图例恢复相关分支。
+- **验证：**`node --test frontend/tests/map_export_composition.test.cjs`，5/5 通过。
+- **边界与进度：**测试基于 Node VM DOM/Canvas 模拟；未在真实浏览器验证不同地图底图 CORS、打印机/浏览器分页差异和大尺寸 Canvas 上限。模块暂记“审查中”，后续需真实浏览器导出验收或发现可测的离线问题。
+
+### 2026-10-30 静态地图文件名路径穿越
+
+- **复现与修复：**`generate_static_map` 将 `output_name` 原样拼入 `cache/charts`。在隔离工作目录传入 `../../escaped`，实际写出到 charts 目录之外；现在去除路径前缀并过滤非法文件名字符。另发现仅空图层时也会保存空白 PNG 并以“含 1 个图层”报告成功；现在统计成功绘制数，无有效图层则关闭图并返回明确错误。比例尺原先直接用经度跨度乘 111 km；在纬度 60°、经度跨度 1.1° 的实图中标 122 km，而 WGS84 地面距离为 66.8 km。现按比例尺所在纬度通过 WGS84 椭球测距。
+- **验证：**路径越界、空图层和高纬比例尺三条回归均先复现旧行为、修复后通过；`python -m pytest backend/tests/test_coverage_gap.py::TestGenerateStaticMap -q --disable-warnings --tb=short -p no:cacheprovider`，3/3 通过；`py_compile`、`git diff --check` 通过。
+- **边界与进度：**路径穿越、空/不可转换数据、成功计数和高纬度量值已覆盖；相同 `output_name` 的覆盖语义、比例尺在其他投影/跨日期变更线数据及大图层性能仍待继续审查。
+
+### 2026-10-30 AI 图层操作与 SSE 重放复核
+
+- **审查范围：**追踪 `run_agent_stream` → `tool_start/tool_end/layer_ops_delta/done`，核对同一会话及全局 GIS 工作区锁、`focus_map` 操作 ID 分配、增量应用失败重试、最终 `done.layer_ops` 重放去重及已结束卡片忽略迟到事件。
+- **结论：**本轮路径未发现新的可复现缺陷。流式 Agent 获得 session lock 和 shared-state lock 后才重置/访问全局工具状态；焦点操作增量带 `_stream_id`，前端仅在确认应用后记为已应用，最终结果会跳过已应用项；未成功操作保留错误供最终重放重试。
+- **验证：**`node --test frontend/tests/execution_cards.test.cjs frontend/tests/chat_send_lifecycle.test.cjs`，64/64 通过；`python -m pytest backend/tests/test_stream_step_events.py -q --disable-warnings --tb=short -p no:cacheprovider`，23/23 通过。
+- **边界与进度：**后端使用模拟图事件、前端使用 Node VM；未通过真实模型与浏览器网络故障注入验证 SSE 断连/重连和多个会话的端到端竞争，AI/SSE 模块仍需剩余入口及运行时检查。
+
+### 2026-10-30 鱼网格网与热力图工具复核
+
+- **审查范围：**追踪 `create_fishnet` 的 extent_layer/联合范围、经纬度单位、cell_size 向上取整、rows/cols 分支、10,000 格上限和图层注册；追踪 `create_heatmap` 的点/MultiPoint 展开、权重提取、渐变选项及前端 `loadHeatmap` 对 max intensity/半径的消费。
+- **复现与修复：**`create_heatmap(weight_field="typo_weight")` 在字段缺失时原先回退成每点权重 1，仍返回成功并发布热力图。新增缺失字段检查，返回可用字段名且不改变待发送热力图状态。
+- **验证：**回归修复前失败，修复后 `python -m pytest backend/tests/test_coverage_gap.py::TestCreateFishnet backend/tests/test_coverage_gap.py::TestCreateHeatmap -q --disable-warnings --tb=short -p no:cacheprovider`，5/5 通过；覆盖鱼网格数量上限、负 cell_size、向上取整尺寸、基本热力图和缺失权重字段。`py_compile`、`git diff --check` 通过。
+- **模块状态与边界：**这两个工具的主要生成/失败路径已做定向复核；鱼网格单元仍以度为单位（接口文档已声明），热力图非数值/空权重、极端半径、跨日期变更线范围及大点集性能尚未覆盖，GIS 工具模块继续审查。
+
+### 2026-10-30 字段计算缺失值被改写为零
+
+- **审查范围：**追踪字段名/表达式 AST 白名单、GeoPandas `eval` 与逐行安全 eval 回退、类型转换、非有限数值清理、GeoJSON 写回注册表与地图推送；同时复核 `measure_area` 的局部 UTM 与大范围 WGS-84 椭球分支及既有跨带基准测试。
+- **复现与修复：**输入字段为 `null` 时表达式结果原为 NaN，函数统一 `.fillna(0)` 后把缺失值写成 0；`field_type="str"` 还会把缺失值变成字符串 `"nan"`。已移除零填充，将 ±Inf 归一为 null，并让字符串转换显式保留缺失值。另确认字段计算器原可将计算结果写入内部 `_fid`，成功更新后会改变稳定要素标识；现在拒绝覆盖 `_fid` 和 `geometry`。
+- **验证：**新增 numeric/string 输出的 null 保留与 `_fid` 拒绝回归；修复前数值字段得到 `[8.0, 0.0]`，且 `_fid` 请求返回成功，修复后保留 null 并拒绝覆盖。`python -m pytest backend/tests/test_coverage_gap.py::TestFieldCalculate -q --disable-warnings --tb=short -p no:cacheprovider`，4/4 通过；并与 `TestMeasureArea` 合并的既有运行 5/5 通过；`py_compile`、`git diff --check` 通过。面积专项既有测试覆盖局部和大范围大地面积。
+- **模块状态与边界：**字段表达式常见算术、AST 限制、null/Inf 输出、身份列保护已检查；输出字段名覆盖现有属性、非法 field_type、数值溢出类型及跨日期变更线面积仍待审查。空间分析工具族继续检查中。
+
+### 2026-10-30 测距工具接受越界/非有限坐标
+
+- **审查范围：**复核 `measure_distance` 的工具参数 schema、Haversine 运算和用户可见的米/公里结果；与邻近路网工具已实施的经纬度边界校验对照。
+- **复现与修复：**经度 181°、纬度 91°、NaN 或 Infinity 原先都会进入 Haversine 公式并返回一个看似正常的距离。现先转数值并拒绝非有限坐标或超出 WGS-84 经度 [-180,180]/纬度 [-90,90] 的输入。
+- **验证：**非法范围/非有限值 5 个回归在修复前均失败并返回数字距离，修复后转为明确输入错误；原已知距离样例继续通过。`python -m pytest backend/tests/test_coverage_gap.py::TestMeasureDistance -q --disable-warnings --tb=short -p no:cacheprovider`，6/6 通过。
+- **边界与进度：**Haversine 仍按工具说明使用平均地球半径；本轮修复的是无效坐标被当作有效测距输入，不将其扩大声称为椭球精密测距。空间工具输入校验仍在逐项审查。
+
+### 2026-10-30 热力图插件不可用时登记空图层
+
+- **审查范围：**追踪后端 `create_heatmap` → `result.heatmap` → 聊天 SSE 与手动工具结果 → `map.loadHeatmap` → 图层面板；检查 `leaflet.heat` CDN 未加载时前端返回和 UI 结果。
+- **复现与修复：**热力图插件不可用时 `loadHeatmap` 返回 `null`。SSE 路径原先仍无条件把 `geojson:null` 的热力图记录加入图层面板，造成不可见的假图层；手动路径无任何失败提示。两个入口现确认返回的 Leaflet 图层对象后才登记/视为成功，插件或地图未就绪时显示错误提示。
+- **验证：**新增 SSE 回归修复前失败并观察到 phantom layer；另测手动工具结果入口。`node --test frontend/tests/chat_send_lifecycle.test.cjs`，45/45 通过；`node --check frontend/js/chat.js` 与 `git diff --check` 通过。
+- **边界与进度：**通过模拟 `loadHeatmap` 返回 null 覆盖插件缺失状态，未在真实离线浏览器/外部 CDN 故障环境验证插件加载和成功渲染；热力图参数范围与大点集性能仍待检查。
+
+### 2026-10-30 多环缓冲排序与环带语义复核
+
+- **审查范围：**重新追踪 `spatial_multi_ring_buffer` 的距离单位规范化、正数/有限性/重复值/最多 20 个距离校验、局部 UTM 缓冲、按距离升序差集，以及输出按输入顺序还原、dissolve 和属性注册。
+- **结论：**当前实现按升序构造互斥环带，最后按用户输入顺序输出；既有回归覆盖递减距离顺序、内区差集、dissolve 与否、单位别名/椭球距离、无效范围和重复距离不覆盖现有输出。本轮未发现新的可复现缺陷。
+- **验证：**`python -m pytest backend/tests/test_spatial_tools.py::TestMultiRingBuffer -q --disable-warnings --tb=short -p no:cacheprovider`，31/31 通过。
+- **边界与进度：**测试使用局部合成 WGS-84 几何；真实 GIS 软件拓扑兼容、大量源要素性能和无效源几何的处理仍未验收。多环缓冲主路径和关键参数失败路径已审，邻近 `move_features` 及其他空间变换工具继续检查。
+
+### 2026-10-30 要素旋转误用经纬度平面
+
+- **审查范围：**追踪 `rotate_features` 的角度参数、旋转中心计算、GeoJSON 修改和注册表/地图同步。
+- **复现与修复：**原实现直接对 EPSG:4326 坐标调用 Shapely 旋转。在纬度 80°、南北约 22 km 的长条面上旋转 90°，结果重新投影后东西宽度仅约 4.2 km，实际没有按地面尺度完成方向旋转。现先检查局部 UTM 适用范围，在 UTM 米制坐标中求合并几何中心并旋转，再转回 EPSG:4326；非法/非有限角度及超出局部投影范围时不改原图层。
+- **验证：**新增 80°N WGS-84 对照回归，修复前旋转后宽度未达到原地面南北长度，修复后宽度超过 15 km、南北高度小于 3 km。`python -m pytest backend/tests/test_spatial_tools.py::TestRotateFeatures -q --disable-warnings --tb=short -p no:cacheprovider`，2/2 通过；`py_compile`、`git diff --check` 通过。
+- **边界与进度：**旋转仅支持局部 UTM 适用数据，跨日期变更线/超宽范围明确拒绝；真实浏览器地图回显及曲线/无效几何的视觉拓扑仍未验收。
+
+### 2026-10-30 Agent 工具产物登记与核验链复查
+
+- **审查范围与结论：**追踪工具写出文件 → `record_tool_artifact` → SQLite `run_artifacts` → `result_guard.verify_result` 的 run/task 归属、basename/路径匹配、缺失/空文件判定及历史残留隔离；未发现新的可复现生产缺陷。
+- **测试夹具问题：**`test_result_guard_v2.py` 的 run-id 用例原先直接使用默认 workspace SQLite 数据库并留下运行记录。增加模块级隔离 fixture，将其改写到 pytest 临时数据库，防止回归套件污染用户的持久化产物台账。
+- **验证：**`python -m pytest backend/tests/test_result_guard.py backend/tests/test_result_guard_v2.py backend/tests/test_storage_service.py -q --disable-warnings --tb=short -p no:cacheprovider`，40/40 通过；临时数据库由测试 fixture 隔离。
+- **边界与进度：**没有并发多进程 SQLite 压力测试或完整真实 Agent/模型会话；结论限定在本地台账与核验代码路径。工具产物模块仍有更多文件生成器和真实前端附件下载需继续审查。
+### 2026-10-30 要素缩放误用经纬度平面
+
+- **审查范围：**检查 `scale_features` 的倍数校验、缩放中心、坐标单位及注册表/地图同步。
+- **复现与修复：**原实现直接在 EPSG:4326 的度坐标上缩放。在 78°–82°N 的矩形中仅将 Y 倍数设为 2，重新投影后 X 向地面宽度从约 26.9 km 增至约 49.9 km，两个轴相互串扰。现使用局部 UTM 米制坐标求合并中心并缩放，再转回 WGS-84；跨日期变更线、过宽或超出 UTM 纬度范围时拒绝修改图层。
+- **验证：**新增高纬度地面宽度回归，修复前失败、修复后通过。`python -m pytest backend/tests/test_spatial_tools.py::TestScaleFeatures -q --disable-warnings --tb=short -p no:cacheprovider`，2/2 通过。
+- **边界与进度：**只覆盖局部 UTM 适用范围；未在真实浏览器验证地图回显，也未做无效/复杂几何的拓扑验收。缩放工具主路径与高纬度轴向语义已审。
+
+### 2026-10-30 要素移动接受非有限位移
+
+- **审查范围：**复核 `move_features` 位移参数转换、单位换算、局部 UTM 投影与图层写回。
+- **复现与修复：**`dx=NaN` 或 `dy=Infinity` 原会经过投影平移，后续才因 GeoJSON 坐标无效报错；错误发生在更新路径内，未能提供明确输入反馈。现先转换并检查两个位移均为有限数值，再执行零位移与单位逻辑；非法值在触碰图层前拒绝。
+- **验证：**新增 NaN/±Infinity 参数回归，修复前 3 项均失败、修复后通过；`TestMoveFeatures`、`TestScaleFeatures`、`TestRotateFeatures` 合计 14/14 通过。`py_compile` 与 `git diff --check` 通过。
+- **边界与进度：**局部 UTM 范围限制和单位语义已有邻近测试；未测极端但有限的超大位移对投影有效范围的影响，地图真实回显未验收。
+
+### 2026-10-30 缓冲与空间变换参数边界复核
+
+- **审查范围与结论：**复核 `spatial_buffer` 的 m/km 单位规范化、NaN/Infinity/溢出距离拒绝、旧输出保护、局部 UTM 范围限制及 dissolve 参数路径；未发现新的可复现缺陷。非数值文本在工具 schema 层即被拒绝，不进入空间工具实现。
+- **验证：**缓冲、移动、缩放、旋转相关回归合计 30/30 通过。
+- **边界与进度：**仅针对合成局部几何及参数边界；超大有效几何的性能、真实 GIS 渲染与拓扑兼容未验收。缓冲参数和相邻要素编辑核心路径本轮已复核。
+
+### 2026-10-30 GeoTIFF 上传预览与旧式 GeoJSON CRS 复核
+
+- **审查范围与状态：**追踪 `/api/upload` 的 GeoTIFF 源文件保留、波段/alpha/NoData 预览生成、Warp 到 Web Mercator、预览尺寸限制、图层注册和异常清理；并核对旧式 GeoJSON `crs` 声明通过 GeoPandas 转为 WGS-84 后再登记。当前覆盖的主要数据路径与关键错误清理路径未发现新的已证实缺陷，记为**已审查（当前覆盖范围）**。
+- **验证：**`python -m pytest backend/tests/test_upload_raster.py backend/tests/test_upload_handoff.py::test_declared_projected_geojson_is_reprojected_before_registration -q --disable-warnings --tb=short -p no:cacheprovider`，10/10 通过（2 warnings）。测试含 alpha 顺序/透明度、NoData、旋转像元轴、百万级预览限额、同名 TIFF 资产、缺 CRS 拒绝、处理失败清理及 EPSG:3857 GeoJSON 重投影。
+- **边界：**未实测浏览器端瓦片叠加与真实大型外部 TIFF；旧式 CRS 格式只覆盖 EPSG 命名声明，其他历史 URN/URL 写法尚无完整兼容矩阵。上传模块其他 CSV/矢量/云原生与浏览器队列路径继续按台账其他条目处理。
+
+### 2026-10-30 代价栅格忽略真实像元距离
+
+- **审查范围：**追踪 `_cost_graph` 到 `cost_distance` 和 `least_cost_path`，检查 NoData/非正值节点过滤、8 邻域边权、源/终点坐标投影和 Dijkstra 输出。
+- **复现与修复：**旧图权重固定按横纵 1、对角 √2 计算，没使用栅格仿射变换或 CRS。100 m × 1000 m 的 EPSG:3857 栅格中，竖向边本应是横向边的 10 倍，旧算法却视为等长；经纬度栅格的距离随纬度变化也被忽略。现由仿射变换计算相邻像元中心坐标，投影 CRS 按其单位换算为米，地理 CRS 使用 CRS 椭球测地线距离；两个工具都用同一物理距离权重，输出说明更新为“代价值·米”。
+- **验证：**新增矩形像元测试，覆盖 100/1000 米横纵边、真实对角长度和 EPSG:4326 高纬行的测地线距离。修复前新测试因 `_cost_graph` 不接收变换/CRS 而失败，修复后通过。定向运行 `python -m pytest backend/tests/test_raster_gap_tools.py::test_cost_graph_uses_georeferenced_cell_distance_for_rectangular_pixels backend/tests/test_raster_gap_tools.py::test_cost_graph_rejects_oversized_valid_surface backend/tests/test_raster_gap_tools.py::test_cost_distance_transforms_wgs84_sources_and_preserves_near_nodata_cost backend/tests/test_raster_gap_tools.py::test_least_cost_path_transforms_wgs84_points_to_projected_raster backend/tests/test_raster_gap_tools.py::test_least_cost_path_does_not_snap_outside_point_toward_zero -q --disable-warnings --tb=short -p no:cacheprovider`，5/5 通过。
+- **边界与进度：**未做大型栅格性能基准或不同投影/椭球的完整矩阵；图规模仍受现有 10 万有效像元上限约束。代价距离和最小代价路径的栅格几何权重主路径已修复并验证。
+
+- **追加复现与修复：**`least_cost_path` 原依赖 `estimate_utm_crs()` 计算路径长度；估算为 None 时仍报成功并显示 `nan km`。现投影栅格按 CRS 线性单位换算，地理栅格按椭球测地线计算。
+- **追加验证：**既有路径回归模拟 UTM 估算 None 并断言路径总长 1.00 km；修复前断言失败，修复后通过。完整 `test_raster_gap_tools.py` 为 72/72 通过。
+
+### 2026-10-30 处理历史重跑破坏栅格图层
+
+- **审查范围：**追踪历史面板/API → `rerun_history` → 工具调用、输出文件、注册表快照恢复、前端 `dem_result` 图层操作与工程栅格源文件解析。
+- **复现与修复：**重跑同名栅格分析时，固定 `_raster_output_dir` 会先覆盖旧 TIFF/PNG；之后历史恢复代码把旧图层的 `geojson=None` 交给矢量注册器，导致重跑报错，旧栅格也无法保留。现重跑期间使用唯一隔离的上传子目录，生成新栅格不触碰旧文件；恢复旧 Raster 时按原 raster metadata 与 source path 重新注册，并追加带 `_原` 名称的 `dem_result` 操作。预览/源 URL 支持该子目录，工程栅格资源解析仅允许安全的 uploads 子路径并仍拒绝 `..` 越界。
+- **追加缺陷与修复：**`map.addImageOverlay` 对每个 `dem_result` 都会 `fitBounds`。若按新结果→旧图层顺序处理，最终视图可能跳回旧范围；现在把旧图层操作插到同名新结果之前，使新结果最后应用。
+- **验证：**新增同名 TIFF 写入与 Raster 替换回归，核对旧文件字节、元数据、源路径及新旧两个栅格操作顺序；另测嵌套源 URL 可解析且路径穿越被拒。后端历史/工程测试 68/68、手动 API 流程 15/15 通过；`node --test frontend/tests/history_race.test.cjs`，6/6 通过，包含旧/新 Raster 操作顺序转发。
+- **边界与进度：**API、静态文件获取及前端处理器转发已验证；未在真实浏览器检查图层面板视觉顺序。历史矢量重跑回归同批通过。历史重跑的 Raster 保留、视图操作顺序和工程路径衔接已修复并验证。
+
+### 2026-10-30 Agent 非流式重试、空响应恢复与取消复核
+
+- **审查范围与状态：**追踪 `run_agent` → `_invoke_agent_with_budget` / `_invoke_empty_response_recovery` → ReAct/ToolNode → 部分地图状态返回；核对工具开始前瞬时错误最多重试一次、工具已开始后不重放整轮、reasoning 空响应关闭推理并只在首步强制工具、provider 拒绝 `tool_choice=required` 后回退、取消检查和总时限锁租约。
+- **结论：**在受控 LangGraph/ToolNode 与模拟 HTTP 模型覆盖的路径中，没有发现新的已证实缺陷。取消或超时不会误报普通成功；工具执行后连接中断保留部分图层操作且不重放，避免副作用重复。
+- **验证：**`python -m pytest backend/tests/test_agent_retry_safety.py backend/tests/test_empty_response_recovery.py backend/tests/test_stream_step_events.py backend/tests/test_ai_cancellation.py::test_empty_response_recovery_observes_request_cancel_while_invoke_is_blocked -q --disable-warnings --tb=short -p no:cacheprovider`，35/35 通过（12 warnings）。包含 provider 拒绝 required 选择、完整真实 LangGraph 加模拟 HTTP 模型（流式/非流式）、工具已启动与未启动重试差异及阻塞恢复期间取消。
+- **边界与进度：**未连接真实第三方模型或对服务商的工具调用策略做在线验证；阻塞调用超时后底层线程会继续运行，已有锁租约保护并通过本地并发测试验证。当前 Agent 重试/空响应恢复关键本地分支已审，真实服务商兼容仍需对应网络/模型条件。
+
+### 2026-10-30 云原生矢量 bbox 与限量读取复核
+
+- **审查范围与结论：**复核 GeoParquet/FlatGeobuf 的 WGS84 bbox 解析、源 CRS 外接框转换、精确相交过滤、分批/限量读取和未知 CRS 拒绝。当前本地用例已覆盖投影外接框误报不消耗要素限额、GeoParquet 无 covering-bbox 元数据回退、FlatGeobuf 分批过滤与 CRS 声明；本轮没有确认新的可复现缺陷。
+- **验证：**`python -m pytest backend/tests/test_cloud_native.py -q --disable-warnings --tb=short -p no:cacheprovider -k 'not integration'`，62/62 通过。首次不排除集成用例的运行到远程测试阶段未及时结束，已中断；四个远程 COG/PMTiles/GeoParquet/FlatGeobuf 集成用例因此未纳入本轮结论。
+- **边界与进度：**云端网络服务、远端格式变体与大规模数据性能未验证；bbox 接口当前限定常规 `minx < maxx` 的 WGS84 矩形，不支持跨日期变更线的反经线范围。后续可继续复核 COG/PMTiles 服务响应、认证与瓦片边界行为。
+
+### 2026-10-30 手动云原生栅格预览文件名冲突
+
+- **审查范围：**追踪 `/api/online/load` 的 COG/PMTiles 栅格读取、预览文件写入和返回 URL；与工具 Agent 的 COG 唯一文件名修复及上传重试回执比较。
+- **复现与修复：**手动在线加载用图层名加秒级时间生成 COG/PMTiles 预览名。同名数据在同一秒内连续加载会返回相同 URL，第二次写入覆盖第一次图层引用的影像。新增 API 回归先复现同路径覆盖；现为两条预览路径追加 UUID 后缀，确保并发/快速重复加载文件互不覆盖。
+- **追加发现与修复：**PMTiles Raster 接口只读取中心的一块瓦片，原成功消息容易让人理解为完整栅格已加载；前端原本未保存预览标记且成功消息隐藏。后端现为 COG/PMTiles Raster 响应添加 `preview_only`、`preview_scope`、`processing`，PMTiles 返回消息明确中心单瓦片范围；Antigravity 按 GPT 指令在图层记录保留元数据、对中心瓦片弹出可见提示，并将相对预览 URL 解析到 API 主机。
+- **追加复核：**Antigravity 增加 GeoJSON 首要素 `geometry: null` 的安全处理；GPT 核实 GeoParquet/FlatGeobuf GeoJSON 序列化可产生 null geometry，并要求增加回归用例。
+- **验证：**重名/预览范围 API 回归修复前分别因路径相同、`preview_only` 缺失而失败，后端修复后通过；`python -m py_compile backend/main.py` 通过。后端 `backend/tests/test_upload_handoff.py` 全文件 41/41 通过；云原生本地用例 `backend/tests/test_cloud_native.py -k 'not test_integration'` 62/62 通过（4 个远程集成用例排除）。GPT 独立重跑前端 `node --test frontend/tests/connector_online_load.test.cjs`，10/10 通过；两个 `node --check` 和相关 `git diff --check` 通过。
+- **边界与进度：**已验证手动 API 响应和预览文件、Connector 图层元数据/提示/跨源 URL、null geometry 错误路径；没有连接真实远程 COG/PMTiles 服务，也未在真实浏览器检查并发叠加、跨源图片 CORS 和 toast 视觉呈现。云原生本地入口和本地格式处理继续审查中。
+
+### 2026-10-30 字段计算类型转换静默失效
+
+- **审查范围：**检查 `field_calculate` 对声明类型 `str/int/float` 的新字段转换、null 保留及写回时序。
+- **复现与修复：**`int` 转换使用 `astype(errors="ignore")`，`"not-a-number"` 会原样留下却报告成功；`float` 未转换数值字符串。现对新字段逐值转换，转换失败在图层注册/地图推送前返回明确错误；null 保留，字符串转换保留既有行为。原生大整数保留为精确整数，避免转 float 后损失超过 JavaScript 安全整数范围的精度；转换结果以 object dtype 写回，避免 Pandas 对整数与 null 混合列再次强制转 float。
+- **验证：**`TestFieldCalculate` 12/12 通过，覆盖非法 int 不变更图层、数字字符串转 float、null、字段冲突、别名及 `2**53+1` 精度；`python -m py_compile backend/services/tools.py backend/tests/test_coverage_gap.py` 与相关 `git diff --check` 通过。
+- **边界与进度：**Antigravity 完成了只读契约复核和聚焦回归交接，确认当前修复符合边界；代码由 GPT 实施，非 Antigravity 编码贡献。验证限定字段计算目标路径，其他 GIS 工具模块继续扫描。
+
+### 2026-10-30 工程 ZIP 导入受 NTFS 8.3 短名覆盖
+
+- **审查范围：**检查 `_extract_project_archive` 的路径遍历、Windows 规范化、成员冲突、符号链接和解压限额，并沿 `import_project` 确认解包目录是待导入工程的暂存目录。
+- **复现：**在本机 NTFS 临时目录依次写入 `project.json` 与其 8.3 短名别名 `projec~1.jso`，后一次写入会覆盖前一个文件；同样的两个 ZIP 成员经当前 `_extract_project_archive` 解包后仅剩 `project.json`，内容变为 `OVERWRITTEN`。现有 NFC/casefold 路径树没有检测这类文件系统别名。
+- **修复：**解包前先验证所有成员；随后逐成员创建目录，并用 `open(..., "xb")` 独占创建文件，拒绝由 Windows 8.3 别名解析到已写文件的路径。捕获文件已存在并返回重复路径错误；`import_project` 的异常清理负责删除未完成的暂存目录。
+- **验证：**新增 Windows 8.3 能力检测回归，覆盖 `project.json` / `projec~1.jso` 冲突并断言原内容不变。为避开服务模块导入时扫描默认工程目录，GPT 从源文件 AST 隔离加载目标函数，仅在临时目录复验：短名归档被拒且原文件保留，合法 `data~1.tif` 与普通嵌套目录归档可正常解包。`py_compile` 与相关 `git diff --check` 通过；未运行会先导入服务模块的 pytest 文件。
+- **协作与边界：**缺陷由 GPT 从复现结果筛选并实施；Antigravity 最终交接确认其未写代码，提供 NTFS 短名复现、独占创建验证及对 GPT `_extract_project_archive` 实际差异的只读认可。其报告记录的隔离路径穿越测试 4/4 通过，并指出直接调用提取函数若中途失败会留下部分临时文件；当前生产调用仅由 `import_project` 包裹且负责 staging 清理。其早先直接复现命令曾在建立临时提取目录前导入 `project_service`，触发模块级默认索引扫描；命令未输出项目内容，是否曾写索引无独立证据。该项限定于本机 NTFS 与目标解包函数。
+
+### 2026-10-30 工程服务导入触发默认加密索引访问
+
+- **发现与影响链：**`backend.main` 顶层导入 `project_service`，后者原先在文件尾立即调用 `_rebuild_refcount()`，继而读取默认加密工程索引。若已有工程而系统密钥库暂时不可用或密钥失效，读取异常会在 FastAPI 模块加载时冒出，可能连不依赖工程存储的 API 也无法启动。
+- **修复：**移除文件尾导入期 `_rebuild_refcount()`，更新缓存注释。工程操作路径中的显式重建调用仍保留；`_blob_remove` 在缓存无有效引用计数时会回退到磁盘引用检查。
+- **验证：**新增 subprocess 隔离回归，在导入服务前将 `local_encryption.read_bytes`、keyring 与 `_master_key` 替换成失败哨兵；导入成功且哨兵未触发。GPT 独立运行 `python -m pytest backend/tests/test_project_service_import.py -q --disable-warnings --tb=short -p no:cacheprovider`，2/2 通过；随后运行旧进程缓存 Blob 删除回退与单个坏矢量图层隔离两个针对性用例，2/2 通过；`py_compile` 与相关差异空白检查通过。
+- **协作与边界：**本项由 Antigravity 实施，GPT 审查并运行聚焦回归。测试证明模块导入不读加密索引/凭据，不证明 keyring 不可用时工程 API 的操作行为或多进程引用计数一致性；这些仍需单独覆盖。工程持久化模块继续审查中。
+
+
+### 2026-10-30 工程打开时单个损坏矢量 Blob 中断全工程恢复
+
+- **复现与影响：**在临时工程库中创建包含两个独立矢量图层的工程，只对第一个加密 Blob 的末尾字节翻转。修复前 `_blob_get()` 的认证/解压异常从 `load_project()` 冒泡，`open_project()` 整体失败，正常的第二个图层也无法恢复。
+- **修复：**打开时把可确认的单个 Blob 文件/数据损坏降级为缺失图层数据，在 `registration_warnings` 中列出图层并继续恢复其余有效图层。若系统密钥库不可用仍原样失败；认证标签失败只有在当前工程 JSON 已成功以加密格式解密时才按该 Blob 损坏处理，旧式明文工程无法证明密钥正确时仍抛出认证异常。
+- **验证：**新增临时存储回归覆盖真实加密 Blob 位翻转、另一个有效图层继续注册、密钥库不可用传播，以及旧式明文工程的认证异常传播；相关四项测试 4/4 通过。`py_compile` 与相关 `git diff --check` 通过。
+- **协作与边界：**本项由 GPT 在 Antigravity 本机 RPC 持续拒绝连接期间实施；已尝试通过原会话索取交接，但消息未能送达。验证限定单进程本机加密库和工程打开路径，未覆盖真实磁盘介质故障或完整工程恢复 UI；工程持久化模块仍继续审查。
+
+
+### 2026-10-30 分级设色最大值因浮点断点舍入被分到首级
+
+- **复现与影响：**构造三要素值 `-54247.55574590947`、中点与 `91558.13856151933`，等间距 2 级。修复前后端最后断点计算为 `91558.13856151931`，比真实最大值低约 `1.46e-11`。前端按 `[break[j], break[j+1])` 分类且无匹配时默认 `classIdx=0`，最大值没有命中任何等级而被错误渲染为首级颜色。
+- **修复：**后端在生成等间距或分位数断点后，明确将首尾断点设为实际 `vmin` / `vmax`。前端分类也对断点范围外的值做首尾级夹取，避免浮点边界微差或历史断点造成未匹配值落入首级。
+- **验证：**新增后端精确断点回归与前端略高于末断点的分类回归。`python -m pytest backend/tests/test_spatial_tools.py::TestSpatialGraduatedColors -q --disable-warnings --tb=short -p no:cacheprovider`，3/3 通过；完整 `node --test frontend/tests/layer_symbology_persistence.test.cjs`，25/25 通过；相关 `py_compile`、`node --check` 与 `git diff --check` 通过。
+- **协作与边界：**Antigravity 侧车取模型时 RPC 返回连接拒绝，未创建新任务，因此本项由 GPT 复现、编码和验证，尚未由 Antigravity 独立复核。未在真实浏览器测量颜色渲染；分级设色之外的工具族仍待逐项审查。
+
+
+### 2026-10-30 栅格裁剪预览错位、丢弃零值与输出路径穿越
+
+- **复现 1：裁剪预览错位。**在临时目录创建 2×2 栅格（范围 `[0,0,2,2]`），用右半面裁剪。工具产出 1×2 PNG，却把原始全幅 bounds `[0,0,2,2]` 放进地图操作；正确范围应为 `[1,0,2,2]`，因此裁剪结果会被拉伸到整个源栅格。
+- **复现 2：有效零值被误判为空。**无 NoData、四个像元都有效且全为 0 的栅格完整落在裁剪面内，修复前 `data > 0` 将四个有效像元全部滤掉，工具返回“裁剪结果为空”，没有地图操作。
+- **复现 3：输出名可穿越目录。**将 `output_name` 设为 `..\escaped`，修复前 `clip_raster` 成功把 `escaped.png` 写到 `uploads` 父目录，而不是上传输出目录。
+- **修复：**bounds 现从裁剪后的 `out_transform` 和像素尺寸计算，并在必要时转换到 WGS84；裁剪读取使用 `filled=False`，有效值依据 Rasterio 掩码和有限数检查，零值/负值保留，面外与 NoData 像元在 RGBA 预览中透明；常量单波段使用可见中点色。用户输出名先取文件名并清理 Windows/Unix 不安全字符，拒绝清理后为空的名称。
+- **验证：**新增 4 个临时数据回归，覆盖全零有效栅格、半幅裁剪 bounds、含洞面外像元透明、路径穿越输出名；`python -m pytest backend/tests/test_spatial_tools.py::TestClipRaster -q --disable-warnings --tb=short -p no:cacheprovider`，5/5 通过。`py_compile` 与相关 `git diff --check` 通过。
+- **协作与边界：**向 workspace 绑定的 Antigravity 会话下发了限定任务，但本机 sidecar RPC 仍返回 connection refused，任务未创建；本批由 GPT 复现、修改与验证，待 Antigravity 恢复后独立复核。所有复现文件都在临时目录；未访问 `cache/projects`、真实凭据或云服务。裁剪预览已修，栅格工具其余函数与真实浏览器渲染仍继续检查。
+
+
+### 2026-10-30 重采样和重投影结果文件被后续调用覆盖
+
+- **审查范围：**检查 `raster_resample` / `raster_reproject` 输出落盘、预览注册和工程栅格资产调用路径；检索并更新依赖确定性文件名的回归用例。
+- **复现与影响：**在合成 8×8 栅格上先以 2 倍、再以 4 倍重采样，两个 `dem_result` 操作都指向 `dem_重采样.tif`；第二次写入后，第一次操作引用的 TIFF 也读出 2×2 像元，而非原来的 4×4。重投影也按源文件名固定写入 `_重投影.tif`，连续使用不同目标 CRS 会覆盖此前投影结果，旧预览 URL/图层记录因此指向后来内容。
+- **修复：**每次重采样和重投影都在输出基名加入独立 UUID 后缀；预览和图层注册沿用该唯一 TIFF 名。相关测试改为从返回的 `dem_result` 读取实际产物名，增加连续不同参数调用后文件路径不同、原结果尺寸/CRS未改变的回归。
+- **验证：**`backend/tests/test_new_tools.py -k 'raster_resample or raster_reproject'`，5/5 通过；`backend/tests/test_project_raster_persistence.py::test_raster_tool_outputs_do_not_modify_project_assets`，1/1 通过；相关 `py_compile` 与 `git diff --check` 通过。
+- **协作与边界：**向 Antigravity 下发只读栅格工具审查，但侧车会话创建 RPC 返回 connection refused，未创建会话；缺陷由 GPT 复现、修复并验证。范围限于栅格重采样/重投影本地 TIFF 路径；未验证并发极端文件系统故障或真实浏览器图层呈现。栅格工具族仍继续扫描。
+
+
+### 2026-10-30 栅格掩膜提取重复调用覆盖先前结果
+
+- **审查范围：**检查 `raster_extract_by_mask` 的掩膜像元计算、输出 TIFF/预览命名与注册引用，并追踪项目内依赖文件名的测试。
+- **复现与影响：**对同一 5×5 栅格先用 3×3 掩膜提取 9 个有效像元，再把同名面图层缩小为 1×1 像元并再次提取。修复前两次都写到 `<源名>_掩膜内.tif`，第二次会改写第一次结果文件，旧图层引用所见内容由 9 像元变为 1 像元。
+- **修复：**每次掩膜提取输出名追加 UUID 后缀；新增连续两种掩膜的回归断言两条路径不同，旧结果仍为 9 个像元、新结果为 1 个像元。既有掩膜工具测试改为从最新 `dem_result` 读取实际 TIFF 名。
+- **验证：**`backend/tests/test_raster_gap_tools.py -k 'extract_by_mask'`，GPT 本地 9/9 通过；Antigravity 会话运行整文件 73/73，并报告 AI wiring 与分析面板 wiring 测试 31/31 通过。GPT 后续加强“无 CRS 不写产物”的断言为 UUID 文件名 glob，单测 1/1 通过，相关 `py_compile` 与 `git diff --check` 通过。
+- **协作与边界：**Antigravity 只读审查会话已成功创建，ID `5d8fdbd4-c69f-41ac-88aa-de9eddd81d75`；最终交接确认它检查了目标实际 diff、输出 TIFF/PNG 路径、图层名及工程持久化引用，未发现功能残留问题，并指出 CRS 缺失用例应匹配 UUID 文件名。缺陷由 GPT 复现、修改并做本地验证，审查未改仓库。仅验证合成栅格和面，真实浏览器呈现及异常文件系统行为未覆盖。它另一次 `test_project_raster_persistence.py` 收集因 `ModuleNotFoundError: No module named 'backend'` 失败，该结果不计作代码失败或测试通过。
+
+
+### 2026-10-30 栅格重分类与焦点统计重复结果互相覆盖
+
+- **审查范围：**延续栅格派生文件生命周期审查，核对 `raster_reclassify` 和 `raster_focal_stats` 输出文件、预览 URL、图层注册及已有固定文件名测试。
+- **复现与影响：**重分类将 1/2/3 三个值先按规则全编码为 1，再按另一规则全编码为 2；两次 `dem_result` 都引用同一 `<源名>_重分类.tif`，第二次调用后第一次结果也变成 2。焦点均值对中心值为 8 的 7×7 合成栅格先跑 3×3 再跑 5×5，两次都引用 `<源名>_焦点mean.tif`，旧结果中心值从 `8/9` 被覆盖为 `8/25`。
+- **修复：**两工具每次输出基名追加独立 UUID 后缀；测试从工具产生的 raster 元数据读取文件名。新增重复重分类和不同窗口焦点均值回归，明确断言旧 TIFF 数值仍保持原结果。
+- **验证：**完整 `backend/tests/test_raster_gap_tools.py`，75/75 通过（包含既有 73 项和本批 2 项新增回归）；`py_compile` 与相关 `git diff --check` 通过。
+- **协作与边界：**代码由 GPT 实施。Antigravity 的只读掩膜审查会话未给出最终交接；本轮请求其停止无关环境排查的 RPC 再次 connection refused，因此没有收到对本次重分类/焦点改动的实现或审查贡献。验证使用合成栅格，未做浏览器界面视觉检查。
+
+
+### 2026-10-30 栅格计算器重复表达式覆盖既有结果
+
+- **审查范围：**检查 `raster_calculator` 从表达式求值到 GeoTIFF/PNG 落盘、预览 URL 和 `dem_result` 注册的文件生命周期；检索依赖固定 `_calc` 文件名的回归测试。
+- **复现与影响：**对合成 `[1, 2, 3]` 波段先计算 `B1*2`，再计算 `B1*3`。两个结果都写入 `grid_calc.tif`，第二次调用后第一次图层引用也读出 `[3, 6, 9]`，原 `[2, 4, 6]` 结果丢失；固定 PNG 预览也会被更新。
+- **修复：**计算器每次生成的输出基名追加独立 UUID 后缀，GeoTIFF 和 PNG URL/文件名一并唯一；依赖测试改为通过最新 `dem_result` 的 raster 元数据取文件名。增加两种表达式重复计算回归，分别核对两份 TIFF 数值。
+- **验证：**`test_dem_analysis.py` 10/10、`test_spatial_tools.py -k 'calc_'` 6/6、上传交接用例 1/1、工程栅格持久化用例 1/1 通过。代码与相关测试 `py_compile`、`git diff --check` 通过。
+- **协作与边界：**代码由 GPT 实施；Antigravity 最近消息的 RPC 仍 connection refused，未收到此项编码或复审贡献。复现为本地合成栅格，未覆盖真实浏览器叠加及并发磁盘故障。
+
+
+### 2026-10-30 NDVI 波段选择变化覆盖先前计算结果
+
+- **审查范围：**从重分类/焦点统计/栅格计算器文件生命周期检查延伸到遥感指数 `ndvi_analysis`，追踪波段参数、TIFF/PNG 产物与注册图层引用。
+- **复现与影响：**同一 4 波段合成影像用红光 band 3/NIR band 4 得到 NDVI `0.4286`，随后改用 band 2/NIR band 4 得到 `0.25`。两次原先都写入 `<图层>_ndvi.tif`，第二次改写了第一次图层引用和预览 URL 的结果。
+- **修复：**NDVI 每次生成的基名追加 UUID 后缀，TIFF 与 PNG URL/文件名均随同唯一；新增回归分别打开两份结果，断言其数值各自匹配对应波段公式。
+- **验证：**`backend/tests/test_spectral_indices.py`，8/8 通过；相关 `py_compile` 与 `git diff --check` 通过。
+- **协作与边界：**代码由 GPT 实施。Antigravity 已完成上一项掩膜提取修复的只读独立审查，确认 TIFF/PNG、图层名和持久化引用一致且未见功能残留；本轮请求其继续审查当前多工具 UUID 改动时 RPC 拒绝连接，故 NDVI 及本轮其他 UUID 改动尚无独立复审。验证使用合成波段数据，未做真实浏览器呈现测试。
+
+
+### 2026-10-30 矢量转栅格改变字段后覆盖先前像元结果
+
+- **审查范围：**检查 `feature_to_raster` 的字段选择、网格参数、GeoTIFF/PNG 输出和 `dem_result` 注册名，并沿新栅格图层的重采样/重投影下游调用检查名字依赖。
+- **复现与影响：**对同一 2×2 面依次烧录属性 `first=3` 与 `second=7`，此前两次都写入 `<图层>_转栅格.tif`；第二次后第一张栅格引用也变为全 7，首个字段结果丢失。参数 `cell_size`、`all_touched` 变化也会落到同一产物名。
+- **修复：**每次矢量转栅格的输出基名追加独立 UUID，使 GeoTIFF、PNG URL、注册图层名各自唯一；相关测试从最新 `dem_result` 获取动态注册名，并让下游重采样/重投影按该注册名继续处理。新增重复字段栅格化回归，验证两条 TIFF/PNG 文件名均不同，且两次像元值分别保留 3 和 7。
+- **验证：**`backend/tests/test_coverage_gap.py::TestFeatureToRaster`，6/6 通过；相关 `py_compile` 与 `git diff --check` 通过。
+- **协作与边界：**已向 Antigravity 分配限定编码任务，但侧车 RPC 返回 connection refused，未创建会话；本批由 GPT 复现、实现及验证。使用临时合成面数据，尚未做真实浏览器或工程恢复下的页面验证。栅格转矢量的参数化输出生命周期仍需继续审查。
+
+
+### 2026-10-30 鱼网重名覆盖及分级设色非有限值
+
+- **鱼网复现与修复：**同一默认/指定输出名创建两次鱼网，第二次覆盖注册表中的首个结果。名称分配现检查已注册和待提交图层，并在锁内完成名称选择与注册；发生冲突时追加序号并保留扩展名。回归断言 4 格和 16 格结果分别保留。`TestCreateFishnet` 4/4 通过，相关 `git diff --check` 通过。
+- **分级设色复现与修复：**值 `[1, 2, +Infinity, -Infinity]` 曾生成范围 `1 ~ inf` 和断点 `[1, inf, inf]`；该图层操作经 SSE 默认 JSON 序列化会产生非标准 `Infinity`，前端 `JSON.parse` 会跳过该事件。后端现只用有限值计算范围/断点；全非有限值返回无有效数值且不排入操作。新增正负无穷、全非有限值及严格 JSON 序列化回归。
+- **验证：**`backend/tests/test_spatial_tools.py`，231/231 通过；`TestSpatialGraduatedColors` 6/6 通过；`git diff --check` 通过。
+- **协作与边界：**Gemini 在真实工作树添加了分级设色回归测试；其本机测试命令遇到工作目录解析问题，未完成验证。有限值过滤由 GPT 实施并审查；鱼网主逻辑由 GPT 整合自 Gemini 隔离副本的设计。未提交或推送，用户原有工作树更改均保留。继续审查其他模块，长期 Goal 未完成。
+
+
+### 2026-10-30 重复缓冲输出覆盖先前结果
+
+- **复现与影响：**同一点图层先后执行 100 米与 1000 米缓冲，两次都注册为 `<图层>_缓冲区`；第二次覆盖第一份 GeoJSON，无法再引用第一结果。
+- **修复：**Gemini 在 `spatial_buffer` 中复用图层名消歧函数，并在 `_state_lock` 内完成选择名称、注册和推送；响应显示实际图层名。新增重复距离回归，验证两个不同注册名及两份不同 GeoJSON 同时保留。
+- **验证：**`backend/tests/test_spatial_tools.py -k TestSpatialBuffer`，17/17 通过；相关 `git diff --check` 通过。
+- **协作与边界：**Gemini 修改了生产函数；因其在停止点交接了测试用例，Codex 补写并审查回归测试、独立运行验证。未提交或推送；缓冲范围/失败路径仍由既有测试覆盖。
+
+
+### 2026-10-30 重复多环缓冲输出覆盖先前结果
+
+- **复现与影响：**同一点图层先后以 `100,200` 与 `500,1000` 米创建多环缓冲，两次都注册为 `<图层>_多环m`；第二次替换第一份 GeoJSON。
+- **修复：**Gemini 在 `spatial_multi_ring_buffer` 中复用名称消歧逻辑，并在 `_state_lock` 内完成名称选择、注册和推送；成功消息返回实际图层名。新增回归验证两份不同几何分别保留。现有公里单位测试改为容许持久注册表产生的数字后缀。
+- **验证：**`TestMultiRingBuffer`，32/32 通过；完整 `backend/tests/test_spatial_tools.py`，233/233 通过；相关 `git diff --check` 通过。
+- **协作与边界：**Gemini 修改生产函数；Codex 补回归测试、处理旧测试对固定名称的假设并独立验证。未提交或推送，长程 Goal 继续审查其他工具。
+
+
+### 2026-10-30 不同简化容差覆盖先前结果
+
+- **复现与影响：**同一锯齿多边形分别用 `0.001` 与 `0.2` 容差运行简化，两个成果都注册为 `<图层>_简化`，第二次替换第一份几何。
+- **修复：**`spatial_simplify` 现在使用名称消歧，并在 `_state_lock` 内完成名称选择与注册；成功消息返回实际图层名。回归测试用唯一源图层验证两种容差的输出名称不同、首个 GeoJSON 未改变且第二个几何不同。
+- **验证：**`TestSpatialSimplify`，6/6 通过；完整 `backend/tests/test_spatial_tools.py`，234/234 通过；相关 `git diff --check` 通过。
+- **协作与边界：**Gemini 未完成本项生产代码改动；Codex 根据已复现根因实施并验证。随后 Gemini 按限定代码和测试完成只读复核，未提出阻塞问题。成功消息新增实际图层名，普通文本消费者需接受这一补充内容。未提交或推送，持续审查其他工具。
+
+
+### 2026-10-30 不同空间谓词的选择结果互相覆盖
+
+- **复现与影响：**同一目标点图层对同一面图层分别使用 `intersects` 与 `within`。前者返回边界点和内部点共 2 个要素，后者仅返回内部点 1 个要素；两次原先都注册为 `<目标图层>_选择`，第二次替换第一份结果。
+- **修复：**Gemini 在 `spatial_select` 中复用结果名消歧，并在 `_state_lock` 内完成名称选择和注册；成功消息返回实际图层名。新增回归断言两个不同名称、两份要素数不同的结果均保留。
+- **验证：**`TestSpatialSelect`，3/3 通过；完整 `backend/tests/test_spatial_tools.py`，235/235 通过；相关 `git diff --check` 通过。
+- **协作与边界：**Gemini 完成生产函数改动；Codex 补写回归测试，并清理了 Gemini 两次插入的重复测试（其中一份误放在 `TestSpatialDissolve` 且引用未定义变量），然后独立验证。未提交或推送，持续审查其他工具。
+
+
+### 2026-10-30 不同聚类参数的结果互相覆盖
+
+- **复现与影响：**四个点分别以 `eps=0.0001` 和 `eps=0.005`、`min_samples=2` 聚类。前者是 4 个噪声点，后者形成 2 个簇；两次原先都注册为 `<图层>_聚类`，第二次覆盖第一份 cluster 标签。
+- **修复：**Gemini 在 `spatial_cluster` 中使用名称消歧，并在 `_state_lock` 内完成名称选择和注册；成功消息显示实际图层名。回归确认两份结果分别保留 `[-1,-1,-1,-1]` 与 `[0,0,1,1]` 标签。
+- **验证：**`TestSpatialCluster`，14/14 通过；完整 `backend/tests/test_spatial_tools.py`，236/236 通过；相关 `git diff --check` 通过。
+- **协作与边界：**Gemini 修改生产函数；测试文本插入交接给 Codex 完成并独立验证。未提交或推送，继续检查其他工具的结果生命周期。
+- **修复：**Gemini 在 `spatial_near` 中使用 `_disambiguate_layer_name`，并在 `_state_lock` 内完成唯一名称分配与结果注册；成功消息返回实际图层名。Codex 独立添加重复查询回归用例。
+- **验证：**先运行回归确认失败（两次结果只留下一个图层）；修复后 `TestSpatialNear` 10/10、完整 `backend/tests/test_spatial_tools.py` 237/237，相关 `git diff --check` 通过。完整文件有 1,690 条既有 deprecation/pending-deprecation warnings。
+- **协作与边界：**Gemini 修改生产函数；Codex 审查并独立验证。未提交或推送，长程 Goal 继续审查其他工具。
+### 2026-10-30 不同裁剪边界覆盖先前结果（已修复）
+
+- **复现与影响：**同一正方形源图层先后使用左右两个不同裁剪边界，结果都注册为 `<源图层>_裁剪`；第二次替换第一次结果。新增回归 `TestSpatialClip.test_clipping_with_different_masks_preserves_previous_results`，修复前失败（注册结果数为 1，预期为 2）。
+- **修复：**桥接回执两次报告本机 RPC 连接被拒绝，且 `::1:59895` 没有监听，无法确认 Gemini 收到任务。为解除已确认缺陷，Codex 在 `spatial_clip` 中复用名称消歧，并在 `_state_lock` 内完成命名和注册；保留裁剪来源 provenance，成功消息继续显示实际结果图层名。
+- **验证：**目标回归先失败（只留下 1 个结果），修复后 `TestSpatialClip` 3/3、完整 `backend/tests/test_spatial_tools.py` 238/238，相关 `git diff --check` 通过。完整文件仍报告 1,690 条既有 deprecation/pending-deprecation warnings。
+- **协作状态：**此修复由 Codex 临时接手；Gemini 已完成只读复核并给出“无阻塞问题”结论，覆盖锁内唯一命名、provenance、返回图层名及空结果行为。未提交或推送。
+
+### 2026-10-30 不同空间谓词的连接结果互相覆盖
+
+- **复现与影响：**同一多边形与内点、边界点分别以 `predicate=intersects` 和 `predicate=contains`、`how=inner` 连接，结果应为 2 条和 1 条。此前都固定注册为 `<目标>_连接<连接图层>`，后者覆盖前者。新增回归 `TestSpatialJoin.test_different_predicates_preserve_previous_join_results`。
+- **修复：**Gemini 在 `spatial_join` 内通过 `_disambiguate_layer_name` 生成唯一名，在 `_state_lock` 内完成命名与注册；成功消息显示实际结果图层名。
+- **验证：**新回归先失败（仅留下 1 个结果）；修复后 `TestSpatialJoin` 5/5，完整 `backend/tests/test_spatial_tools.py` 239/239，相关 `git diff --check` 通过。完整文件有 1,690 条既有弃用警告。
+- **协作与边界：**Gemini 修改生产函数；Codex 编写回归、审阅改动并独立验证。Gemini 已在会话交接文件中对 `spatial_clip` 修复给出无阻塞审查结论。未提交或推送。
+
+### 2026-10-30 不同随机样本覆盖先前结果（已修复）
+
+- **复现与影响：**同一 8 点图层连续采样 3 个要素，通过受控 sampler 得到 `{0,1,2}` 与 `{5,6,7}`；两次都注册为 `<图层>_采样3`，后一次覆盖先前结果。回归 `TestSpatialSample.test_repeated_sampling_preserves_distinct_samples` 已复现失败。
+- **修复：**Gemini 在 `spatial_sample` 中以 `_disambiguate_layer_name` 生成唯一结果名，并在 `_state_lock` 内完成名称选择和注册；成功消息返回实际图层名。保留既有抽样流程与参数验证。
+- **验证：**受控 sampler 回归先失败（只留下 1 个图层）；修复后 `TestSpatialSample` 9/9、完整 `backend/tests/test_spatial_tools.py` 240/240，相关 `git diff --check` 通过。完整文件报告 1,690 条既有弃用警告。
+- **协作与边界：**Gemini 修改生产函数；Codex 编写回归、审查改动并独立验证。Gemini 已在会话交接文件中确认对应实现及其测试状态。未提交或推送。
+
+### 2026-10-30 不同网格大小的 KDE 结果互相覆盖（已修复）
+
+- **复现与影响：**同一输入点分别以 `grid_size=10` 与 `20` 执行 KDE，两个网格结果不同，却都注册为 `<图层>_KDE`；第二个结果替换第一个。新增回归 `TestSpatialKDE.test_different_grid_sizes_preserve_previous_kde_results` 已稳定复现失败。
+- **修复：**Gemini 在 `spatial_kde` 中使用 `_disambiguate_layer_name`，并在 `_state_lock` 内分配名称与注册结果；成功消息返回真实图层名。保持 KDE 计算与参数语义不变。
+- **验证：**新回归修复前失败（仅留下一个结果）；修复后 `TestSpatialKDE` 9/9、完整 `backend/tests/test_spatial_stats.py` 19/19，完整 `backend/tests/test_spatial_tools.py` 240/240，相关 `git diff --check` 通过。KDE 测试辅助函数已更新为读取本次新建结果图层；空间工具文件仍有 1,690 条既有弃用警告。
+- **协作与边界：**Gemini 修改生产函数；Codex 增加回归、调整因唯一结果命名而过时的测试假设并独立验证。Gemini 已在会话交接文件中确认实现与实际检查范围。未提交或推送。
+
+### 2026-10-30 不同属性连接键覆盖先前结果（已修复）
+- **复现与影响：**同一对图层分别按 `key_a/id_a` 和 `key_b/id_b` 执行属性连接，第一份结果匹配到 `score=10`，第二份应为未匹配 `NaN`；两次结果名原来都固定为 `<目标>_连接<源>`，后一次覆盖前一次。回归 `test_different_attribute_keys_preserve_previous_join_results` 已复现失败。
+- **修复：**Gemini 在 `join_field` 中为连接结果使用名称消歧，并在 `_state_lock` 内完成唯一名称选择和注册；成功回复保留实际图层名。字段选择、键校验、连接类型与匹配计数逻辑未改动。
+- **验证：**新回归修复前失败（只留下 1 个结果）；修复后属性连接相关测试 6/6、完整 `backend/tests/test_vector_gap_tools.py` 20/20，相关 `git diff --check` 通过。现有 inner 测试改为读取本次新建图层，未匹配值以 pandas 空值语义断言。
+- **协作与边界：**Gemini 修改生产函数；Codex 编写回归、审查 diff、修正持久注册表引发的旧测试假设并独立验证。审查反馈已通过桥接发回 Gemini；未提交或推送。
+
+### 2026-10-30 不同阈值的热点分析结果互相覆盖（已修复）
+
+- **复现与影响：**同一输入与字段分别使用 `threshold=0.01` 和 `0.2` 运行 Gi*，热点统计属性不同，却都注册为 `<图层>_热点`；第二次覆盖第一份。新增回归 `TestSpatialHotspot.test_different_thresholds_preserve_previous_hotspot_results` 已确认结果内容不同且注册表只留一个图层。
+- **修复：**由于桥接连续未带来生产代码变化，Codex 临时在 `spatial_hotspot` 中复用名称消歧；在 `_state_lock` 内选择唯一结果名并注册，成功回复显示实际图层名。
+- **验证：**新回归修复前确认两个阈值结果不同、注册表仅留一层；修复后 `TestSpatialHotspot` 2/2 通过，相关 `git diff --check` 通过。Gemini 对此修复的只读审查已随 Moran 任务再次请求，尚未回传。
+
+### 2026-10-30 不同阈值的 Moran’s I 结果互相覆盖（已修复）
+
+- **复现与影响：**同一输入字段使用 `threshold=0.01` 与 `0.2` 运行局部 Moran’s I，`local_moran` 数值不同，却都固定注册为 `<图层>_MoranI`；后一次覆盖第一份。新增回归 `TestSpatialMoran.test_different_thresholds_preserve_previous_local_results` 已确认统计值不同且只留下一个图层。
+- **修复：**桥接任务接受后生产函数仍未变化，Codex 临时修复局部 LISA 分支：在 `_state_lock` 内消歧、注册，并在结果消息显示实际图层名；保留 Moran/LISA 计算和字段。
+- **验证：**新回归修复前确认阈值导致的 `local_moran` 不同但只剩 1 个结果；修复后 `TestSpatialMoran` 5/5，热点类 `TestSpatialHotspot` 2/2，三组相关测试联合运行 281/281，`git diff --check` 通过。Gemini 对两处临时修复的只读复核已通过桥接索取，待回传。
+- **协作与边界：**Codex 临时接手生产实现和回归；Gemini 待只读审查。未提交或推送。
+
+### 2026-10-30 不同字段的空间插值互相覆写栅格（已修复）
+
+- **复现与影响：**同一输入图层、同一 IDW 算法以 `v_left` 和 `v_right` 分别插值，值栅格不同，但当前固定使用 `<图层>_idw.tif/.png` 和同名栅格层；第二次覆写源栅格及预览资源。回归 `TestInterpolate.test_different_fields_preserve_interpolation_rasters` 已复现同名失败。
+- **修复：**桥接派发与跟进后生产函数仍未变化，Codex 临时接手。每次插值在写栅格前生成 UUID 命名空间，并在状态锁内经名称消歧确定输出标识；TIFF 与 PNG 共享该次唯一标识，成功消息显示栅格图层名。插值计算本身不持有全局状态锁。
+- **验证：**新回归修复前确认同名结果；修复后 `TestInterpolate` 12/12 通过，空间工具、空间统计、矢量属性三组测试联合运行 282/282，相关 `git diff --check` 通过。用不同字段生成的栅格值不同，路径不同，首次文件在第二次运行后保持不变。
+- **协作与边界：**Codex 临时修改生产函数并验证；已通过桥接请求 Gemini 只读复核 UUID 并发路径方案，待回复。未提交或推送。
+
+### 2026-10-30 不同几何属性指标覆盖先前结果（已修复）
+
+- **复现与影响：**同一面图层先后请求 `metrics=bbox` 和 `centroid`，输出字段集合不同，却都固定注册为 `<图层>_几何属性`；第二次替换第一份。回归 `test_different_geometry_metrics_preserve_previous_results` 已确认仅保留一个结果。
+- **修复：**桥接派发后生产函数仍未变化，Codex 临时修复 `geometry_attributes`：在 `_state_lock` 内用 `_disambiguate_layer_name` 分配并注册唯一结果名；成功消息返回本次实际图层名，指标计算及字段语义保持不变。
+- **验证：**新增回归通过；完整 `backend/tests/test_vector_gap_tools.py` 21/21，`test_spatial_tools.py`、`test_spatial_stats.py` 与 `test_vector_gap_tools.py` 联合 283/283，相关 `git diff --check` 通过。联合测试有 1,690 条既有弃用警告。
+- **协作与边界：**Gemini 已通过 Antigravity 桥接收到只读审查请求；尚无审查交接。未提交或推送。
+
+### 2026-10-30 不同栅格参数的输出相互覆盖（已修复，待 Gemini 复核）
+- **复现与影响：**`raster_resample` 文件名遗漏比例/方法，`raster_reproject` 遗漏目标 CRS，`raster_reclassify` 遗漏规则/方式/类别数，`raster_focal_stats` 遗漏窗口大小，`raster_calculator` 固定为 `<layer>_calc` 而遗漏表达式。同一输入用不同参数运行会生成不同栅格，却写入同一 TIFF 路径并覆盖前次输出；preview 也沿用同一标识。五项新增回归在修复前均失败并确认路径相同。
+- **修复：**桥接消息已接受，但 Gemini 会话没有新的执行记录或交接，生产文件保持不变。Codex 随后在五个输出名中加入全 UUID 标识：计算器、重采样、重投影、重分类、焦点统计均用本次标识生成栅格/预览层名；不在长计算阶段持有全局锁。重采样、重投影、重分类、焦点统计保留操作名后缀，方便现有文件匹配逻辑。
+- **验证：**五项新增回归通过：不同参数产生不同图层名、TIFF 与预览 PNG 路径，第一次文件在第二次执行后仍保持原内容。完整 `test_raster_gap_tools.py` 79/79；`test_new_tools.py` 中重采样/重投影相关 5/5；`test_spatial_tools.py` 中计算器、重分类和流向后续重分类相关 8/8；`test_raster_provenance.py` 1/1；`test_coverage_gap.py` 中栅格相关 5/5；相关 `git diff --check` 通过。`test_project_raster_persistence.py` 因环境缺少 `keyring` 导致项目保存返回错误，整文件 34 项失败、13 项通过；两项直接调用端到端测试也因同一依赖在任务持久化阶段失败。不能把这些结果作为本次命名代码的回归结论。
+- **协作与边界：**已通过 Antigravity 桥接通知 Gemini 停止写生产代码，改为只读审查五项修复及此前四项 Codex 改动。首个复核请求触发 OAuth 取令牌 EOF；一次短重试目前只看到 Gemini 的计划器回复和工作区状态检查，尚无实际审查结论。未提交或推送。

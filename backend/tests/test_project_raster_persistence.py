@@ -58,6 +58,24 @@ def _use_temp_projects(tmp_path, monkeypatch):
     return source
 
 
+def test_raster_original_path_accepts_nested_rerun_asset_but_rejects_escape(tmp_path, monkeypatch):
+    monkeypatch.setattr(ai_service, "_TEMP_OUTPUT_DIR", str(tmp_path))
+    rerun_dir = tmp_path / "uploads" / "history-reruns" / "run-123"
+    rerun_dir.mkdir(parents=True)
+    source = rerun_dir / "slope.tif"
+    source.write_bytes(b"raster-data")
+
+    resolved = project_service._raster_original_path({
+        "source_url": "/output/uploads/history-reruns/run-123/slope.tif",
+    })
+    escaped = project_service._raster_original_path({
+        "source_url": "/output/uploads/history-reruns/../../secret.tif",
+    })
+
+    assert resolved == str(source.resolve())
+    assert escaped is None
+
+
 def test_failed_replacement_keeps_existing_project_geojson_intact(tmp_path, monkeypatch):
     source = _use_temp_projects(tmp_path, monkeypatch)
     original_geojson = {"type": "FeatureCollection", "features": [{
@@ -170,6 +188,23 @@ def test_project_import_rejects_blob_with_valid_digest_but_invalid_json(tmp_path
     with pytest.raises(ValueError, match="无效矢量图层数据"):
         project_service.import_project(archive_bytes.getvalue())
     assert [project["id"] for project in project_service.list_projects()] == [saved["id"]]
+
+
+def test_project_import_rejects_blob_with_invalid_geojson_structure(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    raw = json.dumps({"type": "FeatureCollection", "features": "not-a-list"}).encode("utf-8")
+    blob = hashlib.sha256(raw).hexdigest()[:12]
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("project.json", json.dumps({"name": "坏矢量", "layers": [
+            {"name": "坏图层", "blob": blob},
+        ]}))
+        zipped.writestr(f"blobs/{blob}.geojson.gz", gzip.compress(raw))
+
+    with pytest.raises(ValueError, match="无效矢量图层数据"):
+        project_service.import_project(archive.getvalue())
+    assert project_service.list_projects() == []
+    assert not list((tmp_path / "projects").glob("proj_*"))
 
 
 def test_project_import_rejects_vector_layer_with_missing_blob(tmp_path, monkeypatch):
@@ -411,12 +446,9 @@ def test_delete_handles_project_with_malformed_layer_entries(tmp_path, monkeypat
         provider="test", map_state={}, messages=[], layers=[],
     ) for index in range(2 if delete_all else 1)]
 
-    damaged_path = os.path.join(project_service._project_dir(saved[0]["id"]), "project.json")
-    with open(damaged_path, "r", encoding="utf-8") as source:
-        damaged = json.load(source)
+    damaged = project_service._load_project_data(saved[0]["id"])
     damaged["layers"] = [None]
-    with open(damaged_path, "w", encoding="utf-8") as target:
-        json.dump(damaged, target)
+    project_service._save_project_data(saved[0]["id"], damaged)
 
     if delete_all:
         project_service.delete_all_projects()
@@ -661,7 +693,7 @@ def test_project_asset_route_rejects_symlink_swap_before_deferred_file_open(tmp_
         }}],
     )
     raster = project_service._load_project_data(saved["id"])["layers"][0]["raster"]
-    target = Path(project_service._project_raster_path(saved["id"], raster["asset"]))
+    target = Path(project_service.get_project_raster_asset(saved["id"], raster["asset"]))
     outside = tmp_path / "outside-secret.png"
     outside.write_bytes(b"outside secret sentinel")
     original_lookup = project_service.get_project_raster_asset
@@ -877,10 +909,11 @@ def test_original_raster_survives_import_without_runtime_or_original_project_fil
     assert restored_raster['quality_warnings'] == uploaded['raster_info']['quality_warnings']
     assert client.get(layer['raster']['source_url']).content == original
     located = tools._find_uploaded_tif('自定义高程')
-    assert str(Path(project_service._project_dir(imported['id']))) in located
+    assert os.path.commonpath([located, project_service._decrypted_asset_root()]) == project_service._decrypted_asset_root()
     result = tools.raster_calculator.invoke({'layer_name': '自定义高程', 'expression': 'B1*2'})
     assert '范围 [2.00, 32.00]' in result
-    assert (runtime / '自定义高程_calc.png').exists()
+    calc_op = tools._pending_layer_ops[-1]
+    assert (runtime / calc_op['raster']['filename']).exists()
 
 
 def test_derived_dem_layer_survives_project_restore_and_can_be_reanalyzed(tmp_path, monkeypatch):
@@ -915,7 +948,7 @@ def test_derived_dem_layer_survives_project_restore_and_can_be_reanalyzed(tmp_pa
 
     project_service.activate_project(saved['id'])
     restored_source = tools._find_uploaded_tif(layer_name)
-    assert restored_source and str(Path(project_service._project_dir(saved['id']))) in restored_source
+    assert restored_source and os.path.commonpath([restored_source, project_service._decrypted_asset_root()]) == project_service._decrypted_asset_root()
     follow_up = tools.raster_calculator.invoke({'layer_name': layer_name, 'expression': 'B1*2'})
     assert '结果栅格' in follow_up and '已上图' in follow_up
 

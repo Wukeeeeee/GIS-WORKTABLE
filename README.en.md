@@ -18,6 +18,15 @@ The AI `execute_python` tool runs code in a local child process with AST checks 
 - **Projects and outputs:** save workspaces, restore layers, and exchange project packages or standard GIS data formats.
 - **Data connections:** work with local files and supported OGC, ArcGIS REST, and cloud-optimized raster sources, subject to format, network, provider, and licensing constraints.
 
+## Recent maintenance (2026-10-30)
+
+This round continued tracing the data path from inputs through analysis and saved projects:
+
+- **Preserved analysis outputs:** parameter-specific vector and raster runs now keep distinct layer names and files. This includes spatial analysis, the raster calculator, resampling, reprojection, reclassification, and focal statistics.
+- **Upload and project recovery:** GeoJSON/GeoTIFF uploads and project import, save, and restore flows now retain exact attributes, original raster assets, and layer state more reliably.
+- **UI and data boundaries:** fixes cover history reruns, layer synchronization, failed-upload recovery, export paths, dynamic content, and external requests.
+- **Evidence and limits:** see the [module scan log](docs/validation/module-scan-progress.md) and [changelog](CHANGELOG.md) for reproducible checks and remaining validation limits. Passing local tests does not establish that every online service, real model, or full browser workflow has been accepted.
+
 ## Recent maintenance (2026-10-27)
 
 - **GeoSource request safety:** authenticated requests stop when redirected to another host. The local proxy keeps API keys out of AI prompts and project files, blocks public-to-private redirects, and limits read-only catalog SQL to 10,000 characters and five seconds.

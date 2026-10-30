@@ -107,6 +107,38 @@ def test_join_field_left_no_row_multiplication_and_match_counts():
     assert math.isnan(scores[2]), f"未匹配键的行应为 NaN，实际 {scores}"
 
 
+def test_different_attribute_keys_preserve_previous_join_results():
+    """同一对图层用不同键连接时，两个结果都应保留。"""
+    import uuid
+
+    suffix = uuid.uuid4().hex
+    target_name = f"join_keys_target_{suffix}"
+    join_name = f"join_keys_source_{suffix}"
+    target = _fc([_pt({"key_a": 1, "key_b": "north"}, 113.0, 23.0)])
+    join = _fc([_pt({"id_a": 1, "id_b": "south", "score": 10}, 0.0, 0.0)])
+    _register_layer(target_name, target)
+    _register_layer(join_name, join)
+
+    matched_result = join_field.invoke({
+        "target_layer": target_name, "join_layer": join_name,
+        "target_field": "key_a", "join_field": "id_a", "fields": "score",
+    })
+    unmatched_result = join_field.invoke({
+        "target_layer": target_name, "join_layer": join_name,
+        "target_field": "key_b", "join_field": "id_b", "fields": "score",
+    })
+
+    result_names = [name for name in _registered_layers if name.startswith(f"{target_name}_连接{join_name}")]
+    assert len(result_names) == 2
+    matched, _ = T._layer_to_gdf(result_names[0])
+    unmatched, _ = T._layer_to_gdf(result_names[1])
+    assert matched.iloc[0]["score"] == pytest.approx(10)
+    import pandas as pd
+    assert pd.isna(unmatched.iloc[0]["score"])
+    assert result_names[0] in matched_result
+    assert result_names[1] in unmatched_result
+
+
 def test_join_field_does_not_match_null_keys_or_multiply_rows():
     target = _fc([
         _pt({"key": None, "name": "a"}, 113.0, 23.0),
@@ -153,6 +185,7 @@ def test_join_field_supports_one_to_many_duplicate_join_keys():
 
 
 def test_join_field_inner_drops_unmatched():
+    existing_names = set(_registered_layers)
     target = _fc([
         _pt({"key": 1, "name": "a"}, 113.0, 23.0),
         _pt({"key": 2, "name": "b"}, 113.1, 23.1),
@@ -170,7 +203,9 @@ def test_join_field_inner_drops_unmatched():
         "fields": "score", "how": "inner",
     })
     assert "匹配 2" in r, r
-    out, _ = T._layer_to_gdf("tgt_连接jn")
+    result_names = [name for name in _registered_layers if name not in existing_names]
+    assert len(result_names) == 1
+    out, _ = T._layer_to_gdf(result_names[0])
     assert len(out) == 2, f"inner join 应只剩 2 行，实际 {len(out)}"
 
 
@@ -255,6 +290,29 @@ def test_geometry_attributes_metrics_selection():
     out, _ = T._layer_to_gdf("geom_box2_几何属性")
     assert "centroid_x" in out.columns and "centroid_y" in out.columns
     assert "area" not in out.columns and "length" not in out.columns
+
+
+def test_different_geometry_metrics_preserve_previous_results():
+    import uuid
+
+    source_name = f"geometry_metrics_{uuid.uuid4().hex}"
+    box = _fc([_poly({"id": "box"}, [
+        [113.00, 23.00], [113.01, 23.00], [113.01, 23.01],
+        [113.00, 23.01], [113.00, 23.00],
+    ])])
+    _register_layer(source_name, box)
+
+    first_result = geometry_attributes.invoke({"layer_name": source_name, "metrics": "bbox"})
+    second_result = geometry_attributes.invoke({"layer_name": source_name, "metrics": "centroid"})
+
+    result_names = [name for name in _registered_layers if name.startswith(f"{source_name}_几何属性")]
+    assert len(result_names) == 2
+    first, _ = T._layer_to_gdf(result_names[0])
+    second, _ = T._layer_to_gdf(result_names[1])
+    assert "bbox_minx" in first.columns and "centroid_x" not in first.columns
+    assert "centroid_x" in second.columns and "bbox_minx" not in second.columns
+    assert result_names[0] in first_result
+    assert result_names[1] in second_result
 
 
 # ============================================================

@@ -187,6 +187,26 @@ def test_executor_rerun_does_not_reuse_outputs_from_previous_run():
     assert received == []
 
 
+def test_executor_rerun_clears_previous_workflow_error():
+    """成功重跑后，顶层不能继续携带上次失败原因。"""
+    calls = {"count": 0}
+
+    def maybe_fail():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ValueError("first run failed")
+        return {"result": "ok"}
+
+    wf = new_workflow("重跑状态", nodes=[new_node("n1", "步骤", "maybe_fail")])
+    executor = WorkflowExecutor({"maybe_fail": maybe_fail})
+
+    assert executor.execute(wf)["status"] == "failed"
+    result = executor.execute(wf)
+
+    assert result["status"] == "success"
+    assert result["error"] is None
+
+
 def test_executor_invokes_langchain_structured_tool():
     """WorkflowExecutor 应通过 invoke 执行 LangChain StructuredTool。"""
     from langchain_core.tools import StructuredTool

@@ -193,13 +193,15 @@ test('history rerun forwards raster preview operations through the shared tool-r
   const entry = h.elements.historyBody.children[0];
   const actions = entry.children.find(child => child.className === 'toolhist-item-actions');
   actions.children.find(child => child.className === 'toolhist-rerun-btn').listeners.click[0]();
+  const oldOp = { action: 'dem_result', name: 'classes_原.png', layer_name: 'classes_原',
+    url: '/output/uploads/classes_原.png', bounds: [100, 30, 101, 31], raster: { source_filename: 'classes_原.tif' } };
   const op = { action: 'dem_result', name: 'classes.png', layer_name: 'classes',
     url: '/output/uploads/classes.png', bounds: [100, 30, 101, 31], raster: { source_filename: 'classes.tif' } };
   h.requests[1].resolve({ ok: true, json: () => Promise.resolve({
-    ok: true, response: '已重跑 #8 raster_reclassify → 成功', layers: [], layer_ops: [op],
+    ok: true, response: '已重跑 #8 raster_reclassify → 成功', layers: [], layer_ops: [oldOp, op],
   }) });
   await flushPromises();
 
-  assert.equal(applied.length, 1);
-  assert.equal(applied[0].layer_ops[0], op);
+  assert.equal(applied.length, 2);
+  assert.deepEqual(applied.map(result => result.layer_ops[0]), [oldOp, op]);
 });

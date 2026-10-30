@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 fastapi>=0.139.0
+python-multipart>=0.0.20
 uvicorn==0.31.1
 # openai：无直接 import，是 langchain-openai 的传递依赖；pin 上限防止其破坏 langchain 兼容（勿删）
 openai>=2.16.0,<2.45.0

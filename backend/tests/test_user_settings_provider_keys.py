@@ -1,6 +1,7 @@
 """Model provider keys must remain in browser storage, not persisted settings."""
 
 import json
+import threading
 
 from fastapi.testclient import TestClient
 
@@ -145,6 +146,45 @@ def test_deleting_legacy_amap_key_does_not_migrate_it_back(tmp_path, monkeypatch
     assert "amap_key" not in json.loads(persisted)
     assert secret not in persisted
     assert not credential_store.has_credential("amap")
+
+
+def test_concurrent_legacy_migration_cannot_resurrect_deleted_amap_key(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    settings_path = tmp_path / "user_settings.json"
+    secret = "legacy-amap-concurrency-sentinel"
+    settings_path.write_text(json.dumps({"amap_key": secret, "theme": "dark"}), encoding="utf-8")
+    monkeypatch.setattr(main, "_USER_SETTINGS_PATH", str(settings_path))
+    credential_store = _use_temporary_credential_store(tmp_path, monkeypatch)
+    entered_migration = threading.Event()
+    overlapping_migration = threading.Event()
+    release_migration = threading.Event()
+    original_save = main._save_amap_key
+
+    def pause_first_migration(key):
+        if key == secret:
+            if not entered_migration.is_set():
+                entered_migration.set()
+                assert release_migration.wait(5)
+            else:
+                overlapping_migration.set()
+        return original_save(key)
+
+    monkeypatch.setattr(main, "_save_amap_key", pause_first_migration)
+    with TestClient(main.app) as get_client, TestClient(main.app) as post_client, ThreadPoolExecutor(max_workers=2) as pool:
+        get_request = pool.submit(get_client.get, "/api/user-settings")
+        assert entered_migration.wait(5)
+        delete_request = pool.submit(post_client.post, "/api/user-settings", json={"amap_key": ""})
+        raced = overlapping_migration.wait(0.5)
+        release_migration.set()
+        deleted = delete_request.result(timeout=5)
+        fetched = get_request.result(timeout=5)
+
+    assert not raced
+    assert deleted.json()["status"] == "ok"
+    assert fetched.status_code == 200
+    assert not credential_store.has_credential("amap")
+    assert "amap_key" not in json.loads(settings_path.read_text(encoding="utf-8"))
 
 
 def test_invalid_settings_file_is_not_silently_replaced_by_a_partial_update(tmp_path, monkeypatch):

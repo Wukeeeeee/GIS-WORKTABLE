@@ -40,6 +40,7 @@ function loadLayerPanel() {
     attrFillValue: { value: '' },
   };
   const registered = [];
+  const registrationArgs = [];
   const mapRenames = [];
   const mapLoads = [];
   const toastErrors = [];
@@ -49,8 +50,9 @@ function loadLayerPanel() {
   const stateLayer = { fidIndex: {} };
   let failRegistration = false;
   const backend = {
-    registerLayer(name) {
+    registerLayer(name, geojson, raster, projectId, sensitive, token) {
       if (failRegistration) return Promise.reject(new Error('offline'));
+      registrationArgs.push([name, token]);
       registered.push(['register', name]); return Promise.resolve();
     },
     unregisterLayer(name) { registered.push(['unregister', name]); return Promise.resolve(); },
@@ -69,7 +71,26 @@ function loadLayerPanel() {
     getElementById(id) { return elements[id] || null; },
     querySelector(selector) { return selector === '.layer-name[data-id="layer-1"]' ? nameElement : null; },
     querySelectorAll() { return []; },
-    createElement(tag) { const element = makeElement(tag); createdElements.push(element); return element; },
+    createElement(tag) {
+      const element = makeElement(tag);
+      Object.defineProperty(element, 'innerHTML', { set(html) {
+        this._innerHTML = html;
+        for (const match of String(html).matchAll(/<(?:button|div)[^>]*id="([^"]+)"[^>]*>/g)) {
+          const child = makeElement('div');
+          child.id = match[1];
+          child.parentNode = this;
+          child.cloneNode = () => makeElement('button');
+          child.parentNode.replaceChild = (replacement, oldChild) => {
+            elements[oldChild.id] = replacement;
+            replacement.id = oldChild.id;
+            replacement.parentNode = this;
+          };
+          elements[child.id] = child;
+        }
+      }, get() { return this._innerHTML || ''; } });
+      createdElements.push(element);
+      return element;
+    },
   };
   const window = { GIS: { map, state, api: backend, project: {
     getCurrentProjectId() { return projectId; }, getActiveRegistryProjectId() { return projectId; },
@@ -88,7 +109,7 @@ function loadLayerPanel() {
   });
   state.getLayer = id => id === 'layer-1' ? stateLayer : null;
   return { window, layers: window.GIS.layers, tbody, nameElement, registered, mapRenames, stateRenames, stateLayer,
-    state, backend, elements, mapLoads, toastErrors, toastWarnings, createdElements,
+    state, backend, elements, mapLoads, toastErrors, toastWarnings, createdElements, registrationArgs,
     setProjectId(id) { projectId = id; }, failRegistration(value) { failRegistration = value; } };
 }
 
@@ -152,6 +173,15 @@ test('attribute data synchronization updates shared identity index and backend r
   assert.deepEqual(JSON.parse(JSON.stringify(harness.registered)), [['register', 'Original'], ['register', 'Original']]);
 });
 
+test('attribute updates forward the current registration token', async () => {
+  const harness = loadLayerPanel();
+  harness.layers.getLayers()[0]._registrationTokens = { Original: 'current-token' };
+  await harness.layers.syncLayerData('layer-1', { type: 'FeatureCollection', features: [] });
+  const registrations = JSON.parse(JSON.stringify(harness.registrationArgs));
+  assert.ok(registrations.length >= 1);
+  assert.ok(registrations.every(([name, token]) => name === 'Original' && token === 'current-token'));
+});
+
 test('attribute table edits keep existing number and boolean property types', () => {
   const harness = loadLayerPanel();
   assert.equal(harness.layers.coerceAttributeValue(4, '12'), 12);
@@ -193,6 +223,27 @@ test('invalid coordinates report the row and leave every row property and geomet
   assert.deepEqual(geojson.features[1].geometry.coordinates, [121, 31]);
   assert.deepEqual(harness.mapLoads, []);
   assert.match(harness.toastErrors[0], /第 2 行坐标无效：经度必须是有限数字/);
+});
+
+test('cancelling the empty-row warning leaves edited GeoJSON unchanged', () => {
+  const harness = loadLayerPanel();
+  const geojson = { type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { name: 'original' }, geometry: null },
+  ] };
+  harness.layers.getLayers()[0].geojson = geojson;
+  const row = { dataset: { idx: '0' }, querySelectorAll() {
+    return [{ dataset: { field: 'name' }, value: '', readOnly: false }];
+  } };
+  harness.elements.attrDataTable.querySelectorAll = () => [row];
+
+  harness.layers.saveAttrChanges('layer-1', ['name']);
+  assert.equal(geojson.features[0].properties.name, 'original');
+  assert.equal(harness.elements.confirmOverlay.style.display, 'flex');
+
+  harness.elements.confirmCancel.click();
+  assert.equal(harness.elements.confirmOverlay.style.display, 'none');
+  assert.equal(geojson.features[0].properties.name, 'original');
+  assert.deepEqual(harness.mapLoads, []);
 });
 
 test('failed backend sync is reported as a failed layer sync', async () => {

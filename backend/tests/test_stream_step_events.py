@@ -68,6 +68,9 @@ def test_controlled_stream_events_correlate_parallel_calls_and_apply_map_delta(m
     from backend.services import graph
     from backend.services.llm_config import LLMConfig
 
+    # Keep the SSE contract test independent from the local encrypted task store.
+    monkeypatch.setattr(graph.task_manager, "find_or_create_task", lambda *_args, **_kwargs: "sse-test-task")
+
     class FakeAgent:
         def stream(self, payload, config=None, **kwargs):
             base = list(payload["messages"])
@@ -132,13 +135,16 @@ def test_controlled_stream_events_correlate_parallel_calls_and_apply_map_delta(m
     delta = next(event for event in events if event.get("type") == "layer_ops_delta")
     assert delta["step_id"] == next(event for event in starts if event["tool_call_id"] == "map-1")["step_id"]
     assert delta["layer_ops"][0]["action"] == "center"
+    done = next(event for event in events if event.get("type") == "done")
+    done_op = next(op for op in done["layer_ops"] if op["action"] == "center")
+    assert done_op["_stream_id"] == delta["layer_ops"][0]["_stream_id"]
+    assert done_op["_step_id"] == delta["step_id"]
     elevation_end = next(event for event in ends if event.get("tool_call_id") == "elev-1")
     assert elevation_end["status"] == "error" and elevation_end["is_error"] is True
     assert elevation_end["error_message"] == "未能从 Provider 获取任何 tile"
     url_end = next(event for event in ends if event.get("tool_call_id") == "url-1")
     assert url_end["status"] == "error" and url_end["is_error"] is True
     assert url_end["error_message"] == "数据抓取失败: URL 无法解析"
-    assert any(event.get("type") == "done" for event in events)
 
 
 def test_stream_does_not_retry_whole_turn_after_tool_result_then_connection_error(monkeypatch):

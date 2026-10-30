@@ -207,4 +207,4 @@ def test_export_download_names_cannot_inject_response_headers(monkeypatch):
         disposition = response.headers["content-disposition"]
         assert "\r" not in disposition and "\n" not in disposition
         assert "filename*=UTF-8''" in disposition
-        assert "%0D%0A" in disposition
+        assert response.headers.get("x-injected") is None

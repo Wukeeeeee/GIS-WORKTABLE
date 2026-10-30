@@ -400,6 +400,7 @@ class WorkflowExecutor:
 
         if not isinstance(wf.get("id"), str) or not wf["id"].strip():
             wf["id"] = f"wf_{uuid.uuid4().hex[:12]}"
+        wf["error"] = None
         wf["status"] = "running"
         wf["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self._emit({"type": "workflow_started", "workflow_id": wf["id"], "name": wf["name"]})

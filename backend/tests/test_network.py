@@ -123,6 +123,35 @@ class TestShortestRoute:
         assert 400 < result["distance_m"] < 600  # 水平边约 426m
         assert result["node_count"] == 2
 
+    def test_rejects_network_coordinates_outside_wgs84(self):
+        roads = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "LineString", "coordinates": [[181, 0], [182, 0]]}},
+        ]}
+
+        with pytest.raises(ValueError, match="EPSG:4326"):
+            shortest_route(roads, (181, 0), (182, 0))
+
+    def test_rejects_route_points_outside_wgs84(self):
+        with pytest.raises(ValueError, match="EPSG:4326"):
+            shortest_route(GRID_GEOJSON, (181, 0), _NODES["A"])
+
+    def test_network_api_returns_validation_error_instead_of_route(self):
+        from fastapi.testclient import TestClient
+        from backend.main import app
+
+        roads = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "LineString", "coordinates": [[181, 0], [182, 0]]}},
+        ]}
+        response = TestClient(app).post("/api/network/solve", json={
+            "geojson": roads, "type": "route", "origin": [181, 0], "dest": [182, 0],
+        })
+
+        assert response.status_code == 200
+        assert "EPSG:4326" in response.json()["error"]
+        assert "path" not in response.json()
+
     def test_same_snapped_node_returns_zero_distance_point_feature(self):
         result = shortest_route(GRID_GEOJSON, _NODES["A"], _NODES["A"])
 

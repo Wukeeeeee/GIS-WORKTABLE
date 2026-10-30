@@ -788,10 +788,11 @@ window.GIS.api = (() => {
   }
 
   /** 通知后端注册新加载的图层（名字 + GeoJSON）。 */
-  async function registerLayer(name, geojson, raster, expectedProjectId, sensitive) {
+  async function registerLayer(name, geojson, raster, expectedProjectId, sensitive, registrationToken) {
     const project = GIS.project;
     const payload = { name, geojson, raster };
     if (typeof sensitive === 'boolean') payload.sensitive = sensitive;
+    if (typeof registrationToken === 'string' && registrationToken) payload.registration_token = registrationToken;
     if (arguments.length >= 4 && expectedProjectId !== undefined) {
       payload.project_context = true;
       payload.expected_project_id = expectedProjectId == null ? null : expectedProjectId;

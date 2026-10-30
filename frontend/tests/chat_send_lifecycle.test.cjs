@@ -120,6 +120,23 @@ test('plain user chat messages render as text instead of executable HTML', () =>
   assert.equal(content.innerHTML, undefined);
 });
 
+test('attached layer name, type, and count render as text instead of HTML', () => {
+  const h = createChatHarness();
+  h.window.GIS.chat.init();
+  const name = '<img src=x onerror=alert(1)>';
+  const type = '<svg onload=alert(2)>';
+  const count = '<b>999</b>';
+  h.window.GIS.chat.addMessage('analyze this', 'user', {
+    attachLayer: { name, type, count },
+  });
+
+  const row = h.elements.get('chatMessages').children[0];
+  const attachRow = row.children[1].children[1];
+  assert.equal(attachRow.innerHTML, undefined);
+  assert.equal(attachRow.children[1].textContent, name);
+  assert.equal(attachRow.children[2].textContent, type + ' · ' + count + ' 要素');
+});
+
 test('starting a new chat resets backend GIS context before clearing the current workspace', async () => {
   const h = createChatHarness();
   await h.window.GIS.chat.clearSession();
@@ -469,6 +486,39 @@ test('raster analysis results enter the layer panel with project-ready source me
   assert.equal(autoSaves, 1);
 });
 
+test('unavailable heatmap plugin does not register a phantom layer', async () => {
+  const event = { type: 'done', response: '热力图已生成', layers: [], layer_ops: [], heatmap: {
+    name: 'cities_heat', points: [[39, 116, 1]], options: { radius: 20 },
+  } };
+  const bytes = new TextEncoder().encode('data: ' + JSON.stringify(event) + '\n\n');
+  let reads = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } });
+  const addedLayers = [];
+  h.window.GIS.map.loadHeatmap = () => null;
+  h.window.GIS.layers.getLayers = () => addedLayers;
+  h.window.GIS.layers.addLayer = layer => addedLayers.push(layer);
+  h.window.GIS.chat.init();
+
+  await h.window.GIS.chat.send('生成热力图');
+
+  assert.deepEqual(addedLayers, []);
+  assert.ok(h.getElement('chatMessages').children.some(row => /热力图.*无法显示/.test(row._rawText || '')));
+});
+
+test('manual heatmap result reports when the renderer is unavailable', () => {
+  const h = createChatHarness();
+  h.window.GIS.map.loadHeatmap = () => null;
+  h.window.GIS.chat.init();
+
+  h.window.GIS.chat.applyToolResult({ heatmap: {
+    name: 'cities_heat', points: [[39, 116, 1]], options: { radius: 20 },
+  } });
+
+  assert.ok(h.getElement('chatMessages').children.some(row => /热力图.*无法显示/.test(row._rawText || '')));
+});
+
 test('COG preview result is persisted as a preview layer and does not claim pixel analysis', async () => {
   const op = { action: 'dem_result', name: 'cog_scene.png', layer_name: 'scene（COG 预览）',
     url: '/output/uploads/cog_scene.png', bounds: [100, 30, 101, 31], crs: 'EPSG:4326',
@@ -586,6 +636,38 @@ test('a color operation that cannot reach the rendered layer leaves panel state 
   assert.equal(target.color, '#000000');
   assert.equal(renders, 0);
   assert.ok(h.createdElements.some(element => String(element._rawText || '').includes('地图未能应用图层颜色')));
+});
+
+test('successful manual style operations update shared and panel state for project persistence', () => {
+  const event = { type: 'done', response: '已更新样式', layers: [], layer_ops: [
+    { action: 'set_color', name: 'roads', color: '#ff0000' },
+    { action: 'set_style', name: 'roads', style: { weight: 5, fillOpacity: 0.2 } },
+  ] };
+  const h = createChatHarness();
+  const panelLayers = [];
+  h.window.GIS.layers.getLayers = () => panelLayers;
+  h.window.GIS.layers.addLayer = layer => panelLayers.push(layer);
+  h.window.GIS.layers.renderList = () => {};
+  h.window.GIS.map.loadGeoJSON = () => {};
+  const styleCalls = [];
+  h.window.GIS.map.setLayerColor = (...args) => { styleCalls.push(['color', ...args]); return true; };
+  h.window.GIS.map.setLayerStyle = (...args) => { styleCalls.push(['style', ...args]); return true; };
+  let saves = 0;
+  h.window.GIS.project.autoSave = () => { saves++; };
+  h.context.GIS = h.window.GIS;
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../js/gis_state.js'), 'utf8'), h.context);
+  const shared = h.window.GIS.state.addLayer({ layer_id: 'roads-id', name: 'roads',
+    geojson: { type: 'FeatureCollection', features: [] }, style: { color: '#000000', fillColor: '#000000' } });
+  h.window.GIS.chat.applyToolResult({ layer_ops: event.layer_ops });
+
+  assert.equal(panelLayers.length, 1);
+  assert.equal(panelLayers[0].layer_id, 'roads-id');
+  assert.equal(styleCalls.length, 2);
+  assert.equal(shared.style.color, '#ff0000');
+  assert.equal(shared.style.weight, 5);
+  assert.equal(panelLayers[0].style.color, '#ff0000');
+  assert.equal(panelLayers[0].style.fillOpacity, 0.2);
+  assert.equal(saves, 1);
 });
 
 test('streamed fits retry after final layers load before execution cards finish', async () => {

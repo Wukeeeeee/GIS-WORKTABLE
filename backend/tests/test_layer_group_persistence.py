@@ -35,23 +35,31 @@ def _use_temp_project_store(tmp_path, monkeypatch):
 def test_failed_blob_write_does_not_poison_a_retry(tmp_path, monkeypatch):
     _use_temp_project_store(tmp_path, monkeypatch)
     project_service._ensure_dirs()
-    real_gzip_open = gzip.open
+    real_gzip_file = gzip.GzipFile
     failed = False
 
-    def fail_first_blob_write(path, mode="rb", *args, **kwargs):
-        nonlocal failed
-        if not failed and mode == "wt" and os.path.dirname(os.path.abspath(path)) == os.path.abspath(project_service._BLOB_DIR):
-            failed = True
-            with open(path, "wb") as partial:
-                partial.write(b"partial gzip data")
-            raise OSError("simulated interrupted blob write")
-        return real_gzip_open(path, mode, *args, **kwargs)
+    class InterruptedGzipWriter:
+        def __enter__(self):
+            return self
 
-    monkeypatch.setattr(project_service.gzip, "open", fail_first_blob_write)
+        def __exit__(self, *_args):
+            return False
+
+        def write(self, _data):
+            raise OSError("simulated interrupted blob write")
+
+    def fail_first_blob_write(*args, mode="rb", **kwargs):
+        nonlocal failed
+        if not failed and mode == "wb":
+            failed = True
+            return InterruptedGzipWriter()
+        return real_gzip_file(*args, mode=mode, **kwargs)
+
+    monkeypatch.setattr(project_service.gzip, "GzipFile", fail_first_blob_write)
     with pytest.raises(OSError, match="interrupted blob write"):
         project_service._blob_put(_GEOJSON)
 
-    monkeypatch.setattr(project_service.gzip, "open", real_gzip_open)
+    monkeypatch.setattr(project_service.gzip, "GzipFile", real_gzip_file)
     expected_sha = hashlib.sha256(
         json.dumps(_GEOJSON, ensure_ascii=False, sort_keys=True).encode()
     ).hexdigest()[:12]
@@ -385,11 +393,13 @@ def test_open_project_registers_valid_layers_when_another_layer_is_invalid(tmp_p
     _use_temp_project_store(tmp_path, monkeypatch)
     saved = project_service.save_project(
         project_id=None, name="混合图层工程", session_id="mixed-layers", provider="test",
-        map_state={}, messages=[], layers=[
-            {"name": "坏图层", "geojson": {"type": "FeatureCollection", "features": [None]}},
-            {"name": "好图层", "geojson": _GEOJSON},
-        ],
+        map_state={}, messages=[], layers=[{"name": "好图层", "geojson": _GEOJSON}],
     )
+    invalid_geojson = {"type": "FeatureCollection", "features": [None]}
+    invalid_blob = project_service._blob_put(invalid_geojson)
+    project_data = project_service._load_project_data(saved["id"])
+    project_data["layers"].insert(0, {"name": "坏图层", "blob": invalid_blob})
+    project_service._save_project_data(saved["id"], project_data)
     monkeypatch.setattr(tools, "_registered_layers", {})
     monkeypatch.setattr(tools, "_active_project_id", None)
     monkeypatch.setattr(tools, "_pending_layers", [])
@@ -409,6 +419,74 @@ def test_open_project_registers_valid_layers_when_another_layer_is_invalid(tmp_p
     assert [layer["name"] for layer in opened["layers"]] == ["坏图层", "好图层"]
     assert opened["registration_warnings"] == ["坏图层"]
     assert set(tools._registered_layers) == {"好图层"}
+
+
+def test_open_project_skips_corrupt_blob_but_restores_other_layers(tmp_path, monkeypatch):
+    from backend.services import tools
+
+    _use_temp_project_store(tmp_path, monkeypatch)
+    good_geojson = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "properties": {},
+                      "geometry": {"type": "Point", "coordinates": [2, 2]}}],
+    }
+    saved = project_service.save_project(
+        project_id=None, name="损坏 Blob 恢复", session_id="corrupt-blob-session", provider="test",
+        map_state={}, messages=[], layers=[{"name": "坏图层", "geojson": _GEOJSON},
+                                           {"name": "好图层", "geojson": good_geojson}],
+    )
+    project = project_service._load_project_data(saved["id"])
+    corrupt_path = project_service._blob_path(project["layers"][0]["blob"])
+    corrupted_blob = bytearray(open(corrupt_path, "rb").read())
+    corrupted_blob[-1] ^= 0x01
+    with open(corrupt_path, "wb") as blob_file:
+        blob_file.write(corrupted_blob)
+
+    monkeypatch.setattr(tools, "_registered_layers", {})
+    monkeypatch.setattr(tools, "_active_project_id", None)
+    monkeypatch.setattr(tools, "_pending_layers", [])
+    monkeypatch.setattr(tools, "_pending_layer_ops", [])
+
+    opened = project_service.open_project(saved["id"])
+
+    assert [layer["name"] for layer in opened["layers"]] == ["坏图层", "好图层"]
+    assert opened["layers"][0]["geojson"] is None
+    assert opened["registration_warnings"] == ["坏图层"]
+    assert set(tools._registered_layers) == {"好图层"}
+
+
+def test_load_project_propagates_local_encryption_unavailable(tmp_path, monkeypatch):
+    from backend.services.local_encryption import LocalEncryptionUnavailable
+
+    def unavailable(_blob):
+        raise LocalEncryptionUnavailable("test keyring unavailable")
+
+    monkeypatch.setattr(project_service, "_load_project_data", lambda _pid: {
+        "layers": [{"name": "locked", "blob": "abcdef012345"}],
+    })
+    monkeypatch.setattr(project_service, "_blob_get", unavailable)
+
+    with pytest.raises(LocalEncryptionUnavailable, match="test keyring unavailable"):
+        project_service.load_project("locked-project")
+
+
+def test_load_project_propagates_blob_authentication_failure_for_legacy_project(tmp_path, monkeypatch):
+    from cryptography.exceptions import InvalidTag
+    from backend.services import local_encryption
+
+    _use_temp_project_store(tmp_path, monkeypatch)
+
+    def invalid_tag(_blob):
+        raise InvalidTag("test authentication failure")
+
+    monkeypatch.setattr(project_service, "_load_project_data", lambda _pid: {
+        "layers": [{"name": "locked", "blob": "abcdef012345"}],
+    })
+    monkeypatch.setattr(project_service, "_blob_get", invalid_tag)
+    monkeypatch.setattr(local_encryption, "is_encrypted_file", lambda _path: False)
+
+    with pytest.raises(InvalidTag):
+        project_service.load_project("legacy-project")
 
 
 @pytest.mark.parametrize("assignment", [None, {}, {"names": "old"}, {"names": [None]},
@@ -610,7 +688,7 @@ def test_export_refuses_to_include_vector_blob_with_mismatched_content(tmp_path,
     with open(project_service._blob_path(blob), "wb") as corrupted:
         corrupted.write(gzip.compress(b'{"type":"FeatureCollection","features":[]}'))
 
-    with pytest.raises(ValueError, match="校验失败"):
+    with pytest.raises(ValueError, match="工程矢量图层数据无效"):
         project_service.export_project(saved["id"])
 
 
@@ -834,6 +912,35 @@ def test_project_import_rejects_duplicate_windows_path_aliases(tmp_path, monkeyp
         project_service.import_project(archive.getvalue())
 
     assert not (tmp_path / "projects" / "proj_duplicate-path-import").exists()
+
+
+def test_project_archive_extraction_rejects_ntfs_short_name_overwrite(tmp_path):
+    if os.name != "nt":
+        pytest.skip("NTFS short-name alias behavior is Windows-specific")
+    import ctypes
+
+    probe = tmp_path / "short-name-probe"
+    probe.mkdir()
+    long_path = probe / "project.json"
+    long_path.write_bytes(b"probe")
+    short_path = ctypes.create_unicode_buffer(32768)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(long_path), short_path, len(short_path)):
+        pytest.skip("The filesystem does not expose 8.3 short names")
+    if os.path.basename(short_path.value).casefold() != "projec~1.jso":
+        pytest.skip("project.json does not receive the expected NTFS short name here")
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("project.json", b"ORIGINAL")
+        zipped.writestr("projec~1.jso", b"OVERWRITTEN")
+
+    target = tmp_path / "staging"
+    target.mkdir()
+    with zipfile.ZipFile(io.BytesIO(archive.getvalue())) as zipped:
+        with pytest.raises(ValueError, match="重复的文件路径"):
+            project_service._extract_project_archive(zipped, str(target))
+
+    assert (target / "project.json").read_bytes() == b"ORIGINAL"
 
 
 @pytest.mark.parametrize("member_name", [

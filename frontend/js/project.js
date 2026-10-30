@@ -406,6 +406,8 @@ window.GIS = window.GIS || {};
                   provenance: layer.provenance || null,
                   sensitive: true,
                   groupId: layer.groupId || null,
+                  _registrationTokens: layer.registration_token
+                    ? { [layer.name || layer.filename || '图层']: layer.registration_token } : undefined,
                 });
                 if (!isVis && GIS.map.setLayerVisible) {
                   GIS.map.setLayerVisible(mapLayerName, false);
