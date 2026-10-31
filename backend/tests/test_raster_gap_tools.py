@@ -63,6 +63,11 @@ def _read_out(path):
         return src.read(1)
 
 
+def _last_registered_raster_output():
+    op = next(op for op in reversed(_pending_layer_ops) if op.get("action") == "dem_result")
+    return op["layer_name"], T._find_uploaded_tif(op["layer_name"])
+
+
 def _latest_result_path(tmp_path):
     info = _pending_layer_ops[-1]["raster"]
     return os.path.join(str(tmp_path), "uploads", info["source_filename"])
@@ -617,8 +622,32 @@ def test_surface_volumes_pure_fill(tmp_path):
     assert "净方量 50.00 m3" in r.replace(",", ""), r
     assert "变化面积 25.00 m2" in r.replace(",", ""), r
     assert "源栅格缺少 CRS" in r, r
-    out = _read_out(os.path.join(str(tmp_path), "uploads", "sv_before_填挖方.tif"))
+    _, output_path = _last_registered_raster_output()
+    out = _read_out(output_path)
     assert np.allclose(out, 2.0), out
+
+
+def test_surface_volumes_different_after_dem_preserve_previous_output(tmp_path):
+    before, _ = _make_tif(tmp_path, "sv_repeat_before", np.zeros((5, 5), dtype="float32"))
+    after_low, _ = _make_tif(tmp_path, "sv_repeat_after_low", np.full((5, 5), 2.0, dtype="float32"))
+    after_high, _ = _make_tif(tmp_path, "sv_repeat_after_high", np.full((5, 5), 5.0, dtype="float32"))
+
+    first = surface_volumes.invoke({"before_layer": before, "after_layer": after_low})
+    first_name, first_path = _last_registered_raster_output()
+    with open(first_path, "rb") as raster_file:
+        first_bytes = raster_file.read()
+    first_values = _read_out(first_path)
+
+    second = surface_volumes.invoke({"before_layer": before, "after_layer": after_high})
+    second_name, second_path = _last_registered_raster_output()
+
+    assert "填挖方计算完成" in first and "填挖方计算完成" in second
+    assert first_name != second_name
+    assert first_path != second_path
+    assert np.allclose(first_values, 2.0)
+    assert np.allclose(_read_out(second_path), 5.0)
+    with open(first_path, "rb") as raster_file:
+        assert raster_file.read() == first_bytes
 
 
 def test_surface_volumes_preserves_valid_elevation_near_nodata(tmp_path):
@@ -639,7 +668,8 @@ def test_surface_volumes_preserves_valid_elevation_near_nodata(tmp_path):
     flat = result.replace(",", "")
     assert "填方量 10048.95 m3" in flat, result
     assert "变化面积 25.00 m2" in flat, result
-    diff = _read_out(os.path.join(str(tmp_path), "uploads", "sv_near_nodata_before_填挖方.tif"))
+    _, output_path = _last_registered_raster_output()
+    diff = _read_out(output_path)
     assert diff[0, 0] == pytest.approx(10000.95, abs=1e-2)
 
 
@@ -654,7 +684,7 @@ def test_surface_volumes_output_uses_non_colliding_nodata(tmp_path):
     result = surface_volumes.invoke({"before_layer": before, "after_layer": after})
 
     assert "变化面积 1.00 m2" in result, result
-    output_path = os.path.join(str(tmp_path), "uploads", "sv_zero_nodata_before_填挖方.tif")
+    _, output_path = _last_registered_raster_output()
     with rasterio.open(output_path) as output:
         assert np.isnan(output.nodata)
         assert int((output.read_masks(1) > 0).sum()) == 25

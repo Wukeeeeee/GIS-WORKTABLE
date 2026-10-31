@@ -932,12 +932,14 @@ def fetch_gis_data_url(
         gdf.to_file(save_path, driver="GPKG")
         ext = "gpkg"
     elif fmt_lower == "csv":
+        from backend.services.csv_utils import write_formula_safe_csv
+
         save_path = os.path.join(out_dir, f"{base_name}.csv")
         # 导出带 WKT 的 CSV
         df_export = gdf.copy()
         df_export["wkt_geometry"] = df_export.geometry.to_wkt()
         df_export.drop(columns=["geometry"], inplace=True)
-        df_export.to_csv(save_path, index=False, encoding="utf-8-sig")
+        write_formula_safe_csv(df_export, save_path)
         ext = "csv"
     else:  # 默认 GeoJSON
         save_path = os.path.join(out_dir, f"{base_name}.geojson")

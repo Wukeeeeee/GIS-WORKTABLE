@@ -945,6 +945,26 @@ def test_fetch_gis_data_url_csv(tmp_path, monkeypatch):
         assert os.path.exists(res["file_path"])
 
 
+def test_fetched_csv_neutralizes_formula_like_headers_and_values(tmp_path, monkeypatch):
+    import csv
+
+    url = "https://example.com/data.geojson"
+    geojson = {"type": "FeatureCollection", "features": [{
+        "type": "Feature",
+        "properties": {"=header": "=1+1", "note": "\t@SUM(1,2)"},
+        "geometry": {"type": "Point", "coordinates": [120.0, 30.0]},
+    }]}
+    monkeypatch.setattr("backend.services.url_gis_service._get_output_dir", lambda: str(tmp_path))
+    with patch("backend.services.url_gis_service._http_get", return_value=_make_mock_response(json_data=geojson)):
+        result = ugs.fetch_gis_data_url(url, output_format="csv")
+
+    assert result["ok"] is True
+    with open(result["file_path"], encoding="utf-8-sig", newline="") as stream:
+        row = next(csv.DictReader(stream))
+    assert row["\t=header"] == "\t=1+1"
+    assert row["note"] == "\t\t@SUM(1,2)"
+
+
 def test_arcgis_full_fetch_uses_object_id_batches_and_writes_delivery_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(ugs, "_get_output_dir", lambda: str(tmp_path))
     layer_url = "https://example.test/arcgis/rest/services/roads/FeatureServer/0"

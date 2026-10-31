@@ -583,6 +583,41 @@ test('manual vector tool results schedule a project autosave', () => {
   assert.equal(autosaves, 1);
 });
 
+test('label operations forward the requested font size and color', () => {
+  const h = createChatHarness();
+  const calls = [];
+  h.window.GIS.layers.addLabels = (...args) => calls.push(args);
+
+  h.window.GIS.chat.applyToolResult({ layer_ops: [{
+    action: 'labels', name: 'districts', field: 'name', font_size: 18, color: '#aabbcc',
+  }] });
+
+  assert.deepEqual(calls, [['districts', 'name', 18, '#aabbcc']]);
+});
+
+test('streamed label operations forward style and are not applied twice', async () => {
+  const op = { action: 'labels', name: 'districts', field: 'name', font_size: 18, color: '#aabbcc',
+    _stream_id: 'labels-op', _step_id: 'labels-step' };
+  const events = [
+    { type: 'tool_start', name: 'add_labels', tool_call_id: 'labels-call', step_id: 'labels-step', map_ops_pending: 1 },
+    { type: 'tool_end', name: 'add_labels', tool_call_id: 'labels-call', step_id: 'labels-step', output: '已添加标注' },
+    { type: 'layer_ops_delta', step_id: 'labels-step', layer_ops: [op] },
+    { type: 'done', response: '已添加标注', layers: [], layer_ops: [op] },
+  ];
+  const bytes = new TextEncoder().encode(events.map(event => 'data: ' + JSON.stringify(event) + '\n\n').join(''));
+  let reads = 0;
+  const h = createChatHarness({ ok: true, body: { getReader() { return { read() {
+    return Promise.resolve(reads++ === 0 ? { done: false, value: bytes } : { done: true });
+  } }; } } }, true);
+  const calls = [];
+  h.window.GIS.layers.addLabels = (...args) => calls.push(args);
+  h.window.GIS.chat.init();
+
+  await h.window.GIS.chat.send('给 districts 添加 18 号字的标注');
+
+  assert.deepEqual(calls, [['districts', 'name', 18, '#aabbcc']]);
+});
+
 test('layer recovery requires an exact name and warns instead of attaching a similarly named layer', async () => {
   const geojson = { type: 'FeatureCollection', features: [] };
   const event = { type: 'done', response: '已处理图层', layers: [], layer_ops: [

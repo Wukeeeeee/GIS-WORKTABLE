@@ -246,6 +246,22 @@ class TestFieldCalculate:
         values = [feature["properties"]["copy"] for feature in _registered_layers["field_string_null"]["geojson"]["features"]]
         assert values == ["4", None]
 
+    @pytest.mark.parametrize("expression", ["float('inf')", "float('-inf')"])
+    def test_string_output_normalizes_non_finite_numeric_results_to_null(self, expression):
+        _setup("field_string_non_finite", {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"value": 1},
+            "geometry": {"type": "Point", "coordinates": [0, 0]},
+        }]})
+
+        result = field_calculate.invoke({
+            "layer_name": "field_string_non_finite", "expression": expression,
+            "new_field": "as_text", "field_type": "str",
+        })
+
+        assert "已为图层" in result
+        value = _registered_layers["field_string_non_finite"]["geojson"]["features"][0]["properties"]["as_text"]
+        assert value is None
+
     def test_cannot_overwrite_stable_feature_id(self):
         _setup("field_fid", _POINTS)
         before = [feature["properties"]["_fid"] for feature in _registered_layers["field_fid"]["geojson"]["features"]]
@@ -342,6 +358,39 @@ class TestMeasureArea:
 
 
 class TestFeatureToRaster:
+    def test_different_cell_sizes_preserve_previous_raster_output(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        _setup("rasterized_repeat", _SQUARE)
+        first = feature_to_raster.invoke({
+            "layer_name": "rasterized_repeat", "value_field": "val", "cell_size": 1,
+        })
+        first_op = next(op for op in reversed(_pending_layer_ops) if op.get("action") == "dem_result")
+        first_name = first_op["layer_name"]
+        first_path = T._find_uploaded_tif(first_name)
+        with open(first_path, "rb") as raster_file:
+            first_bytes = raster_file.read()
+        with rasterio.open(first_path) as raster:
+            first_values = raster.read(1)
+
+        second = feature_to_raster.invoke({
+            "layer_name": "rasterized_repeat", "value_field": "val", "cell_size": 0.5,
+        })
+        second_op = next(op for op in reversed(_pending_layer_ops) if op.get("action") == "dem_result")
+        second_name = second_op["layer_name"]
+        second_path = T._find_uploaded_tif(second_name)
+
+        assert "矢量转栅格完成" in first and "矢量转栅格完成" in second
+        assert second_name != first_name
+        assert second_path != first_path
+        with open(first_path, "rb") as raster_file:
+            assert raster_file.read() == first_bytes
+        with rasterio.open(second_path) as raster:
+            assert raster.shape == (4, 4)
+            assert not np.array_equal(raster.read(1), first_values)
+
     def test_zero_attribute_values_remain_valid_and_output_is_reusable(self, tmp_path, monkeypatch):
         import math
         import numpy as np
@@ -503,6 +552,18 @@ class TestCreateHeatmap:
         r = create_heatmap.invoke({"layer_name": "hm1"})
         assert "热力图" in r or "生成" in r
 
+    def test_heatmap_accepts_valid_named_and_hex_gradient_colors(self):
+        _setup("hm_gradient_valid", _POINTS)
+
+        result = create_heatmap.invoke({
+            "layer_name": "hm_gradient_valid", "gradient": "0=blue,0.5=#00ff00,1=red",
+        })
+
+        assert "热力图已生成" in result
+        assert T._pending_heatmap["latest"]["options"]["gradient"] == {
+            0.0: "blue", 0.5: "#00ff00", 1.0: "red",
+        }
+
     def test_requested_missing_weight_field_is_not_silently_ignored(self):
         _setup("hm_missing_weight", _POINTS)
 
@@ -511,6 +572,41 @@ class TestCreateHeatmap:
         })
 
         assert "权重字段" in result and "不存在" in result
+        assert T._pending_heatmap["latest"] is None
+
+    def test_null_weight_does_not_emit_non_finite_heatmap_point(self):
+        geojson = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"weight": 2},
+             "geometry": {"type": "Point", "coordinates": [120, 30]}},
+            {"type": "Feature", "properties": {"weight": None},
+             "geometry": {"type": "Point", "coordinates": [121, 31]}},
+        ]}
+        _setup("hm_null_weight", geojson)
+
+        result = create_heatmap.invoke({"layer_name": "hm_null_weight", "weight_field": "weight"})
+
+        assert "热力图已生成" in result
+        assert "跳过 1 个空或非有限权重" in result
+        points = T._pending_heatmap["latest"]["points"]
+        assert points == [[30.0, 120.0, 2.0]]
+        json.dumps(T._pending_heatmap["latest"], allow_nan=False)
+
+    @pytest.mark.parametrize("radius", [0, -1, 101, 1_000_000])
+    def test_heatmap_rejects_radius_outside_supported_pixel_range(self, radius):
+        _setup("hm_radius", _POINTS)
+
+        result = create_heatmap.invoke({"layer_name": "hm_radius", "radius": radius})
+
+        assert "半径范围为 1 到 100 像素" in result
+        assert T._pending_heatmap["latest"] is None
+
+    @pytest.mark.parametrize("gradient", ["-0.1=red,1.2=blue", "NaN=red", "0.4", "0.4=", "0.4=not-a-color"])
+    def test_heatmap_rejects_malformed_or_out_of_range_gradient(self, gradient):
+        _setup("hm_gradient", _POINTS)
+
+        result = create_heatmap.invoke({"layer_name": "hm_gradient", "gradient": gradient})
+
+        assert "渐变" in result and "无效" in result
         assert T._pending_heatmap["latest"] is None
 
 
@@ -534,6 +630,58 @@ class TestAddNorthArrow:
 # ============================================================
 
 class TestExportLayer:
+    @pytest.mark.parametrize("export_format", ["csv", "csv_xy", "gpkg", "shp"])
+    def test_non_geojson_exports_encode_nested_properties_as_json(self, tmp_path, monkeypatch, export_format):
+        import csv
+        import re
+        import geopandas as gpd
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        nested = {"sensor": {"bands": [1, 2]}, "labels": ["红", "蓝"]}
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"metadata": nested},
+            "geometry": {"type": "Point", "coordinates": [113.5, 23.1]},
+        }]}
+        _setup(f"nested_{export_format}", geojson)
+
+        result = export_layer.invoke({"layer_name": f"nested_{export_format}", "format": export_format})
+        extension = "zip" if export_format == "shp" else ("gpkg" if export_format == "gpkg" else "csv")
+        filename = re.search(rf"/output/([^\s]+\.{extension})", result).group(1)
+        path = output_dir / filename
+        if export_format in {"csv", "csv_xy"}:
+            with path.open(encoding="utf-8-sig", newline="") as stream:
+                metadata_value = next(csv.DictReader(stream))["metadata"]
+        else:
+            exported = gpd.read_file(f"zip://{path}" if export_format == "shp" else path)
+            metadata_value = exported.iloc[0]["metadata"]
+
+        assert json.loads(metadata_value) == nested
+
+    @pytest.mark.parametrize("export_format", ["csv", "csv_xy"])
+    def test_csv_exports_neutralize_formula_like_headers_and_values(self, tmp_path, monkeypatch, export_format):
+        import csv
+        import re
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature",
+            "properties": {"=header": "=1+1", "note": "\t@SUM(1,2)"},
+            "geometry": {"type": "Point", "coordinates": [113.5, 23.1]},
+        }]}
+        _setup(f"formula_{export_format}", geojson)
+
+        result = export_layer.invoke({"layer_name": f"formula_{export_format}", "format": export_format})
+        filename = re.search(r"/output/([^\s]+\.csv)", result).group(1)
+        with (output_dir / filename).open(encoding="utf-8-sig", newline="") as stream:
+            row = next(csv.DictReader(stream))
+
+        assert row["\t=header"] == "\t=1+1"
+        assert row["note"] == "\t\t@SUM(1,2)"
+
     def test_csv_xy_export_does_not_overwrite_same_named_source_fields(self, tmp_path, monkeypatch):
         import csv
         import re
@@ -829,6 +977,65 @@ class TestCreateChart:
 
 
 class TestGenerateStaticMap:
+    def test_repeated_output_name_keeps_previous_static_map_artifact(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _setup("static_map_repeat_a", {
+            "type": "FeatureCollection", "features": [
+                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
+                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [0.01, 0]}},
+            ],
+        })
+        first_result = generate_static_map.invoke({
+            "layer_ids": "static_map_repeat_a", "output_name": "repeat_map",
+            "show_north_arrow": False, "show_scale_bar": False, "dpi": 30,
+        })
+        output_dir = tmp_path / "cache" / "charts"
+        first_path = next(output_dir.glob("repeat_map*.png"))
+        first_bytes = first_path.read_bytes()
+
+        _setup("static_map_repeat_b", {
+            "type": "FeatureCollection", "features": [
+                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [100, 40]}},
+                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [100.01, 40]}},
+            ],
+        })
+        second_result = generate_static_map.invoke({
+            "layer_ids": "static_map_repeat_b", "output_name": "repeat_map",
+            "show_north_arrow": False, "show_scale_bar": False, "dpi": 30,
+        })
+
+        assert "静态地图已生成" in first_result and "静态地图已生成" in second_result
+        files = list(output_dir.glob("repeat_map*.png"))
+        assert len(files) == 2
+        assert first_path.read_bytes() == first_bytes
+
+    def test_explicit_layer_list_fails_when_any_id_is_missing(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _setup("static_map_selected", _POINTS)
+
+        result = generate_static_map.invoke({
+            "layer_ids": "static_map_selected,missing_layer",
+            "output_name": "partial_map",
+        })
+
+        assert "指定图层不存在" in result
+        assert not list((tmp_path / "cache" / "charts").glob("partial_map.png"))
+        assert T._pending_images == []
+
+    @pytest.mark.parametrize("dpi", [0, -1, 601, 10_000])
+    def test_static_map_rejects_invalid_or_extreme_dpi_before_save(self, tmp_path, monkeypatch, dpi):
+        import matplotlib.figure
+
+        monkeypatch.chdir(tmp_path)
+        _setup("static_map_dpi", _POINTS)
+        save_calls = []
+        monkeypatch.setattr(matplotlib.figure.Figure, "savefig", lambda *args, **kwargs: save_calls.append(kwargs.get("dpi")))
+
+        result = generate_static_map.invoke({"layer_ids": "static_map_dpi", "dpi": dpi})
+
+        assert "DPI 范围为 30 到 600" in result
+        assert save_calls == []
+
     def test_output_name_cannot_escape_chart_directory(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         _setup("static_map_path", _POINTS)
@@ -884,6 +1091,32 @@ class TestGenerateStaticMap:
         x_values, y_values = observed["line"]
         expected_km = abs(Geod(ellps="WGS84").inv(x_values[0], y_values[0], x_values[1], y_values[1])[2]) / 1000
         assert observed["label_km"] == round(expected_km)
+
+    def test_scale_bar_uses_meters_when_ground_distance_is_below_one_kilometer(self, tmp_path, monkeypatch):
+        import matplotlib.axes
+
+        monkeypatch.chdir(tmp_path)
+        _setup("static_map_small_scale", {
+            "type": "FeatureCollection", "features": [
+                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [120, 30]}},
+                {"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [120.001, 30]}},
+            ],
+        })
+        labels = []
+        original_text = matplotlib.axes.Axes.text
+
+        def capture_text(ax, x, y, text, *args, **kwargs):
+            if isinstance(text, str) and (text.endswith(" km") or text.endswith(" m")):
+                labels.append(text)
+            return original_text(ax, x, y, text, *args, **kwargs)
+
+        monkeypatch.setattr(matplotlib.axes.Axes, "text", capture_text)
+        result = generate_static_map.invoke({"layer_ids": "static_map_small_scale", "show_scale_bar": True})
+
+        assert "静态地图已生成" in result
+        assert len(labels) == 1
+        assert labels[0].endswith(" m")
+        assert float(labels[0].removesuffix(" m")) > 0
 
 
 # ============================================================

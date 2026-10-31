@@ -295,6 +295,18 @@ test('unique-value symbology preserves categories with equal text but different 
   ]);
 });
 
+test('unique-value symbology keeps booleans separate from numeric categories', () => {
+  const features = [true, 1, '1'].map((value, index) => ({
+    type: 'Feature', properties: { _fid: 'typed:' + index, kind: value },
+    geometry: { type: 'Polygon', coordinates: [] },
+  }));
+  const source = createLayers(features);
+  assert.equal(source.layers.applyUniqueValues('长沙区县', 'kind', 'scheme'), true);
+  const items = source.layers.getSymbologyState('population-layer').legendData.items;
+  assert.deepEqual(items.map(item => item.label), ['true', '1 (number)', '1 (string)']);
+  assert.equal(new Set(items.map(item => item.color)).size, 3);
+});
+
 test('duplicate feature IDs fall back to saved feature order for thematic style restoration', () => {
   const data = [feature('duplicate', 12), feature('duplicate', 28)];
   const source = createLayers(data);

@@ -1805,7 +1805,7 @@ function scrollMessages() {
               break;
             case 'labels':
               if (window.GIS.layers) {
-                window.GIS.layers.addLabels(op.name, op.field);
+                window.GIS.layers.addLabels(op.name, op.field, op.font_size, op.color);
               }
               break;
             case 'legend':
@@ -2730,7 +2730,7 @@ function scrollMessages() {
           if (GIS.map.showNorthArrow) GIS.map.showNorthArrow();
           break;
         case 'labels':
-          if (GIS.layers && GIS.layers.addLabels) GIS.layers.addLabels(op.name, op.field);
+          if (GIS.layers && GIS.layers.addLabels) GIS.layers.addLabels(op.name, op.field, op.font_size, op.color);
           break;
         case 'legend':
           if (GIS.layers && GIS.layers.addLegend) GIS.layers.addLegend(op.name);

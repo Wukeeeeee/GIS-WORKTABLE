@@ -6,11 +6,12 @@ const vm = require('node:vm');
 
 function loadInspector(provenance = null, customGeojson = null) {
   const listeners = {};
+  let attributeTable = null;
   const panel = { style: {} };
   const body = { innerHTML: '', querySelector() { return null; }, querySelectorAll() { return []; } };
   const title = { textContent: '' };
   const document = {
-    getElementById(id) { return id === 'layerInspector' ? panel : id === 'inspectorBody' ? body : id === 'inspectorTitle' ? title : null; },
+    getElementById(id) { return id === 'layerInspector' ? panel : id === 'inspectorBody' ? body : id === 'inspectorTitle' ? title : id === 'attrDataTable' ? attributeTable : null; },
     addEventListener(event, callback) { (listeners[event] ||= []).push(callback); },
     dispatchEvent(event) { (listeners[event.type] || []).forEach(callback => callback(event)); },
     querySelectorAll() { return []; },
@@ -43,8 +44,59 @@ function loadInspector(provenance = null, customGeojson = null) {
     provenance,
     geojson: customGeojson || { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [100, 30] } }] },
   }, true);
-  return { layers: window.GIS.layers, body, setLanguage: language => window.GIS.i18n.setLanguage(language) };
+  return { layers: window.GIS.layers, body, setLanguage: language => window.GIS.i18n.setLanguage(language), setAttributeTable(table) { attributeTable = table; } };
 }
+
+test('saving an attribute does not round unchanged point coordinates', async () => {
+  const geojson = { type: 'FeatureCollection', features: [
+    { type: 'Feature', geometry: { type: 'Point', coordinates: [120.123456789, 30.987654321] }, properties: { name: 'before' } },
+  ] };
+  const h = loadInspector(null, geojson);
+  const row = {
+    dataset: { idx: '0', fid: '' },
+    querySelectorAll() { return [
+      { dataset: { field: '_经度' }, value: '120.123457', readOnly: false },
+      { dataset: { field: '_纬度' }, value: '30.987654', readOnly: false },
+      { dataset: { field: 'name' }, value: 'after', readOnly: false },
+    ]; },
+  };
+  h.setAttributeTable({
+    querySelector() { return null; },
+    querySelectorAll(selector) { return selector === 'tbody tr' ? [row] : []; },
+  });
+
+  h.layers.saveAttrChanges('vector-one', ['_经度', '_纬度', 'name']);
+  await new Promise(resolve => setImmediate(resolve));
+
+  const saved = h.layers.getLayers()[0].geojson.features[0];
+  assert.equal(saved.properties.name, 'after');
+  assert.deepEqual(Array.from(saved.geometry.coordinates), [120.123456789, 30.987654321]);
+});
+
+test('editing one point coordinate preserves the other coordinate precision', async () => {
+  const geojson = { type: 'FeatureCollection', features: [
+    { type: 'Feature', geometry: { type: 'Point', coordinates: [-74.123456789, 40.987654321] }, properties: { name: 'point' } },
+  ] };
+  const h = loadInspector(null, geojson);
+  const row = {
+    dataset: { idx: '0', fid: '' },
+    querySelectorAll() { return [
+      { dataset: { field: '_经度' }, value: '-73.5', readOnly: false },
+      { dataset: { field: '_纬度' }, value: '40.987654', readOnly: false },
+      { dataset: { field: 'name' }, value: 'point', readOnly: false },
+    ]; },
+  };
+  h.setAttributeTable({
+    querySelector() { return null; },
+    querySelectorAll(selector) { return selector === 'tbody tr' ? [row] : []; },
+  });
+
+  h.layers.saveAttrChanges('vector-one', ['_经度', '_纬度', 'name']);
+  await new Promise(resolve => setImmediate(resolve));
+
+  const saved = h.layers.getLayers()[0].geojson.features[0];
+  assert.deepEqual(Array.from(saved.geometry.coordinates), [-73.5, 40.987654321]);
+});
 
 test('vector inspector shows the coordinate unit returned for the layer CRS in both UI languages', async () => {
   const h = loadInspector();

@@ -149,6 +149,32 @@ def test_add_length_field_lines():
     assert 0.7 < out["length_km"] < 1.0
 
 
+def test_add_length_field_different_field_names_preserve_previous_results():
+    reg = _registry()
+    line_fc = {"type": "FeatureCollection", "features": [{
+        "type": "Feature",
+        "geometry": {"type": "LineString", "coordinates": [[116.0, 39.5], [116.01, 39.5]]},
+        "properties": {"name": "路段"},
+    }]}
+    _reg("line_length_repeat", line_fc)
+
+    first = reg["add_length_field"].invoke({
+        "layer_name": "line_length_repeat", "field_name": "length_a",
+    })
+    first_name = "line_length_repeat_带长度"
+    first_props = T._registered_layers[first_name]["geojson"]["features"][0]["properties"]
+
+    second = reg["add_length_field"].invoke({
+        "layer_name": "line_length_repeat", "field_name": "length_b",
+    })
+    second_name = "line_length_repeat_带长度_1"
+    second_props = T._registered_layers[second_name]["geojson"]["features"][0]["properties"]
+
+    assert "length_a" in first and "length_b" in second
+    assert "length_a" in first_props and "length_b" not in first_props
+    assert "length_b" in second_props
+
+
 def test_add_length_field_missing_layer():
     r = _registry()["add_length_field"].invoke({"layer_name": "无此层"})
     assert "未找到" in r
@@ -174,6 +200,35 @@ def test_spatial_explode():
     feats = T._registered_layers["多部件_分解"]["geojson"]["features"]
     assert len(feats) == 2
     assert all(f["geometry"]["type"] == "Polygon" for f in feats)
+
+
+def test_spatial_explode_after_source_change_preserves_previous_result():
+    reg = _registry()
+
+    def multi_polygon(count):
+        polygons = []
+        for index in range(count):
+            x = float(index * 2)
+            polygons.append([[[x, 0], [x + 1, 0], [x + 1, 1], [x, 1], [x, 0]]])
+        return {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"name": "parts"},
+            "geometry": {"type": "MultiPolygon", "coordinates": polygons},
+        }]}
+
+    _reg("explode_repeat", multi_polygon(2))
+    first = reg["spatial_explode"].invoke({"layer_name": "explode_repeat"})
+    first_name = "explode_repeat_分解"
+    first_out, _ = T._layer_to_gdf(first_name)
+
+    _register_layer("explode_repeat", multi_polygon(3))
+    second = reg["spatial_explode"].invoke({"layer_name": "explode_repeat"})
+    second_name = "explode_repeat_分解_1"
+    second_out, _ = T._layer_to_gdf(second_name)
+
+    assert "已分解" in first and "已分解" in second
+    assert len(first_out) == 2
+    assert len(second_out) == 3
+    assert len(T._registered_layers[first_name]["geojson"]["features"]) == 2
 
 
 # ============================================================

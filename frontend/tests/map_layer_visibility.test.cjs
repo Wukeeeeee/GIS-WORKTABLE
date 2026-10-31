@@ -9,6 +9,7 @@ function createHarness() {
   const activeLayers = new Set();
   const fitBoundsCalls = [];
   const attributionValues = [];
+  const timers = [];
   let zoom = 8;
   const mapInstance = {
     getZoom() { return zoom; },
@@ -51,7 +52,10 @@ function createHarness() {
     return makeOverlay(url, options);
   };
   const window = { GIS: {} };
-  const document = { getElementById() { return null; }, addEventListener() {} };
+  const document = {
+    getElementById() { return null; }, addEventListener() {},
+    createElement() { return { style: {}, textContent: '' }; },
+  };
   const source = fs.readFileSync(path.resolve(__dirname, '../js/map.js'), 'utf8')
     .replace('GIS.map = {', [
       'GIS.__setMapInstanceForTest = function(value) { mapInstance = value; };',
@@ -59,12 +63,15 @@ function createHarness() {
       'GIS.map = {',
     ].join('\n'));
   const context = vm.createContext({ window, document, console, Promise, Date, Math, Number, String,
-    Object, Array, JSON, Set, Map, URL, Blob, L, XMLSerializer: class {}, Image: class {} });
+    Object, Array, JSON, Set, Map, URL, Blob, L, XMLSerializer: class {}, Image: class {},
+    setInterval(callback, delay) { const timer = { callback, delay }; timers.push(timer); return timer; },
+    clearInterval(timer) { if (timer) timer.cleared = true; },
+  });
   vm.runInContext(source, context, { filename: 'map.js' });
   window.GIS.__setMapInstanceForTest(mapInstance);
   const layer = {};
   window.GIS.__setTestLayer('demo', layer);
-  return { map: window.GIS.map, mapInstance, layer, fitBoundsCalls, activeLayers, renderedFeatures,
+  return { map: window.GIS.map, mapInstance, layer, fitBoundsCalls, activeLayers, renderedFeatures, timers,
     attributionValues,
     setMapInstance: window.GIS.__setMapInstanceForTest, setZoom(value) { zoom = value; } };
 }
@@ -171,7 +178,7 @@ test('rendering a layer does not add renderer-only fields to the source GeoJSON'
 
   assert.equal(geojson.features.some(feature => Object.hasOwn(feature, '_featureIndex')), false);
   assert.equal(map.setLabels('source-geojson', 'label'), true);
-  assert.deepEqual(renderedFeatures.map(feature => feature.tooltip.text), ['first', 'second']);
+  assert.deepEqual(renderedFeatures.map(feature => feature.tooltip.text.textContent), ['first', 'second']);
 });
 
 test('raster overlays replace a restored overlay by stable layer id after rerun', () => {
@@ -291,10 +298,10 @@ test('setLabels reports visible labels, preserves the previous config on an inva
   ] }, 'labeled-layer');
 
   assert.equal(map.setLabels('labeled-layer', 'label'), true);
-  assert.equal(renderedFeatures[0].tooltip.text, '0');
+  assert.equal(renderedFeatures[0].tooltip.text.textContent, '0');
   assert.equal(renderedFeatures[1].tooltip, null);
   assert.equal(map.setLabels('labeled-layer', 'missing'), false);
-  assert.equal(renderedFeatures[0].tooltip.text, '0', 'a failed field change must leave the prior label visible');
+  assert.equal(renderedFeatures[0].tooltip.text.textContent, '0', 'a failed field change must leave the prior label visible');
   assert.equal(map.setLabels('missing-layer', 'label'), false);
 });
 
@@ -308,7 +315,80 @@ test('feature labels and chart-link tooltips render untrusted properties as text
   ] }, 'untrusted-tooltip-layer');
 
   assert.equal(map.setLabels('untrusted-tooltip-layer', 'label'), true);
-  assert.equal(renderedFeatures[0].tooltip.text, '&lt;img src=x onerror=alert(1)&gt;');
+  assert.equal(renderedFeatures[0].tooltip.text.textContent, '<img src=x onerror=alert(1)>');
+  assert.equal(renderedFeatures[0].tooltip.text.innerHTML, undefined, 'untrusted text is never inserted as HTML');
   map.enableChartLink('untrusted-tooltip-layer', 'chart');
   assert.equal(renderedFeatures[0].tooltip.text, '&lt;svg onload=alert(2)&gt;');
+});
+
+test('feature labels apply requested font size and color', () => {
+  const { map, renderedFeatures } = createHarness();
+  map.loadGeoJSON({ type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { label: 'Central' }, geometry: { type: 'Point', coordinates: [0, 0] } },
+  ] }, 'styled-label-layer');
+
+  assert.equal(map.setLabels('styled-label-layer', 'label', 18, '#aabbcc'), true);
+  assert.equal(renderedFeatures[0].tooltip.text.textContent, 'Central');
+  assert.equal(renderedFeatures[0].tooltip.text.style.fontSize, '18px');
+  assert.equal(renderedFeatures[0].tooltip.text.style.color, '#aabbcc');
+  assert.equal(map.setLabels('styled-label-layer', 'label', 80, '#ff0000'), false);
+  assert.equal(renderedFeatures[0].tooltip.text.style.fontSize, '18px', 'invalid size keeps the applied style');
+  assert.equal(renderedFeatures[0].tooltip.text.style.color, '#aabbcc', 'invalid size keeps the applied color');
+});
+
+test('time animation displays the first frame immediately, then advances in order', () => {
+  const { map, activeLayers, renderedFeatures, timers } = createHarness();
+  map.loadGeoJSON({ type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { time: '2020' }, geometry: { type: 'Point', coordinates: [0, 0] } },
+    { type: 'Feature', properties: { time: '2021' }, geometry: { type: 'Point', coordinates: [1, 1] } },
+  ] }, 'time-layer');
+  const targetLayer = renderedFeatures[0];
+  targetLayer._name = 'time-layer';
+  targetLayer.eachLayer = callback => renderedFeatures.forEach(callback);
+  renderedFeatures.forEach(feature => activeLayers.add(feature));
+
+  map.startTimeAnimation('time-layer', 'time', ['2020', '2021'], 400);
+
+  assert.equal(activeLayers.has(renderedFeatures[0]), true);
+  assert.equal(activeLayers.has(renderedFeatures[1]), false);
+  assert.equal(timers[0].delay, 400);
+  timers[0].callback();
+  assert.equal(activeLayers.has(renderedFeatures[0]), false);
+  assert.equal(activeLayers.has(renderedFeatures[1]), true);
+});
+
+test('time animation matches a numeric zero value', () => {
+  const { map, activeLayers, renderedFeatures } = createHarness();
+  map.loadGeoJSON({ type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { time: 0 }, geometry: { type: 'Point', coordinates: [0, 0] } },
+    { type: 'Feature', properties: { time: 1 }, geometry: { type: 'Point', coordinates: [1, 1] } },
+  ] }, 'zero-time-layer');
+  const targetLayer = renderedFeatures[0];
+  targetLayer._name = 'zero-time-layer';
+  targetLayer.eachLayer = callback => renderedFeatures.forEach(callback);
+  renderedFeatures.forEach(feature => activeLayers.add(feature));
+
+  map.startTimeAnimation('zero-time-layer', 'time', ['0', '1'], 400);
+
+  assert.equal(activeLayers.has(renderedFeatures[0]), true, 'numeric zero is a valid first-frame value');
+  assert.equal(activeLayers.has(renderedFeatures[1]), false);
+});
+
+test('time animation does not treat null as an empty-string frame', () => {
+  const { map, activeLayers, renderedFeatures } = createHarness();
+  map.loadGeoJSON({ type: 'FeatureCollection', features: [
+    { type: 'Feature', properties: { time: '' }, geometry: { type: 'Point', coordinates: [0, 0] } },
+    { type: 'Feature', properties: { time: '2021' }, geometry: { type: 'Point', coordinates: [1, 1] } },
+    { type: 'Feature', properties: { time: null }, geometry: { type: 'Point', coordinates: [2, 2] } },
+  ] }, 'empty-time-layer');
+  const targetLayer = renderedFeatures[0];
+  targetLayer._name = 'empty-time-layer';
+  targetLayer.eachLayer = callback => renderedFeatures.forEach(callback);
+  renderedFeatures.forEach(feature => activeLayers.add(feature));
+
+  map.startTimeAnimation('empty-time-layer', 'time', ['', '2021'], 400);
+
+  assert.equal(activeLayers.has(renderedFeatures[0]), true);
+  assert.equal(activeLayers.has(renderedFeatures[1]), false);
+  assert.equal(activeLayers.has(renderedFeatures[2]), false, 'null is not a valid empty-string timestamp');
 });

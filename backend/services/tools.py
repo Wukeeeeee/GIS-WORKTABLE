@@ -2647,12 +2647,15 @@ def visualize_3d(layer_name: str, field: str, max_height: float = 50000, viz_typ
 
 @tool
 def create_heatmap(layer_name: str, weight_field: str = "", radius: int = 20, gradient: str = "") -> str:
-    """从点图层生成热力图。需先有点图层（含权重字段）。参数：weight_field（权重字段）、radius（像素半径，默认20）、gradient（渐变色如"0.4=blue,1.0=red"）。"""
+    """从点图层生成热力图。需先有点图层（含权重字段）。参数：weight_field（权重字段）、radius（1–100像素，默认20）、gradient（渐变色如"0.4=blue,1.0=red"）。"""
     info = _registered_layers.get(layer_name)
     if not info:
         return f"图层 {layer_name} 未找到"
+    if isinstance(radius, bool) or not isinstance(radius, int) or not 1 <= radius <= 100:
+        return "热力图半径范围为 1 到 100 像素"
     try:
         import geopandas as gpd
+        import pandas as pd
         gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
         if gdf.empty:
             return f"图层 {layer_name} 为空"
@@ -2663,32 +2666,61 @@ def create_heatmap(layer_name: str, weight_field: str = "", radius: int = 20, gr
             available_fields = [str(column) for column in pg.columns if column != "geometry"][:12]
             return f"权重字段「{weight_field}」不存在，可用字段：{available_fields or '无'}"
         pts = []
+        skipped_weights = 0
         for _, r in pg.iterrows():
             g = r.geometry
-            v = float(r[weight_field]) if weight_field and weight_field in r else 1.0
+            v = 1.0
+            if weight_field:
+                raw_weight = r[weight_field]
+                try:
+                    missing_weight = bool(pd.isna(raw_weight))
+                except (TypeError, ValueError):
+                    missing_weight = False
+                if missing_weight:
+                    skipped_weights += 1
+                    continue
+                try:
+                    v = float(raw_weight)
+                except (TypeError, ValueError, OverflowError):
+                    return f"权重字段「{weight_field}」包含非数值内容，无法生成热力图"
+                if not math.isfinite(v):
+                    skipped_weights += 1
+                    continue
             if g.geom_type == "MultiPoint":
                 for p in g.geoms:
                     pts.append([p.y, p.x, v])
             else:
                 pts.append([g.y, g.x, v])
 
+        if not pts:
+            return f"权重字段「{weight_field}」没有有限数值，无法生成热力图" if weight_field else "没有可用于生成热力图的点"
+
         grad = None
         if gradient:
+            from matplotlib.colors import is_color_like
+
+            grad = {}
             try:
-                parts = [p.strip() for p in gradient.split(",") if p.strip() and "=" in p]
-                if parts:
-                    grad = {}
-                    for p in parts:
-                        k, v2 = p.split("=", 1)
-                        grad[float(k.strip())] = v2.strip()
-            except Exception:
-                pass
+                parts = gradient.split(",")
+                for part in parts:
+                    if "=" not in part:
+                        return "热力图渐变格式无效，请使用 0.4=blue,1.0=red 格式"
+                    key, color = part.split("=", 1)
+                    stop = float(key.strip())
+                    color = color.strip()
+                    if (not math.isfinite(stop) or not 0 <= stop <= 1 or
+                            not color or stop in grad or not is_color_like(color)):
+                        return "热力图渐变参数无效：阈值须在 0 到 1 之间，颜色须为有效颜色"
+                    grad[stop] = color
+            except (TypeError, ValueError, OverflowError):
+                return "热力图渐变格式无效，请使用 0.4=blue,1.0=red 格式"
 
         opts = {"radius": radius, "blur": max(10, radius - 5)}
         if grad:
             opts["gradient"] = grad
         _pending_heatmap["latest"] = {"points": pts, "name": f"{layer_name}_heat", "options": opts}
-        return f"热力图已生成：{len(pts)} 个点"
+        skipped_note = f"，跳过 {skipped_weights} 个空或非有限权重" if skipped_weights else ""
+        return f"热力图已生成：{len(pts)} 个点{skipped_note}"
     except Exception as e:
         return f"热力图生成失败: {str(e)}"
 
@@ -2931,6 +2963,15 @@ def field_calculate(layer_name: str, expression: str, new_field: str, field_type
             except Exception as e2:
                 return f"表达式计算失败：{str(e2)[:200]}"
 
+        gdf[new_field] = pd.Series(
+            [
+                None if isinstance(value, (float, np.floating)) and not np.isfinite(value) else value
+                for value in gdf[new_field].tolist()
+            ],
+            index=gdf.index,
+            dtype=object,
+        )
+
         if field_type in ("int", "float"):
             def convert_field_value(value):
                 if value is None or pd.isna(value):
@@ -3162,7 +3203,7 @@ def _json_script_value(value) -> str:
             .replace("\u2029", r"\u2029"))
 
 
-def _geojson_to_export_gdf(geojson: dict):
+def _geojson_to_export_gdf(geojson: dict, serialize_nested: bool = False):
     """Build a WGS-84 GeoDataFrame without pandas coercing mixed property values."""
     import geopandas as gpd
     import pandas as pd
@@ -3178,8 +3219,15 @@ def _geojson_to_export_gdf(geojson: dict):
         if key != "geometry"
     ))
     for key in property_keys:
+        values = [properties.get(key) for properties in property_rows]
+        if serialize_nested:
+            values = [
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(value, (dict, list)) else value
+                for value in values
+            ]
         gdf[key] = pd.Series(
-            [properties.get(key) for properties in property_rows],
+            values,
             index=gdf.index,
             dtype=object,
         )
@@ -3248,7 +3296,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             import tempfile, zipfile, shutil
             import datetime
 
-            gdf = _geojson_to_export_gdf(geojson)
+            gdf = _geojson_to_export_gdf(geojson, serialize_nested=True)
             if gdf.empty:
                 return "图层为空，无法导出"
 
@@ -3317,7 +3365,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             import geopandas as gpd
             import datetime
 
-            gdf = _geojson_to_export_gdf(geojson)
+            gdf = _geojson_to_export_gdf(geojson, serialize_nested=True)
             if gdf.empty:
                 return "图层为空，无法导出"
 
@@ -3357,8 +3405,9 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             import geopandas as gpd
             import pandas as pd
             import datetime
+            from backend.services.csv_utils import write_formula_safe_csv
 
-            gdf = _geojson_to_export_gdf(geojson)
+            gdf = _geojson_to_export_gdf(geojson, serialize_nested=True)
             if gdf.empty:
                 return "图层为空，无法导出"
 
@@ -3368,7 +3417,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             init_temp_dir()
             path = os.path.join(_temp_output_dir, fname)
             attr_df = gdf.drop(columns=["geometry"], errors="ignore")
-            attr_df.to_csv(path, index=False, encoding="utf-8-sig")
+            write_formula_safe_csv(attr_df, path)
 
             # === 导出真实性验证 ===
             _verr = []
@@ -3399,8 +3448,9 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             import geopandas as gpd
             import pandas as pd
             import datetime
+            from backend.services.csv_utils import write_formula_safe_csv
 
-            gdf = _geojson_to_export_gdf(geojson)
+            gdf = _geojson_to_export_gdf(geojson, serialize_nested=True)
             if gdf.empty:
                 return "图层为空，无法导出"
             if not gdf.geometry.geom_type.eq("Point").all():
@@ -3428,7 +3478,7 @@ def export_layer(layer_name: str, format: str = "geojson") -> str:
             gdf[longitude_field] = gdf.geometry.x
             gdf[latitude_field] = gdf.geometry.y
             attr_df = gdf.drop(columns=["geometry"], errors="ignore")
-            attr_df.to_csv(path, index=False, encoding="utf-8-sig")
+            write_formula_safe_csv(attr_df, path)
 
             # === 导出真实性验证 ===
             _verr = []
@@ -4411,7 +4461,7 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
         if error:
             return error
 
-        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        gdf = _geojson_to_export_gdf(info["geojson"])
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
@@ -4495,7 +4545,7 @@ def rotate_features(layer_name: str, angle: float = 90) -> str:
         if error:
             return error
 
-        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        gdf = _geojson_to_export_gdf(info["geojson"])
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
@@ -4550,7 +4600,7 @@ def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) ->
         if error:
             return error
 
-        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        gdf = _geojson_to_export_gdf(info["geojson"])
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
@@ -4964,12 +5014,11 @@ def spatial_select(target_layer: str, source_layer: str, predicate: str = "inter
         if gdf_t is None: return name_t
         gdf_s, name_s = _layer_to_gdf(source_layer)
         if gdf_s is None: return name_s
-        result = gpd.sjoin(gdf_t, gdf_s, how="inner", predicate=predicate)
-        result = result.drop(columns=[c for c in result.columns if c.endswith("_right") or c == "index_right"], errors="ignore")
-        # Keep one row per target feature. ``drop_duplicates`` hashes every
-        # property and fails for valid nested JSON attributes (dict/list); the
-        # spatial join preserves the left index for each duplicate match.
-        result = result.loc[~result.index.duplicated(keep="first")]
+        joined = gpd.sjoin(gdf_t, gdf_s, how="inner", predicate=predicate)
+        # This is a selection, so return original target rows only. Filtering
+        # the left index preserves all target attributes (including names that
+        # happen to end in ``_right``) and avoids leaking source-only fields.
+        result = gdf_t.loc[gdf_t.index.isin(joined.index)].copy()
         if result.empty:
             return f"没有要素满足「{predicate}」关系"
         base_result_name = f"{name_t}_选择"
@@ -5561,8 +5610,19 @@ def layer_add_geometry(layer_name: str, lon_field: str = "", lat_field: str = ""
 @tool
 def add_labels(layer_name: str, field: str, font_size: int = 12, color: str = "#333333") -> str:
     """对图层添加属性标注，每个要素上显示指定字段的文本标签，类似于 ArcGIS 的"标注要素"功能。
-    layer_name: 图层名；field: 用于标注的字段名；font_size: 字体大小（默认12）；color: 字体颜色（如"#333333"）。"""
+    layer_name: 图层名；field: 用于标注的字段名；font_size: 字体大小（6-72，默认12）；color: CSS 字体颜色（默认"#333333"）。"""
     try:
+        import math
+        try:
+            requested_size = float(font_size)
+        except (TypeError, ValueError, OverflowError):
+            return "标注失败：font_size 必须是 6 到 72 之间的整数"
+        if not math.isfinite(requested_size) or not requested_size.is_integer() or not 6 <= requested_size <= 72:
+            return "标注失败：font_size 必须是 6 到 72 之间的整数"
+        font_size = int(requested_size)
+        if not isinstance(color, str) or not color.strip() or len(color) > 64:
+            return "标注失败：color 必须是非空 CSS 颜色值"
+        color = color.strip()
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
@@ -5696,6 +5756,7 @@ def spatial_unique_values(layer_name: str, field: str, color_scheme: str = "sche
     layer_name: 图层名；field: 分类字段（字符串或数值）；
     color_scheme: 色带 scheme(默认)/blues(蓝)/reds(红)/greens(绿)/purples(紫)/oranges(橙)。"""
     try:
+        import numpy as np
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
@@ -5703,7 +5764,18 @@ def spatial_unique_values(layer_name: str, field: str, color_scheme: str = "sche
         if field not in gdf.columns:
             return f"图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
 
-        unique_vals = gdf[field].dropna().unique()
+        unique_vals = []
+        seen_values = set()
+        for value in gdf[field].dropna().tolist():
+            if isinstance(value, (bool, np.bool_)):
+                key = ("boolean", bool(value))
+            elif isinstance(value, (int, float, np.number)):
+                key = ("number", value.item() if isinstance(value, np.generic) else value)
+            else:
+                key = (type(value).__name__, value)
+            if key not in seen_values:
+                seen_values.add(key)
+                unique_vals.append(value)
         n_unique = len(unique_vals)
         if n_unique == 0:
             return f"字段「{field}」无有效值"
@@ -5722,8 +5794,23 @@ def spatial_unique_values(layer_name: str, field: str, color_scheme: str = "sche
             "scheme": color_scheme,
         })
 
-        val_list = list(unique_vals[:20])
-        vals_str = ", ".join(str(v) for v in val_list)
+        display_values = []
+        display_counts = {}
+        for value in unique_vals:
+            if isinstance(value, (bool, np.bool_)):
+                label, value_type = str(value).lower(), "boolean"
+            elif isinstance(value, (int, float, np.number)):
+                number = value.item() if isinstance(value, np.generic) else value
+                label = str(int(number)) if isinstance(number, float) and number.is_integer() else str(number)
+                value_type = "number"
+            else:
+                label, value_type = str(value), "string"
+            display_values.append((label, value_type))
+            display_counts[label] = display_counts.get(label, 0) + 1
+        vals_str = ", ".join(
+            f"{label} ({value_type})" if display_counts[label] > 1 else label
+            for label, value_type in display_values[:20]
+        )
         if n_unique > 20:
             vals_str += f" ... 等共 {n_unique} 个值"
         return (f"已对「{name}」应用唯一值渲染，字段：{field}，{n_unique} 个类别，"
@@ -5771,10 +5858,11 @@ def update_attribute(layer_name: str, field: str, value: str, condition_field: s
         if error:
             return error
 
+        import copy
         import geopandas as gpd
-        import json
 
-        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        features = info["geojson"]["features"]
+        gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
@@ -5783,8 +5871,24 @@ def update_attribute(layer_name: str, field: str, value: str, condition_field: s
         if field == "_fid":
             return "_fid 是要素稳定标识，不能修改"
 
-        # 类型转换
-        dtype_kind = gdf[field].dtype.kind
+        def property_kind(values, fallback):
+            present = [item for item in values if item is not None]
+            if not present:
+                return fallback
+            if all(isinstance(item, bool) for item in present):
+                return "b"
+            if all(isinstance(item, int) and not isinstance(item, bool) for item in present):
+                return "i"
+            if all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in present):
+                return "f"
+            return "O"
+
+        raw_field_values = [
+            (feature.get("properties") or {}).get(field) for feature in features
+        ]
+        # Convert against source values so mixed nulls do not make large integer
+        # properties appear to be floating point.
+        dtype_kind = property_kind(raw_field_values, gdf[field].dtype.kind)
         try:
             if dtype_kind in ('i', 'u'):
                 typed_value = int(value)
@@ -5799,12 +5903,17 @@ def update_attribute(layer_name: str, field: str, value: str, condition_field: s
                 typed_value = str(value)
         except ValueError:
             return f"字段「{field}」类型为 {gdf[field].dtype}，但值「{value}」无法转换"
+        if dtype_kind == "f" and not math.isfinite(typed_value):
+            return f"字段「{field}」只接受有限浮点数"
 
         # 筛选要更新的行
         if condition_field:
             if condition_field not in gdf.columns:
                 return f"条件字段「{condition_field}」不存在"
-            cond_kind = gdf[condition_field].dtype.kind
+            raw_condition_values = [
+                (feature.get("properties") or {}).get(condition_field) for feature in features
+            ]
+            cond_kind = property_kind(raw_condition_values, gdf[condition_field].dtype.kind)
             try:
                 if cond_kind in ('i', 'u', 'f'):
                     cond_value = _parse_numeric_condition(condition_value, cond_kind)
@@ -5816,17 +5925,30 @@ def update_attribute(layer_name: str, field: str, value: str, condition_field: s
             except ValueError:
                 cond_value = str(condition_value)
 
-            matches_mask = gdf[condition_field] == cond_value
-            match_count = matches_mask.sum()
+            matches_mask = [item == cond_value for item in raw_condition_values]
+            match_count = sum(matches_mask)
             if match_count == 0:
                 return f"没有要素满足条件（{condition_field} = {condition_value}）"
-            gdf.loc[matches_mask, field] = typed_value
+            target_indices = [index for index, matched in enumerate(matches_mask) if matched]
+            affected_geojson = copy.deepcopy(info["geojson"])
+            for index in target_indices:
+                properties = affected_geojson["features"][index].get("properties")
+                if not isinstance(properties, dict):
+                    properties = {}
+                    affected_geojson["features"][index]["properties"] = properties
+                properties[field] = typed_value
             affected = match_count
         else:
-            gdf[field] = typed_value
+            affected_geojson = copy.deepcopy(info["geojson"])
+            for feature in affected_geojson["features"]:
+                properties = feature.get("properties")
+                if not isinstance(properties, dict):
+                    properties = {}
+                    feature["properties"] = properties
+                properties[field] = typed_value
             affected = len(gdf)
 
-        geojson_data = gdf.__geo_interface__
+        geojson_data = affected_geojson
         geojson_data["name"] = layer_name
         _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
@@ -5855,17 +5977,36 @@ def delete_features(layer_name: str, condition_field: str = "", condition_value:
         if not condition_field:
             return "请指定删除条件（condition_field 和 condition_value），例如删除 name=xx 的所有要素"
 
+        import copy
         import geopandas as gpd
-        import json
 
-        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        features = info["geojson"]["features"]
+        gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
         if condition_field not in gdf.columns:
             return f"条件字段「{condition_field}」不存在，可用字段：{', '.join([c for c in gdf.columns if c != 'geometry'])}"
 
-        cond_kind = gdf[condition_field].dtype.kind
+        raw_values = [
+            (feature.get("properties") or {}).get(condition_field)
+            for feature in features
+        ]
+        non_null_values = [value for value in raw_values if value is not None]
+        if non_null_values and all(isinstance(value, bool) for value in non_null_values):
+            cond_kind = "b"
+        elif non_null_values and all(
+            isinstance(value, int) and not isinstance(value, bool)
+            for value in non_null_values
+        ):
+            cond_kind = "i"
+        elif non_null_values and all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            for value in non_null_values
+        ):
+            cond_kind = "f"
+        else:
+            cond_kind = "O"
         try:
             if cond_kind in ('i', 'u', 'f'):
                 cond_val = _parse_numeric_condition(condition_value, cond_kind)
@@ -5877,22 +6018,23 @@ def delete_features(layer_name: str, condition_field: str = "", condition_value:
         except ValueError:
             cond_val = str(condition_value)
 
-        mask = gdf[condition_field] == cond_val
-        to_delete = mask.sum()
+        mask = [value == cond_val for value in raw_values]
+        to_delete = sum(mask)
         if to_delete == 0:
             return f"没有要素满足条件（{condition_field} = {condition_value}）"
 
-        remaining = gdf[~mask]
-        if remaining.empty:
+        remaining_indices = [index for index, matched in enumerate(mask) if not matched]
+        if not remaining_indices:
             return f"条件（{condition_field} = {condition_value}）将删除全部 {to_delete} 个要素，操作已取消"
 
-        geojson_data = remaining.__geo_interface__
+        geojson_data = copy.deepcopy(info["geojson"])
+        geojson_data["features"] = [copy.deepcopy(features[index]) for index in remaining_indices]
         geojson_data["name"] = layer_name
         _update_registered_layer_data(layer_name, geojson_data)
         _push_layer(layer_name, geojson_data)
 
         return (f"已从图层「{layer_name}」删除 {to_delete}/{len(gdf)} 个要素"
-                f"（条件：{condition_field} = {condition_value}），剩余 {len(remaining)} 个，已同步地图")
+                f"（条件：{condition_field} = {condition_value}），剩余 {len(remaining_indices)} 个，已同步地图")
     except Exception as e:
         return f"删除要素失败: {str(e)[:300]}"
 
@@ -5906,15 +6048,13 @@ def add_field(layer_name: str, field_name: str, field_type: str = "str", default
     """为图层添加新字段。field_type 可选 str(文本) / int(整数) / float(小数)。
     default_value 可指定默认填充值。添加后地图自动同步。"""
     try:
-        import geopandas as gpd
         import pandas as pd
-        import json
 
         layer_name, info, error = _get_exact_registered_layer(layer_name)
         if error:
             return error
 
-        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        gdf = _geojson_to_export_gdf(info["geojson"])
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
@@ -5942,6 +6082,8 @@ def add_field(layer_name: str, field_name: str, field_type: str = "str", default
                 parsed_default = int(default_value) if field_type == "int" else float(default_value) if field_type == "float" else str(default_value)
             except (TypeError, ValueError):
                 return f"默认值「{default_value}」无法转换为字段类型 {field_type}"
+            if field_type == "float" and not math.isfinite(parsed_default):
+                return "浮点字段默认值必须是有限数值"
         if field_type == "int":
             gdf[field_name] = parsed_default if parsed_default is not None else pd.Series([None] * len(gdf), dtype="object")
         elif field_type == "float":
@@ -5966,14 +6108,11 @@ def add_field(layer_name: str, field_name: str, field_type: str = "str", default
 def delete_field(layer_name: str, field_name: str) -> str:
     """删除图层的指定字段。字段删除后数据不可恢复。layer_name: 图层名；field_name: 要删除的字段名。"""
     try:
-        import geopandas as gpd
-        import json
-
         layer_name, info, error = _get_exact_registered_layer(layer_name)
         if error:
             return error
 
-        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        gdf = _geojson_to_export_gdf(info["geojson"])
         if gdf.empty:
             return f"图层「{layer_name}」为空"
 
@@ -6051,6 +6190,10 @@ def spatial_select_by_attribute(layer_name: str, field: str, operator: str, valu
                 return f"between 值必须为数字，当前：{value}"
             if not is_numeric:
                 return f"字段「{field}」不是数值类型，不支持 between"
+            if any(isinstance(bound, float) and not math.isfinite(bound) for bound in (vmin, vmax)):
+                return "between 值必须是有限数字"
+            if vmin > vmax:
+                return "between 下限不能大于上限"
             mask = (field_data >= vmin) & (field_data <= vmax)
         else:
             if is_numeric:
@@ -6058,6 +6201,8 @@ def spatial_select_by_attribute(layer_name: str, field: str, operator: str, valu
                     v = _parse_numeric_condition(value, field_data.dtype.kind)
                 except ValueError:
                     return f"字段「{field}」为数值类型，但条件值「{value}」无法转为数字"
+                if isinstance(v, float) and not math.isfinite(v):
+                    return f"字段「{field}」的条件值必须为有限数字"
                 if op_norm == "eq":
                     mask = field_data == v
                 elif op_norm == "ne":
@@ -6082,6 +6227,7 @@ def spatial_select_by_attribute(layer_name: str, field: str, operator: str, valu
                 else:
                     return f"不支持的字符串操作符：{operator}"
 
+        mask = mask.fillna(False) & field_data.notna()
         result = gdf[mask].copy()
         if result.empty:
             return f"没有满足条件（{field} {operator} {value}）的要素"
@@ -6426,7 +6572,7 @@ def ndvi_analysis(layer_name: str, red_band: int = 3, nir_band: int = 4) -> str:
         if np.any(~valid):
             rgb[~valid] = 0
         img = Image.fromarray(rgb)
-        out_name = f"{layer_name}_ndvi"
+        out_name = f"{_safe_layer_export_stem(layer_name)}_{uuid.uuid4().hex}_ndvi"
         raster_path = _write_raster_output(tif_path, out_name, ndvi, metadata={
             "SOURCE_LAYER": layer_name, "SOURCE_LABEL": source_label or "GIS WorkTable 栅格分析",
             "PROCESSING": "NDVI 归一化植被指数", "VALUE_UNITS": "无量纲（-1 至 1）",
@@ -7168,15 +7314,24 @@ def animate_time(layer_name: str, time_field: str, interval_ms: int = 500) -> st
     """对图层的时序字段进行动画播放。time_field为日期/数字字段，
     interval_ms为每帧间隔（毫秒，默认500）。前端会按时间顺序逐帧显示。"""
     try:
+        import pandas as pd
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
             return name
         if time_field not in gdf.columns:
             return f"图层 '{name}' 没有字段 '{time_field}'"
-        time_vals = gdf[time_field].dropna().unique()
+        field_data = gdf[time_field]
+        time_vals = list(field_data.dropna().unique())
         if len(time_vals) < 2:
             return f"字段 '{time_field}' 只有 {len(time_vals)} 个唯一值，至少需要2个"
-        time_vals = sorted(time_vals)
+        if field_data.dtype.kind in ("i", "u", "f"):
+            time_vals = sorted(time_vals)
+        else:
+            try:
+                parsed_times = pd.to_datetime(time_vals, utc=True, errors="raise")
+            except (TypeError, ValueError, OverflowError):
+                return f"字段 '{time_field}' 必须是数值或可解析的日期时间"
+            time_vals = [value for _, value in sorted(zip(parsed_times, time_vals), key=lambda pair: pair[0])]
         _pending_layer_ops.append({
             "action": "time_animation",
             "name": name,
@@ -7320,8 +7475,9 @@ def terrain_profile(layer_name: str, line_coords: str) -> str:
 
 @tool
 def topology_check(layer_name: str) -> str:
-    """对面要素图层执行几何拓扑检查并自动修复（仅支持面图层）。
-    - layer_name: 待检查面图层名。自动用 make_valid 修复自相交与环方向，报告要素间重叠与缝隙。"""
+    """只读检查面图层的无效几何、要素间重叠与缝隙，并生成问题标记图层。
+    不修改源图层；修复无效几何请调用 spatial_fix_geometry。
+    - layer_name: 待检查的面图层名。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None:
@@ -7411,10 +7567,12 @@ def topology_check(layer_name: str) -> str:
         if not issues:
             return f"图层 '{name}' 未发现拓扑错误"
         fc = {"type": "FeatureCollection", "features": issues}
-        out_name = f"{name}_拓扑错误"
-        _push_layer(out_name, fc)
-        _register_layer(out_name, fc)
-        return f"拓扑检查完成，发现 {len(issues)} 个问题，已生成图层 '{out_name}'"
+        with _state_lock:
+            out_name = _disambiguate_layer_name(f"{name}_拓扑错误")
+            _push_layer(out_name, fc)
+            _register_layer(out_name, fc)
+        return (f"拓扑检查完成，发现 {len(issues)} 个问题，已生成问题标记图层 '{out_name}'；"
+                "源图层未修改。修复无效几何请使用 spatial_fix_geometry。")
     except Exception as e:
         return f"拓扑检查失败: {str(e)[:300]}"
 
@@ -7740,27 +7898,38 @@ def clip_raster(layer_name: str, clip_layer_name: str, output_name: str = "") ->
 
             rgba_image = np.dstack((rgb, alpha))
             img = Image.fromarray(rgba_image)
-            if output_name:
-                out_name = os.path.basename(str(output_name).replace("\\", "/"))
-                out_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', out_name).strip(' .')
-                if not out_name:
-                    return "输出图层名称无效"
-            else:
-                out_name = f"{layer_name}_clip_{clip_layer_name}"
-            out_path = os.path.join(upload_dir, f"{out_name}.png")
-            img.save(out_path)
+            with _state_lock:
+                if output_name:
+                    base_out_name = os.path.basename(str(output_name).replace("\\", "/"))
+                    base_out_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', base_out_name).strip(' .')
+                    if not base_out_name:
+                        return "输出图层名称无效"
+                else:
+                    base_out_name = (
+                        f"{_safe_layer_export_stem(layer_name)}_{uuid.uuid4().hex}_clip_"
+                        f"{_safe_layer_export_stem(clip_layer_name)}"
+                    )
+                out_name = base_out_name
+                suffix = 1
+                while os.path.exists(os.path.join(upload_dir, f"{out_name}.png")):
+                    out_name = f"{base_out_name}_{suffix}"
+                    suffix += 1
+                out_path = os.path.join(upload_dir, f"{out_name}.png")
+                img.save(out_path)
 
-            _pending_layer_ops.append({
-                "action": "dem_result",
-                "name": f"{out_name}.png",
-                "url": f"/output/uploads/{out_name}.png",
-                "bounds": bounds,
-                "label": f"栅格裁剪: {layer_name}",
-            })
+                from urllib.parse import quote
+                preview_name = f"{out_name}.png"
+                _pending_layer_ops.append({
+                    "action": "dem_result",
+                    "name": preview_name,
+                    "url": f"/output/uploads/{quote(preview_name, safe='')}",
+                    "bounds": bounds,
+                    "label": f"栅格裁剪: {layer_name}",
+                })
 
             feat_count = len(clip_gdf)
             return (f"已用 {clip_layer_name}（{feat_count} 个面）裁剪 {layer_name}"
-                    f"，结果已叠加到地图")
+                    f"，结果「{out_name}」已叠加到地图")
 
     except Exception as e:
         import traceback
@@ -8490,13 +8659,14 @@ def _calc_spectral_index(layer_name: str, formula_name: str, calc_fn, cmap_name:
         if np.any(~valid):
             rgb[~valid] = 0
         img = Image.fromarray(rgb)
-        out_name = f"{layer_name}_{formula_name}.png"
+        out_name = f"{_safe_layer_export_stem(layer_name)}_{uuid.uuid4().hex}_{formula_name}.png"
         out_path = os.path.join(upload_dir, out_name)
         img.save(out_path)
+        from urllib.parse import quote
         _pending_layer_ops.append({
             "action": "dem_result",
             "name": out_name,
-            "url": f"/output/uploads/{out_name}",
+            "url": f"/output/uploads/{quote(out_name, safe='')}",
             "bounds": bounds,
             "label": label,
         })
@@ -9709,7 +9879,9 @@ def generate_static_map(
     需要保留当前地图底图（包括卫星影像）导出图片时应调用 export_map；本工具用于独立矢量图。
     layer_ids: 要绘制的图层ID，逗号分隔（为空则绘制所有已注册图层）；
     title: 地图标题；output_name: 输出文件名；
-    show_north_arrow: 是否显示指北针；show_scale_bar: 是否显示比例尺；dpi: 输出分辨率。"""
+    show_north_arrow: 是否显示指北针；show_scale_bar: 是否显示比例尺；dpi: 输出分辨率（30–600）。"""
+    if isinstance(dpi, bool) or not isinstance(dpi, int) or not 30 <= dpi <= 600:
+        return "静态地图 DPI 范围为 30 到 600"
     try:
         import geopandas as gpd
         import matplotlib
@@ -9721,9 +9893,11 @@ def generate_static_map(
         layers_to_draw = []
         if layer_ids.strip():
             ids = [x.strip() for x in layer_ids.split(",") if x.strip()]
+            missing_ids = [lid for lid in ids if lid not in _registered_layers]
+            if missing_ids:
+                return f"指定图层不存在：{', '.join(missing_ids)}"
             for lid in ids:
-                if lid in _registered_layers:
-                    layers_to_draw.append((lid, _registered_layers[lid]))
+                layers_to_draw.append((lid, _registered_layers[lid]))
         else:
             for lid, ldata in _registered_layers.items():
                 layers_to_draw.append((lid, ldata))
@@ -9782,9 +9956,14 @@ def generate_static_map(
                 sy = ylim[0] + (ylim[1] - ylim[0]) * 0.05
                 width = (xlim[1] - xlim[0]) * 0.1
                 ground_distance_km = abs(Geod(ellps="WGS84").inv(sx, sy, sx + width, sy)[2]) / 1000
+                if ground_distance_km >= 1:
+                    scale_label = f"{ground_distance_km:.0f} km"
+                else:
+                    ground_distance_m = ground_distance_km * 1000
+                    scale_label = f"{ground_distance_m:.0f} m" if ground_distance_m >= 10 else f"{ground_distance_m:.2g} m"
                 ax.plot([sx, sx + width], [sy, sy], "k-", linewidth=3)
                 ax.text(sx + width / 2, sy + (ylim[1] - ylim[0]) * 0.01,
-                        f"{ground_distance_km:.0f} km", ha="center", fontsize=9)
+                        scale_label, ha="center", fontsize=9)
             except Exception:
                 pass
 
@@ -9797,7 +9976,25 @@ def generate_static_map(
         safe_output_name = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', '_', safe_output_name).strip(' .') or 'static_map'
         fname = f"{safe_output_name}.png"
         out_path = os.path.join(out_dir, fname)
-        fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor="white")
+        suffix = 2
+        while True:
+            try:
+                reservation_fd = os.open(out_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
+                os.close(reservation_fd)
+                break
+            except FileExistsError:
+                fname = f"{safe_output_name}_{suffix}.png"
+                out_path = os.path.join(out_dir, fname)
+                suffix += 1
+        try:
+            fig.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor="white")
+        except Exception:
+            plt.close(fig)
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+            raise
         plt.close(fig)
 
         record_tool_artifact(fname, out_path, artifact_type="image")
@@ -10424,9 +10621,11 @@ def zonal_statistics(raster_layer: str, zone_layer: str, stat: str = "mean") -> 
                 props["name"] = props.get("name") or f"{zone_name}_区{idx + 1}"
                 feats.append({"type": "Feature", "geometry": mapping(geom4326), "properties": props})
         out_fc = {"type": "FeatureCollection", "features": feats}
-        out_name = f"{zone_name}_分区统计"
-        _push_layer(out_name, out_fc, {"color": "#7b1fa2", "weight": 2, "fillOpacity": 0.15})
-        _register_layer(out_name, out_fc)
+        base_out_name = f"{zone_name}_分区统计"
+        with _state_lock:
+            out_name = _disambiguate_layer_name(base_out_name)
+            _push_layer(out_name, out_fc, {"color": "#7b1fa2", "weight": 2, "fillOpacity": 0.15})
+            _register_layer(out_name, out_fc)
         ok_count = sum(1 for f in feats if f["properties"]["zonal_count"] > 0)
         key = {"mean": "zonal_mean", "sum": "zonal_sum", "min": "zonal_min", "max": "zonal_max"}.get(
             str(stat).lower(), "zonal_mean")
@@ -10453,8 +10652,9 @@ def add_length_field(layer_name: str, field_name: str = "length_km") -> str:
         lengths_km = projected.geometry.length / 1000.0
         out = gdf.copy()
         out[field_name] = [round(float(v), 4) for v in lengths_km]
-        out_name = f"{name}_带长度"
-        _gdf_to_layer(out, out_name)
+        with _state_lock:
+            out_name = _disambiguate_layer_name(f"{name}_带长度")
+            _gdf_to_layer(out, out_name)
         return (f"已添加字段「{field_name}」（单位 km，UTM {utm.to_string()} 计算）："
                 f"总长 {lengths_km.sum():.2f} km，最长 {lengths_km.max():.2f} km，"
                 f"结果图层「{out_name}」已上图")
@@ -10471,8 +10671,9 @@ def spatial_explode(layer_name: str) -> str:
         return name
     try:
         out = gdf.explode(index_parts=False).reset_index(drop=True)
-        out_name = f"{name}_分解"
-        _gdf_to_layer(out, out_name)
+        with _state_lock:
+            out_name = _disambiguate_layer_name(f"{name}_分解")
+            _gdf_to_layer(out, out_name)
         return f"已分解多部件要素：{len(gdf)} → {len(out)} 个要素，结果图层「{out_name}」已上图"
     except Exception as e:
         return f"分解失败: {str(e)[:300]}"
@@ -11805,7 +12006,9 @@ def surface_volumes(before_layer: str, after_layer: str, reference: float = -999
             # sentinel such as 0 can be a valid unchanged difference and must not mask it.
             out_nodata = np.nan
             arr = np.where(np.isfinite(diff_out), diff_out, out_nodata)
-            out_name = f"{os.path.splitext(os.path.basename(before_path))[0]}_填挖方"
+            out_name = (
+                f"{_safe_layer_export_stem(before_layer)}_{uuid.uuid4().hex}_填挖方"
+            )
             out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
             with rasterio.open(out_path, "w", **_raster_out_profile(src_b, out_nodata)) as dst:
                 dst.write(arr.astype("float32"), 1)
@@ -12142,7 +12345,9 @@ def minimum_bounding_geometry(layer_name: str, kind: str = "envelope", group_fie
             note = f"（圆/定向边在 UTM {utm.to_string()} 下按米计算，几何已转回 {crs.to_string()}）"
         else:
             note = f"（按 {work.crs.to_string() if work.crs is not None else '未定义坐标系'} 计算）"
-        _gdf_to_layer(out, out_name)
+        with _state_lock:
+            out_name = _disambiguate_layer_name(out_name)
+            _gdf_to_layer(out, out_name)
         extra_txt = f"，半径 {float(out['radius_m'].iloc[0]):.3f} m" if (kind_key == "circle" and len(out)) else ""
         return f"最小外包几何完成（{kind_key}{extra_txt}）：{len(out)} 个要素，结果图层「{out_name}」已上图{note}"
     except Exception as e:
@@ -12222,8 +12427,9 @@ def points_to_line(layer_name: str, group_field: str, order_field: str = "", clo
                 out["length_m"] = out.to_crs(utm).geometry.length.astype(float)
         except Exception:
             pass
-        out_name = f"{name}_点转线"
-        _gdf_to_layer(out, out_name)
+        with _state_lock:
+            out_name = _disambiguate_layer_name(f"{name}_点转线")
+            _gdf_to_layer(out, out_name)
         return f"点转线完成：生成 {len(out)} 条线，跳过 {skipped} 个点不足 2 的分组，结果图层「{out_name}」已上图"
     except Exception as e:
         return f"点转线失败: {str(e)[:300]}"
@@ -12313,8 +12519,9 @@ def generate_points_along_lines(layer_name: str, interval: float = 100, unit: st
         out = gpd.GeoDataFrame(attrs, geometry=pt_geoms, crs=proj.crs)
         if is_geographic:
             out = out.to_crs(crs)
-        out_name = f"{name}_沿线等距点"
-        _gdf_to_layer(out, out_name)
+        with _state_lock:
+            out_name = _disambiguate_layer_name(f"{name}_沿线等距点")
+            _gdf_to_layer(out, out_name)
         return (f"沿线生成等距点完成（间隔 {unit_note}）：共 {total_pts} 个点，"
                 f"覆盖线长 {covered_m:,.2f} m（线总长 {total_len_m:,.2f} m），"
                 f"结果图层「{out_name}」已上图")
@@ -13147,7 +13354,7 @@ def feature_to_raster(layer_name: str, value_field: str = "", cell_size: float =
             shapes_iter, out_shape=(height, width), transform=transform,
             fill=fill_value, all_touched=bool(all_touched), dtype=dtype,
         )
-        out_name = f"{name}_转栅格"
+        out_name = f"{_safe_layer_export_stem(name)}_{uuid.uuid4().hex}_转栅格"
         out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
         profile = dict(driver="GTiff", height=height, width=width, count=1, dtype=arr.dtype.name,
                        crs="EPSG:4326", transform=transform, nodata=nodata)
@@ -13418,8 +13625,8 @@ def cost_distance(cost_layer: str, source_layer: str, out_name: str = "") -> str
         reachable = int(np.isfinite(out).sum())
         unreachable = int((valid & ~np.isfinite(out)).sum())
         out_name = _safe_layer_export_stem(out_name or f"{cost_layer}_代价距离")
-        out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
         profile = dict(driver="GTiff", height=h, width=w, count=1, dtype="float64", crs=crs, transform=transform, nodata=float("nan"))
+        out_path = os.path.join(_raster_output_dir(), out_name + ".tif")
         with rasterio.open(out_path, "w", **profile) as dst:
             dst.write(out, 1)
         with rasterio.open(out_path) as _src_preview:

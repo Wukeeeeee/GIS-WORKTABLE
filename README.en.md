@@ -18,6 +18,15 @@ The AI `execute_python` tool runs code in a local child process with AST checks 
 - **Projects and outputs:** save workspaces, restore layers, and exchange project packages or standard GIS data formats.
 - **Data connections:** work with local files and supported OGC, ArcGIS REST, and cloud-optimized raster sources, subject to format, network, provider, and licensing constraints.
 
+## Recent maintenance (2026-11-01)
+
+This round continued checking data fidelity across layer editing, spatial transforms, and map outputs:
+
+- **Attribute and feature editing:** adding or deleting fields, conditional updates, and feature deletion preserve large integers and nulls. Non-finite floating-point defaults and updates are rejected before write-back.
+- **Geometry transforms and maps:** move, rotate, and scale preserve attribute precision and stable feature IDs. Static-map generation validates DPI and requested layer IDs, and assigns distinct files to repeated output names.
+- **Visualization inputs:** heatmap weights and gradients are validated; small-scale static maps use meters so short distances do not render as `0 km`.
+- **Evidence and limits:** reproduction steps, regression results, and remaining boundaries are recorded in the [module scan log](docs/validation/module-scan-progress.md) and [tool validation record](docs/tool-validation.md). These local checks do not establish full browser, external-service, or large-data acceptance.
+
 ## Recent maintenance (2026-10-30)
 
 This round continued tracing the data path from inputs through analysis and saved projects:

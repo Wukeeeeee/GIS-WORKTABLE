@@ -1899,7 +1899,11 @@ var _undoSkip = false;
       }
       if (typeof leaf.bindTooltip !== 'function') return;
       var isPt = leaf && (typeof leaf.getRadius === 'function' || leaf instanceof L.CircleMarker);
-      leaf.bindTooltip(escapeHtml(txt), {
+      var labelContent = document.createElement('span');
+      labelContent.textContent = txt;
+      labelContent.style.fontSize = cfg.fontSize + 'px';
+      labelContent.style.color = cfg.color;
+      leaf.bindTooltip(labelContent, {
         permanent: true,
         direction: isPt ? 'top' : 'center',
         offset: isPt ? [0, -8] : [0, 0],
@@ -1913,6 +1917,14 @@ var _undoSkip = false;
   /** 对图层添加/更新标注 */
   function setLabels(name, field, fontSize, color) {
     if (!name || !field || !layers[name]) return false;
+    var normalizedFontSize = Number(fontSize === undefined || fontSize === null ? 12 : fontSize);
+    if (!Number.isInteger(normalizedFontSize) || normalizedFontSize < 6 || normalizedFontSize > 72) return false;
+    var normalizedColor = color === undefined || color === null ? '#333333' : String(color).trim();
+    if (!normalizedColor || normalizedColor.length > 64) return false;
+    var colorProbe = document.createElement('span');
+    colorProbe.style.color = normalizedColor;
+    if (!colorProbe.style.color) return false;
+    normalizedColor = colorProbe.style.color;
     var gj = geoStore[name] && geoStore[name].geojson;
     if (!gj) return false;
     var features = gj.type === 'FeatureCollection' ? (gj.features || []) : [gj];
@@ -1924,7 +1936,7 @@ var _undoSkip = false;
     if (!hasValue) return false;
 
     var previous = _labelConfigs[name];
-    _labelConfigs[name] = { field: field, fontSize: fontSize || 12, color: color || '#333333' };
+    _labelConfigs[name] = { field: field, fontSize: normalizedFontSize, color: normalizedColor };
     if (_applyLabelsForLayer(name) > 0) return true;
     if (previous) _labelConfigs[name] = previous;
     else delete _labelConfigs[name];
@@ -2984,18 +2996,22 @@ var _undoSkip = false;
       }
       var idx = 0;
       if (window._timeAnimTimer) clearInterval(window._timeAnimTimer);
-      window._timeAnimTimer = setInterval(function() {
-        idx = (idx + 1) % timeValues.length;
+      var applyFrame = function() {
         var val = timeValues[idx];
         targetLayer.eachLayer(function(f) {
-          var fv = f.feature && f.feature.properties ? String(f.feature.properties[timeField] || '') : '';
-          var match = fv === val;
+          var rawTime = f.feature && f.feature.properties ? f.feature.properties[timeField] : null;
+          var match = rawTime != null && String(rawTime) === val;
           if (mapInstance.hasLayer(f)) {
             if (!match) mapInstance.removeLayer(f);
           } else {
             if (match) mapInstance.addLayer(f);
           }
         });
+      };
+      applyFrame();
+      window._timeAnimTimer = setInterval(function() {
+        idx = (idx + 1) % timeValues.length;
+        applyFrame();
       }, intervalMs || 500);
       if (window.GIS.chat) {
         window.GIS.chat.addMessage('时序动画播放中，共' + timeValues.length + '帧', 'system');

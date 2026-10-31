@@ -65,6 +65,7 @@ ndvi_analysis = T.ndvi_analysis
 raster_calculator = T.raster_calculator
 raster_reclassify = T.raster_reclassify
 spatial_interpolate = T.spatial_interpolate
+zonal_statistics = T.zonal_statistics
 topology_check = T.topology_check
 hydrology_analysis = T.hydrology_analysis
 create_workflow = T.create_workflow
@@ -804,6 +805,27 @@ class TestSpatialSelect:
         assert "选择" in r
         assert len(_pending_layers) == 1
 
+    def test_select_preserves_target_fields_ending_in_right_and_excludes_source_fields(self):
+        target = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"id": 1, "note_right": "target value"},
+            "geometry": {"type": "Point", "coordinates": [0.5, 0.5]},
+        }]}
+        source = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"source_only": "should not be copied"},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]},
+        }]}
+        _setup("target_suffix", target)
+        _setup("source_attrs", source)
+
+        result = spatial_select.invoke({
+            "target_layer": "target_suffix", "source_layer": "source_attrs",
+        })
+
+        assert "选择了 1/1" in result, result
+        properties = _pending_layers[-1]["geojson"]["features"][0]["properties"]
+        properties.pop("_fid", None)
+        assert properties == {"id": 1, "note_right": "target value"}
+
     def test_select_preserves_distinct_duplicate_features(self):
         same_geometry = {"type": "Point", "coordinates": [0.5, 0.5]}
         targets = {"type": "FeatureCollection", "features": [
@@ -1326,6 +1348,36 @@ class TestSpatialUniqueValues:
         assert op["symbology_type"] == "unique"
         assert op["field"] == "group"
 
+    def test_unique_categories_distinguish_boolean_from_number(self):
+        features = [{
+            "type": "Feature", "properties": {"category": value},
+            "geometry": {"type": "Point", "coordinates": [index, 0]},
+        } for index, value in enumerate([True, 1, "1"])]
+        _setup("typed_categories", {"type": "FeatureCollection", "features": features})
+
+        result = spatial_unique_values.invoke({
+            "layer_name": "typed_categories", "field": "category",
+        })
+
+        assert "3 个类别" in result, result
+        assert "值列表：true, 1 (number), 1 (string)" in result, result
+
+    def test_unique_value_labels_include_collisions_beyond_display_limit(self):
+        values = ["1", *[f"category_{index}" for index in range(19)], 1]
+        features = [{
+            "type": "Feature", "properties": {"category": value},
+            "geometry": {"type": "Point", "coordinates": [index, 0]},
+        } for index, value in enumerate(values)]
+        _setup("many_typed_categories", {"type": "FeatureCollection", "features": features})
+
+        result = spatial_unique_values.invoke({
+            "layer_name": "many_typed_categories", "field": "category",
+        })
+
+        assert "21 个类别" in result, result
+        assert "值列表：1 (string), category_0" in result, result
+        assert "等共 21 个值" in result, result
+
 
 
 
@@ -1338,6 +1390,27 @@ class TestAddLabels:
         op = T._pending_layer_ops[0]
         assert op["action"] == "labels"
         assert op["field"] == "group"
+
+    def test_labels_include_requested_font_size_and_color(self):
+        _setup("multi", _MULTI_POLY)
+
+        result = add_labels.invoke({
+            "layer_name": "multi", "field": "group", "font_size": 18, "color": "#aabbcc",
+        })
+
+        assert "已为" in result
+        assert T._pending_layer_ops[-1]["font_size"] == 18
+        assert T._pending_layer_ops[-1]["color"] == "#aabbcc"
+
+    def test_labels_reject_out_of_range_font_size_without_queuing_operation(self):
+        _setup("multi", _MULTI_POLY)
+
+        result = add_labels.invoke({
+            "layer_name": "multi", "field": "group", "font_size": 73,
+        })
+
+        assert "6 到 72 之间的整数" in result
+        assert T._pending_layer_ops == []
 
 
 
@@ -1369,6 +1442,49 @@ class TestSelectByAttribute:
         _setup("pts", _MULTI_SELECT)
         r = spatial_select_by_attribute.invoke({"layer_name": "pts", "field": "val", "operator": ">", "value": "30"})
         assert "选择了 2/5" in r
+
+    def test_not_equal_does_not_select_missing_numeric_values(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"value": 1},
+             "geometry": {"type": "Point", "coordinates": [0, 0]}},
+            {"type": "Feature", "properties": {"value": None},
+             "geometry": {"type": "Point", "coordinates": [1, 1]}},
+            {"type": "Feature", "properties": {"value": 2},
+             "geometry": {"type": "Point", "coordinates": [2, 2]}},
+        ]}
+        _setup("nullable_numeric", features)
+
+        result = spatial_select_by_attribute.invoke({
+            "layer_name": "nullable_numeric", "field": "value", "operator": "!=", "value": "1",
+        })
+
+        assert "选择了 1/3 个要素" in result, result
+        selected = _pending_layers[-1]["geojson"]["features"]
+        assert [feature["properties"]["value"] for feature in selected] == [2]
+
+    def test_numeric_selection_rejects_nonfinite_condition(self):
+        _setup("pts", _MULTI_SELECT)
+
+        result = spatial_select_by_attribute.invoke({
+            "layer_name": "pts", "field": "val", "operator": "!=", "value": "nan",
+        })
+
+        assert "条件值必须为有限数字" in result
+        assert _pending_layers == []
+
+    @pytest.mark.parametrize(("value", "message"), [
+        ("nan,20", "between 值必须是有限数字"),
+        ("40,20", "between 下限不能大于上限"),
+    ])
+    def test_between_rejects_invalid_numeric_bounds(self, value, message):
+        _setup("pts", _MULTI_SELECT)
+
+        result = spatial_select_by_attribute.invoke({
+            "layer_name": "pts", "field": "val", "operator": "between", "value": value,
+        })
+
+        assert message in result
+        assert _pending_layers == []
 
     def test_gt_unsigned_64_bit_numeric_property(self):
         value = 2**63 + 17
@@ -1932,6 +2048,7 @@ class TestContour:
         os.unlink(tmp.name)
         return dest
 
+
     def test_contour_no_dem(self):
         r = extract_contours.invoke({"layer_name": "nonexistent"})
         assert "未找到" in r or "请先上传" in r
@@ -2101,6 +2218,44 @@ class TestNDVI:
                     os.unlink(candidate)
 
 
+
+
+class TestZonalStatistics:
+    def test_different_rasters_preserve_previous_zone_results(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        for name, value in (("zones_low", 10), ("zones_high", 20)):
+            with rasterio.open(
+                upload_dir / f"{name}.tif", "w", driver="GTiff", width=2, height=2,
+                count=1, dtype="float32", crs="EPSG:4326",
+                transform=from_bounds(0, 0, 2, 2, 2, 2),
+            ) as dst:
+                dst.write(np.full((2, 2), value, dtype=np.float32), 1)
+        _register_layer("zonal_repeat_zone", _SQUARE_A)
+
+        first = zonal_statistics.invoke({
+            "raster_layer": "zones_low", "zone_layer": "zonal_repeat_zone",
+        })
+        first_name = T._pending_layers[-1]["name"]
+        first_props = T._registered_layers[first_name]["geojson"]["features"][0]["properties"]
+
+        T.reset_state()
+        second = zonal_statistics.invoke({
+            "raster_layer": "zones_high", "zone_layer": "zonal_repeat_zone",
+        })
+        second_name = T._pending_layers[-1]["name"]
+        second_props = T._registered_layers[second_name]["geojson"]["features"][0]["properties"]
+
+        assert "分区统计完成" in first and "分区统计完成" in second
+        assert second_name != first_name
+        assert first_props["zonal_mean"] == 10
+        assert second_props["zonal_mean"] == 20
+        assert T._registered_layers[first_name]["geojson"]["features"][0]["properties"]["zonal_mean"] == 10
 
 
 class TestRasterCalculator:
@@ -2486,6 +2641,49 @@ class TestTopologyCheck:
         r = topology_check.invoke({"layer_name": "valid"})
         assert "未发现" in r or "无" in r
 
+    def test_topology_check_marks_invalid_geometry_without_changing_source(self):
+        from shapely.geometry import shape
+
+        fc = {"type": "FeatureCollection", "features": [{
+            "type": "Feature", "properties": {"n": 1},
+            "geometry": {"type": "Polygon", "coordinates": [[
+                [0, 0], [2, 2], [0, 2], [2, 0], [0, 0],
+            ]]},
+        }]}
+        _register_layer("invalid_topology_source", fc)
+
+        result = topology_check.invoke({"layer_name": "invalid_topology_source"})
+
+        source = _registered_layers["invalid_topology_source"]["geojson"]["features"][0]
+        assert not shape(source["geometry"]).is_valid
+        assert "拓扑检查完成" in result and "源图层未修改" in result
+        issue_layer = _registered_layers["invalid_topology_source_拓扑错误"]["geojson"]
+        assert issue_layer["features"][0]["properties"]["type"] == "无效几何"
+
+    def test_repeated_topology_checks_preserve_previous_issue_layer(self):
+        def bowtie(offset):
+            return {"type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {"n": 1},
+                "geometry": {"type": "Polygon", "coordinates": [[
+                    [offset, 0], [offset + 2, 2], [offset, 2], [offset + 2, 0], [offset, 0],
+                ]]},
+            }]}
+
+        _register_layer("topology_repeat_source", bowtie(0))
+        first = topology_check.invoke({"layer_name": "topology_repeat_source"})
+        first_name = "topology_repeat_source_拓扑错误"
+        first_issue = _registered_layers[first_name]["geojson"]["features"][0]
+        first_coordinates = first_issue["geometry"]["coordinates"]
+
+        _register_layer("topology_repeat_source", bowtie(10))
+        second = topology_check.invoke({"layer_name": "topology_repeat_source"})
+        second_name = "topology_repeat_source_拓扑错误_1"
+        second_issue = _registered_layers[second_name]["geojson"]["features"][0]
+
+        assert "拓扑检查完成" in first and "拓扑检查完成" in second
+        assert first_coordinates != second_issue["geometry"]["coordinates"]
+        assert _registered_layers[first_name]["geojson"]["features"][0]["geometry"]["coordinates"] == first_coordinates
+
 
 
 
@@ -2724,6 +2922,33 @@ class TestTimeAnimation:
         r = animate_time.invoke({"layer_name": "anim_pts", "time_field": "id", "interval_ms": 300})
         assert "动画" in r or "启动" in r
 
+    def test_date_animation_sorts_timezone_values_by_instant(self):
+        values = ["2024-01-01T09:00:00Z", "2024-01-01T10:00:00+02:00"]
+        features = [{
+            "type": "Feature", "properties": {"time": value},
+            "geometry": {"type": "Point", "coordinates": [index, 0]},
+        } for index, value in enumerate(values)]
+        _register_layer("tz_animation", {"type": "FeatureCollection", "features": features})
+
+        result = animate_time.invoke({"layer_name": "tz_animation", "time_field": "time"})
+
+        assert "已启动时序动画" in result, result
+        assert T._pending_layer_ops[-1]["time_values"] == [
+            "2024-01-01T10:00:00+02:00", "2024-01-01T09:00:00Z",
+        ]
+
+    def test_date_animation_rejects_unparseable_time_values(self):
+        features = [{
+            "type": "Feature", "properties": {"time": value},
+            "geometry": {"type": "Point", "coordinates": [index, 0]},
+        } for index, value in enumerate(["spring", "autumn"])]
+        _register_layer("invalid_animation", {"type": "FeatureCollection", "features": features})
+
+        result = animate_time.invoke({"layer_name": "invalid_animation", "time_field": "time"})
+
+        assert "必须是数值或可解析的日期时间" in result
+        assert T._pending_layer_ops == []
+
 
 
 class TestChartLink:
@@ -2895,6 +3120,91 @@ class TestClipRaster:
     def test_clip_nonexistent_raster(self):
         r = clip_raster.invoke({"layer_name": "nope", "clip_layer_name": "clip"})
         assert "未找到" in r or "请先上传" in r
+
+    def test_default_clip_name_preserves_previous_mask_result(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        with rasterio.open(
+            upload_dir / "clip_repeat_source.tif", "w", driver="GTiff", width=4, height=4,
+            count=1, dtype="float32", crs="EPSG:4326", transform=from_bounds(0, 0, 4, 4, 4, 4),
+        ) as dst:
+            dst.write(np.arange(16, dtype=np.float32).reshape(4, 4), 1)
+
+        def mask(west, east):
+            return {"type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Polygon", "coordinates": [[
+                    [west, 0], [east, 0], [east, 4], [west, 4], [west, 0],
+                ]]},
+            }]}
+
+        T._register_layer("same_clip_mask", mask(0, 2))
+        first = clip_raster.invoke({
+            "layer_name": "clip_repeat_source", "clip_layer_name": "same_clip_mask",
+        })
+        first_op = T._pending_layer_ops[-1]
+        first_path = upload_dir / first_op["name"]
+        first_bytes = first_path.read_bytes()
+
+        T._register_layer("same_clip_mask", mask(2, 4))
+        second = clip_raster.invoke({
+            "layer_name": "clip_repeat_source", "clip_layer_name": "same_clip_mask",
+        })
+        second_op = T._pending_layer_ops[-1]
+
+        assert first.startswith("已用") and second.startswith("已用")
+        assert second_op["name"] != first_op["name"]
+        assert first_path.read_bytes() == first_bytes
+        assert (upload_dir / second_op["name"]).is_file()
+
+    def test_reused_explicit_output_name_is_disambiguated(self, tmp_path, monkeypatch):
+        import numpy as np
+        import rasterio
+        from rasterio.transform import from_bounds
+
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        upload_dir = tmp_path / "uploads"
+        upload_dir.mkdir()
+        with rasterio.open(
+            upload_dir / "named_clip_source.tif", "w", driver="GTiff", width=4, height=4,
+            count=1, dtype="float32", crs="EPSG:4326", transform=from_bounds(0, 0, 4, 4, 4, 4),
+        ) as dst:
+            dst.write(np.arange(16, dtype=np.float32).reshape(4, 4), 1)
+
+        def mask(west, east):
+            return {"type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {},
+                "geometry": {"type": "Polygon", "coordinates": [[
+                    [west, 0], [east, 0], [east, 4], [west, 4], [west, 0],
+                ]]},
+            }]}
+
+        T._register_layer("named_clip_mask", mask(0, 2))
+        first = clip_raster.invoke({
+            "layer_name": "named_clip_source", "clip_layer_name": "named_clip_mask",
+            "output_name": "custom_result",
+        })
+        first_op = T._pending_layer_ops[-1]
+        first_path = upload_dir / first_op["name"]
+        first_bytes = first_path.read_bytes()
+
+        T._register_layer("named_clip_mask", mask(2, 4))
+        second = clip_raster.invoke({
+            "layer_name": "named_clip_source", "clip_layer_name": "named_clip_mask",
+            "output_name": "custom_result",
+        })
+        second_op = T._pending_layer_ops[-1]
+
+        assert first.startswith("已用") and second.startswith("已用")
+        assert first_op["name"] == "custom_result.png"
+        assert second_op["name"] == "custom_result_1.png"
+        assert first_path.read_bytes() == first_bytes
+        assert (upload_dir / second_op["name"]).is_file()
 
     def test_clip_raster_keeps_valid_zero_values(self, tmp_path, monkeypatch):
         import numpy as np

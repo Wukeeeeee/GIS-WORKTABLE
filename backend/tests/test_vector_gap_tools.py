@@ -363,6 +363,35 @@ def test_minimum_bounding_geometry_circle_radius_in_metres():
     assert radius_m == pytest.approx(oracle_r, rel=1e-6), (radius_m, oracle_r)
 
 
+def test_minimum_bounding_geometry_after_source_change_preserves_previous_result():
+    def points(offset):
+        return _fc([
+            _pt({"g": "g1"}, offset, 0.0),
+            _pt({"g": "g1"}, offset + 2.0, 1.0),
+        ])
+
+    _register_layer("bbox_repeat", points(0.0))
+    first = minimum_bounding_geometry.invoke({
+        "layer_name": "bbox_repeat", "kind": "envelope",
+    })
+    first_name = "bbox_repeat_包络"
+    first_out, _ = T._layer_to_gdf(first_name)
+    first_bounds = tuple(first_out.geometry.iloc[0].bounds)
+
+    _register_layer("bbox_repeat", points(10.0))
+    second = minimum_bounding_geometry.invoke({
+        "layer_name": "bbox_repeat", "kind": "envelope",
+    })
+    second_name = "bbox_repeat_包络_1"
+    second_out, _ = T._layer_to_gdf(second_name)
+    preserved_out, _ = T._layer_to_gdf(first_name)
+
+    assert "完成" in first and "完成" in second
+    assert first_bounds == pytest.approx((0.0, 0.0, 2.0, 1.0))
+    assert tuple(second_out.geometry.iloc[0].bounds) == pytest.approx((10.0, 0.0, 12.0, 1.0))
+    assert tuple(preserved_out.geometry.iloc[0].bounds) == pytest.approx(first_bounds)
+
+
 def test_minimum_bounding_geometry_missing_group_field_fails():
     pts = _fc([_pt({"g": "g1"}, 113.0, 23.0)])
     _register_layer("pts_bad", pts)
@@ -414,6 +443,35 @@ def test_points_to_line_close_ring():
     assert coords[0] == pytest.approx(coords[-1]), "close_ring=True 首尾应重合"
 
 
+def test_points_to_line_different_close_ring_setting_preserves_previous_result():
+    pts = _fc([
+        _pt({"g": "L1", "ord": 1}, 0.00, 0.0),
+        _pt({"g": "L1", "ord": 2}, 0.01, 0.0),
+        _pt({"g": "L1", "ord": 3}, 0.01, 0.01),
+    ])
+    _register_layer("pp_close_repeat", pts)
+
+    first = points_to_line.invoke({
+        "layer_name": "pp_close_repeat", "group_field": "g", "order_field": "ord",
+        "close_ring": False,
+    })
+    first_name = "pp_close_repeat_点转线"
+    first_out, _ = T._layer_to_gdf(first_name)
+    first_coords = list(first_out.iloc[0].geometry.coords)
+
+    second = points_to_line.invoke({
+        "layer_name": "pp_close_repeat", "group_field": "g", "order_field": "ord",
+        "close_ring": True,
+    })
+    second_name = "pp_close_repeat_点转线_1"
+    second_out, _ = T._layer_to_gdf(second_name)
+    second_coords = list(second_out.iloc[0].geometry.coords)
+
+    assert "完成" in first and "完成" in second
+    assert len(first_coords) == 3 and first_coords[0] != first_coords[-1]
+    assert len(second_coords) == 4 and second_coords[0] == pytest.approx(second_coords[-1])
+
+
 # ============================================================
 # generate_points_along_lines
 # ============================================================
@@ -437,6 +495,30 @@ def test_generate_points_along_lines_count_matches_known_length():
     assert dists == pytest.approx([250.0 * (i + 1) for i in range(expected_n)]), dists
 
 
+def test_generate_points_different_intervals_preserve_previous_results():
+    line = _fc([_line({"n": "l"}, [[113.00, 23.00], [113.01, 23.00]])])
+    _register_layer("gen_ln_interval_repeat", line)
+
+    first = generate_points_along_lines.invoke({
+        "layer_name": "gen_ln_interval_repeat", "interval": 250, "unit": "m",
+    })
+    first_name = "gen_ln_interval_repeat_沿线等距点"
+    out_250, _ = T._layer_to_gdf(first_name)
+    first_distances = sorted(float(v) for v in out_250["dist_m"])
+
+    second = generate_points_along_lines.invoke({
+        "layer_name": "gen_ln_interval_repeat", "interval": 500, "unit": "m",
+    })
+    second_name = "gen_ln_interval_repeat_沿线等距点_1"
+    out_500, _ = T._layer_to_gdf(second_name)
+
+    assert "完成" in first and "完成" in second
+    assert len(out_250) > len(out_500) > 0
+    assert sorted(float(v) for v in out_250["dist_m"]) == first_distances
+    assert sorted(float(v) for v in out_500["dist_m"]) == pytest.approx(
+        [500.0 * (i + 1) for i in range(len(out_500))])
+
+
 def test_generate_points_along_lines_km_unit_equivalent():
     """0.25 km 与 250 m 必须生成完全相同的点数。"""
     line = _fc([_line({"n": "l"}, [[113.00, 23.00], [113.01, 23.00]])])
@@ -446,7 +528,7 @@ def test_generate_points_along_lines_km_unit_equivalent():
     n_m = len(out_m)
 
     generate_points_along_lines.invoke({"layer_name": "gen_ln2", "interval": 0.25, "unit": "km"})
-    out_km, _ = T._layer_to_gdf("gen_ln2_沿线等距点")
+    out_km, _ = T._layer_to_gdf("gen_ln2_沿线等距点_1")
     assert len(out_km) == n_m, (len(out_km), n_m)
     assert sorted(float(v) for v in out_km["dist_m"]) == pytest.approx(
         sorted(float(v) for v in out_m["dist_m"]))

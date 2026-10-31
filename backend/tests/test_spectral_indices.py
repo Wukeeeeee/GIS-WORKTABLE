@@ -98,6 +98,54 @@ class TestSpectralIndexValues:
         val = self._mean(r)
         assert val is not None and abs(val - 0.4286) < 0.01, r
 
+    def test_ndvi_different_band_params_preserve_previous_output(self, upload_dir):
+        import rasterio
+
+        _make_tif(os.path.join(upload_dir, "ndvi_repeat.tif"), [0.1, 0.3, 0.2, 0.5, 0.05])
+        first = ndvi_analysis.invoke({"layer_name": "ndvi_repeat", "red_band": 3, "nir_band": 4})
+        first_op = next(op for op in _pending_layer_ops if op.get("action") == "dem_result")
+        first_name = first_op["layer_name"]
+        first_info = _registered_layers[first_name]
+        first_path = first_info["raster_source_path"]
+        with open(first_path, "rb") as raster_file:
+            first_bytes = raster_file.read()
+        with rasterio.open(first_path) as raster:
+            first_values = raster.read(1)
+
+        reset_state()
+        second = ndvi_analysis.invoke({"layer_name": "ndvi_repeat", "red_band": 2, "nir_band": 4})
+        second_op = next(op for op in _pending_layer_ops if op.get("action") == "dem_result")
+        second_name = second_op["layer_name"]
+        second_info = _registered_layers[second_name]
+
+        assert "已生成NDVI" in first and "已生成NDVI" in second
+        assert second_name != first_name
+        assert second_info["raster_source_path"] != first_path
+        with open(first_path, "rb") as raster_file:
+            assert raster_file.read() == first_bytes
+        with rasterio.open(second_info["raster_source_path"]) as raster:
+            assert not np.array_equal(raster.read(1), first_values)
+
+    def test_shared_spectral_index_different_bands_preserve_previous_preview(self, upload_dir):
+        _make_tif(os.path.join(upload_dir, "ndwi_repeat.tif"), [0.1, 0.3, 0.2, 0.5, 0.05])
+        first = ndwi_analysis.invoke({"layer_name": "ndwi_repeat", "green_band": 2, "nir_band": 4})
+        first_op = next(op for op in _pending_layer_ops if op.get("action") == "dem_result")
+        first_name = first_op["name"]
+        first_path = os.path.join(upload_dir, first_name)
+        with open(first_path, "rb") as image_file:
+            first_bytes = image_file.read()
+
+        reset_state()
+        second = ndwi_analysis.invoke({"layer_name": "ndwi_repeat", "green_band": 3, "nir_band": 4})
+        second_op = next(op for op in _pending_layer_ops if op.get("action") == "dem_result")
+        second_name = second_op["name"]
+
+        assert "已生成NDWI" in first and "已生成NDWI" in second
+        assert second_name != first_name
+        with open(first_path, "rb") as image_file:
+            assert image_file.read() == first_bytes
+        assert os.path.isfile(os.path.join(upload_dir, second_name))
+
     def test_evi_formula_value(self, upload_dir):
         """EVI = 2.5*(NIR-Red)/(NIR+6*Red-7.5*Blue+1) 应得已知值"""
         # NIR=0.5, Red=0.2, Blue=0.1 -> 2.5*0.3/(0.5+1.2-0.75+1)=0.3846

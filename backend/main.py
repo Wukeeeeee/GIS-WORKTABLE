@@ -2091,7 +2091,7 @@ async def _process_uploaded_file(file: UploadFile, request_id=None):
                             )
                         else:
                             preview_frame[column] = preview_frame[column].astype(common_dtype)
-                    preview = orjson.loads(preview_frame.to_json(orient='records'))
+                    preview = orjson.loads(preview_frame.to_json(orient='records', double_precision=15))
                 return columns or [], preview, rows
             columns, preview, rows = await asyncio.to_thread(read_csv_preview)
 

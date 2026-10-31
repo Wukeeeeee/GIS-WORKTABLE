@@ -141,6 +141,16 @@ def test_csv_preview_applies_late_mixed_type_inference_across_chunks(client):
     ]
 
 
+def test_csv_preview_preserves_float_precision_for_coordinate_values(client):
+    value = 120.12345678901234
+    response = client.post(
+        '/api/upload', files={'file': ('precise.csv', f'longitude\n{value}\n'.encode(), 'text/csv')},
+    )
+
+    assert response.status_code == 200
+    assert response.json()['csv_info']['preview'][0]['longitude'] == value
+
+
 def test_header_only_csv_preserves_columns_without_data_rows(client):
     response = client.post(
         '/api/upload', files={'file': ('schema-only.csv', b'longitude,latitude\n', 'text/csv')},

@@ -279,6 +279,63 @@ def test_zero_default_is_kept_and_stable_fid_cannot_be_deleted():
     assert all("_fid" in f["properties"] for f in tools._registered_layers["places"]["geojson"]["features"])
 
 
+def test_add_field_preserves_large_integer_properties_with_nulls():
+    exact_value = 2**53 + 1
+    tools._register_layer("places", {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"value": exact_value},
+             "geometry": {"type": "Point", "coordinates": [120, 30]}},
+            {"type": "Feature", "properties": {"value": None},
+             "geometry": {"type": "Point", "coordinates": [121, 31]}},
+        ],
+    })
+
+    result = tools.add_field.invoke({"layer_name": "places", "field_name": "note", "field_type": "str"})
+
+    assert "添加" in result
+    features = tools._registered_layers["places"]["geojson"]["features"]
+    assert features[0]["properties"]["value"] == exact_value
+    assert features[1]["properties"]["value"] is None
+    assert all(feature["properties"]["note"] is None for feature in features)
+
+
+def test_delete_field_preserves_large_integer_properties_with_nulls():
+    exact_value = 2**53 + 1
+    tools._register_layer("places", {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"value": exact_value, "remove_me": "x"},
+             "geometry": {"type": "Point", "coordinates": [120, 30]}},
+            {"type": "Feature", "properties": {"value": None, "remove_me": "y"},
+             "geometry": {"type": "Point", "coordinates": [121, 31]}},
+        ],
+    })
+
+    result = tools.delete_field.invoke({"layer_name": "places", "field_name": "remove_me"})
+
+    assert "删除字段" in result
+    features = tools._registered_layers["places"]["geojson"]["features"]
+    assert features[0]["properties"]["value"] == exact_value
+    assert features[1]["properties"]["value"] is None
+    assert all("remove_me" not in feature["properties"] for feature in features)
+
+
+@pytest.mark.parametrize("default_value", ["nan", "inf", "-inf", "Infinity", "-Infinity"])
+def test_add_field_rejects_non_finite_float_defaults_without_mutating_layer(default_value):
+    tools._register_layer("places", _points())
+    previous = tools._registered_layers["places"]["geojson"]
+
+    result = tools.add_field.invoke({
+        "layer_name": "places", "field_name": "score", "field_type": "float",
+        "default_value": default_value,
+    })
+
+    assert "必须是有限数值" in result
+    assert tools._registered_layers["places"]["geojson"] == previous
+    assert tools.get_pending_state()["layers"] == []
+
+
 def test_delete_features_accepts_explicit_empty_string_value():
     tools._register_layer("places", _points())
     result = tools.delete_features.invoke({
@@ -286,6 +343,148 @@ def test_delete_features_accepts_explicit_empty_string_value():
     })
     assert "1/2" in result
     assert [feature["properties"]["group"] for feature in tools._registered_layers["places"]["geojson"]["features"]] == ["x"]
+
+
+def test_delete_features_preserves_unmodified_large_integer_with_null_peer():
+    exact_value = 2**53 + 1
+    tools._register_layer("places", {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"value": exact_value, "action": "keep"},
+             "geometry": {"type": "Point", "coordinates": [120, 30]}},
+            {"type": "Feature", "properties": {"value": None, "action": "drop"},
+             "geometry": {"type": "Point", "coordinates": [121, 31]}},
+        ],
+    })
+
+    result = tools.delete_features.invoke({
+        "layer_name": "places", "condition_field": "action", "condition_value": "drop",
+    })
+
+    assert "删除 1/2" in result
+    remaining = tools._registered_layers["places"]["geojson"]["features"]
+    assert len(remaining) == 1
+    assert remaining[0]["properties"]["value"] == exact_value
+
+
+def test_delete_features_matches_large_integer_exactly_with_null_peer():
+    exact_value = 2**53 + 1
+    tools._register_layer("places", {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"value": exact_value},
+             "geometry": {"type": "Point", "coordinates": [120, 30]}},
+            {"type": "Feature", "properties": {"value": exact_value + 1},
+             "geometry": {"type": "Point", "coordinates": [121, 31]}},
+            {"type": "Feature", "properties": {"value": None},
+             "geometry": {"type": "Point", "coordinates": [122, 32]}},
+        ],
+    })
+
+    result = tools.delete_features.invoke({
+        "layer_name": "places", "condition_field": "value", "condition_value": str(exact_value),
+    })
+
+    assert "删除 1/3" in result
+    remaining = tools._registered_layers["places"]["geojson"]["features"]
+    assert [feature["properties"]["value"] for feature in remaining] == [exact_value + 1, None]
+
+
+def test_update_attribute_preserves_unmodified_large_integer_with_null_peer():
+    exact_value = 2**53 + 1
+    tools._register_layer("places", {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"value": exact_value, "action": "keep", "state": "old"},
+             "geometry": {"type": "Point", "coordinates": [120, 30]}},
+            {"type": "Feature", "properties": {"value": None, "action": "edit", "state": "old"},
+             "geometry": {"type": "Point", "coordinates": [121, 31]}},
+        ],
+    })
+
+    result = tools.update_attribute.invoke({
+        "layer_name": "places", "field": "state", "value": "new",
+        "condition_field": "action", "condition_value": "edit",
+    })
+
+    assert "影响 1/2" in result
+    features = tools._registered_layers["places"]["geojson"]["features"]
+    assert features[0]["properties"]["value"] == exact_value
+    assert features[0]["properties"]["state"] == "old"
+    assert features[1]["properties"]["value"] is None
+    assert features[1]["properties"]["state"] == "new"
+
+
+def test_update_attribute_can_fill_all_null_text_field_conditionally():
+    tools._register_layer("places", {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"status": None, "action": "edit"},
+             "geometry": {"type": "Point", "coordinates": [120, 30]}},
+            {"type": "Feature", "properties": {"status": None, "action": "keep"},
+             "geometry": {"type": "Point", "coordinates": [121, 31]}},
+        ],
+    })
+
+    result = tools.update_attribute.invoke({
+        "layer_name": "places", "field": "status", "value": "checked",
+        "condition_field": "action", "condition_value": "edit",
+    })
+
+    assert "影响 1/2" in result
+    features = tools._registered_layers["places"]["geojson"]["features"]
+    assert features[0]["properties"]["status"] == "checked"
+    assert features[1]["properties"]["status"] is None
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "Infinity", "-Infinity", "1e999"])
+def test_update_attribute_rejects_non_finite_float_without_mutating_layer(value):
+    tools._register_layer("places", {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature", "properties": {"score": 1.5},
+            "geometry": {"type": "Point", "coordinates": [120, 30]},
+        }],
+    })
+    previous = tools._registered_layers["places"]["geojson"]
+
+    result = tools.update_attribute.invoke({
+        "layer_name": "places", "field": "score", "value": value,
+    })
+
+    assert "只接受有限浮点数" in result
+    assert tools._registered_layers["places"]["geojson"] == previous
+    assert tools.get_pending_state()["layers"] == []
+
+
+@pytest.mark.parametrize("operation,arguments", [
+    ("move_features", {"dx": 100, "dy": 0, "unit": "m"}),
+    ("rotate_features", {"angle": 30}),
+    ("scale_features", {"x_factor": 2, "y_factor": 2}),
+])
+def test_geometry_transformations_preserve_large_integer_properties(operation, arguments):
+    exact_value = 2**53 + 1
+    tools._register_layer("places", {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "properties": {"value": exact_value},
+             "geometry": {"type": "Point", "coordinates": [116.4, 39.9]}},
+            {"type": "Feature", "properties": {"value": None},
+             "geometry": {"type": "Point", "coordinates": [116.41, 39.91]}},
+        ],
+    })
+    before_features = tools._registered_layers["places"]["geojson"]["features"]
+    before_fids = [feature["properties"]["_fid"] for feature in before_features]
+    before_geometries = [feature["geometry"] for feature in before_features]
+
+    result = getattr(tools, operation).invoke({"layer_name": "places", **arguments})
+
+    assert "已同步地图" in result
+    after_features = tools._registered_layers["places"]["geojson"]["features"]
+    values = [feature["properties"]["value"] for feature in after_features]
+    assert values == [exact_value, None]
+    assert [feature["properties"]["_fid"] for feature in after_features] == before_fids
+    assert [feature["geometry"] for feature in after_features] != before_geometries
 
 
 def test_invalid_registration_is_reported_instead_of_silently_acknowledged():

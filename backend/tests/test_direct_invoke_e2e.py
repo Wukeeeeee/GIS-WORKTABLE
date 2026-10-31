@@ -177,7 +177,11 @@ def test_e2e_history_rerun_preserves_previous_raster_result(dem_registered, tmp_
         first = _invoke("raster_resample", {
             "layer_name": dem_registered, "scale_factor": 2.0, "method": "bilinear",
         })
-        result_name = f"{dem_registered}_重采样"
+        first_raster_ops = [
+            op for op in first["layer_ops"] if op.get("action") == "dem_result"
+        ]
+        assert len(first_raster_ops) == 1
+        result_name = first_raster_ops[0]["layer_name"]
         original_info = tool_service._registered_layers[result_name]
         original_path = original_info["raster_source_path"]
         with open(original_path, "rb") as original_file:
@@ -194,13 +198,13 @@ def test_e2e_history_rerun_preserves_previous_raster_result(dem_registered, tmp_
         assert rerun["ok"] is True, rerun
         with open(original_path, "rb") as original_file:
             assert original_file.read() == original_bytes
-        current = tool_service._registered_layers[result_name]
-        preserved = tool_service._registered_layers[f"{result_name}_原"]
-        assert current["raster_source_path"] != original_path
-        assert preserved["raster"]["crs"] == original_info["raster"]["crs"]
-        assert preserved["raster_source_path"] == original_path
         raster_ops = [op for op in rerun["layer_ops"] if op["action"] == "dem_result"]
-        assert [op["layer_name"] for op in raster_ops] == [f"{result_name}_原", result_name]
+        assert len(raster_ops) == 1
+        rerun_name = raster_ops[0]["layer_name"]
+        assert rerun_name != result_name
+        rerun_info = tool_service._registered_layers[rerun_name]
+        assert rerun_info["raster_source_path"] != original_path
+        assert tool_service._registered_layers[result_name]["raster_source_path"] == original_path
         for op in raster_ops:
             assert client.get(op["url"]).status_code == 200
             assert client.get(op["raster"]["source_url"]).status_code == 200

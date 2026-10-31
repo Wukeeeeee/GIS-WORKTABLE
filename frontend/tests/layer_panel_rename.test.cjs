@@ -409,10 +409,10 @@ test('adding and clearing layer labels updates the saved layer assignment', () =
   harness.window.GIS.map.setLabels = (...args) => { labelCalls.push(['set', ...args]); return true; };
   harness.window.GIS.map.clearLabels = name => labelCalls.push(['clear', name]);
 
-  assert.equal(harness.layers.addLabels('Original', 'district'), true);
-  assert.deepEqual(Array.from(labelCalls[0]), ['set', 'Original', 'district', 12, '#333333']);
+  assert.equal(harness.layers.addLabels('Original', 'district', 18, '#aabbcc'), true);
+  assert.deepEqual(Array.from(labelCalls[0]), ['set', 'Original', 'district', 18, '#aabbcc']);
   assert.deepEqual(JSON.parse(JSON.stringify(harness.layers.getLayers()[0].labels)), {
-    field: 'district', fontSize: 12, color: '#333333',
+    field: 'district', fontSize: 18, color: '#aabbcc',
   });
   harness.layers.clearLabels('Original');
   assert.equal(harness.layers.getLayers()[0].labels, undefined);

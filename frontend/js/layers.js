@@ -3181,12 +3181,20 @@ window.GIS = window.GIS || {};
         var rowNumber = parseInt(row.dataset.idx, 10) + 1;
         var longitudeText = coordinateValues['_经度'];
         var latitudeText = coordinateValues['_纬度'];
-        var parsedPoint = _parseEditedPointCoordinates(longitudeText, latitudeText);
-        if (parsedPoint.error) {
-          _showAttrValidationError(table, '第 ' + rowNumber + ' 行坐标无效：' + parsedPoint.error);
-          return;
+        var currentGeometry = features[idx] && features[idx].geometry;
+        var currentCoordinates = currentGeometry && currentGeometry.type === 'Point' ? currentGeometry.coordinates : null;
+        var longitudeUnchanged = Array.isArray(currentCoordinates) && longitudeText === currentCoordinates[0].toFixed(6);
+        var latitudeUnchanged = Array.isArray(currentCoordinates) && latitudeText === currentCoordinates[1].toFixed(6);
+        if (!longitudeUnchanged || !latitudeUnchanged) {
+          if (longitudeUnchanged) longitudeText = String(currentCoordinates[0]);
+          if (latitudeUnchanged) latitudeText = String(currentCoordinates[1]);
+          var parsedPoint = _parseEditedPointCoordinates(longitudeText, latitudeText);
+          if (parsedPoint.error) {
+            _showAttrValidationError(table, '第 ' + rowNumber + ' 行坐标无效：' + parsedPoint.error);
+            return;
+          }
+          pointCoordinates = parsedPoint.coordinates;
         }
-        pointCoordinates = parsedPoint.coordinates;
         allEmpty = false;
       }
       if (allEmpty) emptyRowNums.push(idx + 1);
@@ -4194,10 +4202,14 @@ window.GIS = window.GIS || {};
       return true;
     },
     /** AI 自然语言调用：对图层添加属性标注 */
-    addLabels: function(name, field) {
+    addLabels: function(name, field, fontSize, color) {
       var layer = _findLayerByNameOrFuzzy(name);
       if (!layer) { if (window.GIS.chat) window.GIS.chat.addMessage('未找到图层「' + name + '」', 'system'); return false; }
-      var labelConfig = { field: field, fontSize: 12, color: '#333333' };
+      var labelConfig = {
+        field: field,
+        fontSize: fontSize === undefined || fontSize === null ? 12 : fontSize,
+        color: color === undefined || color === null ? '#333333' : color,
+      };
       var applied = GIS.map && GIS.map.setLabels && GIS.map.setLabels(
         layer._rawName || layer.layer_id, field, labelConfig.fontSize, labelConfig.color
       );
