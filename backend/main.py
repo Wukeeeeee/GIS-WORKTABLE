@@ -164,7 +164,7 @@ def _resolve_upload_request(request_id):
         if record is None:
             return None
         _upload_request_cache.move_to_end(request_id)
-        if record["kind"] == "cancelled":
+        if record["kind"] in ("cancelled", "cancel_unconfirmed"):
             return {"error": "上传已取消"}
         if record["kind"] == "result":
             result = dict(record["result"])
@@ -200,6 +200,15 @@ def _remember_cancelled_upload(request_id):
     with _upload_request_lock:
         _upload_request_cache[request_id] = {
             "kind": "cancelled", "created_at": time.monotonic(),
+        }
+        _upload_request_cache.move_to_end(request_id)
+        _prune_upload_request_cache()
+
+
+def _remember_unconfirmed_upload_cancel(request_id):
+    with _upload_request_lock:
+        _upload_request_cache[request_id] = {
+            "kind": "cancel_unconfirmed", "created_at": time.monotonic(),
         }
         _upload_request_cache.move_to_end(request_id)
         _prune_upload_request_cache()
@@ -1402,6 +1411,8 @@ async def upload_status(request_id: str):
         record = _upload_request_cache.get(request_id)
         if record and record.get("kind") == "cancelled":
             return {"status": "cancelled"}
+        if record and record.get("kind") == "cancel_unconfirmed":
+            return {"status": "unknown"}
     result = _resolve_upload_request(request_id)
     if result and result.get("error") == "上传已取消":
         return {"status": "cancelled"}
@@ -1430,6 +1441,8 @@ async def cancel_upload(request_id: str):
             return {"status": "cancelling"}
     if record and record.get("kind") == "cancelled":
         return {"status": "cancelled"}
+    if record and record.get("kind") == "cancel_unconfirmed":
+        return {"status": "uncertain"}
     if record is not None:
         result = _resolve_upload_request(request_id)
         if result is not None and not result.get("error"):
@@ -1437,9 +1450,12 @@ async def cancel_upload(request_id: str):
             _remember_cancelled_upload(request_id)
             return {"status": "cancelled"}
         return {"status": "completed"}
-    # Cancellation can arrive before the multipart parser dispatches the upload route.
-    _remember_cancelled_upload(request_id)
-    return {"status": "cancelled"}
+    # No active handle or receipt is ambiguous: the upload may not have started,
+    # or its successful receipt may have expired/been evicted. Keep a bounded
+    # pre-cancel marker so a late upload cannot proceed, but do not claim that
+    # any previously completed result was rolled back.
+    _remember_unconfirmed_upload_cancel(request_id)
+    return {"status": "uncertain"}
 
 
 @app.post('/api/upload')
@@ -2578,12 +2594,63 @@ def _export_shp_sync(geojson: dict, crs: str, name: str):
     geopandas 转换 + zip 打包是纯 CPU/IO 重活，大图层可达数十秒，
     必须经 asyncio.to_thread 调用，不能占着事件循环。
     """
-    import tempfile, zipfile, shutil
+    import numbers, tempfile, zipfile, shutil
     import geopandas as gpd
 
     tmp_dir = None
     try:
-        gdf = gpd.GeoDataFrame.from_features(geojson["features"], crs=crs)
+        raw_features = geojson.get("features", [])
+        if not raw_features:
+            return None, "没有可导出的要素"
+
+        export_crs = crs
+        if not export_crs:
+            if isinstance(geojson.get("crs"), dict) and isinstance(geojson["crs"].get("properties"), dict):
+                export_crs = geojson["crs"]["properties"].get("name")
+        if not export_crs or str(export_crs).strip() in ("WGS84", "WGS-84", "4326", "CRS84", "urn:ogc:def:crs:OGC:1.3:CRS84"):
+            export_crs = "EPSG:4326"
+
+        prop_keys = set()
+        for feat in raw_features:
+            props = feat.get("properties")
+            if isinstance(props, dict):
+                prop_keys.update(props.keys())
+
+        for key in prop_keys:
+            coerces_to_float = False
+            large_int = None
+            for feat in raw_features:
+                props = feat.get("properties")
+                if not isinstance(props, dict):
+                    coerces_to_float = True
+                    continue
+                val = props.get(key)
+                if val is None or (isinstance(val, numbers.Real) and not isinstance(val, numbers.Integral)):
+                    coerces_to_float = True
+                elif isinstance(val, numbers.Integral) and not isinstance(val, bool):
+                    if abs(val) > 9007199254740991:
+                        large_int = val
+            if coerces_to_float and large_int is not None:
+                return None, f"Shapefile 无法精确表示混合浮点或空值的超大整数（属性「{key}」值 {large_int} 超过 53 位精度限制），请使用 GeoJSON 格式导出"
+
+        prepared_features = []
+        for feat in raw_features:
+            props = feat.get("properties")
+            new_feat = dict(feat)
+            if isinstance(props, dict):
+                new_props = {}
+                for k, v in props.items():
+                    if isinstance(v, (dict, list)):
+                        v = json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+                    if isinstance(v, str):
+                        byte_len = len(v.encode("utf-8"))
+                        if byte_len > 254:
+                            return None, f"Shapefile 字符串字段最大支持 254 字节，属性「{k}」长度为 {byte_len} 字节（已超过上限），请缩短字段内容或使用 GeoJSON 格式导出"
+                    new_props[k] = v
+                new_feat["properties"] = new_props
+            prepared_features.append(new_feat)
+
+        gdf = gpd.GeoDataFrame.from_features(prepared_features, crs=export_crs)
         if gdf.empty:
             return None, "没有可导出的要素"
 

@@ -2760,3 +2760,67 @@
 - **修复：**字段类型转换前先把浮点 NaN/±Inf 归一为 `None`，再用 object dtype 重建结果列，保留大整数精度和既有字符串/null 语义。
 - **验证：**新增 ±Inf 字符串输出回归修复前分别得到文本。第一次归一化实现被既有大整数与缺失值测试捕获 Pandas 浮点提升；改为 object dtype 后 `TestFieldCalculate` 与 `TestMeasureArea`：16/16，`py_compile` 与 `git diff --check` 通过（仅 LF→CRLF 提示）。
 - **边界：**覆盖 IEEE 浮点 NaN/±Inf 清理与大整数/缺失值回归；未新增复数、Decimal 或自定义数值类型转换契约。
+
+### 2026-11-04 工作流历史固化 DAG 依赖覆盖与分支链破坏（已修复）
+
+- **复现与影响：**`materialize_from_history` 原先直接根据参数字典中的 key 是否匹配 `("output_layer", "result_layer", "target_layer", "name", "layer_name")` 来登记 `layer_producers`。由于绝大多数分析工具（如 `spatial_buffer`、`spatial_dissolve`、`query_spatial_sql` 等）均使用 `layer_name` 作为**输入**参数，旧实现将输入图层误判为当前节点生成的产物，导致 `layer_producers` 被后续步骤覆盖。在分支工作流中（多个下游步骤依赖同一个根图层），第二个步骤会被错误重连到第一个步骤（兄弟节点），破坏原本的树状/DAG 依赖结构；此外，旧逻辑仅支持单字符串精确匹配，不支持参数中的图层列表（如 `layer_ids: ["layer_a", "layer_b"]`）或逗号分隔的复合图层字符串。
+- **进一步复现（审查发现）：**
+  1. 逗号盲目拆分破坏 SQL 列名：参数值包含逗号时（如 `SELECT id, name, area FROM table`），若某个列名（如 `name`）恰好与上游生成的图层同名，旧实现会将其按逗号切分并错误替换为 `${node_1.layer_name}`，直接摧毁 SQL 语法。
+  2. SQL 表依赖未建立：当步骤调用 `query_spatial_sql` 并从上游图层查询时（如 `FROM "target_poly"`），旧逻辑无法识别 SQL 字符串内部的表名引用，未将上游节点添加至 `depends_on`，导致拓扑乱序或重跑失败。
+  3. 多图层产物键名不一致：当上游产生多个图层时，物化逻辑登记了 `layer_name_2`，但执行引擎输出中仅存在 `layer_names` 列表，下游节点消费时触发 KeyError。
+- **修复：**清理 `layer_producers` 候选字段，仅保留真正的输出参数名（`result_layer_name`、`output_layer_name`、`output_name`、`output_layer`、`result_layer`）及权威产物图层 ID（`layer_ids`），排除作为输入的 `layer_name`、`name`、`target_layer`；逗号分隔仅对显式图层列表参数生效，或当且仅当拆分出的每一项均为主管图层时才替换；增加针对 SQL 语句中的 `FROM/JOIN "layer"` 与 `FROM/JOIN layer` 表名检测并替换为动态引用，同时加入 `depends_on`；多图层输出时同步登记 `layer_name_1`、`layer_name_2` 及 `layer_names`；输入解析实现多层嵌套字典/列表的递归处理；并在 `topological_sort` 与 `_detect_cycle` 中过滤非字典或缺失 `id` 的节点，防止未捕获异常。
+- **验证：**新增 SQL 查询列名保留、SQL 表引用上游依赖物化、多产物图层索引键物化、非法节点拓扑容错等针对性回归；`backend/tests/test_materialize_workflow.py` 6/6 全部通过；`py_compile` 与 `git diff --check` 通过。
+- **边界：**基于合成历史事件与工具参数进行 DAG 构建与拓扑排序验证；未在真实 Web 前端画布中做拖拽节点渲染验收，也未测试包含循环引用的极端历史事件链。
+
+### 2026-11-04 工作流执行引擎引用解析与未执行节点状态（已修复）
+
+- **复现与影响：**`WorkflowExecutor._resolve_inputs` 仅支持 `${node_id.key}` 顶层单字符串精确替换。若参数值包含嵌套字典、列表，或 `${ node_1.output }`（大括号内含空格），或模板字符串插值（`${node_1.layer},${node_2.layer}`），解析均失效并保留原始字面量或抛出异常。同时，在依赖未满足或图结构不连通导致部分节点残留为 `pending` 状态时，`WorkflowExecutor.execute` 在无失败/跳过节点时仍会将工作流整体标记为 `success`，掩盖未执行步骤。`_auto_register_layer` 还会无条件覆盖已有同名输出键。
+- **进一步复现（审查发现）：**
+  1. 混合花括号正则匹配越界：使用 `startswith("${") and endswith("}") and count("${") == 1` 判断单变量引用时，若字符串类似 `"${node_1.name} and {extra}"`（尾部含普通花括号），会被误判为单变量引用，导致 `out_key` 被提取为 `"name} and {extra"` 并抛出 `KeyError`。
+  2. 工作流重跑状态残留：`execute()` 启动时仅清空了 `outputs` 和 `error`，未重置 `status`（保持上一次运行的 `success`）和时间戳；若第二次执行时部分节点因断图未被调度，`pending` 检查因该节点仍标记为 `success` 而失效，整体状态被误报为 `success`。
+  3. 工具异常前缀识别遗漏：`_tool_failure_message` 缺少对 `"异常:"`、`"异常："` 以及 `{"ok": false}` JSON 字符串返回值的识别，导致工具显式异常返回被当成成功。
+  4. 多图层输出字段缺失：`layer_snapshot_fn` 产生多个新图层时，仅填入 `layer_names`，缺少 `layer_name_1`、`layer_name_2`，导致下游单图层引用失败。
+- **修复：**
+  1. 单变量引用改用 `re.fullmatch(r"\$\{\s*([^}]+)\s*\}", val_stripped)` 严格匹配，字符串插值由 `re.sub` 处理并支持混合花括号；
+  2. 实现通用嵌套属性和列表索引提取函数 `_get_nested_val`，支持 `${node.meta.layer_name}` 和 `${node.items.0}`；
+  3. 执行前统一将所有节点重置为 `status="pending"`、`duration=None` 并清空时间戳；
+  4. 上游状态检查统一为 `node_map[dep].get("status") != "success"`，阻断依赖未成功的节点继续执行；
+  5. 扩展 `_tool_failure_message` 正则模式，覆盖 `"异常:"` 标识并解析 JSON 错误载荷；
+  6. 多图层变更时同步填充 `layer_name`、`layer_names` 及 `layer_name_i` 别名。
+- **验证：**新增混合花括号插值、嵌套属性/列表索引解析、重跑状态重置、多产物图层下游消费、异常前缀/JSON 失败识别等针对性回归；`backend/tests/test_workflow.py` 37/37 全部通过；`py_compile` 与 `git diff --check` 通过。
+- **边界：**验证引擎在单机 Python 进程内的内存图解析与模拟执行；未覆盖分布式或长时间异步节点的中断重试机制。
+
+### 2026-11-04 SQL 引擎 Markdown 表格管道转义与只读语法扩展（已修复）
+
+- **复现与影响：**`execute_layer_sql` 生成 Markdown 预览表格时，表头或单元格如果包含管道符 `|` 或换行符 `\n`/`\r`，会导致前端渲染时 Markdown 表格列结构破裂错位。此外，只读检查仅允许 `SELECT`, `WITH`, `EXPLAIN`，排除了 SQLite 原生支持的只读 `VALUES (...)` 表值表达式。在测试隔离方面，`test_sql_engine.py` 遗留已注册图层 `"长沙市"`，导致跨测试触发 `privacy_service` 保护并在 `cache/history/` 下生成残留状态。
+- **进一步复现（审查发现）：**
+  1. 圆括号外包只读查询被拒：用户或客户端传入口包含圆括号的外层查询（如 `(SELECT 1)` 或 `(VALUES ('alpha'))`）时，`is_safe_readonly_sql` 因起始字符为 `(` 而直接判为“SQL 语句无效”；同时 SQLite 顶层语法对最外层多余括号报语法错误。
+  2. 非字典图层或脏要素崩溃：`execute_layer_sql` 遍历 `registered_layers` 及 `features` 时未完全校验对象类型，传入 `None` 或脏要素时抛出未捕获 `AttributeError`。
+  3. 空白图层名回退成 fishnet：`query_spatial_sql` 中 `result_layer_name` 为纯空白字符串时，Python 布尔值为真，直接传入 `_disambiguate_layer_name("   ")` 导致输出图层被错误命名为 `"fishnet"` 而非默认的 SQL 过滤结果名；同时缺失 `provenance` 谱系登记。
+- **修复：**
+  1. 实现 `_strip_outer_parens` 自动剥除匹配的外层圆括号，并在 `is_safe_readonly_sql` 白名单检查与 `execute_layer_sql` 底层执行中统一解包；
+  2. 在遍历 `registered_layers` 和要素 `features` 时添加全面的 `isinstance(..., dict)` 类型防御，跳过无效项；
+  3. `query_spatial_sql` 对 `result_layer_name.strip()` 判空，空白时回退至 `f"SQL过滤结果_{count}条"`，并补齐 `provenance={"tool": "query_spatial_sql", "sql": sql}` 传递。
+- **验证：**新增外层圆括号只读查询放行与执行、非字典图层与脏要素容错、空白结果图层名回退回归；修复后 `backend/tests/test_sql_engine.py` 28/28 全部通过；`py_compile` 与 `git diff --check` 通过。
+- **边界：**针对 SQLite 内存引擎与合成属性表；未在真实高并发只读连接池或远程 DuckDB 引擎下执行压测。
+
+### 2026-11-04 矢量图层几何变换与要素创建边界防护（已修复）
+
+- **复现与影响：**
+  1. `layer_split` 缺少拆分数量熔断：当未指定 `by_field` 时，旧逻辑为每一个要素单独建立图层；若遇到大量要素的图层，将在内部循环中注册海量图层并并发推送至前端，导致内存暴涨和地图/DOM 卡死；且空图层未被保护，返回看似成功的 0 个子图层。
+  2. `layer_add_geometry` 传入不存在字段抛未捕获 KeyError：用户显式指定不存在的 `lon_field` 或 `lat_field` 时，跳过候选查找后直接取列，触发原始异常并将 KeyError 字符串返回；经纬度字段指定相同未做校验；且多次执行未对产物名称做消歧，存在同名覆盖。
+  3. `layer_merge` 缺少输入图层数量与重复校验：传入单图层或空字符串时未能提前校验拦截；合并列表中包含重复图层时无校验；多图层合并未统一投影坐标系，且依赖过时的 `gpd.pd`。
+  4. `draw_feature` 异常向用户泄露完整 Python Traceback：遇到 `float("nan")` 等无效坐标时未能提前拦截，并在异常块中将完整调用堆栈拼入返回文案；且多次绘制同名要素未做消歧；Circle 缺乏超范围半径与超出 UTM 纬度（80°S–84°N）的防护。
+  5. `spatial_sample` 补全非整型数值输入防护与谱系元数据记录。
+- **修复：**
+  1. `layer_split` 增加 `MAX_SPLIT_LAYERS = 50` 阈值，未指定字段时若要素超过 50 个或唯一分组超过 50 个明确拒绝拆分并给出操作引导；空图层明确拦截；产物登记接入 `_disambiguate_layer_name` 并记录谱系。
+  2. `layer_add_geometry` 显式校验 `lon_field`/`lat_field` 是否在列名中，字段不存在时返回明确提示并列出可用字段；禁止经纬度指定同一列；产物图层使用 `_disambiguate_layer_name` 并附带谱系元数据。
+  3. `layer_merge` 校验至少 2 个非空图层名，排查重复图层名，基于 `pd.concat` 与首个图层 CRS 统合投影，产物接入消歧并记录来源。
+  4. `draw_feature` 移除堆栈泄露；`parse_xy` 校验 `math.isfinite` 及经纬度有效范围；Rectangle 校验对角线不共线；Circle 限制半径在合理范围内且圆心纬度在 80°S–84°N 内；产物图层统一接入消歧。
+- **验证：**
+  - `backend/tests/test_spatial_tools.py` 新增针对性回归测试（覆盖拆分数量熔断、合并参数校验与重复排查、经纬度字段有效性与重名消歧、绘制异常无堆栈泄露与坐标边界等）；
+  - 全量 `test_spatial_tools.py` 271/271 全部通过；
+  - `git diff --check` 与 `py_compile` 0 错误/0 警告。
+- **边界：**
+  - 基于本地受控测试套件与 GeoDataFrame/GeoJSON 运行环境验证；
+  - 未在真实 Web 浏览器或 Electron 环境下做实际地图交互式手绘、图层拆分/合并视觉渲染验收。

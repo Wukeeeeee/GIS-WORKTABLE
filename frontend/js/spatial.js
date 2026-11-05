@@ -673,22 +673,25 @@ window.GIS = window.GIS || {};
 
     p.then(function(result) {
       if (projectChanged()) throw new Error('工程已切换，旧工程工具结果未应用');
-      loader.style.display = 'none';
+      if (loader) loader.style.display = 'none';
       buttons.forEach(function(button) { button.disabled = false; });
+      if (!result || result.ok === false || result.error) {
+        throw new Error((result && (result.error || result.response)) || '工具执行失败');
+      }
       if (GIS.workspace && !GIS.workspace.toolFeedback('spatialPanel', result)) return;
       // 图层/op/热力图/图片统一上图
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
       _refreshLayers();
       // 文本结果展示在面板底部
       var parameterWarnings = Array.isArray(result.param_warnings) ? result.param_warnings.map(String).filter(Boolean) : [];
-      resultBody.textContent = [result.response || '', parameterWarnings.length ? '参数提示：' + parameterWarnings.join('；') : ''].filter(Boolean).join('\n\n');
-      resultEl.style.display = GIS.workspace ? 'none' : '';
+      if (resultBody) resultBody.textContent = [result.response || '', parameterWarnings.length ? '参数提示：' + parameterWarnings.join('；') : ''].filter(Boolean).join('\n\n');
+      if (resultEl) resultEl.style.display = GIS.workspace ? 'none' : '';
     }).catch(function(err) {
-      loader.style.display = 'none';
+      if (loader) loader.style.display = 'none';
       buttons.forEach(function(button) { button.disabled = false; });
       if (GIS.workspace) GIS.workspace.toolFeedback('spatialPanel', null, err);
-      resultBody.textContent = '执行失败: ' + err.message;
-      resultEl.style.display = GIS.workspace ? 'none' : '';
+      if (resultBody) resultBody.textContent = '执行失败: ' + err.message;
+      if (resultEl) resultEl.style.display = GIS.workspace ? 'none' : '';
     });
   }
 

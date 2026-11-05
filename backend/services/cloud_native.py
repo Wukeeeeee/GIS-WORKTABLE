@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
 import urllib.parse
 import urllib.request
+import warnings
 
 from backend.services.data_providers.errors import DataProviderError  # noqa: F401 (保持包初始化一致)
 from backend.services.url_security import safe_redirect_opener
@@ -416,6 +417,10 @@ def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None =
         import numpy as np
         import rasterio
         from rasterio.enums import ColorInterp
+        try:
+            from rasterio.errors import NodataShadowWarning
+        except ImportError:
+            NodataShadowWarning = None
         from rasterio.warp import transform_bounds
         from PIL import Image
     except ImportError as e:
@@ -440,13 +445,20 @@ def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None =
             out_w = max(1, width // scale)
             out_h = max(1, height // scale)
             count = ds.count
+            palette_band = next(
+                (index + 1 for index, interpretation in enumerate(ds.colorinterp)
+                 if interpretation == ColorInterp.palette),
+                None,
+            )
             alpha_band = next(
                 (index + 1 for index, interpretation in enumerate(ds.colorinterp)
                  if interpretation == ColorInterp.alpha),
                 None,
             )
             color_indexes = {interpretation: index + 1 for index, interpretation in enumerate(ds.colorinterp)}
-            if all(color in color_indexes for color in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)):
+            if palette_band:
+                rgb_indexes = [palette_band, palette_band, palette_band]
+            elif all(color in color_indexes for color in (ColorInterp.red, ColorInterp.green, ColorInterp.blue)):
                 rgb_indexes = [color_indexes[ColorInterp.red], color_indexes[ColorInterp.green], color_indexes[ColorInterp.blue]]
             else:
                 non_alpha_indexes = [
@@ -464,31 +476,82 @@ def _read_cog_impl(source: str, max_size: int = 2048, fallback_url: str | None =
             ]
 
             nodata = ds.nodata
-            if nodata is not None:
-                mask = np.zeros_like(bands[0], dtype=bool)
-                for b in bands:
+            mask = np.zeros_like(bands[0], dtype=bool)
+            for b in bands:
+                mask |= ~np.isfinite(b)
+                if nodata is not None and not np.isnan(nodata):
                     mask |= b == nodata
-            else:
-                mask = ~np.isfinite(bands[0])
-                for b in bands[1:]:
-                    mask |= ~np.isfinite(b)
             # Internal TIFF masks are independent of nodata metadata. Include
             # each displayed band's validity mask in the preview transparency.
-            for index in rgb_indexes:
-                mask |= ds.read_masks(index, out_shape=(out_h, out_w)) == 0
-            alpha = ds.dataset_mask(out_shape=(out_h, out_w)) if alpha_band else None
+            with warnings.catch_warnings():
+                if NodataShadowWarning is not None:
+                    warnings.simplefilter("ignore", NodataShadowWarning)
+                for index in rgb_indexes:
+                    mask |= ds.read_masks(index, out_shape=(out_h, out_w)) == 0
+            if alpha_band:
+                raw_alpha = ds.read(alpha_band, out_shape=(out_h, out_w))
+                if np.issubdtype(raw_alpha.dtype, np.floating):
+                    finite_alpha = np.where(np.isfinite(raw_alpha), raw_alpha, 0.0)
+                    if np.nanmax(finite_alpha) <= 1.0 and np.nanmin(finite_alpha) >= 0.0:
+                        alpha = np.clip(np.round(finite_alpha * 255.0), 0, 255).astype("uint8")
+                    else:
+                        alpha = np.clip(np.round(finite_alpha), 0, 255).astype("uint8")
+                elif raw_alpha.dtype == np.uint16:
+                    alpha = (raw_alpha // 257).astype("uint8")
+                elif np.issubdtype(raw_alpha.dtype, np.integer):
+                    max_int = float(np.iinfo(raw_alpha.dtype).max)
+                    if max_int > 255.0:
+                        alpha = np.clip(
+                            np.maximum(raw_alpha, 0) // int(max_int / 255.0),
+                            0,
+                            255,
+                        ).astype("uint8")
+                    else:
+                        alpha = np.clip(raw_alpha, 0, 255).astype("uint8")
+                else:
+                    alpha = np.clip(raw_alpha, 0, 255).astype("uint8")
+            else:
+                alpha = None
 
-            rgb = []
-            for b in bands:
-                valid = np.isfinite(b) & ~mask
-                if valid.any():
-                    lo, hi = np.percentile(b[valid], 2), np.percentile(b[valid], 98)
-                    if hi <= lo:
-                        hi = lo + 1.0
-                    b = np.clip((b - lo) / (hi - lo), 0, 1)
-                b = np.where(valid, b, 0)
-                rgb.append((b * 255).astype("uint8"))
-            rgb_image = np.stack(rgb, axis=-1)
+            if palette_band:
+                indices = bands[0]
+                palette = ds.colormap(palette_band)
+                rgb_image = np.zeros((*indices.shape, 3), dtype="uint8")
+                palette_alpha = np.full(indices.shape, 255, dtype="uint8")
+                known = np.zeros(indices.shape, dtype=bool)
+                has_palette_alpha = False
+                for index, color in palette.items():
+                    selected = indices == index
+                    if not selected.any():
+                        continue
+                    known |= selected
+                    rgb_image[selected] = np.clip(color[:3], 0, 255)
+                    if len(color) > 3:
+                        palette_alpha[selected] = np.clip(color[3], 0, 255)
+                        has_palette_alpha |= color[3] < 255
+                mask |= ~known
+                rgb_image[mask] = 0
+                if has_palette_alpha or alpha_band or mask.any():
+                    if alpha is not None:
+                        palette_alpha = (
+                            palette_alpha.astype("uint16")
+                            * np.asarray(alpha, dtype="uint16")
+                            // 255
+                        ).astype("uint8")
+                    alpha = palette_alpha
+                    alpha[mask] = 0
+            else:
+                rgb = []
+                for b in bands:
+                    valid = np.isfinite(b) & ~mask
+                    if valid.any():
+                        lo, hi = np.percentile(b[valid], 2), np.percentile(b[valid], 98)
+                        if hi <= lo:
+                            hi = lo + 1.0
+                        b = np.clip((b - lo) / (hi - lo), 0, 1)
+                    b = np.where(valid, b, 0)
+                    rgb.append((b * 255).astype("uint8"))
+                rgb_image = np.stack(rgb, axis=-1)
             if alpha is not None:
                 alpha = np.asarray(alpha, dtype="uint8")
                 alpha[mask] = 0

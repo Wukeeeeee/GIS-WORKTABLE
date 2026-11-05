@@ -137,17 +137,26 @@ class TestDataVIntegration:
 
 
 def test_convert_coordinates_utm_auto():
+    import pyproj
     from backend.services.tools import convert_coordinates
     """utm_auto 按经度自动落带：112.94→49带(32649)，116.4→50带(32650)"""
     r = convert_coordinates.invoke({"coords": "112.94,28.23",
                                     "source_crs": "wgs84", "target_crs": "utm_auto"})
     assert "wgs84→utm_auto" in r
-    easting = float(r.split(": ")[1].split(",")[0])
+    easting, northing = (float(v) for v in r.split(": ", 1)[1].split(","))
+    ref49_x, ref49_y = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32649", always_xy=True).transform(112.94, 28.23)
+    assert easting == pytest.approx(ref49_x, abs=0.5)
+    assert northing == pytest.approx(ref49_y, abs=0.5)
     assert 100_000 < easting < 900_000  # UTM 东向坐标合理范围
 
     r2 = convert_coordinates.invoke({"coords": "116.4,39.9",
                                      "source_crs": "wgs84", "target_crs": "utm_auto"})
-    assert "32650" in convert_coordinates.invoke(
-        {"coords": "116.4,39.9", "source_crs": "utm_auto", "target_crs": "wgs84"}) or True
+    easting2, northing2 = (float(v) for v in r2.split(": ", 1)[1].split(","))
+
+    # 116.4°E, 39.9°N 应自动落入 UTM 50N (EPSG:32650)，与独立 pyproj 变换基准严格一致
+    ref_x, ref_y = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:32650", always_xy=True).transform(116.4, 39.9)
+    assert easting2 == pytest.approx(ref_x, abs=0.5)
+    assert northing2 == pytest.approx(ref_y, abs=0.5)
+
     # 116.4°E → UTM 50N：东坐标应明显小于 49 带的同经度结果
-    assert float(r2.split(": ")[1].split(",")[0]) < easting
+    assert easting2 < easting

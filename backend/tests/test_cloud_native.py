@@ -444,6 +444,38 @@ def test_cog_preview_does_not_mask_rgb_pixel_near_nodata(tmp_path):
     assert green > 100 and blue > 100
 
 
+def test_cog_preview_renders_palette_indices_and_nodata_transparency(tmp_path):
+    import io
+    import numpy as np
+    import rasterio
+    from PIL import Image
+    from rasterio.enums import ColorInterp
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "palette-preview.tif"
+    with rasterio.open(
+        path, "w", driver="GTiff", width=2, height=2, count=1,
+        dtype="uint8", crs="EPSG:4326", nodata=0,
+        transform=from_origin(0, 2, 1, 1),
+    ) as dataset:
+        dataset.write(np.array([[1, 2], [3, 0]], dtype="uint8"), 1)
+        dataset.colorinterp = (ColorInterp.palette,)
+        dataset.write_colormap(1, {
+            0: (0, 0, 0, 255),
+            1: (255, 0, 0, 255),
+            2: (0, 255, 0, 255),
+            3: (0, 0, 255, 255),
+        })
+
+    result = cn._read_cog_impl(str(path), max_size=256)
+    with Image.open(io.BytesIO(result["png_bytes"])) as preview:
+        assert preview.mode == "RGBA"
+        assert preview.getpixel((0, 0)) == (255, 0, 0, 255)
+        assert preview.getpixel((1, 0)) == (0, 255, 0, 255)
+        assert preview.getpixel((0, 1)) == (0, 0, 255, 255)
+        assert preview.getpixel((1, 1))[3] == 0
+
+
 def test_read_cog_preview(local_tif):
     r = cn.read_cog(local_tif, max_size=256)
     assert r["png_bytes"][:8] == b"\x89PNG\r\n\x1a\n"
@@ -513,6 +545,84 @@ def test_read_cog_preview_uses_rgb_color_interpretation_when_alpha_is_first(tmp_
         assert preview.mode == "RGBA"
         assert red > green and red > blue
         assert alpha == 255
+
+
+def test_read_cog_preview_preserves_alpha_when_nodata_is_declared(tmp_path):
+    import io
+    import numpy as np
+    import rasterio
+    from PIL import Image
+    from rasterio.enums import ColorInterp
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "rgba-with-nodata.tif"
+    data = np.full((4, 4, 4), 200, dtype=np.uint8)
+    data[3] = 255
+    data[0, 0, 0] = 99  # nodata in red band at (0, 0)
+    data[3, 0, 1] = 0   # transparent alpha at (0, 1) with RGB=200
+    data[3, 0, 2] = 128 # semi-transparent alpha at (0, 2) with RGB=200
+
+    with rasterio.open(
+        path, "w", driver="GTiff", width=4, height=4, count=4, dtype="uint8",
+        crs="EPSG:4326", transform=from_origin(0, 4, 1, 1), nodata=99,
+    ) as dataset:
+        dataset.write(data)
+        dataset.colorinterp = (
+            ColorInterp.red, ColorInterp.green, ColorInterp.blue, ColorInterp.alpha,
+        )
+
+    result = cn._read_cog_impl(str(path), max_size=256)
+    with Image.open(io.BytesIO(result["png_bytes"])) as preview:
+        assert preview.mode == "RGBA"
+        assert preview.getpixel((0, 0))[3] == 0
+        assert preview.getpixel((1, 0))[3] == 0
+        assert preview.getpixel((2, 0))[3] == 128
+        assert preview.getpixel((3, 3))[3] == 255
+
+
+def test_read_cog_preview_preserves_uint16_alpha_and_nodata(tmp_path):
+    import io
+    import numpy as np
+    import rasterio
+    from PIL import Image
+    from rasterio.enums import ColorInterp
+    from rasterio.transform import from_origin
+
+    path = tmp_path / "uint16-rgba-nodata.tif"
+    data = np.full((4, 4, 4), 20000, dtype=np.uint16)
+    data[0, 0, 0] = 9999    # nodata in red band at (0, 0)
+    data[3, 0, 1] = 0       # transparent in alpha band at (0, 1)
+    data[3, 0, 2] = 20000   # partial alpha 20000 at (0, 2) -> 77
+    data[3, 0, 3] = 32768   # half alpha 32768 at (0, 3) -> 127
+    data[3, 1, 0] = 65535   # fully opaque at (1, 0) -> 255
+
+    with rasterio.open(
+        path, "w", driver="GTiff", width=4, height=4, count=4, dtype="uint16",
+        crs="EPSG:4326", transform=from_origin(0, 4, 1, 1), nodata=9999,
+    ) as dataset:
+        dataset.write(data)
+        dataset.colorinterp = (
+            ColorInterp.red, ColorInterp.green, ColorInterp.blue, ColorInterp.alpha,
+        )
+        mask = np.full((4, 4), 255, dtype=np.uint8)
+        mask[1, 1] = 0      # internal TIFF mask at (1, 1)
+        dataset.write_mask(mask)
+
+    result = cn._read_cog_impl(str(path), max_size=256)
+    with Image.open(io.BytesIO(result["png_bytes"])) as preview:
+        assert preview.mode == "RGBA"
+        # Nodata pixel is transparent despite opaque alpha
+        assert preview.getpixel((0, 0))[3] == 0
+        # Raw alpha=0 is preserved
+        assert preview.getpixel((1, 0))[3] == 0
+        # Partial alpha 20000 scaled via // 257 to 77
+        assert preview.getpixel((2, 0))[3] == 77
+        # Half alpha 32768 scaled via // 257 to 127 matching Rasterio dataset_mask
+        assert preview.getpixel((3, 0))[3] == 127
+        # Opaque 65535 scaled to 255
+        assert preview.getpixel((0, 1))[3] == 255
+        # Internal TIFF mask zeroes alpha even when raw alpha is 20000
+        assert preview.getpixel((1, 1))[3] == 0
 
 
 def test_remote_cog_uses_guarded_source_context(local_tif, monkeypatch):

@@ -91,6 +91,7 @@ def test_query_spatial_sql_tool_handles_registered_layer_fid():
             sql='SELECT name, pop_wan FROM "长沙市" ORDER BY pop_wan DESC'
         )
     finally:
+        tools._unregister_layer("长沙市")
         tools.reset_state()
 
     assert "SQL 执行成功" in result
@@ -294,4 +295,153 @@ def test_sql_tool_failure_is_detected_and_does_not_push_layer(monkeypatch, raise
         assert tools._tool_result_failed("query_spatial_sql", output)
         assert tools.get_pending_state()["layers"] == []
     finally:
+        tools.reset_state()
+
+
+def test_sql_values_statements_are_allowed():
+    """只读 VALUES 表达式应被允许并可作为表输出。"""
+    assert is_safe_readonly_sql("VALUES (1, '北京'), (2, '上海')")[0] is True
+
+    res = execute_layer_sql("VALUES (1, '北京'), (2, '上海')", {})
+    assert res["ok"] is True
+    assert res["row_count"] == 2
+    assert res["rows"] == [
+        {"column1": 1, "column2": "北京"},
+        {"column1": 2, "column2": "上海"},
+    ]
+
+
+def test_sql_markdown_table_escapes_pipes_and_newlines():
+    """Markdown 表格输出应转义属性中的竖线并清理换行符，避免破坏表格排版。"""
+    layers = {"pipe_layer": {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"title": "A | B", "desc": "line1\nline2"}, "geometry": None}
+    ]}}
+    res = execute_layer_sql('SELECT title, desc FROM "pipe_layer"', layers)
+    assert res["ok"] is True
+    table = res["markdown_table"]
+    # 竖线被转义为 \|
+    assert "A \\| B" in table
+    # 单元格中的换行符被转为空格，不产生破坏性多行
+    assert "line1 line2" in table
+    # 表格有效行数保持为 3（表头、分割线、单条记录行）
+    lines = [line for line in table.splitlines() if line.strip()]
+    assert len(lines) == 3
+
+
+def test_query_spatial_sql_disambiguates_repeated_output_names():
+    """重复运行同名或默认输出名称的查询时，新图层应自动消歧并保留旧图层。"""
+    from backend.services import tools
+    tools.reset_state()
+    source = "sql_disambiguate_src"
+    destination = "sql_custom_result"
+    try:
+        tools._register_layer(source, {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [112.9, 28.2]},
+                "properties": {"name": "点A"},
+            }]
+        })
+        out1 = tools.query_spatial_sql.func(
+            sql=f'SELECT * FROM "{source}"',
+            result_layer_name=destination,
+        )
+        assert destination in tools._registered_layers
+
+        out2 = tools.query_spatial_sql.func(
+            sql=f'SELECT * FROM "{source}"',
+            result_layer_name=destination,
+        )
+        assert f"{destination}_1" in tools._registered_layers
+        assert destination in tools._registered_layers
+        assert f"「{destination}_1」" in out2
+    finally:
+        tools._unregister_layer(source)
+        tools._unregister_layer(destination)
+        tools._unregister_layer(f"{destination}_1")
+        tools.reset_state()
+
+
+def test_sql_parenthesized_queries_are_allowed():
+    """外层被圆括号包裹的只读查询应被正确识别并允许执行。"""
+    assert is_safe_readonly_sql("(SELECT 1)")[0] is True
+    assert is_safe_readonly_sql("  (  VALUES ('alpha')  )  ")[0] is True
+
+    res = execute_layer_sql("(SELECT 1 AS num)", {})
+    assert res["ok"] is True
+    assert res["rows"] == [{"num": 1}]
+
+
+def test_execute_layer_sql_handles_none_layers_and_malformed_features():
+    """注册图层字典包含 None、非字典图层或要素列表含脏数据时不触发未捕获异常。"""
+    layers = {
+        "valid": {
+            "geojson": {
+                "type": "FeatureCollection",
+                "features": [
+                    None,
+                    {"type": "Feature", "geometry": None, "properties": {"val": 100}},
+                    "dirty_string_feature",
+                ]
+            }
+        },
+        "bad_none": None,
+        "bad_str": "not_a_layer_dict",
+    }
+    res = execute_layer_sql('SELECT val FROM "valid" WHERE val = 100', layers)
+    assert res["ok"] is True
+    assert res["row_count"] == 1
+    assert res["rows"][0]["val"] == 100
+
+
+def test_large_json_integers_do_not_abort_queries_on_other_layers():
+    """SQLite binding must not fail globally on exact JSON integers outside int64."""
+    from backend.services.sql_engine import execute_layer_sql
+
+    too_large = 2**63 + 17
+    too_small = -(2**63) - 1
+    layers = {
+        "target": {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"value": 7}, "geometry": None},
+        ]},
+        "unrelated_uint64": {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"value": too_large}, "geometry": None},
+            {"type": "Feature", "properties": {"value": too_small}, "geometry": None},
+        ]},
+    }
+
+    target_result = execute_layer_sql('SELECT value FROM "target"', layers)
+    assert target_result["ok"] is True
+    assert target_result["rows"] == [{"value": 7}]
+
+    large_result = execute_layer_sql('SELECT value FROM "unrelated_uint64"', layers)
+    assert large_result["ok"] is True
+    assert [row["value"] for row in large_result["rows"]] == [str(too_large), str(too_small)]
+
+
+def test_query_spatial_sql_whitespace_name_falls_back_to_default():
+    """空白字符作为 result_layer_name 时应回退到默认 SQL 过滤结果图层名，而非 fishnet。"""
+    from backend.services import tools
+    tools.reset_state()
+    source = "sql_space_src"
+    try:
+        tools._register_layer(source, {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [112.9, 28.2]},
+                "properties": {"name": "点1"},
+            }]
+        })
+        out = tools.query_spatial_sql.func(
+            sql=f'SELECT * FROM "{source}"',
+            result_layer_name="   ",
+        )
+        assert "fishnet" not in tools._registered_layers
+        # 默认名称应包含 SQL过滤结果
+        assert any("SQL过滤结果" in k for k in tools._registered_layers.keys())
+    finally:
+        for k in list(tools._registered_layers.keys()):
+            tools._unregister_layer(k)
         tools.reset_state()

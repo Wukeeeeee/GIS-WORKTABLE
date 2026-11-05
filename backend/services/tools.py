@@ -4651,7 +4651,7 @@ def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> 
     try:
         import geopandas as gpd
         from shapely.geometry import Point, LineString, Polygon
-        import json, re
+        import json, re, math
 
         gt = geometry_type.strip().lower()
         norm_map = {"point": "Point", "linestring": "LineString", "polygon": "Polygon",
@@ -4672,8 +4672,13 @@ def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> 
             if len(xy) != 2:
                 return None
             try:
-                return (float(xy[0]), float(xy[1]))
-            except ValueError:
+                x, y = float(xy[0]), float(xy[1])
+                if not math.isfinite(x) or not math.isfinite(y):
+                    return None
+                if not (-180 <= x <= 180 and -90 <= y <= 90):
+                    return None
+                return (x, y)
+            except (ValueError, TypeError, OverflowError):
                 return None
 
         pts = [parse_xy(p) for p in parts]
@@ -4681,40 +4686,47 @@ def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> 
 
         if gt == "Point":
             if not pts:
-                return "无法解析坐标，请使用「lon,lat」格式"
+                return "无法解析坐标，请使用「lon,lat」格式（经度 -180~180，纬度 -90~90）"
             geom = Point(pts[0])
             node_count = 1
         elif gt == "LineString":
             if len(pts) < 2:
-                return "无法解析坐标，LineString 至少需要 2 个点"
+                return "无法解析坐标，LineString 至少需要 2 个有效点"
             geom = LineString(pts)
             node_count = len(pts)
         elif gt == "Polygon":
             if len(pts) < 3:
-                return "无法解析坐标，Polygon 至少需要 3 个点"
+                return "无法解析坐标，Polygon 至少需要 3 个有效点"
             if pts[0] != pts[-1]:
                 pts.append(pts[0])
             geom = Polygon(pts)
             node_count = len(pts)
         elif gt == "Rectangle":
-            if len(parts) == 2 and (len(pts) < 2 or len(pts) > 2):
-                pass  # pts already parsed
             if len(pts) != 2:
-                return "Rectangle 需要 2 个坐标（对角线）：lon1,lat1;lon2,lat2"
+                return "Rectangle 需要 2 个有效坐标（对角线）：lon1,lat1;lon2,lat2"
             xs = [p[0] for p in pts]
             ys = [p[1] for p in pts]
             minx, maxx = min(xs), max(xs)
             miny, maxy = min(ys), max(ys)
+            if minx == maxx or miny == maxy:
+                return "Rectangle 对角线两点不能在同一经度或同一纬度上"
             geom = Polygon([(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)])
             node_count = 4
         else:  # Circle
             if len(pts) < 1 or len(parts) < 2:
                 return "Circle 需要圆心坐标和半径：lon,lat;radius_m"
-            radius = float(parts[1]) if len(parts) >= 2 else 0
-            if radius <= 0:
-                return "半径必须大于 0"
-            center_pt = Point(pts[0])
+            try:
+                radius = float(parts[1])
+            except (ValueError, TypeError, OverflowError):
+                return "Circle 半径必须是有限数值"
+            if not math.isfinite(radius) or radius <= 0:
+                return "Circle 半径必须大于 0"
+            if radius > 50_000_000:
+                return "Circle 半径超出合理地理范围"
             lon, lat = pts[0]
+            if lat < -80 or lat > 84:
+                return "Circle 圆心纬度必须在 UTM 投影适用范围（80°S 至 84°N）内"
+            center_pt = Point(pts[0])
             crs_utm = _get_utm_crs(lon, lat)
             center_gdf = gpd.GeoDataFrame({"geometry": [center_pt]}, crs="EPSG:4326")
             center_utm = center_gdf.to_crs(crs_utm)
@@ -4723,14 +4735,16 @@ def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> 
             geom = circle_gdf.geometry.iloc[0]
             node_count = len(geom.exterior.coords) if hasattr(geom, 'exterior') else 0
 
-        name = layer_name.strip() or f"绘制_{gt}_{len(_registered_layers) + 1}"
-        gdf = gpd.GeoDataFrame({"geometry": [geom]}, crs="EPSG:4326")
-        _gdf_to_layer(gdf, name)
+        base_name = layer_name.strip() or f"绘制_{gt}_{len(_registered_layers) + 1}"
+        with _state_lock:
+            name = _disambiguate_layer_name(base_name)
+            gdf = gpd.GeoDataFrame({"geometry": [geom]}, crs="EPSG:4326")
+            provenance = {"tool": "draw_feature", "geometry_type": gt}
+            _gdf_to_layer(gdf, name, provenance=provenance)
         pts_str = f"，含 {node_count} 个节点" if node_count else ""
         return f"已创建{gt}图层「{name}」，含 1 个要素{pts_str}，已加载到地图"
     except Exception as e:
-        import traceback
-        return f"绘制失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+        return f"绘制失败: {str(e)[:300]}"
 
 
 # ============================================================
@@ -5040,10 +5054,12 @@ def spatial_sample(layer_name: str, n: int = 0, frac: float = 0) -> str:
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None: return name
-        if isinstance(n, bool) or n < 0:
+        if isinstance(n, bool) or not isinstance(n, (int, float)) or not math.isfinite(n) or n < 0 or int(n) != n:
             return "采样失败: n 必须是非负整数"
-        if not math.isfinite(frac) or frac < 0:
+        n = int(n)
+        if isinstance(frac, bool) or not isinstance(frac, (int, float)) or not math.isfinite(frac) or frac < 0:
             return "采样失败: frac 必须是 0 到 1 之间的有限比例"
+        frac = float(frac)
         if n > 0 and frac > 0:
             return "采样失败: n 和 frac 只能指定一个"
         if n > 0:
@@ -5060,7 +5076,8 @@ def spatial_sample(layer_name: str, n: int = 0, frac: float = 0) -> str:
         base_result_name = f"{name}_采样{n or frac}"
         with _state_lock:
             result_name = _disambiguate_layer_name(base_result_name)
-            _gdf_to_layer(sampled, result_name)
+            provenance = {"tool": "spatial_sample", "source_layer": name, "n": n, "frac": frac}
+            _gdf_to_layer(sampled, result_name, provenance=provenance)
         return f"已随机采样 {len(sampled)}/{len(gdf)} 个要素，图层「{result_name}」已加载到地图"
     except Exception as e:
         return f"采样失败: {str(e)[:300]}"
@@ -5491,26 +5508,38 @@ def layer_merge(layer_names: str, new_name: str = "") -> str:
     """合并多个图层为一个（行合并）。layer_names 用逗号分隔。"""
     try:
         import geopandas as gpd
-        names = [n.strip() for n in layer_names.split(",")]
+        import pandas as pd
+        names = [n.strip() for n in layer_names.split(",") if n.strip()]
+        if len(names) < 2:
+            return "图层合并至少需要提供 2 个图层名（逗号分隔）"
+        if len(names) != len(set(names)):
+            duplicates = [n for n in names if names.count(n) > 1]
+            return f"图层合并列表中包含重复图层名「{duplicates[0]}」"
+
         gdfs = []
+        resolved_names = []
         for n in names:
             gdf, resolved = _layer_to_gdf(n)
             if gdf is None: return resolved
             gdfs.append(gdf)
-        result = gpd.pd.concat(gdfs, ignore_index=True)
-        merged_name = new_name.strip() or f"{'_'.join(names)}_合并"
+            resolved_names.append(resolved)
+
+        target_crs = gdfs[0].crs or "EPSG:4326"
+        unified_gdfs = []
+        for g in gdfs:
+            if g.crs and g.crs != target_crs:
+                unified_gdfs.append(g.to_crs(target_crs))
+            else:
+                unified_gdfs.append(g)
+
+        concatenated = pd.concat(unified_gdfs, ignore_index=True)
+        result = gpd.GeoDataFrame(concatenated, crs=target_crs)
+        base_name = new_name.strip() or f"{'_'.join(resolved_names)}_合并"
         with _state_lock:
-            occupied_names = set(_registered_layers)
-            occupied_names.update(
-                item.get("name") for item in _pending_layers if isinstance(item.get("name"), str)
-            )
-            base_name = merged_name
-            suffix = 1
-            while merged_name in occupied_names:
-                merged_name = f"{base_name}_{suffix}"
-                suffix += 1
-            _gdf_to_layer(result, merged_name)
-        return f"合并完成：{len(result)} 个要素（{len(names)} 个图层），结果图层「{merged_name}」已加载到地图"
+            merged_name = _disambiguate_layer_name(base_name)
+            provenance = {"tool": "layer_merge", "source_layers": resolved_names}
+            _gdf_to_layer(result, merged_name, provenance=provenance)
+        return f"合并完成：{len(result)} 个要素（{len(resolved_names)} 个图层），结果图层「{merged_name}」已加载到地图"
     except Exception as e:
         return f"图层合并失败: {str(e)[:300]}"
 
@@ -5521,35 +5550,36 @@ def layer_merge(layer_names: str, new_name: str = "") -> str:
 
 @tool
 def layer_split(layer_name: str, by_field: str = "") -> str:
-    """按属性字段拆分图层，每个唯一值生成一个子图层。不传 by_field 则每个要素单独成层。"""
+    """按属性字段拆分图层，每个唯一值生成一个子图层。不传 by_field 则每个要素单独成层（上限 50 层）。"""
     try:
         gdf, name = _layer_to_gdf(layer_name)
         if gdf is None: return name
+        if gdf.empty:
+            return f"图层「{name}」为空，无法拆分"
+
+        MAX_SPLIT_LAYERS = 50
 
         def register_part(group, base_name):
             with _state_lock:
-                occupied_names = set(_registered_layers)
-                occupied_names.update(
-                    item.get("name") for item in _pending_layers
-                    if isinstance(item.get("name"), str)
-                )
-                result_name = base_name
-                suffix = 1
-                while result_name in occupied_names:
-                    result_name = f"{base_name}_{suffix}"
-                    suffix += 1
-                _gdf_to_layer(group, result_name)
+                result_name = _disambiguate_layer_name(base_name)
+                provenance = {"tool": "layer_split", "source_layer": name, "by_field": by_field}
+                _gdf_to_layer(group, result_name, provenance=provenance)
 
         if by_field and by_field not in gdf.columns:
             return f"图层「{name}」不存在字段「{by_field}」，可用字段：{', '.join(map(str, gdf.columns))}"
         if by_field:
-            groups = gdf.groupby(by_field, dropna=False)
+            groups = list(gdf.groupby(by_field, dropna=False))
+            if len(groups) > MAX_SPLIT_LAYERS:
+                return f"字段「{by_field}」包含 {len(groups)} 个唯一值，超出拆分上限（最多 {MAX_SPLIT_LAYERS} 个图层）；未执行拆分"
             count = 0
             for val, group in groups:
-                register_part(group, f"{name}_{val}")
+                val_str = "null" if val is None or (isinstance(val, float) and math.isnan(val)) else str(val)
+                register_part(group, f"{name}_{val_str}")
                 count += 1
             return f"按字段「{by_field}」拆分为 {count} 个子图层（共 {len(gdf)} 个要素），已加载到地图"
         else:
+            if len(gdf) > MAX_SPLIT_LAYERS:
+                return f"图层「{name}」要素过多（{len(gdf)} 个），未指定字段拆分时最多支持 {MAX_SPLIT_LAYERS} 个要素单独成层；请指定 by_field 字段按类别拆分"
             for i in range(len(gdf)):
                 sub = gdf.iloc[[i]].copy()
                 register_part(sub, f"{name}_{i}")
@@ -5572,6 +5602,12 @@ def layer_add_geometry(layer_name: str, lon_field: str = "", lat_field: str = ""
         from shapely.geometry import Point
         lon_candidates = ["lng", "lon", "longitude", "x", "经度", "经"]
         lat_candidates = ["lat", "latitude", "y", "纬度", "纬"]
+
+        if lon_field and lon_field not in gdf.columns:
+            return f"图层「{name}」不存在经度列「{lon_field}」，可用列：{', '.join(map(str, gdf.columns))}"
+        if lat_field and lat_field not in gdf.columns:
+            return f"图层「{name}」不存在纬度列「{lat_field}」，可用列：{', '.join(map(str, gdf.columns))}"
+
         if not lon_field:
             for c in lon_candidates:
                 if c in gdf.columns:
@@ -5583,7 +5619,9 @@ def layer_add_geometry(layer_name: str, lon_field: str = "", lat_field: str = ""
                     lat_field = c
                     break
         if not lon_field or not lat_field:
-            return f"未找到经纬度列，可用列：{', '.join(gdf.columns)}"
+            return f"未找到经纬度列，可用列：{', '.join(map(str, gdf.columns))}"
+        if lon_field == lat_field:
+            return f"经度字段与纬度字段不能相同（均为「{lon_field}」）"
         import math
         try:
             longitudes = gdf[lon_field].map(float)
@@ -5596,9 +5634,11 @@ def layer_add_geometry(layer_name: str, lon_field: str = "", lat_field: str = ""
             return "经纬度超出有效范围：经度 -180 至 180，纬度 -90 至 90"
         gdf["geometry"] = [Point(lon, lat) for lon, lat in zip(longitudes, latitudes)]
         gdf = gdf.set_geometry("geometry", crs="EPSG:4326")
-        result_name = f"{name}_点"
-        _gdf_to_layer(gdf, result_name)
-        return f"已从 {lon_field}/{lat_field} 创建 {len(gdf)} 个点，已加载到地图"
+        with _state_lock:
+            result_name = _disambiguate_layer_name(f"{name}_点")
+            provenance = {"tool": "layer_add_geometry", "source_layer": name, "lon_field": lon_field, "lat_field": lat_field}
+            _gdf_to_layer(gdf, result_name, provenance=provenance)
+        return f"已从 {lon_field}/{lat_field} 创建 {len(gdf)} 个点，图层「{result_name}」已加载到地图"
     except Exception as e:
         return f"创建几何失败: {str(e)[:300]}"
 
@@ -10193,15 +10233,18 @@ def query_spatial_sql(sql: str, result_layer_name: str = "") -> str:
         # 若生成了衍生图层，自动推送到地图
         derived_geojson = res.get("derived_geojson")
         if derived_geojson and derived_geojson.get("features"):
-            layer_name = result_layer_name or f"SQL过滤结果_{len(derived_geojson['features'])}条"
+            clean_result_name = result_layer_name.strip() if isinstance(result_layer_name, str) else ""
+            base_layer_name = clean_result_name or f"SQL过滤结果_{len(derived_geojson['features'])}条"
+            layer_name = _disambiguate_layer_name(base_layer_name)
             style = {
                 "color": "#e11d48",
                 "fillColor": "#fb7185",
                 "fillOpacity": 0.4,
                 "weight": 2
             }
-            _push_layer(layer_name, derived_geojson, style=style)
-            _register_layer(layer_name, derived_geojson)
+            provenance = {"tool": "query_spatial_sql", "sql": sql}
+            _push_layer(layer_name, derived_geojson, style=style, provenance=provenance)
+            _register_layer(layer_name, derived_geojson, provenance=provenance)
             out_lines.append(f"\n✨ 已将包含空间几何的 {len(derived_geojson['features'])} 个要素自动加载为新图层「{layer_name}」！")
 
         return "\n".join(out_lines)

@@ -1465,3 +1465,153 @@ def test_stale_process_blob_refcount_does_not_remove_other_projects_blob(tmp_pat
 
     recovered = project_service.load_project(second["id"])
     assert recovered["layers"][0]["geojson"] == _GEOJSON
+
+def test_project_save_respects_project_count_limit_without_evicting_existing_data(
+    tmp_path, monkeypatch,
+):
+    _use_temp_project_store(tmp_path, monkeypatch)
+    monkeypatch.setattr(project_service, "_MAX_PROJECTS", 1)
+
+    initial_layer = {
+        "name": "初始矢量图层",
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {"tag": "first"},
+                "geometry": {"type": "Point", "coordinates": [120.0, 30.0]},
+            }],
+        },
+    }
+    first = project_service.save_project(
+        project_id=None,
+        name="已存在工程",
+        session_id="first-session",
+        provider="test-provider",
+        map_state={"center": [120.0, 30.0], "zoom": 12},
+        messages=[{"role": "user", "content": "保留我"}],
+        layers=[initial_layer],
+    )
+    first_pid = first["id"]
+    first_data = project_service._load_project_data(first_pid)
+    assert first_data is not None
+    pre_attempt_snapshot = json.loads(json.dumps(first_data))
+    blob_sha = first_data["layers"][0]["blob"]
+    assert project_service._blob_refcount.get(blob_sha) == 1
+    assert (tmp_path / "projects" / f"proj_{first_pid}").is_dir()
+
+    calls = {"allocate": 0, "blob_put": 0, "raster_store": 0, "save_data": 0, "delete_data": 0}
+    orig_allocate = project_service._allocate_project_id
+    orig_blob_put = project_service._blob_put
+    orig_raster_store = project_service._store_project_raster
+    orig_save_data = project_service._save_project_data
+    orig_delete_data = project_service._delete_project_data
+
+    def spy_allocate(*args, **kwargs):
+        calls["allocate"] += 1
+        return orig_allocate(*args, **kwargs)
+
+    def spy_blob_put(*args, **kwargs):
+        calls["blob_put"] += 1
+        return orig_blob_put(*args, **kwargs)
+
+    def spy_raster_store(*args, **kwargs):
+        calls["raster_store"] += 1
+        return orig_raster_store(*args, **kwargs)
+
+    def spy_save_data(*args, **kwargs):
+        calls["save_data"] += 1
+        return orig_save_data(*args, **kwargs)
+
+    def spy_delete_data(*args, **kwargs):
+        calls["delete_data"] += 1
+        return orig_delete_data(*args, **kwargs)
+
+    monkeypatch.setattr(project_service, "_allocate_project_id", spy_allocate)
+    monkeypatch.setattr(project_service, "_blob_put", spy_blob_put)
+    monkeypatch.setattr(project_service, "_store_project_raster", spy_raster_store)
+    monkeypatch.setattr(project_service, "_save_project_data", spy_save_data)
+    monkeypatch.setattr(project_service, "_delete_project_data", spy_delete_data)
+
+    new_raster_layer = {
+        "name": "多余栅格图层",
+        "raster": {
+            "source_asset": "mock_raster.tif",
+            "bounds": [100.0, 30.0, 101.0, 31.0],
+        },
+    }
+    with pytest.raises(ValueError, match="工程数量已达到上限（最多 1 个）；请先删除不需要的工程后再保存"):
+        project_service.save_project(
+            project_id=None,
+            name="第二个新工程-含栅格",
+            session_id="second-session",
+            provider="test-provider",
+            map_state={},
+            messages=[],
+            layers=[new_raster_layer],
+        )
+
+    new_vector_layer = {
+        "name": "多余矢量图层",
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {"tag": "second"},
+                "geometry": {"type": "Point", "coordinates": [121.0, 31.0]},
+            }],
+        },
+    }
+    with pytest.raises(ValueError, match="工程数量已达到上限（最多 1 个）；请先删除不需要的工程后再保存"):
+        project_service.save_project(
+            project_id="nonexistent_project_id_12345",
+            name="不存在ID的新工程",
+            session_id="third-session",
+            provider="test-provider",
+            map_state={},
+            messages=[],
+            layers=[new_vector_layer],
+        )
+
+    assert calls == {"allocate": 0, "blob_put": 0, "raster_store": 0, "save_data": 0, "delete_data": 0}
+
+    assert project_service._load_project_data(first_pid) == pre_attempt_snapshot
+    assert project_service.load_project(first_pid)["name"] == "已存在工程"
+    assert [p["id"] for p in project_service.list_projects()] == [first_pid]
+    assert len(list((tmp_path / "projects").glob("proj_*"))) == 1
+    assert project_service._blob_refcount.get(blob_sha) == 1
+
+    updated_layer = {
+        "name": "更新后图层",
+        "geojson": {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {"tag": "updated"},
+                "geometry": {"type": "Point", "coordinates": [120.5, 30.5]},
+            }],
+        },
+    }
+    updated = project_service.save_project(
+        project_id=first_pid,
+        name="已存在工程-更新版",
+        session_id="first-session",
+        provider="test-provider",
+        map_state={"center": [120.5, 30.5], "zoom": 14},
+        messages=[{"role": "user", "content": "保留我"}, {"role": "assistant", "content": "已更新"}],
+        layers=[updated_layer],
+    )
+    assert updated["id"] == first_pid
+    assert updated["name"] == "已存在工程-更新版"
+    assert calls["allocate"] == 0
+    assert calls["delete_data"] == 0
+    assert calls["raster_store"] == 0
+    assert calls["save_data"] == 1
+    assert calls["blob_put"] == 1
+
+    loaded = project_service.load_project(first_pid)
+    assert loaded["name"] == "已存在工程-更新版"
+    assert [p["id"] for p in project_service.list_projects()] == [first_pid]
+    assert len(list((tmp_path / "projects").glob("proj_*"))) == 1
+    assert len(loaded["layers"]) == 1
+    assert loaded["layers"][0]["name"] == "更新后图层"

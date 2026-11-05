@@ -396,14 +396,50 @@ def test_cancel_before_upload_route_starts_blocks_processing(client, monkeypatch
 
     monkeypatch.setattr(main, '_process_uploaded_file', unexpected_upload)
     request_id = 'cancel-before-upload-123'
-    assert asyncio.run(main.cancel_upload(request_id)) == {'status': 'cancelled'}
+    assert asyncio.run(main.cancel_upload(request_id)) == {'status': 'uncertain'}
 
     result = asyncio.run(main.upload(
         StarletteUploadFile(file=BytesIO(b'{}'), filename='cancelled.geojson'), request_id,
     ))
 
     assert result == {'error': '上传已取消'}
-    assert asyncio.run(main.upload_status(request_id)) == {'status': 'cancelled'}
+    assert asyncio.run(main.upload_status(request_id)) == {'status': 'unknown'}
+
+
+def test_cancel_after_upload_receipt_eviction_is_unconfirmed_and_preserves_layer(client, tmp_path, monkeypatch):
+    content = json.dumps({'type': 'Feature', 'properties': {'value': 1},
+                          'geometry': {'type': 'Point', 'coordinates': [-122.3, 47.6]}})
+    request_id = 'evicted-late-cancel-123'
+    uploaded = client.post(
+        f'/api/upload?request_id={request_id}',
+        files={'file': ('evicted-late-cancel.geojson', content, 'application/geo+json')},
+    )
+    assert uploaded.status_code == 200
+    result = uploaded.json()
+    source_path = tmp_path / 'uploads' / 'evicted-late-cancel.geojson'
+    assert result['name'] in tools._registered_layers
+    assert source_path.exists()
+
+    # Evict the successful receipt, reproducing the bounded-cache edge case.
+    monkeypatch.setattr(main, '_UPLOAD_REQUEST_CACHE_LIMIT', 1)
+    main._remember_upload_request('newer-receipt-456', {'csv_info': {'filename': 'newer.csv'}})
+    assert client.get(f'/api/upload/status/{request_id}').json() == {'status': 'unknown'}
+
+    # The server cannot prove cleanup, so it must preserve the layer and report
+    # uncertainty rather than tell the client that cancellation succeeded.
+    assert client.post(f'/api/upload/cancel/{request_id}').json() == {'status': 'uncertain'}
+    assert client.get(f'/api/upload/status/{request_id}').json() == {'status': 'unknown'}
+    assert result['name'] in tools._registered_layers
+    assert source_path.exists()
+
+    # Keep the request id blocked so an attempted recovery cannot duplicate it.
+    retry = client.post(
+        f'/api/upload?request_id={request_id}',
+        files={'file': ('evicted-late-cancel.geojson', content, 'application/geo+json')},
+    )
+    assert retry.status_code == 200
+    assert retry.json() == {'error': '上传已取消'}
+    assert result['name'] in tools._registered_layers
 
 
 def test_task_cancellation_without_request_id_removes_saved_upload(client, tmp_path, monkeypatch):

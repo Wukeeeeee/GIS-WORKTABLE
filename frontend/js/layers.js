@@ -1679,7 +1679,11 @@ window.GIS = window.GIS || {};
       ? bbox.map(function(v) { return v.toFixed(6); }).join(', ')
       : '无法计算';
 
-    var invalidCount = remote.invalid_geom_count !== undefined ? remote.invalid_geom_count : '未检测';
+    var invalidCount = (remote.invalid_geom_count !== undefined && remote.invalid_geom_count !== null) ? remote.invalid_geom_count : '未检测';
+    var isInvalidPositive = typeof invalidCount === 'number' ? invalidCount > 0 : (Number(invalidCount) > 0);
+    var invalidCountHtml = isInvalidPositive
+      ? '<span class="info-val is-warning" style="color:var(--error,#d32f2f);font-weight:600;">' + escapeHtml(String(invalidCount)) + '</span>'
+      : '<span class="info-val">' + escapeHtml(String(invalidCount)) + '</span>';
 
     if (title) title.textContent = layer.filename || '图层检查';
 
@@ -1704,6 +1708,7 @@ window.GIS = window.GIS || {};
       '</div>' +
       '<div class="info-row"><span class="info-label">要素总数</span><span class="info-val">' + audit.featureCount + '</span></div>' +
       '<div class="info-row"><span class="info-label">空几何数量</span><span class="info-val">' + audit.nullGeometryCount + '</span></div>' +
+      '<div class="info-row"><span class="info-label">无效几何数量</span>' + invalidCountHtml + '</div>' +
       '<div class="info-group-title">几何类型分布</div>' + auditGeometryRows +
       '<div class="info-group-title">各字段空值数量</div>' + auditRows + '</div>';
 

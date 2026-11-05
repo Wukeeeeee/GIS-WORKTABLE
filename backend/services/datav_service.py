@@ -211,14 +211,9 @@ def _find_adcode(name: str) -> int:
     # 2. 先在省份字典里查
     if clean_name in _ADCODES:
         return _ADCODES[clean_name]
-    for suffix in ['省', '市', '区', '县', '自治州', '自治区', '特别行政区']:
-        if clean_name.endswith(suffix):
-            bare = clean_name[:-len(suffix)]
-            for k, v in _ADCODES.items():
-                if bare in k:
-                    return v
 
-    # 3. 不是省份，从城市 adcode 字典查
+    # 3. 优先精确匹配城市/区县。省名子串回退必须放在城市查询之后，
+    # 否则“吉林市”等城市名会被误认为“吉林省”。
     city_map = _load_city_adcodes()
     if city_map:
         if clean_name in city_map:
@@ -228,6 +223,11 @@ def _find_adcode(name: str) -> int:
                 return city_map[clean_name[:-len(sfx)]]
             if clean_name + sfx in city_map:
                 return city_map[clean_name + sfx]
+
+    # 未知的行政区后缀名称不能猜成包含该子串的省份。
+    if clean_name.endswith(('省', '市', '区', '县', '自治州', '自治区', '特别行政区')):
+        return 0
+
     return 0
 
 

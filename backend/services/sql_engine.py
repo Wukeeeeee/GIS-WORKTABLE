@@ -21,6 +21,8 @@ SQL_QUERY_TIMEOUT_SECONDS = 10.0
 SQL_MAX_RESULT_ROWS = 100_000
 SQL_MAX_RESULT_BYTES = 32 * 1024 * 1024
 SQL_MAX_VALUE_BYTES = 16 * 1024 * 1024
+SQLITE_INT_MIN = -(2 ** 63)
+SQLITE_INT_MAX = (2 ** 63) - 1
 
 
 def is_safe_readonly_sql(sql: str) -> Tuple[bool, str]:
@@ -63,14 +65,34 @@ def is_safe_readonly_sql(sql: str) -> Tuple[bool, str]:
                 i += 1
         return "".join(out)
 
+    def _strip_outer_parens(s: str) -> str:
+        res = s.strip()
+        while res.startswith("(") and res.endswith(")"):
+            depth = 0
+            matched = True
+            for ch in res[:-1]:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        matched = False
+                        break
+            if matched and depth == 1:
+                res = res[1:-1].strip()
+            else:
+                break
+        return res
+
     clean_no_comments = _strip_sql_comments(clean)
-    first_token = re.match(r"([A-Za-z]+)\b", clean_no_comments.lstrip())
+    clean_unwrapped = _strip_outer_parens(clean_no_comments)
+    first_token = re.match(r"([A-Za-z]+)\b", clean_unwrapped.lstrip())
     if not first_token:
         return False, "SQL 语句无效"
 
     first_word = first_token.group(1).upper()
-    if first_word not in ("SELECT", "WITH", "EXPLAIN"):
-        return False, f"仅支持执行 SELECT 或 WITH 只读查询，拒绝执行「{first_word}」语句"
+    if first_word not in ("SELECT", "WITH", "EXPLAIN", "VALUES"):
+        return False, f"仅支持执行 SELECT、WITH 或 VALUES 只读查询，拒绝执行「{first_word}」语句"
 
     # 禁止破坏性关键词
     forbidden = [
@@ -158,8 +180,14 @@ def execute_layer_sql(sql: str, registered_layers: dict,
         # 1. 动态将每个图层挂载为内存表
         _used_table_names = set()
         for layer_name, layer_data in registered_layers.items():
-            geojson = layer_data.get("geojson") or (layer_data if isinstance(layer_data, dict) else {})
+            if not isinstance(layer_data, dict):
+                continue
+            geojson = layer_data.get("geojson") or layer_data
+            if not isinstance(geojson, dict):
+                continue
             features = geojson.get("features", [])
+            if not isinstance(features, list):
+                features = []
             if not features and geojson.get("type") == "Feature":
                 features = [geojson]
 
@@ -184,8 +212,10 @@ def execute_layer_sql(sql: str, registered_layers: dict,
             # 探测所有 properties 字段名
             all_fields = set()
             for f in features:
-                props = f.get("properties") or {}
-                all_fields.update(props.keys())
+                if isinstance(f, dict):
+                    props = f.get("properties") or {}
+                    if isinstance(props, dict):
+                        all_fields.update(props.keys())
 
             # _fid and _geom_json are reserved engine columns. SQLite resolves
             # identifiers case-insensitively, so their property aliases must be
@@ -234,7 +264,11 @@ def execute_layer_sql(sql: str, registered_layers: dict,
             # 插入数据
             insert_rows = []
             for idx, f in enumerate(features):
+                if not isinstance(f, dict):
+                    continue
                 props = f.get("properties") or {}
+                if not isinstance(props, dict):
+                    props = {}
                 fid = f.get("id")
                 if fid is None:
                     fid = props.get("_fid")
@@ -249,6 +283,12 @@ def execute_layer_sql(sql: str, registered_layers: dict,
                     val = props.get(col)
                     if isinstance(val, (dict, list)):
                         val = json.dumps(val, ensure_ascii=False)
+                    elif (isinstance(val, int) and not isinstance(val, bool)
+                          and not SQLITE_INT_MIN <= val <= SQLITE_INT_MAX):
+                        # SQLite INTEGER bindings are signed 64-bit. Preserve
+                        # larger GeoJSON integers exactly as decimal text so an
+                        # unrelated layer cannot abort the entire SQL query.
+                        val = str(val)
                     elif val is not None and not isinstance(val, (str, int, float)):
                         val = str(val)
                     row_vals.append(val)
@@ -270,7 +310,23 @@ def execute_layer_sql(sql: str, registered_layers: dict,
             return int(query_timed_out)
 
         conn.set_progress_handler(interrupt_expired_query, 1000)
-        cur.execute(sql)
+        exec_sql = sql.strip()
+        while exec_sql.startswith("(") and exec_sql.endswith(")"):
+            depth = 0
+            matched = True
+            for ch in exec_sql[:-1]:
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                    if depth == 0:
+                        matched = False
+                        break
+            if matched and depth == 1:
+                exec_sql = exec_sql[1:-1].strip()
+            else:
+                break
+        cur.execute(exec_sql)
         rows_raw = []
         result_bytes = 0
         for row in cur:
@@ -318,15 +374,21 @@ def execute_layer_sql(sql: str, registered_layers: dict,
                 }
 
         # 4. 生成可读的 Markdown 表格输出
-        # 去掉内部字段以供表格阅读
+        # 去掉内部字段以供表格阅读，并转义管道符与换行符以保持 Markdown 表格结构
         display_cols = [c for c in columns if c != "_geom_json"]
         lines = []
         if display_cols and rows:
-            lines.append("| " + " | ".join(display_cols) + " |")
+            safe_headers = [str(c).replace("|", "\\|").replace("\r", "").replace("\n", " ") for c in display_cols]
+            lines.append("| " + " | ".join(safe_headers) + " |")
             lines.append("| " + " | ".join(["---"] * len(display_cols)) + " |")
             for r in rows[:50]:  # 最多预览 50 行
-                row_str = " | ".join([str(r.get(c, "") if r.get(c) is not None else "") for c in display_cols])
-                lines.append(f"| {row_str} |")
+                row_vals = []
+                for c in display_cols:
+                    val = r.get(c)
+                    val_str = "" if val is None else str(val)
+                    val_str = val_str.replace("|", "\\|").replace("\r", "").replace("\n", " ")
+                    row_vals.append(val_str)
+                lines.append(f"| {' | '.join(row_vals)} |")
             if len(rows) > 50:
                 lines.append(f"\n*(共 {len(rows)} 条记录，以上展示前 50 条)*")
 

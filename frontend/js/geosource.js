@@ -1562,7 +1562,7 @@
     }
   }
 
-  function loadSavedServiceLayer(layer) {
+  function loadSavedServiceLayer(layer, isCurrent) {
     var rawUrl = layer && (layer.url || layer.service_url);
     if (!rawUrl) return false;
     if (hasUrlUserInfo(rawUrl)) {
@@ -1577,6 +1577,7 @@
     var requiresAuth = !!layer.requires_auth || !!authParameter;
 
     function connect(credential) {
+      if (typeof isCurrent === 'function' && !isCurrent()) return false;
       var runtimeUrl;
       try {
         runtimeUrl = credential ? withQueryCredential(url, credential) : url;
@@ -1604,6 +1605,7 @@
 
     if (!requiresAuth) return connect(null);
     requestCredentialForService({ service_name: serviceName, auth_parameter: authParameter }, function (choice) {
+      if (typeof isCurrent === 'function' && !isCurrent()) return;
       if (!choice) return;
       connect(choice.skipCredentialPrompt ? null : choice);
     });

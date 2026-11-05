@@ -7,6 +7,40 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def clean_stream_session_isolation():
+    from backend.services import tools
+    from backend.services.privacy_service import _marker
+    old_layers = dict(tools._registered_layers)
+    tools._registered_layers.clear()
+    tools.reset_state()
+    test_sessions = [
+        "controlled-step-sse",
+        "stream-retry-after-tool-result",
+        "stream-provider-error-redaction",
+        "workflow-custom-progress",
+    ]
+    for s in test_sessions:
+        marker = _marker(s)
+        if marker.exists():
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+    yield
+    tools._registered_layers.clear()
+    tools._registered_layers.update(old_layers)
+    tools.reset_state()
+    for s in test_sessions:
+        marker = _marker(s)
+        if marker.exists():
+            try:
+                marker.unlink()
+            except OSError:
+                pass
+
+
+
 @pytest.mark.parametrize("message", [
     "数据抓取失败: 未能解析 URL 所属的 GIS 服务或数据类型",
     "SQL 查询未通过: duplicate column name: _fid",

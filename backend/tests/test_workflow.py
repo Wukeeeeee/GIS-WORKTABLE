@@ -481,6 +481,210 @@ def test_execute_workflow_tool_unknown_tool():
     assert "nonexistent_xyz" in result
 
 
+def test_topological_sort_dangling_dependency_does_not_crash():
+    """节点依赖不存在的 ID 时，拓扑排序不应触发 KeyError 异常。"""
+    nodes = [
+        new_node("n1", "步骤1", "tool_a", depends_on=["missing_upstream"]),
+        new_node("n2", "步骤2", "tool_b", depends_on=["n1"]),
+    ]
+    order = topological_sort(nodes)
+    assert order.index("n1") < order.index("n2")
+
+
+def test_executor_resolves_nested_list_and_whitespace_references():
+    """解析上游变量时应支持内部空白、列表参数及字典嵌套。"""
+    called_args = []
+
+    def mock_sink(**kwargs):
+        called_args.append(kwargs)
+        return {"ok": True}
+
+    tools = {
+        "producer": lambda: {"layer_name": "poly_layer", "count": 10},
+        "producer2": lambda: {"layer_name": "line_layer"},
+        "consumer": mock_sink,
+    }
+
+    wf = new_workflow("测试模板解析", nodes=[
+        new_node("p1", "生成多边形", "producer"),
+        new_node("p2", "生成线", "producer2"),
+        new_node("c1", "下游汇总", "consumer", {
+            "single": " ${ p1.layer_name } ",
+            "layers": ["${p1.layer_name}", "${p2.layer_name}"],
+            "nested": {"target": "${p1.layer_name}", "num": "${p1.count}"},
+            "interpolated": "${p1.layer_name}+${p2.layer_name}",
+        }, depends_on=["p1", "p2"]),
+    ])
+
+    result = WorkflowExecutor(tools).execute(wf)
+    assert result["status"] == "success"
+    assert len(called_args) == 1
+    args = called_args[0]
+    assert args["single"] == "poly_layer"
+    assert args["layers"] == ["poly_layer", "line_layer"]
+    assert args["nested"] == {"target": "poly_layer", "num": 10}
+    assert args["interpolated"] == "poly_layer+line_layer"
+
+
+def test_executor_unexecuted_nodes_prevent_success_status():
+    """若由于非标准拓扑导致部分节点仍处于 pending 状态，整体工作流不能标记为 success。"""
+    tools = {
+        "tool_a": lambda: {"ok": True},
+    }
+    wf = new_workflow("未执行节点", nodes=[
+        new_node("n1", "执行节点", "tool_a"),
+        new_node("n2", "未触发节点", "tool_a"),
+    ])
+    executor = WorkflowExecutor(tools)
+    # 模拟拓扑排序仅返回第一个节点（例如因环或断图导致第二个节点未排入队列）
+    import backend.services.workflow as wf_module
+    orig_topo = wf_module.topological_sort
+    wf_module.topological_sort = lambda nodes: ["n1"]
+    try:
+        res = executor.execute(wf)
+        assert res["status"] == "partial"
+        assert "1 个节点未执行" in res["error"]
+        assert res["nodes"][0]["status"] == "success"
+        assert res["nodes"][1]["status"] == "pending"
+    finally:
+        wf_module.topological_sort = orig_topo
+
+
+def test_executor_resolves_string_interpolation_with_mixed_braces():
+    """测试包含 ${...} 且尾部或中间包含普通花括号的字符串能正确解析，而不误判为单变量引用。"""
+    called_args = []
+    tools = {
+        "producer": lambda: {"name": "boundary_1"},
+        "consumer": lambda **kwargs: called_args.append(kwargs) or {"ok": True},
+    }
+    wf = new_workflow("混合花括号解析", nodes=[
+        new_node("p1", "产出", "producer"),
+        new_node("c1", "消费", "consumer", {
+            "template": "${p1.name} and {literal_extra}",
+            "json_like": '{"target": "${p1.name}", "flag": 1}',
+        }, depends_on=["p1"]),
+    ])
+    result = WorkflowExecutor(tools).execute(wf)
+    assert result["status"] == "success"
+    assert len(called_args) == 1
+    assert called_args[0]["template"] == "boundary_1 and {literal_extra}"
+    assert called_args[0]["json_like"] == '{"target": "boundary_1", "flag": 1}'
+
+
+def test_executor_resolves_nested_path_and_list_index():
+    """解析上游引用应支持嵌套字典路径及列表索引访问。"""
+    called_args = []
+    tools = {
+        "producer": lambda: {
+            "meta": {"layer_name": "nested_roads", "count": 42},
+            "layer_names": ["layer_alpha", "layer_beta"],
+        },
+        "consumer": lambda **kwargs: called_args.append(kwargs) or {"ok": True},
+    }
+    wf = new_workflow("嵌套属性引用", nodes=[
+        new_node("p1", "产出嵌套数据", "producer"),
+        new_node("c1", "消费嵌套数据", "consumer", {
+            "road": "${p1.meta.layer_name}",
+            "total": "${p1.meta.count}",
+            "second": "${p1.layer_names.1}",
+        }, depends_on=["p1"]),
+    ])
+    result = WorkflowExecutor(tools).execute(wf)
+    assert result["status"] == "success"
+    assert called_args[0]["road"] == "nested_roads"
+    assert called_args[0]["total"] == 42
+    assert called_args[0]["second"] == "layer_beta"
+
+
+def test_executor_rerun_resets_stale_status_and_timing():
+    """同一 Workflow 实例重跑时，所有节点的 status、duration 和时间戳必须重置为 pending。"""
+    import backend.services.workflow as wf_module
+    tools = {"tool_a": lambda: {"ok": True}}
+    wf = new_workflow("重跑工作流", nodes=[
+        new_node("n1", "节点1", "tool_a"),
+        new_node("n2", "节点2", "tool_a"),
+    ])
+    executor = WorkflowExecutor(tools)
+    res1 = executor.execute(wf)
+    assert res1["status"] == "success"
+    assert res1["nodes"][0]["status"] == "success"
+    assert res1["nodes"][1]["status"] == "success"
+
+    # 模拟第二次执行时，拓扑排序因断图等原因仅调度 n1
+    orig_topo = wf_module.topological_sort
+    wf_module.topological_sort = lambda nodes: ["n1"]
+    try:
+        res2 = executor.execute(wf)
+        assert res2["status"] == "partial"
+        assert "1 个节点未执行" in res2["error"]
+        assert res2["nodes"][0]["status"] == "success"
+        # 核心：n2 不能残留第一次执行的 success
+        assert res2["nodes"][1]["status"] == "pending"
+        assert res2["nodes"][1]["duration"] is None
+    finally:
+        wf_module.topological_sort = orig_topo
+
+
+def test_executor_multi_layer_output_resolution():
+    """上游产生多个新图层时，下游引用 ${node.layer_name_2} 和 ${node.layer_names} 均可正常解析。"""
+    state = {"existing": "v1"}
+    def snapshot():
+        return dict(state)
+
+    def multi_producer():
+        state["layer_first"] = "v2"
+        state["layer_second"] = "v3"
+        return "多图层生成成功"
+
+    received = []
+    def consumer(l1, l2, all_layers):
+        received.append((l1, l2, all_layers))
+        return {"ok": True}
+
+    tools = {
+        "multi_producer": multi_producer,
+        "consumer": consumer,
+    }
+
+    wf = new_workflow("多产物图层下游消费", nodes=[
+        new_node("p1", "多图层生成", "multi_producer"),
+        new_node("c1", "下游消费", "consumer", {
+            "l1": "${p1.layer_name}",
+            "l2": "${p1.layer_name_2}",
+            "all_layers": "${p1.layer_names}",
+        }, depends_on=["p1"]),
+    ])
+
+    executor = WorkflowExecutor(tools, layer_snapshot_fn=snapshot)
+    res = executor.execute(wf)
+    assert res["status"] == "success"
+    assert len(received) == 1
+    assert received[0][0] == "layer_first"
+    assert received[0][1] == "layer_second"
+    assert received[0][2] == ["layer_first", "layer_second"]
+
+
+def test_topological_sort_and_detect_cycle_handle_invalid_nodes():
+    """topological_sort 与 _detect_cycle 传入 None 或缺少 id 的非法字典不崩溃。"""
+    from backend.services.workflow import _detect_cycle
+    # 包含 None 及无 id 字典
+    nodes = [{"id": "a", "depends_on": []}, None, {"name": "missing_id"}, {"id": "b", "depends_on": ["a"]}]
+    order = topological_sort(nodes)
+    assert order == ["a", "b"]
+
+    cycle = _detect_cycle(nodes)
+    assert cycle is None
+
+
+def test_tool_failure_message_detects_exceptions_and_json_payloads():
+    """统一识别异常前缀及 JSON 格式失败载荷。"""
+    from backend.services.workflow import _tool_failure_message
+    assert _tool_failure_message("SQL 查询执行异常: table not found") is not None
+    assert _tool_failure_message('{"ok": false, "error": "参数越界"}') == "参数越界"
+    assert _tool_failure_message("空间计算异常：坐标超限") is not None
+    assert _tool_failure_message("正常执行成功结果") is None
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

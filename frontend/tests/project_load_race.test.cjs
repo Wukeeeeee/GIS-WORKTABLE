@@ -192,6 +192,7 @@ test('deleting the current project waits for active chat cancellation', async ()
   );
   vm.runInNewContext(source, {
     window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+    confirm: () => true,
   }, { filename: sourcePath });
 
   window.GIS.project.setCurrentProjectId('active-project');
@@ -225,6 +226,7 @@ test('current project deletion is blocked when active chat cancellation fails', 
   );
   vm.runInNewContext(source, {
     window, document, Promise, Date, Math, Number, String, Object, Array, JSON,
+    confirm: () => true,
   }, { filename: sourcePath });
 
   window.GIS.project.setCurrentProjectId('active-project');
@@ -730,4 +732,96 @@ test('project export keeps its object URL alive until the browser can start the 
   assert.equal(timers[0].delay, 1000);
   timers[0].callback();
   assert.deepEqual(events, ['append', 'click', 'remove', 'revoke:blob:project-export']);
+});
+
+test('restoring a credential-protected GeoSource service does not register into a newer project if credentials arrive late', async () => {
+  const elements = {};
+  function element(id) {
+    const listeners = {};
+    const value = {
+      id, style: {}, dataset: {}, value: '', textContent: '', listeners,
+      addEventListener(type, callback) { listeners[type] = callback; },
+      focus() {},
+      click() { if (listeners.click) listeners.click({ target: value }); },
+    };
+    elements[id] = value;
+    return value;
+  }
+  for (const id of [
+    'geosourceModal', 'geosourceCredentialModal', 'geosourceCredentialTitle',
+    'geosourceCredentialParam', 'geosourceCredentialValue', 'geosourceCredentialCancelBtn',
+    'geosourceCredentialNoKeyBtn', 'geosourceCredentialSubmitBtn',
+    'workspaceCurrentProjectName', 'chatMessages', 'chatHistory',
+  ]) element(id);
+
+  const layers = [];
+  const renderedTiles = [];
+  const window = {
+    location: { href: 'http://localhost/' },
+    alert() {},
+    GIS: {
+      api: {
+        loadProject(id) {
+          if (id === 'project-a') {
+            return Promise.resolve({
+              id: 'project-a', name: '工程A', messages: [], mapState: {},
+              layers: [{
+                filename: '受保护在线瓦片', geometry_type: 'XYZ瓦片', service_type: 'XYZ',
+                url: 'https://tiles.example.test/{z}/{x}/{y}', requires_auth: true, auth_parameter: 'token',
+              }],
+            });
+          }
+          return Promise.resolve({ id: 'project-b', name: '工程B', messages: [], mapState: {}, layers: [] });
+        },
+      },
+      chat: { clear() {}, addMessage() {}, cancelActiveRequest() { return Promise.resolve(true); } },
+      map: {
+        clearAll() {},
+        addTileLayer(url, name) { renderedTiles.push({ url, name }); return {}; },
+      },
+      layers: {
+        getLayers() { return layers; },
+        clearAll() { layers.length = 0; },
+        addLayer(layer) { layers.push(layer); },
+        syncLayerOrder() {},
+        setGroupState() {},
+      },
+      utils: { escapeHtml(s) { return String(s); } },
+    },
+    addEventListener() {},
+  };
+  const document = {
+    readyState: 'complete',
+    addEventListener() {},
+    querySelector() { return null; },
+    getElementById(id) { return elements[id] || null; },
+  };
+
+  const context = vm.createContext({
+    window, document, console, Promise, JSON, Array, String, Number, Object, Date,
+    encodeURIComponent, decodeURIComponent, URL, Set, Map,
+  });
+
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../js/geosource.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../js/project.js'), 'utf8'), context);
+
+  await window.GIS.project.loadProject('project-a');
+  assert.equal(elements.geosourceCredentialModal.style.display, 'flex');
+  assert.equal(layers.length, 0);
+
+  await window.GIS.project.loadProject('project-b');
+  assert.equal(window.GIS.project.getCurrentProjectId(), 'project-b');
+  assert.equal(layers.length, 0);
+
+  elements.geosourceCredentialParam.value = 'token';
+  elements.geosourceCredentialValue.value = 'VALID_TOKEN_VALUE';
+  elements.geosourceCredentialSubmitBtn.click();
+
+  assert.equal(
+    layers.some(l => l.filename === '受保护在线瓦片'),
+    false,
+    'late credential for project A must not register its layer into project B'
+  );
+  assert.equal(layers.length, 0);
+  assert.equal(renderedTiles.length, 0);
 });

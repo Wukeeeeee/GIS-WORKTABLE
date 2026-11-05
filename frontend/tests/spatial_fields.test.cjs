@@ -162,3 +162,105 @@ test('spatial layer selectors disambiguate legacy Unicode aliases and preserve e
     ['e\u0301.geojson', 'e\u0301.geojson (2)'],
   ]);
 });
+
+test('spatial execution failure passes error to workspace feedback without swallowing details or applying result', async () => {
+  const sourcePath = path.resolve(__dirname, '../js/spatial.js');
+  const source = fs.readFileSync(sourcePath, 'utf8').replace(
+    'GIS.spatial = {', 'GIS.spatial = { _runOperationForTest: _runOperation,',
+  );
+  const values = { geomLayer: 'Sites', geomOp: 'centroid' };
+  const button = { disabled: false };
+  const loader = { style: {} };
+  const resultEl = { style: {} };
+  const resultBody = { textContent: '' };
+  const document = {
+    addEventListener() {},
+    getElementById(id) {
+      if (id === 'spatialResult') return resultEl;
+      if (id === 'spatialResultBody') return resultBody;
+      if (id === 'spatialLoader') return loader;
+      return { value: values[id] };
+    },
+    querySelectorAll() { return [button]; },
+  };
+  let feedbackCall = null;
+  let applied = false;
+  const window = {
+    GIS: {
+      workspace: {
+        toolPending() {},
+        toolFeedback(panel, res, err) { feedbackCall = { panel, res, err }; return false; },
+      },
+      chat: {
+        applyToolResult() { applied = true; },
+      },
+      api: {
+        invokeTool() {
+          return Promise.resolve({ ok: false, busy: true, error: '当前 GIS 正在处理另一项任务，请稍后重试' });
+        },
+      },
+    },
+  };
+  vm.runInNewContext(source, { window, document, Promise, Array, Object, String, Number, Math, Date, Set, Map });
+
+  window.GIS.spatial._runOperationForTest('geom', button);
+  assert.equal(button.disabled, true, 'run button is locked during execution');
+
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(button.disabled, false, 'run button is unlocked after failure');
+  assert.equal(applied, false, 'failed tool result is never applied');
+  assert.equal(loader.style.display, 'none');
+  assert.ok(feedbackCall, 'toolFeedback was invoked');
+  assert.equal(feedbackCall.panel, 'spatialPanel');
+  assert.equal(feedbackCall.res, null);
+  assert.equal(feedbackCall.err.message, '当前 GIS 正在处理另一项任务，请稍后重试');
+});
+
+test('spatial execution failure in non-workspace mode sets execution failure message on result element', async () => {
+  const sourcePath = path.resolve(__dirname, '../js/spatial.js');
+  const source = fs.readFileSync(sourcePath, 'utf8').replace(
+    'GIS.spatial = {', 'GIS.spatial = { _runOperationForTest: _runOperation,',
+  );
+  const values = { geomLayer: 'Sites', geomOp: 'centroid' };
+  const button = { disabled: false };
+  const loader = { style: {} };
+  const resultEl = { style: { display: 'none' } };
+  const resultBody = { textContent: '' };
+  const document = {
+    addEventListener() {},
+    getElementById(id) {
+      if (id === 'spatialResult') return resultEl;
+      if (id === 'spatialResultBody') return resultBody;
+      if (id === 'spatialLoader') return loader;
+      return { value: values[id] };
+    },
+    querySelectorAll() { return [button]; },
+  };
+  let applied = false;
+  const window = {
+    GIS: {
+      workspace: null,
+      chat: {
+        applyToolResult() { applied = true; },
+      },
+      api: {
+        invokeTool() {
+          return Promise.resolve({ ok: false, response: '无效几何要素' });
+        },
+      },
+    },
+  };
+  vm.runInNewContext(source, { window, document, Promise, Array, Object, String, Number, Math, Date, Set, Map });
+
+  window.GIS.spatial._runOperationForTest('geom', button);
+
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(applied, false, 'failed tool result is not applied');
+  assert.equal(button.disabled, false);
+  assert.equal(resultBody.textContent, '执行失败: 无效几何要素');
+  assert.equal(resultEl.style.display, '');
+});

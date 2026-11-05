@@ -281,6 +281,7 @@ test('replacing a chat request cancels its task without letting stale cleanup un
   await first;
 
   assert.equal(harness.tasks[0].status, 'cancelled');
+  assert.equal(harness.tasks[0].error, '请求已被新请求替换');
   assert.equal(harness.tasks[1].status, 'planning');
   assert.equal(harness.window._aiRunning, true);
   assert.equal(harness.window._aiAbortController.signal.aborted, false);
@@ -288,6 +289,7 @@ test('replacing a chat request cancels its task without letting stale cleanup un
   harness.window._aiAbortController.abort('user-cancel');
   await second;
   assert.equal(harness.tasks[1].status, 'cancelled');
+  assert.equal(harness.tasks[1].error, '用户取消');
   assert.equal(harness.window._aiRunning, false);
 });
 
@@ -1073,4 +1075,193 @@ test('hyphenated map export slash commands remain selectable and route directly 
     { action: 'pdf', title: '地图导出' },
   ]);
   assert.equal(harness.streamCalls.length, 0, 'direct export commands must not start an AI request');
+});
+
+test('cancellation or replacement during missing layer restoration prevents stale GIS writes and aborts the restore fetch', async () => {
+  const payload = 'data: ' + JSON.stringify({
+    type: 'done',
+    response: '已完成分析并设色',
+    layers: [],
+    layer_ops: [{ action: 'set_color', name: 'missing-roads', color: '#ff0000' }],
+  }) + '\n\n';
+  const bytes = new TextEncoder().encode(payload);
+  let resolveLayerFetch = null;
+  let restoreSignal = null;
+  const addedStateLayers = [];
+  const colorOperations = [];
+  let autoSaveCalls = 0;
+
+  const harness = createChatHarness(null);
+
+  harness.window.GIS.state = {
+    addLayer(layer) { addedStateLayers.push(layer); return { layer_id: layer.layer_id }; },
+    getLayers() { return []; },
+  };
+  harness.window.GIS.map.setLayerColor = (name, color) => { colorOperations.push({ name, color }); return true; };
+  harness.window.GIS.project.autoSave = () => { autoSaveCalls++; };
+
+  const originalFetch = harness.context.fetch;
+  let streamCount = 0;
+  harness.context.fetch = (url, options) => {
+    if (url.includes('/api/cancel')) return Promise.resolve({ ok: true });
+    if (url.endsWith('/api/chat/stream')) {
+      streamCount++;
+      if (streamCount === 1) {
+        let readCount = 0;
+        return Promise.resolve({
+          ok: true,
+          body: {
+            getReader() {
+              return {
+                read() {
+                  return Promise.resolve(readCount++ === 0
+                    ? { done: false, value: bytes }
+                    : { done: true });
+                }
+              };
+            }
+          }
+        });
+      }
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => {
+          const error = new Error('aborted');
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+      });
+    }
+    if (url.endsWith('/api/layers')) {
+      restoreSignal = options && options.signal;
+      return new Promise(resolve => {
+        resolveLayerFetch = () => resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            layers: [{ name: 'missing-roads', geojson: { type: 'FeatureCollection', features: [] } }],
+          }),
+        });
+      });
+    }
+    return originalFetch(url, options);
+  };
+
+  harness.window.GIS.chat.init();
+  const firstSend = harness.window.GIS.chat.send('第一条任务：带图层操作');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.ok(resolveLayerFetch, 'expected request 1 to be waiting on missing layer restore fetch');
+
+  // Request 2 arrives while Request 1 is paused on /api/layers
+  const secondSend = harness.window.GIS.chat.send('第二条任务：替换旧任务');
+  await new Promise(resolve => setImmediate(resolve));
+
+  // Now resolve the old restore fetch (simulating a response returning after replacement)
+  resolveLayerFetch();
+  await firstSend;
+
+  assert.deepEqual(addedStateLayers, [], 'stale request must not register restored layers after replacement');
+  assert.deepEqual(colorOperations, [], 'stale request must not apply layer operations after replacement');
+  assert.equal(autoSaveCalls, 0, 'stale request must not trigger project autoSave after replacement');
+  assert.equal(harness.tasks[0].status, 'cancelled');
+  assert.equal(harness.tasks[0].error, '请求已被新请求替换');
+
+  assert.ok(restoreSignal, 'expected restore fetch to receive request abort signal');
+  assert.equal(restoreSignal.aborted, true, 'abort controller should abort in-flight restore fetch on replacement');
+
+  assert.equal(harness.window._aiRunning, true);
+  harness.window._aiAbortController.abort('user-cancel');
+  await secondSend;
+  assert.equal(harness.tasks[1].status, 'cancelled');
+  assert.equal(harness.tasks[1].error, '用户取消');
+  assert.equal(harness.window._aiRunning, false);
+});
+
+test('delayed layer restore resolves after a replacement request has already finished without relabeling or stale writes', async () => {
+  const payload1 = 'data: ' + JSON.stringify({
+    type: 'done',
+    response: '任务1完成',
+    layers: [],
+    layer_ops: [{ action: 'set_color', name: 'late-layer', color: '#00ff00' }],
+  }) + '\n\n';
+  const payload2 = 'data: ' + JSON.stringify({
+    type: 'done',
+    response: '任务2完成',
+    layers: [],
+  }) + '\n\n';
+  let resolveLayerFetch = null;
+  const addedStateLayers = [];
+  const colorOperations = [];
+  let autoSaveCalls = 0;
+
+  const harness = createChatHarness(null);
+  harness.window.GIS.state = {
+    addLayer(layer) { addedStateLayers.push(layer); return { layer_id: layer.layer_id }; },
+    getLayers() { return []; },
+  };
+  harness.window.GIS.map.setLayerColor = (name, color) => { colorOperations.push({ name, color }); return true; };
+  harness.window.GIS.project.autoSave = () => { autoSaveCalls++; };
+
+  const originalFetch = harness.context.fetch;
+  let streamCount = 0;
+  harness.context.fetch = (url, options) => {
+    if (url.includes('/api/cancel')) return Promise.resolve({ ok: true });
+    if (url.endsWith('/api/chat/stream')) {
+      streamCount++;
+      const bytes = new TextEncoder().encode(streamCount === 1 ? payload1 : payload2);
+      let readCount = 0;
+      return Promise.resolve({
+        ok: true,
+        body: {
+          getReader() {
+            return {
+              read() {
+                return Promise.resolve(readCount++ === 0
+                  ? { done: false, value: bytes }
+                  : { done: true });
+              }
+            };
+          }
+        }
+      });
+    }
+    if (url.endsWith('/api/layers')) {
+      return new Promise(resolve => {
+        resolveLayerFetch = () => resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            layers: [{ name: 'late-layer', geojson: { type: 'FeatureCollection', features: [] } }],
+          }),
+        });
+      });
+    }
+    return originalFetch(url, options);
+  };
+
+  harness.window.GIS.chat.init();
+  const firstSend = harness.window.GIS.chat.send('任务1：触发缺失图层恢复');
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.ok(resolveLayerFetch, 'expected request 1 to be waiting on missing layer restore fetch');
+
+  // Request 2 arrives and COMPLETES fully before request 1's fetch resolves
+  const secondSend = harness.window.GIS.chat.send('任务2：替换并立即完成');
+  await secondSend;
+
+  // Confirm request 2 has already completely finished and cleared active request state
+  assert.equal(harness.window._aiRunning, false);
+  assert.equal(harness.window._aiRequestId, null);
+  assert.equal(harness.tasks[1].status, 'success');
+  const autoSaveAfterSecond = autoSaveCalls;
+  assert.equal(autoSaveAfterSecond, 1, 'request 2 should autoSave on completion');
+
+  // Now resolve request 1's delayed fetch after request 2 is already done
+  resolveLayerFetch();
+  await firstSend;
+
+  // Request 1 must still be durably labeled as replaced, not mislabeled as user cancel
+  assert.equal(harness.tasks[0].status, 'cancelled');
+  assert.equal(harness.tasks[0].error, '请求已被新请求替换');
+  assert.deepEqual(addedStateLayers, [], 'stale request must not register restored layers after replacement');
+  assert.deepEqual(colorOperations, [], 'stale request must not apply layer operations after replacement');
+  assert.equal(autoSaveCalls, autoSaveAfterSecond, 'stale request must not trigger an additional autoSave after replacement');
 });

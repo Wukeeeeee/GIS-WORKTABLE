@@ -68,10 +68,7 @@ def inspect_geojson(geojson: dict) -> dict:
             invalid_geom += 1
             continue
         gtype = geom.get("type")
-        if not gtype:
-            null_geom += 1
-            continue
-        if not isinstance(gtype, str):
+        if not gtype or not isinstance(gtype, str):
             invalid_geom += 1
             continue
         geom_types.add(gtype)
@@ -81,13 +78,16 @@ def inspect_geojson(geojson: dict) -> dict:
         all_coords.extend(extracted)
 
         # 检查无效几何
-        try:
-            from shapely.geometry import shape
-            s = shape(geom)
-            if not s.is_valid:
-                invalid_geom += 1
-        except Exception:
+        if not _validate_geometry(geom):
             invalid_geom += 1
+        else:
+            try:
+                from shapely.geometry import shape
+                s = shape(geom)
+                if not s.is_valid:
+                    invalid_geom += 1
+            except Exception:
+                invalid_geom += 1
 
     # bbox
     bbox = _calc_bbox(all_coords) if all_coords else None
@@ -108,6 +108,73 @@ def inspect_geojson(geojson: dict) -> dict:
         "invalid_geom_count": invalid_geom,
         "coord_sample": all_coords[:3] if all_coords else [],
     }
+
+
+def _is_valid_ordinate(val) -> bool:
+    """检查单个坐标分量是否为有限数值（排除布尔值与字符串）。"""
+    if isinstance(val, bool) or not isinstance(val, (int, float, Real)):
+        return False
+    try:
+        return math.isfinite(float(val))
+    except (OverflowError, TypeError, ValueError):
+        return False
+
+
+def _is_valid_position(pos) -> bool:
+    """GeoJSON 位置必须是由至少两个有限数值构成的列表或元组（不能是布尔值或字符串）。"""
+    if not isinstance(pos, (list, tuple)):
+        return False
+    if len(pos) < 2:
+        return False
+    return all(_is_valid_ordinate(v) for v in pos)
+
+
+def _validate_coords(gtype: str, coords) -> bool:
+    """根据几何类型校验 coordinates 嵌套结构及坐标有效性。"""
+    if not isinstance(coords, (list, tuple)):
+        return False
+    if len(coords) == 0:
+        return True
+
+    if gtype == "Point":
+        return _is_valid_position(coords)
+    elif gtype in ("MultiPoint", "LineString"):
+        return all(_is_valid_position(p) for p in coords)
+    elif gtype in ("Polygon", "MultiLineString"):
+        for ring in coords:
+            if not isinstance(ring, (list, tuple)) or len(ring) == 0:
+                return False
+            if not all(_is_valid_position(p) for p in ring):
+                return False
+        return True
+    elif gtype == "MultiPolygon":
+        for poly in coords:
+            if not isinstance(poly, (list, tuple)) or len(poly) == 0:
+                return False
+            for ring in poly:
+                if not isinstance(ring, (list, tuple)) or len(ring) == 0:
+                    return False
+                if not all(_is_valid_position(p) for p in ring):
+                    return False
+        return True
+    return False
+
+
+def _validate_geometry(geom: dict) -> bool:
+    """递归校验几何结构与坐标合法性。"""
+    if not isinstance(geom, dict):
+        return False
+    gtype = geom.get("type")
+    if not isinstance(gtype, str) or not gtype:
+        return False
+    if gtype == "GeometryCollection":
+        geoms = geom.get("geometries")
+        if not isinstance(geoms, (list, tuple)):
+            return False
+        if len(geoms) == 0:
+            return True
+        return all(_validate_geometry(sub) for sub in geoms)
+    return _validate_coords(gtype, geom.get("coordinates"))
 
 
 def _extract_coords(geom: dict) -> list:

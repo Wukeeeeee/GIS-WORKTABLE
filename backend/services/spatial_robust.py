@@ -41,7 +41,8 @@ def repair_geometry(gdf: gpd.GeoDataFrame):
     """修复无效几何并丢弃空几何或无法修复的无效几何。
 
     返回 (new_gdf, stats)，stats = {"repaired": n, "dropped": n}。
-    无效几何先试 geom.buffer(0)（shapely 经典自交修法），
+    无效几何优先使用 shapely.make_valid 修复以完整保留全部几何分量（如自交多边形的两叶），
+    避免 geom.buffer(0) 丢弃自交分量或面积损失；若 make_valid 不可用或失败则回退至 buffer(0)；
     仍无效则丢弃；None/empty 直接丢弃。
     """
     if gdf is None or len(gdf) == 0:
@@ -59,10 +60,18 @@ def repair_geometry(gdf: gpd.GeoDataFrame):
             keep_positions.append(idx)
             new_geoms.append(geom)
             continue
+        fixed = None
         try:
-            fixed = geom.buffer(0)
+            import shapely
+            if hasattr(shapely, "make_valid"):
+                fixed = shapely.make_valid(geom)
         except Exception:
             fixed = None
+        if (fixed is None or fixed.is_empty or not fixed.is_valid) and hasattr(geom, "buffer"):
+            try:
+                fixed = geom.buffer(0)
+            except Exception:
+                fixed = None
         if fixed is not None and not fixed.is_empty and fixed.is_valid:
             repaired += 1
             keep_positions.append(idx)

@@ -17,7 +17,7 @@ def _gdf(geoms, crs="EPSG:4326"):
 
 
 def test_repair_bowtie_self_intersection():
-    """自相交 bowtie 三角形：buffer(0) 后应变有效，且统计 repaired>=1"""
+    """自相交 bowtie 三角形：make_valid 修复后应变有效，完整保留两叶面积（area=2），且统计 repaired>=1"""
     from shapely.geometry import Polygon
     from backend.services.spatial_robust import repair_geometry
     bowtie = Polygon([(0, 0), (2, 2), (2, 0), (0, 2), (0, 0)])  # 自交
@@ -27,6 +27,28 @@ def test_repair_bowtie_self_intersection():
     assert stats["repaired"] >= 1, stats
     assert out.geometry.is_valid.all(), "修复后仍有无效几何"
     assert len(out) == 2
+    # 验证完整保留双叶结构与面积，避免 buffer(0) 丢失半边（原面积应为 2.0 而非 1.0）
+    repaired_bowtie = out.geometry.iloc[0]
+    assert abs(repaired_bowtie.area - 2.0) < 1e-6, f"预期修复后保留两叶面积 2.0，实际为 {repaired_bowtie.area}"
+
+
+def test_repair_preserves_valid_components_and_geometry_collection():
+    """带悬挂线自交面等复杂几何修复后保留有效分量（GeometryCollection/Polygon/LineString），不静默丢失"""
+    from shapely.geometry import Polygon
+    from backend.services.spatial_robust import repair_geometry
+    p_dangle = Polygon([(0, 0), (0, 1), (1, 1), (1, 0), (2, 0), (1, 0), (0, 0)])
+    assert not p_dangle.is_valid
+    gdf = _gdf([p_dangle])
+    out, stats = repair_geometry(gdf)
+    assert stats["repaired"] == 1
+    assert stats["dropped"] == 0
+    assert len(out) == 1
+    repaired_geom = out.geometry.iloc[0]
+    assert repaired_geom.is_valid
+    assert repaired_geom.geom_type == "GeometryCollection"
+    sub_types = {g.geom_type for g in repaired_geom.geoms}
+    assert "Polygon" in sub_types, f"缺少 Polygon 分量: {sub_types}"
+    assert "LineString" in sub_types, f"缺少 LineString 分量: {sub_types}"
 
 
 def test_repair_drops_none_and_empty():

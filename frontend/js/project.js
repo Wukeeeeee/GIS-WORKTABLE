@@ -467,7 +467,10 @@ window.GIS = window.GIS || {};
             } else if (serviceUrl && proto.indexOf('wms') >= 0 && GIS.geosource &&
                 (GIS.geosource.loadSavedServiceLayer || GIS.geosource.loadWmsSublayer)) {
               if (GIS.geosource.loadSavedServiceLayer) {
-                GIS.geosource.loadSavedServiceLayer(Object.assign({}, layer, { layer_id: restoredLayerId }));
+                GIS.geosource.loadSavedServiceLayer(
+                  Object.assign({}, layer, { layer_id: restoredLayerId }),
+                  function() { return loadGeneration === _loadGeneration && _currentProjectId === data.id; }
+                );
               } else {
                 GIS.geosource.loadWmsSublayer(
                   encodeURIComponent(serviceUrl), encodeURIComponent(layer.sublayer || ''),
@@ -476,7 +479,10 @@ window.GIS = window.GIS || {};
               }
             } else if (serviceUrl && (proto.indexOf('xyz') >= 0 || /\{[xyz]\}/i.test(serviceUrl)) && GIS.map && GIS.map.addTileLayer) {
               if (GIS.geosource && GIS.geosource.loadSavedServiceLayer) {
-                GIS.geosource.loadSavedServiceLayer(Object.assign({}, layer, { layer_id: restoredLayerId }));
+                GIS.geosource.loadSavedServiceLayer(
+                  Object.assign({}, layer, { layer_id: restoredLayerId }),
+                  function() { return loadGeneration === _loadGeneration && _currentProjectId === data.id; }
+                );
               } else {
                 GIS.map.addTileLayer(serviceUrl, layerName);
                 if (GIS.layers && GIS.layers.addLayer) {
@@ -535,35 +541,55 @@ window.GIS = window.GIS || {};
 
   function _deleteProject(pid, itemEl) {
     if (_pendingDeleteProjectIds.has(pid)) return;
-    _pendingDeleteProjectIds.add(pid);
-    var cancelPromise = false;
-    if (pid === _currentProjectId) {
-      _loadGeneration += 1;
-      if (GIS.chat && typeof GIS.chat.cancelActiveRequest === 'function') {
-        cancelPromise = GIS.chat.cancelActiveRequest('删除当前工程，已取消正在运行的任务');
+    function executeDelete() {
+      if (_pendingDeleteProjectIds.has(pid)) return;
+      _pendingDeleteProjectIds.add(pid);
+      var cancelPromise = false;
+      if (pid === _currentProjectId) {
+        _loadGeneration += 1;
+        if (GIS.chat && typeof GIS.chat.cancelActiveRequest === 'function') {
+          cancelPromise = GIS.chat.cancelActiveRequest('删除当前工程，已取消正在运行的任务');
+        }
+      }
+      _queueProjectSave(function() {
+        var deleteRequest = function() { return GIS.api.deleteProject(pid); };
+        if (cancelPromise && typeof cancelPromise.then === 'function') {
+          return Promise.resolve(cancelPromise).catch(function() { return false; }).then(function(cancelled) {
+            if (cancelled === false) throw new Error('无法确认当前任务已停止，未删除工程');
+            return deleteRequest();
+          });
+        }
+        return deleteRequest();
+      }).then(function(result) {
+        if (itemEl && itemEl.parentNode) itemEl.remove();
+        _refreshList();
+        if (result && result.warning && GIS.toast && typeof GIS.toast.warn === 'function') GIS.toast.warn(result.warning);
+        // Serialize deletion with saves so an in-flight or queued autosave cannot recreate this project.
+        if (pid === _currentProjectId) _clearCurrentProjectState();
+        _pendingDeleteProjectIds.delete(pid);
+        return result;
+      }).catch(function(err) {
+        _pendingDeleteProjectIds.delete(pid);
+        GIS.chat.addMessage('删除失败: ' + _escapeMarkup(err.message || err), 'system');
+      });
+    }
+
+    if (GIS.workspace && typeof GIS.workspace.confirmModal === 'function') {
+      GIS.workspace.confirmModal('删除工程', '确定删除此工程记录？此操作不可恢复。', executeDelete, true);
+    } else {
+      var confirmFn = typeof confirm === 'function' ? confirm : (typeof window !== 'undefined' && typeof window.confirm === 'function' ? window.confirm : null);
+      if (confirmFn) {
+        if (confirmFn('确定删除此工程？此操作不可恢复。')) {
+          executeDelete();
+        }
+      } else {
+        if (GIS.chat && typeof GIS.chat.addMessage === 'function') {
+          GIS.chat.addMessage('无法调起删除确认对话框，未删除工程', 'system');
+        } else if (GIS.toast && typeof GIS.toast.error === 'function') {
+          GIS.toast.error('无法调起删除确认对话框，未删除工程');
+        }
       }
     }
-    _queueProjectSave(function() {
-      var deleteRequest = function() { return GIS.api.deleteProject(pid); };
-      if (cancelPromise && typeof cancelPromise.then === 'function') {
-        return Promise.resolve(cancelPromise).catch(function() { return false; }).then(function(cancelled) {
-          if (cancelled === false) throw new Error('无法确认当前任务已停止，未删除工程');
-          return deleteRequest();
-        });
-      }
-      return deleteRequest();
-    }).then(function(result) {
-      if (itemEl && itemEl.parentNode) itemEl.remove();
-      _refreshList();
-      if (result && result.warning && GIS.toast && typeof GIS.toast.warn === 'function') GIS.toast.warn(result.warning);
-      // Serialize deletion with saves so an in-flight or queued autosave cannot recreate this project.
-      if (pid === _currentProjectId) _clearCurrentProjectState();
-      _pendingDeleteProjectIds.delete(pid);
-      return result;
-    }).catch(function(err) {
-      _pendingDeleteProjectIds.delete(pid);
-      GIS.chat.addMessage('删除失败: ' + _escapeMarkup(err.message || err), 'system');
-    });
   }
 
   function _promptRename(pid, itemEl) {

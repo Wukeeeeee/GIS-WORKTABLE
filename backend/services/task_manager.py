@@ -645,9 +645,11 @@ def record_gis_operation(task_id: str, tool: str, arguments: dict,
             outputs = operation["output_layers"] or operation["output_artifacts"]
             if outputs:
                 gis["last_successful_output"] = outputs[-1]
-        task["gis_context"] = gis
-        task["updated_at"] = _now()
-        _save_task_to_disk(task)
+        candidate = dict(task)
+        candidate["gis_context"] = gis
+        candidate["updated_at"] = _now()
+        _save_task_to_disk(candidate)
+        task.update(candidate)
     return True
 
 

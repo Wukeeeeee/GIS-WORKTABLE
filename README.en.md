@@ -6,6 +6,17 @@ An open-source GIS workbench that brings manual spatial tools, AI-assisted workf
 
 The competition walkthrough is Mandarin-first for domestic review, with the English interface available as a switchable edition. See the [English demo runbook](docs/competition/demo-runbook.en.md) and the [portable sample project](frontend/samples/GIS-WorkTable-Competition-Demo.giswork).
 
+## Recent maintenance (2026-11-05)
+
+This round focused on project capacity, numeric fidelity, raster previews, and result delivery:
+
+- **Project save and restore:** new projects are rejected when the 30-project limit is reached, while existing projects remain available for updates. `.giswork` imports verify managed raster assets and rebind legacy source-raster references to the current project. Save errors now retain the backend's recovery guidance.
+- **Numeric and geometry handling:** integers outside SQLite's native range are passed as decimal text so unrelated layers cannot abort a query. GeoJSON large-integer restoration avoids overflowing float conversion. Geometry repair preserves valid components in `GeometryCollection` results.
+- **Raster and export:** COG palette previews retain source colors and NoData transparency. Shapefile export improves handling of large integers, structured attributes, field widths, and CRS metadata.
+- **Verification limits:** focused regressions and isolated browser workflows cover synthetic vector/raster analysis, project restore, and export. They do not establish acceptance for external data services, production-scale data, live models, or a packaged Electron client. Reproduction evidence and remaining limits are in the [module scan log](docs/validation/module-scan-progress.md).
+
+Integers outside SQLite's native range may be returned as text; this does not imply arbitrary-precision SQL arithmetic support.
+
 GIS WorkTable is intended for GIS learning, spatial-analysis prototyping, and workflow demonstrations. The project is under active development. Analysis results must be checked against source-data quality, coordinate reference systems, units, and method assumptions.
 
 The AI `execute_python` tool runs code in a local child process with AST checks and a 120-second timeout. These controls are not an operating-system security sandbox and do not isolate local files, network access, or resource use. The built-in launcher binds to `127.0.0.1` by default; do not expose the service to untrusted users or use it as a public multi-tenant service.

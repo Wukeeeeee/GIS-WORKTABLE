@@ -9,6 +9,13 @@ JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _INTEGER_TEXT = re.compile(r"^[+-]?[0-9]+$")
 
 
+def _same_float_value(a, b):
+    try:
+        return float(a) == float(b)
+    except OverflowError:
+        return False
+
+
 def protect_geojson_property_integers(geojson):
     """Copy GeoJSON and encode unsafe integers in feature properties as decimal text.
 
@@ -87,10 +94,10 @@ def restore_registered_integer_properties(existing_geojson, incoming_geojson):
                 if isinstance(new_value, str) and _INTEGER_TEXT.fullmatch(new_value):
                     new_props[key] = int(new_value)
                 elif isinstance(new_value, int) and not isinstance(new_value, bool):
-                    if float(new_value) == float(old_value):
+                    if _same_float_value(new_value, old_value):
                         new_props[key] = old_value
                 elif isinstance(new_value, float) and math.isfinite(new_value):
-                    if new_value.is_integer() and new_value == float(old_value):
+                    if new_value.is_integer() and _same_float_value(new_value, old_value):
                         new_props[key] = old_value
         for path in new_feature.get("_gisworktable_integer_paths", []):
             if not isinstance(path, list) or not path:

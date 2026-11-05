@@ -4,7 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
-function loadInspector(provenance = null, customGeojson = null) {
+function loadInspector(provenance = null, customGeojson = null, invalidGeomCount = 0) {
   const listeners = {};
   let attributeTable = null;
   const panel = { style: {} };
@@ -23,7 +23,8 @@ function loadInspector(provenance = null, customGeojson = null) {
       api: { async inspectLayer() { return {
         crs: 'EPSG:32649', crs_known: true, coordinate_units: 'metre',
         geometry_type: 'Point', feature_count: 1, bbox: [100, 30, 100, 30],
-        attr_fields: {}, invalid_geom_count: 0,
+        attr_fields: {},
+        ...(invalidGeomCount !== null && invalidGeomCount !== undefined ? { invalid_geom_count: invalidGeomCount } : {}),
       }; } },
       workspace: { preparePanel() {}, expandPanel() {}, centerPanel() {} },
     },
@@ -279,6 +280,7 @@ test('layer data audit accurately computes feature count, null geometries, geome
   // 2. 要素总数与空几何数量
   assert.match(h.body.innerHTML, /<span class="info-label">要素总数<\/span><span class="info-val">5<\/span>/);
   assert.match(h.body.innerHTML, /<span class="info-label">空几何数量<\/span><span class="info-val">2<\/span>/);
+  assert.match(h.body.innerHTML, /<span class="info-label">无效几何数量<\/span><span class="info-val">0<\/span>/);
 
   // 3. 几何类型分布
   assert.match(h.body.innerHTML, /<span class="info-label">Point<\/span><span class="info-val">2<\/span>/);
@@ -427,4 +429,31 @@ test('GeoJSON download restores transported unsafe integers as numeric literals'
   assert.match(json, /"value":9007199254740995/);
   assert.match(json, /"ordinaryNumericText":"123"/);
   assert.doesNotMatch(json, /_gisworktable_integer_paths/);
+});
+
+test('vector inspector renders invalid geometry count row with warning treatment for positive count and fallback when absent', async () => {
+  // 1. Nonzero positive count triggers warning treatment
+  const hPositive = loadInspector(null, null, 2);
+  await hPositive.layers.showLayerInspector('vector-one');
+  assert.match(
+    hPositive.body.innerHTML,
+    /<div class="info-row"><span class="info-label">无效几何数量<\/span><span class="info-val is-warning" style="color:var\(--error,#d32f2f\);font-weight:600;">2<\/span><\/div>/
+  );
+
+  // 2. Zero count remains visible without warning treatment
+  const hZero = loadInspector(null, null, 0);
+  await hZero.layers.showLayerInspector('vector-one');
+  assert.match(
+    hZero.body.innerHTML,
+    /<div class="info-row"><span class="info-label">无效几何数量<\/span><span class="info-val">0<\/span><\/div>/
+  );
+  assert.doesNotMatch(hZero.body.innerHTML, /<span class="info-label">无效几何数量<\/span><span class="info-val is-warning"/);
+
+  // 3. Absent count falls back to 未检测
+  const hAbsent = loadInspector(null, null, null);
+  await hAbsent.layers.showLayerInspector('vector-one');
+  assert.match(
+    hAbsent.body.innerHTML,
+    /<div class="info-row"><span class="info-label">无效几何数量<\/span><span class="info-val">未检测<\/span><\/div>/
+  );
 });

@@ -824,7 +824,7 @@ window.GIS.api = (() => {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(data),
     });
-    if (!res.ok) throw new Error(`保存工程失败: ${res.status}`);
+    if (!res.ok) throw new Error(await projectResponseError(res, '保存工程'));
     return res.json();
   }
   async function loadProject(id) {
@@ -892,7 +892,7 @@ window.GIS.api = (() => {
         layer_assignments: layerAssignments || [],
       }),
     });
-    if (!res.ok) throw new Error(`自动保存失败: ${res.status}`);
+    if (!res.ok) throw new Error(await projectResponseError(res, '自动保存'));
     return res.json();
   }
 

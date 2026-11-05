@@ -398,10 +398,12 @@ window.GIS = window.GIS || {};
     }
     var resultEl = document.getElementById('rtResult');
     var resultBody = document.getElementById('rtResultBody');
-    resultEl.style.display = 'none';
-    resultBody.textContent = '计算中...';
-    resultEl.style.display = '';
-    if (GIS.workspace) { GIS.workspace.toolPending('rasterToolsPanel'); resultEl.style.display='none'; }
+    var runBtn = document.getElementById('rtRun');
+    if (runBtn) runBtn.disabled = true;
+    if (resultEl) resultEl.style.display = 'none';
+    if (resultBody) resultBody.textContent = '计算中...';
+    if (resultEl) resultEl.style.display = '';
+    if (GIS.workspace) { GIS.workspace.toolPending('rasterToolsPanel'); if (resultEl) resultEl.style.display='none'; }
     var layerNames = Object.keys(args || {})
       .filter(function (k) { return /layer/.test(k) && typeof args[k] === 'string'; })
       .map(function (k) { return args[k]; });
@@ -414,13 +416,21 @@ window.GIS = window.GIS || {};
       return GIS.api.invokeTool(tool, args);
     }).then(function (result) {
       if (projectChanged()) throw new Error('工程已切换，旧工程工具结果未应用');
+      if (runBtn) runBtn.disabled = false;
+      if (!result || result.ok === false || result.error) {
+        throw new Error((result && (result.error || result.response)) || '工具执行失败');
+      }
       if (GIS.workspace && !GIS.workspace.toolFeedback('rasterToolsPanel', result)) return;
       if (GIS.chat && GIS.chat.applyToolResult) GIS.chat.applyToolResult(result);
+      _refreshLayers();
       var parameterWarnings = Array.isArray(result.param_warnings) ? result.param_warnings.map(String).filter(Boolean) : [];
-      resultBody.textContent = [result.response || '', parameterWarnings.length ? '参数提示：' + parameterWarnings.join('；') : ''].filter(Boolean).join('\n\n');
+      if (resultBody) resultBody.textContent = [result.response || '', parameterWarnings.length ? '参数提示：' + parameterWarnings.join('；') : ''].filter(Boolean).join('\n\n');
+      if (resultEl) resultEl.style.display = GIS.workspace ? 'none' : '';
     }).catch(function (err) {
+      if (runBtn) runBtn.disabled = false;
       if (GIS.workspace) GIS.workspace.toolFeedback('rasterToolsPanel', null, err);
-      resultBody.textContent = '执行失败: ' + err.message;
+      if (resultBody) resultBody.textContent = '执行失败: ' + err.message;
+      if (resultEl) resultEl.style.display = GIS.workspace ? 'none' : '';
     });
   }
 

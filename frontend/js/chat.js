@@ -730,7 +730,7 @@ function scrollMessages() {
     var requestId = 'req_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 12) + '_' + sendGeneration.toString(36);
     // 只在新请求配置有效后替换旧请求，避免无效模型配置中断正在运行的任务。
     if (window._aiRunning) {
-      if (window._aiAbortController) window._aiAbortController.abort('user-cancel');
+      if (window._aiAbortController) window._aiAbortController.abort('request-replaced');
       fetch(_cancelRequestUrl(_currentSessionIdSafe(), previousRequestId), { method: 'POST' }).catch(function(){});
       var oldLoading = document.getElementById('ai-loading-msg');
       if (oldLoading) {
@@ -805,6 +805,20 @@ function scrollMessages() {
     var _clearAllTimeouts = function() {};
     var executionCards = null;
     var abortController = null;
+    var _settleCancelledOrReplaced = function() {
+      var abortReason = abortController && abortController.signal ? abortController.signal.reason : undefined;
+      var isReplaced = abortReason === 'request-replaced' ||
+        !!(window._aiRunning && window._aiRequestId && window._aiRequestId !== requestId);
+      if (executionCards) executionCards.finish('cancelled', isReplaced ? '当前请求已被新请求替换' : '用户已取消当前任务');
+      if (taskId && window.GIS.task) {
+        window.GIS.task.updateTask(taskId, {
+          status: 'cancelled',
+          error: isReplaced ? '请求已被新请求替换' : '用户取消',
+          completedAt: Date.now(),
+        });
+        if (window._currentTaskId === taskId) window._currentTaskId = null;
+      }
+    };
     if (loadingMsg && GIS.executionCards && GIS.executionCards.create) {
       var executionRow = document.createElement('div');
       executionRow.className = 'message message-ai-execution';
@@ -1086,6 +1100,10 @@ function scrollMessages() {
             if (executionCards) executionCards.finish('cancelled', '用户已取消当前任务');
             throw new Error('__USER_CANCELLED__');
           }
+          if (_abortReason === 'request-replaced') {
+            if (executionCards) executionCards.finish('cancelled', '当前请求已被新请求替换');
+            throw new Error('__REQUEST_REPLACED__');
+          }
           if (executionCards) executionCards.finish('interrupted', '请求超时，已保留此前完成的步骤');
           throw new Error('AI 请求' + (window._idleKilled ? '长时间无响应（90s 未收到任何进度）' : '总时长超限（' + (_timeoutMs === Infinity ? '不限时' : _timeoutMs/1000 + 's') + '）') + '，请简化操作或重试');
         }
@@ -1107,7 +1125,10 @@ function scrollMessages() {
 
       // A replaced request may finish after the new one starts; it must not render
       // stale output or remove the newer request's loading state.
-      if (sendGeneration !== _sendGeneration) return;
+      if (sendGeneration !== _sendGeneration) {
+        _settleCancelledOrReplaced();
+        return;
+      }
 
       // 发送后清除 chip 标签（已消费）
       _skillChips = [];
@@ -1623,9 +1644,15 @@ function scrollMessages() {
         });
         if (_missing.length > 0) {
           try {
-            var _lyrRes = await fetch(((window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || '') + '/api/layers');
+            var _lyrRes = await fetch(((window.GIS && window.GIS.api && window.GIS.api.BASE_URL) || '') + '/api/layers', {
+              signal: abortController ? abortController.signal : undefined,
+            });
             if (!_lyrRes.ok) throw new Error('图层列表请求失败');
             var _lyrData = await _lyrRes.json();
+            if (sendGeneration !== _sendGeneration) {
+              _settleCancelledOrReplaced();
+              return;
+            }
             (_lyrData.layers || []).forEach(function(lyr) {
               if (!lyr || !lyr.geojson) return;
               if (_missing.indexOf(lyr.name) < 0) return;
@@ -1647,6 +1674,10 @@ function scrollMessages() {
             console.log('[GIS Chat] layer_ops 引用图层缺失，已从后端补挂:', _missing.join(', '));
           } catch (e) {
             console.warn('[GIS Chat] 补挂缺失图层失败:', e);
+          }
+          if (sendGeneration !== _sendGeneration) {
+            _settleCancelledOrReplaced();
+            return;
           }
           var _panelAfterRestore = (window.GIS.layers && window.GIS.layers.getLayers) ? window.GIS.layers.getLayers() : [];
           _unrestoredNames = _missing.filter(function(nm) {
@@ -2016,20 +2047,19 @@ function scrollMessages() {
       // A replaced request may fail after the next request has started. Keep
       // its task/card outcome, but do not render stale errors or reset shared UI.
       if (sendGeneration !== _sendGeneration) {
-        if (executionCards) executionCards.finish('cancelled', '当前请求已被新请求替换');
-        if (taskId && window.GIS.task) {
-          window.GIS.task.updateTask(taskId, {
-            status: 'cancelled', error: '请求已被新请求替换', completedAt: Date.now(),
-          });
-          if (window._currentTaskId === taskId) window._currentTaskId = null;
-        }
+        _settleCancelledOrReplaced();
         return;
       }
-      // 用户主动取消：不显示"请求失败"，stopBtn 已提示"操作已取消"、任务状态已更新
-      if (err && err.message === '__USER_CANCELLED__') {
-        if (executionCards) executionCards.finish('cancelled', '用户已取消当前任务');
+      // 用户主动取消或请求替换：不显示"请求失败"，stopBtn 已提示"操作已取消"、任务状态已更新
+      if (err && (err.message === '__USER_CANCELLED__' || err.message === '__REQUEST_REPLACED__')) {
+        var _isReplacedErr = err.message === '__REQUEST_REPLACED__';
+        if (executionCards) executionCards.finish('cancelled', _isReplacedErr ? '当前请求已被新请求替换' : '用户已取消当前任务');
         if (taskId && window.GIS.task) {
-          window.GIS.task.updateTask(taskId, { status: 'cancelled', error: '用户取消', completedAt: Date.now() });
+          window.GIS.task.updateTask(taskId, {
+            status: 'cancelled',
+            error: _isReplacedErr ? '请求已被新请求替换' : '用户取消',
+            completedAt: Date.now(),
+          });
           if (window._currentTaskId === taskId) window._currentTaskId = null;
         }
         return;

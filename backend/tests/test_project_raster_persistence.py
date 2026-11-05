@@ -283,7 +283,7 @@ def test_failed_atomic_project_write_keeps_old_file_and_releases_new_blob(tmp_pa
 
 def test_project_index_write_failure_reports_saved_project_and_list_recovers(tmp_path, monkeypatch):
     _use_temp_projects(tmp_path, monkeypatch)
-    monkeypatch.setattr(project_service, "_MAX_PROJECTS", 1)
+    monkeypatch.setattr(project_service, "_MAX_PROJECTS", 2)
     first = project_service.save_project(
         project_id=None, name="旧工程", session_id="old-project", provider="test",
         map_state={}, messages=[], layers=[],
@@ -300,9 +300,9 @@ def test_project_index_write_failure_reports_saved_project_and_list_recovers(tmp
 
     assert saved["id"]
     assert "warning" in saved
-    assert project_service._load_project_data(first["id"]) is None
+    assert project_service._load_project_data(first["id"])["name"] == "旧工程"
     assert project_service._load_project_data(saved["id"])["name"] == "索引异常工程"
-    assert [project["id"] for project in project_service.list_projects()] == [saved["id"]]
+    assert {project["id"] for project in project_service.list_projects()} == {first["id"], saved["id"]}
 
 
 def test_process_termination_after_project_replace_rebuilds_index_on_restart(tmp_path, monkeypatch):
@@ -1041,6 +1041,168 @@ def test_import_rejects_unsafe_or_missing_original_assets(tmp_path, monkeypatch,
         project_service.import_project(archive.getvalue())
     assert project_service.list_projects() == []
     assert not list((tmp_path / 'projects').glob('proj_*'))
+
+
+def test_import_rejects_hashed_raster_asset_with_tampered_bytes(tmp_path, monkeypatch):
+    client, uploaded, saved, original = _upload_real_raster(tmp_path, monkeypatch)
+    exported = project_service.export_project(saved['id'])
+
+    # Tamper with the raw TIFF bytes under its content-addressed filename
+    in_mem = io.BytesIO(exported)
+    tampered_mem = io.BytesIO()
+    with zipfile.ZipFile(in_mem, 'r') as zin, zipfile.ZipFile(tampered_mem, 'w') as zout:
+        for item in zin.infolist():
+            content = zin.read(item.filename)
+            if item.filename.startswith("assets/") and item.filename.endswith(".tif"):
+                content = b"TAMPERED_BYTES_NOT_MATCHING_DIGEST"
+            zout.writestr(item, content)
+
+    project_service.delete_project(saved['id'])
+    assert project_service.list_projects() == []
+
+    with pytest.raises(ValueError, match='不匹配的栅格资源数据'):
+        project_service.import_project(tampered_mem.getvalue())
+
+    assert project_service.list_projects() == []
+    assert not list((tmp_path / 'projects').glob('proj_*'))
+
+
+def test_vector_project_export_import_roundtrip(tmp_path, monkeypatch):
+    _use_temp_projects(tmp_path, monkeypatch)
+    feature_collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[114.0, 30.0], [115.0, 30.0], [115.0, 31.0], [114.0, 31.0], [114.0, 30.0]]],
+                },
+                "properties": {"name": "研究区", "area_sqkm": 125.4},
+            },
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [114.5, 30.5],
+                },
+                "properties": {"name": "采样点A", "station_id": 101},
+            },
+        ],
+    }
+    messages = [
+        {"role": "user", "content": "请分析研究区范围"},
+        {"role": "assistant", "content": "已加载研究区多边形及监测站。"},
+    ]
+    map_state = {"center": [114.5, 30.5], "zoom": 10}
+
+    saved = project_service.save_project(
+        project_id=None,
+        name="矢量往返工程",
+        session_id="vector-roundtrip-session",
+        provider="test-provider",
+        map_state=map_state,
+        messages=messages,
+        layers=[{
+            "layer_id": "vector-1",
+            "name": "地块与站点",
+            "color": "#3388ff",
+            "geojson": feature_collection,
+            "style": {"fillOpacity": 0.5},
+            "opacity": 0.8,
+            "visible": True,
+        }],
+    )
+
+    exported_pkg = project_service.export_project(saved["id"])
+    assert isinstance(exported_pkg, bytes) and len(exported_pkg) > 0
+
+    project_service.delete_project(saved["id"])
+    assert project_service.list_projects() == []
+
+    imported = project_service.import_project(exported_pkg)
+    assert imported["id"] != saved["id"]
+
+    loaded = project_service.load_project(imported["id"])
+    assert loaded["name"] == "矢量往返工程"
+    assert loaded["provider"] == "test-provider"
+    assert loaded.get("mapState") == map_state
+    assert len(loaded["messages"]) == 2
+    assert loaded["messages"][0]["content"] == "请分析研究区范围"
+    assert loaded["messages"][1]["content"] == "已加载研究区多边形及监测站。"
+
+    assert len(loaded["layers"]) == 1
+    layer = loaded["layers"][0]
+    assert layer["name"] == "地块与站点"
+    assert layer["style"]["fillOpacity"] == 0.5
+    assert layer["opacity"] == 0.8
+    assert layer["visible"] is True
+    assert layer["geojson"]["type"] == "FeatureCollection"
+    assert len(layer["geojson"]["features"]) == 2
+    f0 = layer["geojson"]["features"][0]
+    f1 = layer["geojson"]["features"][1]
+    assert f0["geometry"]["type"] == "Polygon"
+    assert f0["properties"]["name"] == "研究区"
+    assert f0["properties"]["area_sqkm"] == 125.4
+    assert f1["geometry"]["type"] == "Point"
+    assert f1["properties"]["station_id"] == 101
+
+    activated = project_service.activate_project(imported["id"])
+    assert activated["layerCount"] == 1
+    assert "地块与站点" in activated["registration_tokens"]
+
+
+def test_source_asset_only_layer_survives_import_and_reload(tmp_path, monkeypatch):
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+    _use_temp_projects(tmp_path, monkeypatch)
+
+    tiff_io = io.BytesIO()
+    with rasterio.open(tiff_io, 'w', driver='GTiff', width=4, height=4, count=1, dtype='float32',
+                       crs='EPSG:4326', transform=from_bounds(100, 30, 101, 31, 4, 4)) as ds:
+        ds.write(np.arange(1, 17, dtype='float32').reshape(4, 4), 1)
+    tiff_bytes = tiff_io.getvalue()
+    raw_sha = hashlib.sha256(tiff_bytes).hexdigest()[:20]
+    asset_name = f"{raw_sha}.tif"
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as zipped:
+        proj_json = {
+            "name": "仅含源栅格工程",
+            "layers": [{
+                "name": "高程源文件",
+                "geometry_type": "Raster",
+                "raster": {
+                    "project_id": "old-machine-pid",
+                    "source_asset": asset_name,
+                    "source_filename": "source.tif",
+                    "source_url": f"/api/projects/old-machine-pid/assets/{asset_name}",
+                    "bounds": [100.0, 30.0, 101.0, 31.0],
+                },
+            }],
+        }
+        zipped.writestr("project.json", json.dumps(proj_json, ensure_ascii=False))
+        zipped.writestr(f"assets/{asset_name}", tiff_bytes)
+
+    imported = project_service.import_project(archive.getvalue())
+    project_service.activate_project(imported["id"])
+    loaded = project_service.load_project(imported["id"])
+    layer = loaded["layers"][0]
+    restored_raster = layer["raster"]
+
+    assert restored_raster["project_id"] == imported["id"]
+    assert restored_raster["source_url"] == f"/api/projects/{imported['id']}/assets/{asset_name}"
+
+    with TestClient(main.app) as client:
+        response = client.get(restored_raster["source_url"])
+        assert response.status_code == 200
+        assert response.content == tiff_bytes
+
+    located = tools._find_uploaded_tif("高程源文件")
+    assert located and os.path.isfile(located)
+    with open(located, "rb") as f:
+        assert f.read() == tiff_bytes
 
 
 @pytest.mark.parametrize('entries', [

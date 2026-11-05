@@ -545,3 +545,21 @@ test('GeoSource data requests proxy a one-session key without persisting it', ()
   assert.equal(JSON.parse(h.fetchCalls[0].init.body).auth_parameter, 'api_key');
   assert.equal(JSON.stringify(h.layers).includes('USER_KEY_SENTINEL'), false);
 });
+
+test('loadSavedServiceLayer drops delayed credential connection when restore is no longer current', () => {
+  const h = createGeoSource([], { withCredentialDialog: true });
+  const url = 'https://tiles.example.test/{z}/{x}/{y}';
+  let active = true;
+  h.geosource.loadSavedServiceLayer({
+    filename: 'Stale layer', service_type: 'XYZ', url: url,
+    requires_auth: true, auth_parameter: 'token'
+  }, () => active);
+
+  active = false;
+  h.elements.geosourceCredentialParam.value = 'token';
+  h.elements.geosourceCredentialValue.value = 'SECRET_TOKEN';
+  h.elements.geosourceCredentialSubmitBtn.click();
+
+  assert.equal(h.renderedTiles.length, 0);
+  assert.equal(h.layers.length, 0);
+});

@@ -334,3 +334,26 @@ def test_three_way_check_with_storage_service_run_id():
     finally:
         _cleanup_file(fn)
 
+
+def test_other_run_artifact_not_confused():
+    """其他 run 登记的 artifact 不应被当作当前 run 的产物（跨 run 隔离）"""
+    from backend.services import storage_service
+    run_a = f"test_run_a_{int(time.time())}"
+    run_b = f"test_run_b_{int(time.time())}"
+    fn = "v2_cross_run_isolation.png"
+    try:
+        path = _create_file(fn, "run-a-image-data")
+        storage_service.record_run_start(run_a, "default", "测试A")
+        storage_service.record_run_start(run_b, "default", "测试B")
+        storage_service.register_run_artifact(run_a, "art_run_a_1", fn, path, file_type="image")
+
+        text = f"已生成 output/{fn}"
+        res = RG.verify_result(text, {}, run_id=run_b)
+        assert res["ok"] is False
+        checks = res["artifact_checks"]
+        assert len(checks) == 1
+        assert checks[0]["registered"] is False
+        assert checks[0]["exists"] is True
+        assert checks[0]["status"] == RG.ST_UNREGISTERED
+    finally:
+        _cleanup_file(fn)

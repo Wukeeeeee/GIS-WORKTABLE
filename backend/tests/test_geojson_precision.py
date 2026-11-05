@@ -91,3 +91,53 @@ def test_manual_project_save_uses_the_token_matched_registered_geojson(monkeypat
     assert blobs[0]["features"][0]["properties"]["parcel_id"] == 9_007_199_254_740_993
     assert saved["layers"][0]["blob"] == "blob-test"
 
+
+def test_registered_integer_restore_leaves_edits_unchanged_on_overflow_integers():
+    huge_int = 10**400
+    existing = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"_fid": "i:0", "large": huge_int}, "geometry": None,
+    }]}
+
+    # 1. Incoming explicit int edit against overflow old int
+    incoming_int = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"_fid": "i:0", "large": 1}, "geometry": None,
+    }]}
+    restore_registered_integer_properties(existing, incoming_int)
+    assert incoming_int["features"][0]["properties"]["large"] == 1
+
+    # 2. Incoming explicit finite-float edit against overflow old int
+    incoming_float = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"_fid": "i:0", "large": 1.0}, "geometry": None,
+    }]}
+    restore_registered_integer_properties(existing, incoming_float)
+    assert incoming_float["features"][0]["properties"]["large"] == 1.0
+
+    # 3. Exact decimal string edit is accepted
+    incoming_str = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"_fid": "i:0", "large": str(huge_int + 5)}, "geometry": None,
+    }]}
+    restore_registered_integer_properties(existing, incoming_str)
+    assert incoming_str["features"][0]["properties"]["large"] == huge_int + 5
+
+    # 4. Negative overflow integer with incoming edit
+    existing_neg = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"_fid": "i:0", "large": -huge_int}, "geometry": None,
+    }]}
+    incoming_neg_float = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"_fid": "i:0", "large": -2.0}, "geometry": None,
+    }]}
+    restore_registered_integer_properties(existing_neg, incoming_neg_float)
+    assert incoming_neg_float["features"][0]["properties"]["large"] == -2.0
+
+
+def test_registered_integer_restore_preserves_representable_rounded_float():
+    existing = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"_fid": "i:0", "large": 9_007_199_254_740_993}, "geometry": None,
+    }]}
+    incoming = {"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {"_fid": "i:0", "large": 9_007_199_254_740_992.0}, "geometry": None,
+    }]}
+
+    restore_registered_integer_properties(existing, incoming)
+    assert incoming["features"][0]["properties"]["large"] == 9_007_199_254_740_993
+

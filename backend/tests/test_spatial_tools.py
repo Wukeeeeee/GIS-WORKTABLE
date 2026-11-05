@@ -676,6 +676,18 @@ class TestLayerMerge:
         assert len(_registered_layers["A"]["geojson"]["features"]) == 1
         assert len(_registered_layers["A_1"]["geojson"]["features"]) == 2
 
+    def test_layer_merge_requires_at_least_two_layers(self):
+        _setup("A", _SQUARE_A)
+        res = layer_merge.invoke({"layer_names": "A"})
+        assert "至少需要提供 2 个图层名" in res
+        res_empty = layer_merge.invoke({"layer_names": "  "})
+        assert "至少需要提供 2 个图层名" in res_empty
+
+    def test_layer_merge_rejects_duplicate_layer_names(self):
+        _setup("A", _SQUARE_A)
+        res = layer_merge.invoke({"layer_names": "A, A"})
+        assert "包含重复图层名" in res
+
 
 
 class TestLayerSplit:
@@ -734,6 +746,30 @@ class TestLayerSplit:
         }
         assert group_values == {1, "1"}
 
+    def test_layer_split_empty_layer(self):
+        _setup("empty", {"type": "FeatureCollection", "features": []})
+        res = layer_split.invoke({"layer_name": "empty"})
+        assert "为空" in res
+
+    def test_layer_split_caps_excessive_features_without_field(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"val": i}, "geometry": {"type": "Point", "coordinates": [i * 0.01, 0]}}
+            for i in range(55)
+        ]}
+        _setup("large_layer", features)
+        res = layer_split.invoke({"layer_name": "large_layer"})
+        assert "要素过多" in res
+        assert "最多支持 50 个要素" in res
+
+    def test_layer_split_caps_excessive_groups(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"grp": f"g_{i}"}, "geometry": {"type": "Point", "coordinates": [i * 0.01, 0]}}
+            for i in range(55)
+        ]}
+        _setup("large_groups", features)
+        res = layer_split.invoke({"layer_name": "large_groups", "by_field": "grp"})
+        assert "超出拆分上限" in res
+
 
 
 
@@ -774,6 +810,36 @@ class TestLayerAddGeometry:
         assert expected in result
         assert _pending_layers == []
         assert set(_registered_layers) == registered_before
+
+    def test_explicit_nonexistent_field_returns_clear_error(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"x": 100, "y": 30}, "geometry": None},
+        ]}
+        _setup("pts_coords", features)
+        res_lon = layer_add_geometry.invoke({"layer_name": "pts_coords", "lon_field": "nonexistent_x", "lat_field": "y"})
+        assert "不存在经度列「nonexistent_x」" in res_lon
+        res_lat = layer_add_geometry.invoke({"layer_name": "pts_coords", "lon_field": "x", "lat_field": "nonexistent_y"})
+        assert "不存在纬度列「nonexistent_y」" in res_lat
+
+    def test_same_lon_lat_field_rejected(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"x": 100, "y": 30}, "geometry": None},
+        ]}
+        _setup("pts_same", features)
+        res = layer_add_geometry.invoke({"layer_name": "pts_same", "lon_field": "x", "lat_field": "x"})
+        assert "不能相同" in res
+
+    def test_repeated_invocations_disambiguate_layer_name(self):
+        features = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"x": 100, "y": 30}, "geometry": None},
+        ]}
+        _setup("pts_rep", features)
+        res1 = layer_add_geometry.invoke({"layer_name": "pts_rep", "lon_field": "x", "lat_field": "y"})
+        res2 = layer_add_geometry.invoke({"layer_name": "pts_rep", "lon_field": "x", "lat_field": "y"})
+        assert "pts_rep_点" in res1
+        assert "pts_rep_点_1" in res2
+        assert "pts_rep_点" in _registered_layers
+        assert "pts_rep_点_1" in _registered_layers
 
 
 
@@ -1947,6 +2013,41 @@ class TestDrawFeature:
         r = draw_feature.invoke({"geometry_type": "LineString", "coordinates": "116.0,39.0;116.5,40.0;117.0,39.5", "layer_name": "测试线"})
         assert "已创建" in r
         assert "LineString" in r
+
+    def test_draw_circle_valid(self):
+        r = draw_feature.invoke({"geometry_type": "Circle", "coordinates": "116.4,39.9; 500", "layer_name": "圆形缓冲区"})
+        assert "已创建" in r
+        assert "Circle" in r
+        assert "圆形缓冲区" in _registered_layers
+
+    def test_draw_circle_rejects_invalid_or_negative_radius(self):
+        res_neg = draw_feature.invoke({"geometry_type": "Circle", "coordinates": "116.4,39.9; -100"})
+        assert "半径必须大于 0" in res_neg
+        res_zero = draw_feature.invoke({"geometry_type": "Circle", "coordinates": "116.4,39.9; 0"})
+        assert "半径必须大于 0" in res_zero
+        res_str = draw_feature.invoke({"geometry_type": "Circle", "coordinates": "116.4,39.9; invalid"})
+        assert "半径必须是有限数值" in res_str
+
+    def test_draw_circle_rejects_out_of_bounds_latitude(self):
+        res = draw_feature.invoke({"geometry_type": "Circle", "coordinates": "0, 88.0; 500"})
+        assert "UTM 投影适用范围" in res
+
+    def test_draw_point_rejects_nan_coordinates(self):
+        res = draw_feature.invoke({"geometry_type": "Point", "coordinates": "NaN, 39.9"})
+        assert "无法解析坐标" in res
+        assert "Traceback" not in res
+
+    def test_draw_rectangle_rejects_collinear_diagonal(self):
+        res = draw_feature.invoke({"geometry_type": "Rectangle", "coordinates": "116.0,39.0; 116.0,40.0"})
+        assert "不能在同一经度或同一纬度" in res
+
+    def test_draw_feature_repeated_name_disambiguation(self):
+        r1 = draw_feature.invoke({"geometry_type": "Point", "coordinates": "116.4,39.9", "layer_name": "标记"})
+        r2 = draw_feature.invoke({"geometry_type": "Point", "coordinates": "116.5,39.9", "layer_name": "标记"})
+        assert "标记" in r1
+        assert "标记_1" in r2
+        assert "标记" in _registered_layers
+        assert "标记_1" in _registered_layers
 
 
 

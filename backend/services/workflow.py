@@ -9,10 +9,11 @@ GIS Workflow 执行引擎
 """
 import json
 import os
+import re
 import tempfile
 import uuid
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ============================================================
@@ -113,15 +114,53 @@ def materialize_from_history(task_id: str, workflow_name: str = "") -> Optional[
         depends_on = []
 
         # 检查参数中引用的图层是否由上游节点生成
-        inputs = {}
-        for k, v in raw_args.items():
-            if isinstance(v, str) and v in layer_producers:
-                dep_node, output_key = layer_producers[v]
-                if dep_node not in depends_on:
-                    depends_on.append(dep_node)
-                inputs[k] = f"${{{dep_node}.{output_key}}}"
-            else:
-                inputs[k] = v
+        def _process_arg_val(val: Any, is_sql: bool = False, param_key: str = "") -> Any:
+            if isinstance(val, str):
+                # 1. 优先尝试直接匹配上游图层名
+                if not is_sql and val in layer_producers:
+                    dep_node, output_key = layer_producers[val]
+                    if dep_node not in depends_on:
+                        depends_on.append(dep_node)
+                    return f"${{{dep_node}.{output_key}}}"
+                # 2. 针对显式图层列表参数或各分项均为主管图层的逗号分隔字符串
+                is_layer_list_param = param_key in ("layers", "layer_names", "layer_ids", "source_layers", "input_layers")
+                if not is_sql and "," in val:
+                    parts = [p.strip() for p in val.split(",")]
+                    if parts and (is_layer_list_param or all(p in layer_producers for p in parts if p)):
+                        new_parts = []
+                        for p in parts:
+                            if p in layer_producers:
+                                dep_node, output_key = layer_producers[p]
+                                if dep_node not in depends_on:
+                                    depends_on.append(dep_node)
+                                new_parts.append(f"${{{dep_node}.{output_key}}}")
+                            else:
+                                new_parts.append(p)
+                        return ",".join(new_parts)
+                # 3. 针对 SQL 语句中的图层表名引用
+                if is_sql or ("SELECT" in val.upper() and "FROM" in val.upper()):
+                    new_val = val
+                    for layer in sorted(layer_producers.keys(), key=len, reverse=True):
+                        dep_node, output_key = layer_producers[layer]
+                        quoted = f'"{layer}"'
+                        if quoted in new_val:
+                            if dep_node not in depends_on:
+                                depends_on.append(dep_node)
+                            new_val = new_val.replace(quoted, f'"${{{dep_node}.{output_key}}}"')
+                        elif re.search(rf'\bFROM\s+{re.escape(layer)}\b', new_val, flags=re.IGNORECASE) or \
+                             re.search(rf'\bJOIN\s+{re.escape(layer)}\b', new_val, flags=re.IGNORECASE):
+                            if dep_node not in depends_on:
+                                depends_on.append(dep_node)
+                            new_val = re.sub(rf'\b({re.escape(layer)})\b', f"${{{dep_node}.{output_key}}}", new_val)
+                    return new_val
+                return val
+            elif isinstance(val, list):
+                return [_process_arg_val(item, is_sql=is_sql, param_key=param_key) for item in val]
+            elif isinstance(val, dict):
+                return {k: _process_arg_val(v, is_sql=(k == "sql"), param_key=k) for k, v in val.items()}
+            return val
+
+        inputs = {k: _process_arg_val(v, is_sql=(k == "sql"), param_key=k) for k, v in raw_args.items()}
 
         node = new_node(
             node_id=node_id,
@@ -132,17 +171,22 @@ def materialize_from_history(task_id: str, workflow_name: str = "") -> Optional[
         )
 
         # 记录本节点产出的图层名（供后续节点建立依赖）
-        for output_index, out_layer in enumerate(e.get("layer_ids", [])):
-            if out_layer:
-                output_key = "layer_name" if output_index == 0 else f"layer_name_{output_index + 1}"
-                layer_producers[str(out_layer)] = (node_id, output_key)
-                node["outputs"][output_key] = str(out_layer)
+        out_layer_list = [str(out_layer) for out_layer in e.get("layer_ids", []) if out_layer]
+        for output_index, out_layer in enumerate(out_layer_list):
+            output_key = "layer_name" if output_index == 0 else f"layer_name_{output_index + 1}"
+            layer_producers[out_layer] = (node_id, output_key)
+            node["outputs"][output_key] = out_layer
+            node["outputs"][f"layer_name_{output_index + 1}"] = out_layer
+        if len(out_layer_list) > 1:
+            node["outputs"]["layer_names"] = out_layer_list
 
-        # 若参数里显式指定了输出图层名
-        for arg_key in ("output_layer", "result_layer", "target_layer", "name", "layer_name"):
-            if arg_key in raw_args and isinstance(raw_args[arg_key], str):
-                node["outputs"].setdefault("layer_name", raw_args[arg_key])
-                layer_producers[raw_args[arg_key]] = (node_id, "layer_name")
+        # 若参数里显式指定了输出图层名（排除输入图层名如 layer_name, target_layer, name）
+        for arg_key in ("result_layer_name", "output_layer_name", "output_name", "output_layer", "result_layer"):
+            out_name = raw_args.get(arg_key)
+            if isinstance(out_name, str) and out_name.strip():
+                clean_out_name = out_name.strip()
+                node["outputs"].setdefault("layer_name", clean_out_name)
+                layer_producers.setdefault(clean_out_name, (node_id, "layer_name"))
 
         nodes.append(node)
 
@@ -242,7 +286,8 @@ def _detect_cycle(nodes: List[Dict]) -> Optional[List[str]]:
 
     比 DFS 回溯稳：不用 parent 回溯，能处理多汇聚点/重边，保证终止。
     """
-    graph = {n["id"]: list(n.get("depends_on", [])) for n in nodes}
+    valid_nodes = [n for n in nodes if isinstance(n, dict) and n.get("id")]
+    graph = {n["id"]: list(n.get("depends_on", [])) for n in valid_nodes}
     # 只能走依赖存在的边，防悬空 dep
     node_ids = set(graph.keys())
     for nid in graph:
@@ -280,7 +325,9 @@ def _detect_cycle(nodes: List[Dict]) -> Optional[List[str]]:
 
 def topological_sort(nodes: List[Dict]) -> List[str]:
     """返回节点执行顺序（拓扑排序）"""
-    graph = {n["id"]: n.get("depends_on", []) for n in nodes}
+    valid_nodes = [n for n in nodes if isinstance(n, dict) and n.get("id")]
+    node_ids = {n["id"] for n in valid_nodes}
+    graph = {n["id"]: [d for d in n.get("depends_on", []) if d in node_ids] for n in valid_nodes}
     in_degree = {nid: len(deps) for nid, deps in graph.items()}
     # 反向图：dep -> [依赖它的节点]
     reverse = {nid: [] for nid in graph}
@@ -314,14 +361,25 @@ def _tool_failure_message(result: Any) -> Optional[str]:
             return str(result.get("error") or result.get("message") or "工具明确返回失败状态")
     if isinstance(result, str):
         text = result.strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                payload = json.loads(text)
+                if isinstance(payload, dict):
+                    msg = _tool_failure_message(payload)
+                    if msg:
+                        return msg
+            except Exception:
+                pass
         failure_prefixes = (
             "工具执行失败:", "执行失败:", "工作流执行失败:", "Workflow 执行失败:",
-            "失败:", "失败：", "错误:", "错误：",
+            "失败:", "失败：", "错误:", "错误：", "异常:", "异常：",
         )
         if text.startswith(failure_prefixes):
             return text
         first_line = text.splitlines()[0][:100] if text else ""
-        if any(marker in first_line for marker in ("失败:", "失败：", "未通过:", "未通过：")):
+        if re.match(r"^(?:失败|错误|异常)[:：]", first_line) or re.match(r"^[^\s:：]{1,30}(?:失败|错误|异常)[:：]", first_line):
+            return text
+        if any(marker in first_line for marker in ("失败:", "失败：", "未通过:", "未通过：", "异常:", "异常：")):
             return text
         if any(marker in text.lower() for marker in ("状态: failed", "状态：failed", "status: failed")):
             return text
@@ -391,12 +449,16 @@ class WorkflowExecutor:
             })
             return wf
 
-        # A saved workflow may include outputs and statuses from its last run.
-        # They are results, not defaults: retaining them lets downstream nodes
-        # consume stale values when the current run no longer produces a key.
+        # 重置所有节点的输出、错误、状态与执行计时，防止重跑时残留旧状态
         for node in wf["nodes"]:
             node["outputs"] = {}
             node["error"] = None
+            node["status"] = "pending"
+            node["duration"] = None
+            node.pop("_started_ts", None)
+            node.pop("_finished_ts", None)
+            node.pop("started_at", None)
+            node.pop("finished_at", None)
 
         if not isinstance(wf.get("id"), str) or not wf["id"].strip():
             wf["id"] = f"wf_{uuid.uuid4().hex[:12]}"
@@ -412,14 +474,15 @@ class WorkflowExecutor:
         for nid in order:
             node = node_map[nid]
 
-            # 检查上游是否有失败
-            upstream_failed = any(
-                node_map[dep].get("status") in ("failed", "skipped")
+            # 检查上游是否有未成功节点
+            upstream_not_ok = any(
+                node_map[dep].get("status") != "success"
                 for dep in node.get("depends_on", [])
+                if dep in node_map
             )
-            if upstream_failed:
+            if upstream_not_ok:
                 node["status"] = "skipped"
-                node["error"] = "上游节点失败，跳过执行"
+                node["error"] = "上游节点未执行成功，跳过执行"
                 self._emit({
                     "type": "workflow_node_skipped", "node_id": nid,
                     "name": node["name"], "tool": node["tool"], "error": node["error"],
@@ -429,8 +492,9 @@ class WorkflowExecutor:
             # 收集上游输出
             upstream_outputs = {}
             for dep in node.get("depends_on", []):
-                dep_node = node_map[dep]
-                upstream_outputs[dep] = dep_node.get("outputs", {})
+                if dep in node_map:
+                    dep_node = node_map[dep]
+                    upstream_outputs[dep] = dep_node.get("outputs", {})
 
             # 执行节点（内部另存 ms 级 _started_ts 供 duration 精确计算）
             node["status"] = "running"
@@ -464,8 +528,12 @@ class WorkflowExecutor:
                     ]
                     if len(changed_layers) == 1:
                         outputs.setdefault("layer_name", changed_layers[0])
+                        outputs.setdefault("layer_name_1", changed_layers[0])
                     elif changed_layers:
+                        outputs.setdefault("layer_name", changed_layers[0])
                         outputs.setdefault("layer_names", changed_layers)
+                        for i, l_name in enumerate(changed_layers):
+                            outputs.setdefault(f"layer_name_{i + 1}", l_name)
                 node["outputs"] = outputs
                 node["status"] = "success"
                 node["_finished_ts"] = time.time()
@@ -508,12 +576,16 @@ class WorkflowExecutor:
         # 最终状态
         failed = [n for n in wf["nodes"] if n["status"] == "failed"]
         skipped = [n for n in wf["nodes"] if n["status"] == "skipped"]
+        pending = [n for n in wf["nodes"] if n["status"] == "pending"]
         if failed:
             wf["status"] = "failed"
             wf["error"] = f"{len(failed)} 个节点失败"
         elif skipped:
             wf["status"] = "partial"
             wf["error"] = f"{len(skipped)} 个节点被跳过"
+        elif pending:
+            wf["status"] = "partial"
+            wf["error"] = f"{len(pending)} 个节点未执行"
         else:
             wf["status"] = "success"
 
@@ -548,24 +620,60 @@ class WorkflowExecutor:
         return result
 
     def _resolve_inputs(self, inputs: Dict, upstream_outputs: Dict) -> Dict:
-        """解析输入中的上游引用 ${node_id.key}"""
+        """解析输入中的上游引用 ${node_id.key}，支持递归解析字典、列表、空白容错、嵌套属性及字符串插值"""
+        def _get_nested_val(data: Any, path: str) -> Tuple[bool, Any]:
+            if not path:
+                return True, data
+            if isinstance(data, dict) and path in data:
+                return True, data[path]
+            curr = data
+            for part in path.split("."):
+                part = part.strip()
+                if isinstance(curr, dict) and part in curr:
+                    curr = curr[part]
+                elif isinstance(curr, (list, tuple)) and part.isdigit() and int(part) < len(curr):
+                    curr = curr[int(part)]
+                else:
+                    return False, None
+            return True, curr
+
+        def _resolve_ref(ref_str: str) -> Any:
+            ref = ref_str.strip()
+            if "." in ref:
+                dep_id, out_path = [x.strip() for x in ref.split(".", 1)]
+                if dep_id not in upstream_outputs:
+                    raise ValueError(f"输入引用 ${{{ref}}} 未声明对应 depends_on")
+                ok, val = _get_nested_val(upstream_outputs[dep_id], out_path)
+                if not ok:
+                    raise ValueError(f"上游节点 {dep_id} 未产生输出 {out_path}")
+                return val
+            else:
+                dep_id = ref
+                if dep_id not in upstream_outputs:
+                    raise ValueError(f"输入引用 ${{{ref}}} 未声明对应 depends_on")
+                return upstream_outputs[dep_id]
+
+        def _resolve_val(val: Any) -> Any:
+            if isinstance(val, str):
+                val_stripped = val.strip()
+                m_single = re.fullmatch(r"\$\{\s*([^}]+)\s*\}", val_stripped)
+                if m_single:
+                    return _resolve_ref(m_single.group(1))
+                elif "${" in val:
+                    def _replace_match(m):
+                        res = _resolve_ref(m.group(1))
+                        return "" if res is None else str(res)
+                    return re.sub(r"\$\{\s*([^}]+)\s*\}", _replace_match, val)
+                return val
+            elif isinstance(val, list):
+                return [_resolve_val(item) for item in val]
+            elif isinstance(val, dict):
+                return {k: _resolve_val(v) for k, v in val.items()}
+            return val
+
         resolved = {}
         for key, val in inputs.items():
-            if isinstance(val, str) and val.startswith("${") and val.endswith("}"):
-                ref = val[2:-1]
-                if "." in ref:
-                    dep_id, out_key = ref.split(".", 1)
-                    if dep_id not in upstream_outputs:
-                        raise ValueError(f"输入引用 {val} 未声明对应 depends_on")
-                    if out_key not in upstream_outputs[dep_id]:
-                        raise ValueError(f"上游节点 {dep_id} 未产生输出 {out_key}")
-                    resolved[key] = upstream_outputs[dep_id][out_key]
-                else:
-                    if ref not in upstream_outputs:
-                        raise ValueError(f"输入引用 {val} 未声明对应 depends_on")
-                    resolved[key] = upstream_outputs[ref]
-            else:
-                resolved[key] = val
+            resolved[key] = _resolve_val(val)
         return resolved
 
 
@@ -585,6 +693,6 @@ class WorkflowExecutor:
         layer_name = f"{node['name']}_结果"
         try:
             self.register_layer_fn(layer_name, geojson)
-            outputs["layer_name"] = layer_name
+            outputs.setdefault("layer_name", layer_name)
         except Exception:
             pass

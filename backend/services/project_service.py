@@ -815,6 +815,9 @@ def save_project(
     now = _now_str()
     is_new = project_id is None or not _project_exists(project_id)
     existing = None
+    index = _load_index()
+    if is_new and len(index.get("projects", {})) >= _MAX_PROJECTS:
+        raise ValueError(f"工程数量已达到上限（最多 {_MAX_PROJECTS} 个）；请先删除不需要的工程后再保存")
 
     if is_new:
         pid = _allocate_project_id()
@@ -961,7 +964,6 @@ def save_project(
         if msg.get("role") == "user" and msg.get("content"):
             preview = extract_clean_title(msg["content"], max_len=60)
             break
-    index = _load_index()
     index["projects"][pid] = {
         "id": pid,
         "name": sanitized_name,
@@ -972,15 +974,6 @@ def save_project(
         "messageCount": len(messages),
         "provider": provider,
     }
-    # 上限修剪
-    projs = index["projects"]
-    if len(projs) > _MAX_PROJECTS:
-        # The current save must survive even when timestamps have only
-        # second-level precision and tie with an older project.
-        older_projects = ((old_pid, summary) for old_pid, summary in projs.items() if old_pid != pid)
-        sorted_items = sorted(older_projects, key=lambda x: x[1].get("updatedAt", ""))
-        for old_pid, _ in sorted_items[:max(0, len(projs) - _MAX_PROJECTS)]:
-            _delete_project_data(old_pid, index, persist_index=False)
     index_warning = None
     try:
         _save_index(index)
@@ -1105,9 +1098,10 @@ def load_project(pid: str) -> dict | None:
         else:
             geojson = None
         raster = layer.get("raster")
-        if isinstance(raster, dict) and raster.get("asset"):
-            raster = {**raster, "project_id": pid,
-                      "url": f"/api/projects/{pid}/assets/{raster['asset']}"}
+        if isinstance(raster, dict) and (raster.get("asset") or raster.get("source_asset")):
+            raster = {**raster, "project_id": pid}
+            if raster.get("asset"):
+                raster["url"] = f"/api/projects/{pid}/assets/{raster['asset']}"
             if raster.get("source_asset"):
                 raster["source_url"] = f"/api/projects/{pid}/assets/{raster['source_asset']}"
         resolved_layers.append({
@@ -1520,9 +1514,23 @@ def import_project(zip_bytes) -> dict:
                     or any(sep in asset for sep in ("/", "\\", ":", "\0"))):
                 shutil.rmtree(target_dir, ignore_errors=True)
                 raise ValueError("导入的工程文件包含无效栅格资源路径")
-            if not os.path.isfile(os.path.join(target_dir, 'assets', asset)):
+            asset_path = os.path.join(target_dir, 'assets', asset)
+            if not os.path.isfile(asset_path):
                 shutil.rmtree(target_dir, ignore_errors=True)
                 raise ValueError("导入的工程文件缺少栅格资源")
+            digest_match = re.fullmatch(r"([0-9a-f]{20})\.[^.]+", asset)
+            if digest_match:
+                hasher = hashlib.sha256()
+                try:
+                    with open(asset_path, "rb") as af:
+                        for chunk in iter(lambda: af.read(1024 * 1024), b""):
+                            hasher.update(chunk)
+                except OSError as exc:
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    raise ValueError("导入的工程文件包含无效栅格资源") from exc
+                if not hasher.hexdigest().startswith(digest_match.group(1)):
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    raise ValueError("导入的工程文件包含不匹配的栅格资源数据")
 
     # Project archives are portable plaintext; encrypt their raster assets before
     # making the imported project available in the local project store.

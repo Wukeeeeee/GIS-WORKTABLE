@@ -244,6 +244,34 @@ def test_gis_operation_context_preserves_latest_success_after_failure():
     assert "不要把分析输出当成原始输入" in prompt_context
 
 
+def test_failed_gis_operation_persistence_keeps_memory_and_disk_unchanged(monkeypatch):
+    tid = task_manager.create_task("写盘失败保留最近成功结果", "gis-state-write-failure")
+    previous_output = {"name": "durable_buffer", "layer_id": "buffer-1"}
+    assert task_manager.record_gis_operation(
+        tid, "spatial_buffer", {"layer_name": "source", "distance": 100},
+        output_layers=[previous_output], status="success", run_id="run-durable",
+    )
+    before_memory = json.loads(json.dumps(task_manager.get_task(tid), ensure_ascii=False))
+    before_disk = task_manager._load_task_from_disk(tid)
+
+    def fail_save(_candidate):
+        raise OSError("simulated GIS context metadata write failure")
+
+    monkeypatch.setattr(task_manager, "_save_task_to_disk", fail_save)
+    with pytest.raises(OSError, match="GIS context metadata write failure"):
+        task_manager.record_gis_operation(
+            tid, "spatial_buffer", {"layer_name": "source", "distance": 500},
+            output_layers=[{"name": "unpersisted_buffer", "layer_id": "buffer-2"}],
+            status="success", run_id="run-unpersisted",
+        )
+
+    assert task_manager.get_task(tid) == before_memory
+    assert task_manager._load_task_from_disk(tid) == before_disk
+    context = task_manager.get_gis_context(tid)
+    assert context["last_successful_output"] == previous_output
+    assert context["current_operation"]["run_id"] == "run-durable"
+
+
 def test_gis_operation_state_isolated_by_task_and_session():
     task_a = task_manager.create_task("任务 A", "session-A")
     task_b = task_manager.create_task("任务 B", "session-B")
