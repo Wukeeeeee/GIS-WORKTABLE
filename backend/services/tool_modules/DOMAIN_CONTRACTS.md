@@ -126,7 +126,7 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 - `_spatial_feature_coordinates(gdf)`: Extracts coordinate points from point/multipoint features.
 - `_gdf_area_km2(gdf, unique=False)`: Computes surface area in km² using EPSG:6933.
 
-#### Tools to Migrate (56 tools, including attribute and geometry-edit migrations):
+#### Tools to Migrate (57 tools, including attribute and geometry-edit migrations):
 | Tool Name | Key Arguments | Return / Behavior |
 |:---|:---|:---|
 | `spatial_buffer` | `layer_name`, `distance`, `unit`, `dissolve` | Buffers vector features by metric distance. |
@@ -167,8 +167,8 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 | `spatial_kde` | `layer_name`, `bandwidth`, `grid_size`, `bandwidth_m`, `metric_units` | Estimates point-event density and registers a density grid layer. |
 | `measure_distance` | `lon1`, `lat1`, `lon2`, `lat2` | Computes WGS-84 Haversine distance and returns meters/km. |
 | `measure_area` | `layer_name` | Measures feature area with local UTM or WGS-84 ellipsoidal area. |
-| `convert_coordinates` | `coords`, `source_crs`, `target_crs` | Converts coordinate pairs between CRSs, including automatic UTM selection. |
-| `convert_crs` | `layer_name`, `target_crs` | Reprojects a registered vector layer into a target CRS and registers a new layer. |
+| `convert_coordinates` | `coords`, `source_crs`, `target_crs` | Converts coordinate pairs between CRSs, including automatic UTM selection; validates EPSG:3857 source and target coordinates against its declared area of use. |
+| `convert_crs` | `layer_name`, `target_crs` | Reprojects a registered vector layer into a target CRS and registers a new layer; rejects Web Mercator inputs outside its declared area of use. |
 | `add_length_field` | `layer_name`, `field_name` | Calculates per-feature projected length and registers an output vector layer. |
 | `edit_vertices` | `layer_name` | Queues frontend vertex-edit mode for a registered vector layer. |
 | `draw_feature` | `geometry_type`, `coordinates`, `layer_name` | Creates and registers a point, line, polygon, rectangle, or circle layer. |
@@ -178,6 +178,7 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 | `add_field` | `layer_name`, `field_name`, `field_type`, `default_value` | Adds a typed attribute to all features while preserving existing properties. |
 | `delete_field` | `layer_name`, `field_name` | Removes an attribute field; protects geometry and stable `_fid` identity. |
 | `move_features` | `layer_name`, `dx`, `dy`, `unit` | Translates all vector features in local metric coordinates. |
+| `rotate_features` | `layer_name`, `angle` | Rotates vector features around their projected geometry center. |
 | `scale_features` | `layer_name`, `x_factor`, `y_factor` | Scales features around their projected geometry center. |
 | `add_labels` | `layer_name`, `field`, `font_size`, `color` | Queues per-feature text labels using a selected attribute field. |
 | `spatial_graduated_colors` | `layer_name`, `field`, `n_classes`, `color_scheme`, `method`, `fill_opacity` | Queues numeric graduated symbology with equal-interval or quantile breaks. |

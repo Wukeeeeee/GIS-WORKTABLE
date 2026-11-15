@@ -131,6 +131,7 @@ def _new_task(user_goal: str, session_id: str = "default") -> dict:
         "current_step": 0,
         "latest_code_version": None,
         "gis_context": {},
+        "linked_sessions": [],
         "created_at": now,
         "updated_at": now,
         "archived": False,
@@ -366,13 +367,13 @@ def update_task(task_id: str, **kwargs) -> bool:
 
 def archive_task(task_id: str) -> bool:
     """归档任务"""
-    ok = update_task(task_id, status="archived", archived=True)
-    if ok:
-        with _lock:
+    with _lock:
+        ok = update_task(task_id, status="archived", archived=True)
+        if ok:
             for sid, tid in list(_session_active.items()):
                 if tid == task_id:
                     _session_active.pop(sid, None)
-    return ok
+        return ok
 
 
 def restore_task(task_id: str) -> bool:
@@ -405,9 +406,8 @@ def delete_task(task_id: str) -> bool:
             except OSError:
                 return False
         _tasks.pop(task_id, None)
-        if task:
-            sid = task.get("session_id") or "default"
-            if _session_active.get(sid) == task_id:
+        for sid, active_tid in list(_session_active.items()):
+            if active_tid == task_id:
                 _session_active.pop(sid, None)
     return True
 
@@ -421,7 +421,10 @@ def list_tasks(session_id: str = None, include_archived: bool = False) -> list:
             task = get_task(tid_dir)
             if not task:
                 continue
-            if session_id and task.get("session_id") != session_id:
+            linked_sessions = task.get("linked_sessions")
+            if session_id and task.get("session_id") != session_id and not (
+                isinstance(linked_sessions, list) and session_id in linked_sessions
+            ):
                 continue
             if not include_archived and task.get("archived"):
                 continue
@@ -827,10 +830,34 @@ def find_active_task_for_session(session_id: str) -> Optional[str]:
             task = get_task(tid_dir)
             if not task:
                 continue
-            if task.get("session_id") == sid and task.get("status") == "active" and not task.get("archived"):
+            linked_sessions = task.get("linked_sessions")
+            belongs_to_session = task.get("session_id") == sid or (
+                isinstance(linked_sessions, list) and sid in linked_sessions
+            )
+            if belongs_to_session and task.get("status") == "active" and not task.get("archived"):
                 with _lock:
-                    _session_active[sid] = task["task_id"]
-                return task["task_id"]
+                    # Another request may have created/restored a session task,
+                    # or deleted/archived this disk snapshot during the scan.
+                    indexed_tid = _session_active.get(sid)
+                    indexed_task = _tasks.get(indexed_tid) if indexed_tid else None
+                    if indexed_task and indexed_task.get("status") == "active" and not indexed_task.get("archived"):
+                        return indexed_tid
+                    if indexed_tid:
+                        _session_active.pop(sid, None)
+
+                    current = _tasks.get(task["task_id"])
+                    current_linked_sessions = current.get("linked_sessions") if current else None
+                    if (
+                        current
+                        and (
+                            current.get("session_id") == sid
+                            or isinstance(current_linked_sessions, list) and sid in current_linked_sessions
+                        )
+                        and current.get("status") == "active"
+                        and not current.get("archived")
+                    ):
+                        _session_active[sid] = task["task_id"]
+                        return task["task_id"]
     return None
 
 
@@ -847,10 +874,29 @@ def find_or_create_task(session_id: str, user_message: str, task_id: str = None)
     # 观察到“无活跃任务”并创建多条任务，最后一条覆盖 session 索引。
     with _lock:
         if task_id:
-            referenced = get_task(str(task_id))
+            referenced_id = str(task_id)
+            referenced = get_task(referenced_id)
             if referenced:
-                _session_active[sid] = str(task_id)
-                return str(task_id)
+                linked_sessions = referenced.get("linked_sessions")
+                if not isinstance(linked_sessions, list):
+                    linked_sessions = []
+                owner_session = referenced.get("session_id") or "default"
+                is_archived = bool(referenced.get("archived")) or referenced.get("status") == "archived"
+                link_session = sid != owner_session and sid not in linked_sessions
+                updates = {}
+                if is_archived:
+                    updates.update(status="active", archived=False)
+                if link_session:
+                    updates["linked_sessions"] = [*linked_sessions, sid]
+                if updates and not update_task(referenced_id, **updates):
+                    reason = "跨会话任务引用" if link_session else "归档任务恢复"
+                    raise OSError(f"无法持久化{reason}: {referenced_id}")
+                if is_archived:
+                    _session_active[owner_session] = referenced_id
+                current = _tasks.get(referenced_id)
+                if current and current.get("status") == "active" and not current.get("archived"):
+                    _session_active[sid] = referenced_id
+                return referenced_id
             # Explicit reference must never silently fall back to an unrelated active task.
             return create_task(user_message, sid)
 

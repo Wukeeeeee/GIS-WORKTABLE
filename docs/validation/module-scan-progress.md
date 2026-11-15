@@ -3347,3 +3347,66 @@
 - **改动：**为 scale 失败文案补足分类，空图层亦可分类；在应用仿射变换前用各轴坐标/中心的最大绝对值分别计算安全乘数上限，溢出时提前拒绝；缩放后验证 bounds 有限。随后保持签名/原逻辑迁入 `vector.py`，facade 重导出，注册顺序保留 `rotate_features` / `scale_features` / `draw_feature`。不在此处施加新的结果纬度上限，保留已有高纬度轴向缩放行为。
 - **验证：**新增回归先复现 4 种无效因子全部被误判、超大倍数导致 Shapely warning/坏环；修复迁移后 compat、registry、字段管理、图层生命周期、move/scale 特性与失败反馈组合：124 passed。覆盖原高纬度轴向缩放、大整数属性保留、失败不改 registry/pending 队列及成功不误判。`tools.py` 实测 5,794 行，vector 有 56 个 `@tool` 实现；测试的 TEMP/TMP/MPLCONFIGDIR 均隔离。
 - **边界：**未运行后端全量；未访问外部服务、凭据或真实用户数据；`.agents/` 未触碰；本轮未提交或推送。下一步建议审计 `rotate_features` 的空层反馈分类和高纬度旋转边界后，再决定迁移。
+
+### 2026-11-15 将 rotate_features 迁入 vector 并修正空层失败分类
+
+- **问题与证据：**空 FeatureCollection 调用 `rotate_features` 返回“图层为空”，但 `_tool_result_failed("rotate_features", result)` 为 False；新增 ownership 回归也在迁移前因 `vector.rotate_features` 不存在而失败。既有高纬度旋转测试覆盖约 79.9°–80.1° 的旋转几何形状。
+- **改动：**将 `rotate_features` 原实现迁入 `vector.py`，门面从 vector 重导出并保留 `move_features` / `rotate_features` / `scale_features` 注册顺序；为旋转空层和有限角度校验错误添加失败标记。新增空层失败无副作用测试与门面 ownership/identity/顺序门禁；更新 vector 合同表和当前规模/验证记录。未更改高纬度投影策略。
+- **验证：**迁移前两条新回归均按预期失败；迁移后 compat、registry、字段管理、图层生命周期、move/rotate/scale 特性与失败反馈组合 **128 passed**。既有高纬度旋转用例通过；新空层用例确认 registry 和 pending 队列不变。独立进程导入 `vector` 未加载 `backend.services.tools`（`VECTOR_ISOLATION_OK`）；`git diff --check` 通过。当前 `tools.py` 5,740 行、vector 57 个 `@tool` 实现。测试使用隔离 TEMP/TMP/MPLCONFIGDIR，未访问外部服务、凭据或用户数据。
+- **边界与下一步：**未运行后端全量，极地/跨 UTM 带旋转行为仍由 `_local_utm_extent_error` 限制且未扩展验证；工作区原有未跟踪 `.agents/` 保持未触碰。本轮改动尚未提交或推送。下一步可审计剩余 vector transform 的失败分类与本地投影范围，再按同一兼容门禁迁移一项。
+
+### 2026-11-15 修正 0° rotate_features 的方向反馈与无效副作用
+
+- **问题与证据：**新增用例复现 `angle=0` 返回“顺时针”、且仍重投影并同步图层；该结果对零角度方向描述不实，也造成无变化操作写入 registry/pending 队列。首轮修复测试还发现以“图层「”开头的中性提示会被既有失败标记误判失败。
+- **改动：**零角度现在明确返回“未旋转……角度为 0°，图层未修改”，在投影和状态更新前短路；保留空图层错误反馈规则，使用不会命中该失败标记的成功文本。
+- **验证：**该回归在修复前失败；第一次实现虽消除方向误报但因共享前缀仍被误分类，调整提示后包含新增回归的定向组合 **129 passed**。检查 registry/pending 队列均不变，`git diff --check` 通过。测试仍使用隔离 TEMP/TMP/MPLCONFIGDIR。
+- **边界与下一步：**未运行后端全量；未改变其他非零旋转及 UTM 范围策略，极地/跨带仍未验证。未提交或推送；`.agents/` 保持未触碰。下一步可审计 `convert_crs` 的 `utm_auto` 投影边界与错误分类，之后继续挑选一项迁移。
+
+### 2026-11-15 拒绝超出 EPSG:3857 area-of-use 的矢量图层
+
+- **问题与证据：**合成点 `[0, 89]` 调用 `convert_crs(..., target_crs="web_mercator")` 被报告成功，并创建了图层，输出 Y≈30,240,972 m；当前 PyProj EPSG:3857 本地元数据声明的纬度范围为 −85.06° 至 85.06°。新增回归在修复前失败，证明该范围外输入被当成功并产生副作用。
+- **改动：**在 `convert_crs` 对 EPSG:3857 目标按 CRS area-of-use 检查输入范围（图层在共享 helper 中以 EPSG:4326 构造）；越界返回坐标系转换失败，不登记或推送结果。新增 89°N 拒绝无副作用用例和 85.05°N 合法范围内成功用例；合同表同步注明边界。
+- **验证：**新回归修复前失败，修复后 compat、registry、字段管理、图层生命周期、move/rotate/scale/CRS 特性及失败反馈组合 **135 passed**；`git diff --check` 通过。pytest 运行使用隔离 TEMP/TMP/MPLCONFIGDIR。单次修复前探针未隔离 MPLCONFIGDIR；只检查了用户 `.matplotlib` 缓存文件元数据，现有两个文件时间仍为 2026-09-13 与 2026-07-14，未观察到改写。
+- **边界与下一步：**未运行后端全量；其他投影 CRS 的 area-of-use 未作通用校验，EPSG:3857 纬度范围依赖本机 PyProj 数据库元数据。未访问外部服务、凭据或真实用户图层；未提交或推送；`.agents/` 未触碰。下一步可对其余矢量坐标转换检查 area-of-use 策略与失败反馈，再选择下一项模块化迁移。
+
+### 2026-11-15 为坐标点转换补充 EPSG:3857 适用范围检查
+
+- **问题与证据：**修正图层转换后继续探测 `convert_coordinates`，`wgs84 → web_mercator` 输入 `0,89` 仍返回成功并给出 Y≈30,240,972 m；反向输入该 EPSG:3857 坐标也被成功转回 89°N，且同 CRS 输入可提前走 no-op 成功分支。三条新拒绝回归在修复前失败。
+- **改动：**对源或目标为 EPSG:3857 的点坐标，先转换至 WGS84 并用 PyProj CRS area-of-use 边界验证；源坐标越界在同 CRS no-op 之前拒绝，目标范围越界在正式转换前拒绝。错误由既有 `坐标转换失败` 前缀分类为失败。新增目标越界、源越界（含同 CRS）与边界内成功回归。
+- **验证：**新增测试先 3 failed、1 passed；修复后 compat、registry、字段管理、图层生命周期、move/rotate/scale、CRS/坐标转换及失败反馈组合 **143 passed**；`git diff --check` 通过。验证运行使用隔离 TEMP/TMP/MPLCONFIGDIR；只用本地合成坐标，无外部服务、凭据或用户图层。
+- **边界与下一步：**area-of-use 检查仅对 EPSG:3857 实施，其他 CRS 尚未通用检查；未运行后端全量。未提交或推送，现有未提交轮次及 `.agents/` 保留。下一步可对其他矢量目标 CRS 评估基于 area-of-use 自动拒绝是否安全，再推进一个独立模块切片。
+
+### 2026-11-15 修复会话活跃任务磁盘回扫的并发索引竞态
+
+- **问题与证据：**`find_active_task_for_session` 在锁外磁盘回扫并调用 `get_task` 后，锁内直接将旧快照写回 `_session_active`。用事件屏障确定性复现两种交错：任务读取后被删除时仍返回已删除 ID；另一个请求创建新活跃任务时旧扫描结果覆盖新索引。新增参数化回归修复前两种情况均失败。
+- **改动：**锁内回填前先尊重并发建立且仍活跃的会话索引；否则重新核验扫描任务仍在 `_tasks`、属于目标 session 且 active/not archived，只有满足条件才回填。删除或归档竞态不再返回陈旧任务 ID。
+- **验证：**`backend/tests/test_task_manager.py` 与 `backend/tests/test_task_manager_adversarial.py`：**36 passed**，包含两个事件屏障竞态分支、并行写入、API 删除竞态及路径/损坏数据检查。测试 fixture 将任务目录重定向到 pytest 临时目录，TEMP/TMP/MPLCONFIGDIR 也隔离；无外部服务、真实用户任务或凭据。`git diff --check` 通过。
+- **边界与下一步：**尚未验证跨进程的多 worker 任务索引同步；当前索引与锁仍为进程内状态。未跑后端全量、未提交或推送；已有未提交 CRS/rotate 改动与 `.agents/` 保留。下一步可检查跨会话显式 task 引用与 session 索引的边界测试，确认文档约定和恢复行为一致。
+
+### 2026-11-15 持久化显式跨会话任务引用
+
+- **问题与证据：**现有 cartography 回归明确允许用户引用另一 session 的任务，并由 `find_or_create_task` 将其放入当前 session 的活跃索引；但索引仅在内存。新增回归创建并显式引用后清空 `_tasks` / `_session_active` 模拟服务缓存重建，原逻辑磁盘回扫返回 `None`，无法续接该引用任务。
+- **改动：**任务记录新增向后兼容的 `linked_sessions`（旧记录缺字段时默认空）；显式跨 session 引用先持久化关联，只有写盘成功后才发布内存索引。磁盘回扫和 `list_tasks(session_id)` 会识别该关联，owner session 原有归属不变。写盘失败时抛出错误，避免只留下易失的内存链接。
+- **验证：**缓存清空恢复测试修复前失败；链接持久化成功、写盘失败不发布索引、跨会话引用的 cartography 上下文既有回归以及旧版缺 `linked_sessions` 的读取回归通过。`backend/tests/test_task_manager.py`、`test_task_manager_adversarial.py` 与 `test_cartography_reuse.py::test_explicitly_referenced_task_context_is_restored`：**40 passed**。任务目录和 TEMP/TMP/MPLCONFIGDIR 均隔离；无外部服务、真实用户任务或凭据。
+- **边界与下一步：**缓存清空是对磁盘恢复路径的本进程模拟，未做真正多进程同时写入/删除；索引锁仍非跨进程锁。未跑后端全量、未提交或推送；已有工作树改动及 `.agents/` 保留。下一步可核查显式引用归档任务时活跃索引是否应仅提供历史上下文，还是应触发恢复。
+
+### 2026-11-15 显式引用归档任务时原子恢复状态
+
+- **问题与证据：**新增回归复现显式引用归档任务后 `find_or_create_task` 返回归档 ID 并把它塞进活跃索引，但任务仍保持 `status=archived`；后续活跃查询会清掉该索引，而代码保存/GIS 记录接口仍可能写入归档任务。函数策略注明用户显式引用任务时优先继续，因此本轮将该动作按恢复任务处理。
+- **改动：**显式引用归档任务时通过一次 `update_task` 原子持久化 `status=active`、`archived=False` 及必要的跨会话链接；写盘成功后才切换原 owner 和引用 session 的活跃索引。写盘失败则保留归档状态、原链接和索引不变。
+- **验证：**归档引用回归修复前失败；恢复后任务管理、adversarial 与显式跨会话 cartography 引用组合：**42 passed**。覆盖原 session 和引用 session 索引、旧版无 `linked_sessions` 元数据兼容，以及 active/archived 两类链接写盘失败都不发布索引。任务目录及 TEMP/TMP/MPLCONFIGDIR 均隔离。
+- **边界与下一步：**本轮选择“用户明确引用归档任务即恢复继续”的语义，若产品预期仅查看历史上下文则需另行调整；未跑后端全量、未验证多进程并发；无外部服务、凭据或真实用户数据。未提交或推送，`.agents/` 和其他既有未提交改动保留。下一步可审计跨会话链接任务的归档/恢复/删除状态矩阵及 API 列表可见性。
+
+### 2026-11-15 删除跨会话任务时清理全部活跃索引
+
+- **问题与证据：**状态矩阵回归先创建 owner 任务并将其显式链接给 borrower，再删除任务；原 `delete_task` 仅按 task 的原始 `session_id` 清理索引，borrower 的 `_session_active` 仍指向已删 ID。新增测试修复前失败。
+- **改动：**任务目录删除成功并清除缓存后，在同一把锁内遍历 `_session_active`，移除所有 value 指向该 task_id 的映射，覆盖 owner 与所有 linked sessions。
+- **验证：**`test_task_manager.py`、`test_task_manager_adversarial.py` 与跨会话 cartography 引用测试组合：**43 passed**；新测试确认删除后没有 session index 残留，owner/borrower 的查找均返回无活跃任务。临时任务目录及 TEMP/TMP/MPLCONFIGDIR 隔离；`git diff --check` 通过。
+- **边界与下一步：**未跑后端全量或多进程测试；linked session 的归档/恢复/列表路径已有部分覆盖，尚未验证失败删除时所有索引均原样保留。本轮未提交或推送；`.agents/` 与既有未提交工作保持原样。下一步可验证删除失败、归档/恢复后全部 linked session 索引与 API 列表的一致性。
+
+### 2026-11-15 串行化归档与恢复的持久化/索引切换
+
+- **问题与证据：**事件屏障测试令 `archive_task` 在持久化 `archived` 后、清理索引前暂停，再恢复同一任务。原实现允许恢复先写回 active 并登记 session 索引，随后归档线程删除该索引；新增回归修复前确定性失败。
+- **改动：**将 `archive_task` 的状态写入和所有 session 活跃索引清理放入同一 `_lock` 临界区，使并发 restore/explicit resume 排在归档转换之后。另补跨会话 delete 失败用例，确认 rmtree 抛错时文件、内存 task 与全部 session 索引保持不变。
+- **验证：**两个新回归修复前归档竞态用例失败、删除失败用例通过；锁修正后 `test_task_manager.py`、`test_task_manager_adversarial.py` 与显式跨会话 cartography 引用组合 **45 passed**。所有 task 文件位于 pytest tmp_path，TEMP/TMP/MPLCONFIGDIR 隔离；`git diff --check` 通过。
+- **边界与下一步：**本轮测试覆盖单进程线程竞态，不代表多进程/多 worker 同步；未跑后端全量。无外部服务、凭据或真实用户任务；未提交或推送，`.agents/` 和其他未提交改动保持不变。下一步可核查跨会话归档/恢复后 API 列表（含 archived 筛选）和主动索引恢复路径。

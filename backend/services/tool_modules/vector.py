@@ -549,6 +549,18 @@ def convert_crs(layer_name: str, target_crs: str = "wgs84") -> str:
         }
         target_key = target_crs.strip().lower()
         target = epsg_map.get(target_key, target_crs.strip())
+        if target_key not in ("utm_auto", "utm"):
+            import pyproj
+            target_definition = pyproj.CRS.from_user_input(target)
+            if target_definition.to_epsg() == 3857 and target_definition.area_of_use:
+                min_lon, min_lat, max_lon, max_lat = target_definition.area_of_use.bounds
+                min_x, min_y, max_x, max_y = gdf.total_bounds
+                if min_x < min_lon or min_y < min_lat or max_x > max_lon or max_y > max_lat:
+                    return (
+                        f"坐标系转换失败: 图层范围超出 {target} 适用范围 "
+                        f"（经度 {min_lon}°–{max_lon}°，纬度 {min_lat}°–{max_lat}°），"
+                        "未生成新图层"
+                    )
         if target_key in ("utm_auto", "utm"):
             extent_error = _local_utm_extent_error(gdf.total_bounds)
             if extent_error:
@@ -594,6 +606,21 @@ def convert_coordinates(coords: str, source_crs: str = "wgs84",
                 raise ValueError("源坐标为 UTM 时需指定 EPSG 分带（例如 EPSG:32719），不能使用 utm_auto")
             return str(name).strip()
 
+        def _validate_web_mercator_area(points, input_crs: str, role: str) -> None:
+            area = pyproj.CRS.from_epsg(3857).area_of_use
+            west, south, east, north = area.bounds
+            to_wgs84 = pyproj.Transformer.from_crs(input_crs, "EPSG:4326", always_xy=True)
+            for x, y in points:
+                lon, lat = to_wgs84.transform(x, y, errcheck=True)
+                if (
+                    not math.isfinite(lon) or not math.isfinite(lat)
+                    or not west <= lon <= east or not south <= lat <= north
+                ):
+                    raise ValueError(
+                        f"{role}超出 EPSG:3857 适用范围 "
+                        f"（经度 {west}°–{east}°，纬度 {south}°–{north}°）"
+                    )
+
         parts_raw = str(coords or "").replace("，", ",").replace("；", ";").split(";")
         parsed = []
         for part in parts_raw:
@@ -610,6 +637,8 @@ def convert_coordinates(coords: str, source_crs: str = "wgs84",
 
         p1 = _resolve_crs(source_crs)
         source_definition = pyproj.CRS.from_user_input(p1)
+        if source_definition.to_epsg() == 3857:
+            _validate_web_mercator_area(parsed, p1, "源坐标")
         if source_definition.is_geographic and any(
             not -180 <= x <= 180 or not -90 <= y <= 90 for x, y in parsed
         ):
@@ -634,6 +663,9 @@ def convert_coordinates(coords: str, source_crs: str = "wgs84",
             p2 = _get_utm_crs(center_lon, center_lat)
         else:
             p2 = _resolve_crs(target_crs)
+        target_definition = pyproj.CRS.from_user_input(p2)
+        if target_definition.to_epsg() == 3857 and source_definition.to_epsg() != 3857:
+            _validate_web_mercator_area(parsed, p1, "目标范围")
         if p1 == p2:
             return f"源和目标CRS相同: {source_crs} = {target_crs}, 无需转换"
         transformer = pyproj.Transformer.from_crs(p1, p2, always_xy=True)
@@ -2314,6 +2346,58 @@ def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m"
     except Exception as e:
         import traceback
         return f"移动要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
+
+@tool
+def rotate_features(layer_name: str, angle: float = 90) -> str:
+    """旋转指定图层的所有要素。angle 为旋转角度（度），正数=逆时针，负数=顺时针。旋转中心为图层所有要素的几何中心。"""
+    try:
+        import warnings
+
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
+
+        gdf = _geojson_to_export_gdf(info["geojson"])
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        try:
+            angle = float(angle)
+        except (TypeError, ValueError, OverflowError):
+            return "旋转要素失败：角度必须是有限数值"
+        if not np.isfinite(angle):
+            return "旋转要素失败：角度必须是有限数值"
+        if angle == 0:
+            return f"未旋转图层「{layer_name}」：角度为 0°，图层未修改"
+
+        bounds = gdf.total_bounds
+        extent_error = _local_utm_extent_error(bounds)
+        if extent_error:
+            return f"旋转要素失败: {extent_error}；未修改图层"
+        lon, lat = (bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2
+        metric_crs = _get_utm_crs(lon, lat)
+        gdf_metric = gdf.to_crs(metric_crs)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            center = gdf_metric.dissolve().centroid.iloc[0]
+
+        gdf_metric.geometry = gdf_metric.geometry.rotate(angle, origin=(center.x, center.y), use_radians=False)
+        gdf_result = gdf_metric.to_crs("EPSG:4326")
+
+        geojson_data = gdf_result.__geo_interface__
+        geojson_data["name"] = layer_name
+        _update_registered_layer_data(layer_name, geojson_data)
+        _push_layer(layer_name, geojson_data)
+
+        direction = "逆时针" if angle > 0 else "顺时针"
+        return (f"已旋转图层「{layer_name}」{abs(angle)}°（{direction}），"
+                f"{len(gdf_result)} 个要素，已同步地图")
+    except Exception as e:
+        import traceback
+        return f"旋转要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
+
 
 @tool
 def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) -> str:
@@ -4072,6 +4156,7 @@ __all__ = [
     "add_field",
     "delete_field",
     "move_features",
+    "rotate_features",
     "scale_features",
     "spatial_select_by_attribute",
     "topology_check",

@@ -5,9 +5,9 @@
 > 下方“迁移前规模”与“2,090 项测试”是本计划建立时的历史基线，不代表当前工作树规模或当前收集到的测试数。
 
 - **迁移前代码基线**：计划建立时记录 `backend/services/tools.py` 约 **671 KB、14,115 行、273 个函数/类**；这是历史快照。
-- **当前工作树核查（2026-11-15）**：`tools.py` 当前为 **5,794 行**；`vector.py` 有 **56 个 `@tool` 实现**，合同表现含属性编辑、`move_features` 和 `scale_features`。为遵守 vector 仅依赖 runtime/common 的层级，混合属性类型的 `geojson_to_export_gdf` 转换实现归 `runtime.py` 所有，`io_export.py` 同对象重导出；空要素集转换为带 WGS-84 几何列的空 GeoDataFrame。工具门面维持原名和注册顺序，运行时图层注册与同步使用共享状态。独立 `shared_state.py` 和 `registry.py` 仍未建立，`tools.py` 也远未收口为薄门面。
-- **当前验证边界**：compat、registry、字段管理、图层生命周期、move/scale 特性与失败反馈组合：124 passed。新增用例复现缩放拒绝文案未被失败分类，以及超大有限倍数导致 Shapely 浮点溢出；修复后通过。`move_features` 与 `scale_features` 持续拒绝无效/非有限结果且不更新共享图层。未跑后端全量；“2,090 项”仅为计划初始基线，不代表本次收集数。
-- **兼容性门禁进度**：`backend/tests/test_tool_modules_compat.py` 检查门面重导出的可变共享状态身份、输出目录动态转发、domain modules 对 runtime 注册表的单一引用、vector 与 runtime `_pending_layer_ops` 单一引用，以及 vector 工具所属关系、门面对象身份与注册表顺序；目前覆盖 `add_field`/`delete_field`/`move_features`/`scale_features` 门面身份和 `geojson_to_export_gdf` 的 runtime 单一所有权。最新 compat 与 registry 对应测试已通过；它仍不等于全部公开符号兼容性审计完成。
+- **当前工作树核查（2026-11-15）**：`tools.py` 当前为 **5,740 行**；`vector.py` 有 **57 个 `@tool` 实现**，合同表现含属性编辑及 move/rotate/scale 几何编辑。混合属性类型的 `geojson_to_export_gdf` 转换实现归 `runtime.py` 所有，`io_export.py` 同对象重导出；空要素集转换为带 WGS-84 几何列的空 GeoDataFrame。工具门面维持原名和注册顺序，运行时图层注册与同步使用共享状态。独立 `shared_state.py` 和 `registry.py` 仍未建立，`tools.py` 也远未收口为薄门面。
+- **当前验证边界**：compat、registry、字段管理、图层生命周期、move/rotate/scale/convert_crs/convert_coordinates 特性与失败反馈组合：143 passed（前轮）；任务管理、adversarial、显式跨会话引用、归档引用恢复、链接删除和归档/恢复竞态：45 passed（本轮）。`find_active_task_for_session` 磁盘回扫并发删除/创建竞态有确定性屏障回归；显式跨会话引用已持久化并在缓存清空后恢复，旧版缺 `linked_sessions` 的任务仍可读取。显式引用归档任务时恢复为 active 并切换两个相关 session 索引；删除链接任务会清理全部活跃索引，删除/归档失败保留既有状态。已修正空旋转图层失败分类并将 `rotate_features` 迁入 vector；0° 旋转不再误报方向或产生副作用。`convert_crs` 和 `convert_coordinates` 均拒绝 EPSG:3857 area-of-use 外数据并保留边界内输入。未跑后端全量；“2,090 项”仅为计划初始基线，不代表本次收集数。
+- **兼容性门禁进度**：`backend/tests/test_tool_modules_compat.py` 检查门面重导出的可变共享状态身份、输出目录动态转发、domain modules 对 runtime 注册表的单一引用、vector 与 runtime `_pending_layer_ops` 单一引用，以及 vector 工具所属关系、门面对象身份与注册表顺序；目前覆盖 `add_field`/`delete_field`/`move_features`/`rotate_features`/`scale_features` 门面身份和 `geojson_to_export_gdf` 的 runtime 单一所有权。最新 compat 与 registry 对应测试已通过；它仍不等于全部公开符号兼容性审计完成。
 - **核心风险点**：
   1. **导入遮蔽（Import Shadowing）**：绝不能同名共存 `backend/services/tools.py` 与 `backend/services/tools/`，否则在不同运行环境和导入语法下会触发模块与包的解析冲突。
   2. **隐式全局状态耦合**：文件中存在 `_registered_layers`、`_tile_cache`、`_geocode_cache`、`_custom_proxy`、任务上下文锁等，必须先确立“状态唯一归属”，严防拆分后产生状态分裂或多份副本。

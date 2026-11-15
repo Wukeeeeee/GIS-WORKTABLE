@@ -262,6 +262,17 @@ def test_move_features_is_owned_by_vector_and_reexported_by_facade():
     ]
 
 
+def test_rotate_features_is_owned_by_vector_and_reexported_by_facade():
+    from backend.services.tool_modules import vector
+
+    assert tools.rotate_features is vector.rotate_features
+    tool_names = [tool.name for tool in tools.tools]
+    rotate_index = tool_names.index("rotate_features")
+    assert tool_names[rotate_index - 1:rotate_index + 2] == [
+        "move_features", "rotate_features", "scale_features",
+    ]
+
+
 def test_scale_features_is_owned_by_vector_and_reexported_by_facade():
     from backend.services.tool_modules import vector
 

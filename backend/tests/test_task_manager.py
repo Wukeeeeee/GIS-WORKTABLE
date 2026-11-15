@@ -165,6 +165,149 @@ def test_restoring_archived_task_makes_it_the_session_active_task():
     assert task_manager.find_active_task_for_session(session_id) == archived
 
 
+def test_archive_and_restore_keep_task_state_and_active_index_in_order(monkeypatch):
+    session_id = "archive-restore-race"
+    task_id = task_manager.create_task("归档恢复竞态", session_id)
+    archive_updated = threading.Event()
+    restore_started = threading.Event()
+    restore_update_entered = threading.Event()
+    release_archive = threading.Event()
+    original_update = task_manager.update_task
+
+    def pause_between_archive_and_index_cleanup(candidate_id, **updates):
+        if updates.get("status") == "active":
+            restore_update_entered.set()
+        result = original_update(candidate_id, **updates)
+        if updates.get("status") == "archived":
+            archive_updated.set()
+            assert release_archive.wait(timeout=3)
+        return result
+
+    def restore():
+        restore_started.set()
+        return task_manager.restore_task(task_id)
+
+    monkeypatch.setattr(task_manager, "update_task", pause_between_archive_and_index_cleanup)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        archive_future = pool.submit(task_manager.archive_task, task_id)
+        assert archive_updated.wait(timeout=3)
+        restore_future = pool.submit(restore)
+        assert restore_started.wait(timeout=3)
+        restore_interleaved = restore_update_entered.wait(timeout=0.2)
+        release_archive.set()
+        assert archive_future.result(timeout=3)
+        assert restore_future.result(timeout=3)
+
+    assert not restore_interleaved
+    assert task_manager.get_task(task_id)["status"] == "active"
+    assert task_manager._session_active[session_id] == task_id
+
+
+def test_explicit_cross_session_task_reference_survives_cache_restart():
+    owner_session = "cross-session-owner"
+    borrowing_session = "cross-session-borrower"
+    task_id = task_manager.create_task("被引用的历史任务", owner_session)
+
+    assert task_manager.find_or_create_task(
+        borrowing_session, "继续引用任务", task_id=task_id,
+    ) == task_id
+    task_manager._tasks.clear()
+    task_manager._session_active.clear()
+
+    assert task_manager.find_active_task_for_session(borrowing_session) == task_id
+    assert [task["task_id"] for task in task_manager.list_tasks(borrowing_session)] == [task_id]
+    assert task_manager.find_active_task_for_session(owner_session) == task_id
+
+
+def test_explicit_reference_restores_archived_task_for_continuation():
+    owner_session = "archived-reference-owner"
+    borrowing_session = "archived-reference-borrower"
+    archived_id = task_manager.create_task("已归档的历史任务", owner_session)
+    assert task_manager.archive_task(archived_id)
+    current_id = task_manager.create_task("当前会话任务", borrowing_session)
+
+    assert task_manager.find_or_create_task(
+        borrowing_session, "继续已引用的归档任务", task_id=archived_id,
+    ) == archived_id
+
+    restored = task_manager.get_task(archived_id)
+    assert restored["status"] == "active"
+    assert restored["archived"] is False
+    assert task_manager._session_active[owner_session] == archived_id
+    assert task_manager._session_active[borrowing_session] == archived_id
+    assert task_manager.find_active_task_for_session(borrowing_session) == archived_id
+    assert current_id != archived_id
+
+
+def test_legacy_task_without_linked_sessions_still_restores_from_disk():
+    session_id = "legacy-linked-session"
+    task_id = task_manager.create_task("旧版任务元数据", session_id)
+    legacy_record = task_manager.get_task(task_id)
+    legacy_record.pop("linked_sessions", None)
+    task_manager._save_task_to_disk(legacy_record)
+    task_manager._tasks.clear()
+    task_manager._session_active.clear()
+
+    assert task_manager.find_active_task_for_session(session_id) == task_id
+    assert [task["task_id"] for task in task_manager.list_tasks(session_id)] == [task_id]
+
+
+@pytest.mark.parametrize("archived", [False, True], ids=["active", "archived"])
+def test_cross_session_reference_persistence_failure_does_not_publish_alias(monkeypatch, archived):
+    task_id = task_manager.create_task("不能丢失引用失败", "cross-session-owner")
+    if archived:
+        assert task_manager.archive_task(task_id)
+
+    def fail_save(_task):
+        raise OSError("simulated task metadata write failure")
+
+    monkeypatch.setattr(task_manager, "_save_task_to_disk", fail_save)
+    with pytest.raises(OSError, match="无法持久化跨会话任务引用"):
+        task_manager.find_or_create_task(
+            "cross-session-borrower", "继续引用任务", task_id=task_id,
+        )
+
+    assert task_manager.get_task(task_id).get("linked_sessions") == []
+    assert task_manager.get_task(task_id)["archived"] is archived
+    assert task_manager.get_task(task_id)["status"] == ("archived" if archived else "active")
+    assert "cross-session-borrower" not in task_manager._session_active
+
+
+@pytest.mark.parametrize("race_action", ["delete", "create"])
+def test_disk_scan_does_not_overwrite_concurrent_session_state(monkeypatch, race_action):
+    session_id = "scan-delete-race"
+    task_id = task_manager.create_task("磁盘回扫删除竞态", session_id)
+    task_manager._session_active.pop(session_id, None)
+    task_manager._tasks.pop(task_id, None)
+    loaded = threading.Event()
+    release = threading.Event()
+    original_get_task = task_manager.get_task
+
+    def pause_after_disk_load(candidate_id):
+        task = original_get_task(candidate_id)
+        if candidate_id == task_id:
+            loaded.set()
+            assert release.wait(timeout=3)
+        return task
+
+    monkeypatch.setattr(task_manager, "get_task", pause_after_disk_load)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        lookup = pool.submit(task_manager.find_active_task_for_session, session_id)
+        assert loaded.wait(timeout=3)
+        if race_action == "delete":
+            assert task_manager.delete_task(task_id)
+            expected = None
+        else:
+            expected = task_manager.create_task("并发创建的活跃任务", session_id)
+        release.set()
+        assert lookup.result(timeout=3) == expected
+
+    if expected is None:
+        assert session_id not in task_manager._session_active
+    else:
+        assert task_manager._session_active[session_id] == expected
+
+
 def test_failed_task_restore_keeps_the_existing_session_active_task(monkeypatch):
     session_id = "restore-task-write-failure"
     archived = task_manager.create_task("归档任务", session_id)
@@ -516,6 +659,47 @@ def test_delete_task_lifecycle():
     assert task_manager.delete_task(tid) is False
     assert task_manager.delete_task("..") is False
     assert task_manager.delete_task("") is False
+
+
+def test_delete_linked_task_clears_all_session_active_indexes():
+    owner_session = "delete-linked-owner"
+    borrowing_session = "delete-linked-borrower"
+    task_id = task_manager.create_task("被跨会话引用后删除", owner_session)
+    assert task_manager.find_or_create_task(
+        borrowing_session, "引用该任务", task_id=task_id,
+    ) == task_id
+    assert task_manager._session_active[owner_session] == task_id
+    assert task_manager._session_active[borrowing_session] == task_id
+
+    assert task_manager.delete_task(task_id)
+
+    assert task_id not in task_manager._session_active.values()
+    assert task_manager.find_active_task_for_session(owner_session) is None
+    assert task_manager.find_active_task_for_session(borrowing_session) is None
+
+
+def test_failed_delete_keeps_linked_task_and_all_session_indexes(monkeypatch):
+    owner_session = "delete-failure-owner"
+    borrowing_session = "delete-failure-borrower"
+    task_id = task_manager.create_task("删除失败需保留", owner_session)
+    assert task_manager.find_or_create_task(
+        borrowing_session, "引用该任务", task_id=task_id,
+    ) == task_id
+    task_path = task_manager._task_dir(task_id)
+    before_task = dict(task_manager.get_task(task_id))
+    before_indexes = dict(task_manager._session_active)
+
+    def fail_rmtree(_path):
+        raise OSError("simulated remove failure")
+
+    monkeypatch.setattr(task_manager.shutil, "rmtree", fail_rmtree)
+    assert task_manager.delete_task(task_id) is False
+
+    assert os.path.isdir(task_path)
+    assert task_manager.get_task(task_id) == before_task
+    assert task_manager._session_active == before_indexes
+    assert task_manager.find_active_task_for_session(owner_session) == task_id
+    assert task_manager.find_active_task_for_session(borrowing_session) == task_id
 
 
 # ============================================================

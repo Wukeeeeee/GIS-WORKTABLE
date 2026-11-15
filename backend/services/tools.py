@@ -243,6 +243,7 @@ from backend.services.tool_modules.vector import (
     add_field,
     delete_field,
     move_features,
+    rotate_features,
     scale_features,
     spatial_select_by_attribute,
     topology_check,
@@ -2816,62 +2817,6 @@ def add_north_arrow() -> str:
         return "已在地图右上角显示指北针"
     except Exception as e:
         return f"指北针添加失败: {str(e)[:200]}"
-
-
-# ============================================================
-# 工具: rotate_features — 旋转要素
-# ============================================================
-
-@tool
-def rotate_features(layer_name: str, angle: float = 90) -> str:
-    """旋转指定图层的所有要素。angle 为旋转角度（度），正数=逆时针，负数=顺时针。旋转中心为图层所有要素的几何中心。"""
-    try:
-        import geopandas as gpd
-        import numpy as np
-        import warnings
-
-        layer_name, info, error = _get_exact_registered_layer(layer_name)
-        if error:
-            return error
-
-        gdf = _geojson_to_export_gdf(info["geojson"])
-        if gdf.empty:
-            return f"图层「{layer_name}」为空"
-
-        try:
-            angle = float(angle)
-        except (TypeError, ValueError, OverflowError):
-            return "旋转要素失败：角度必须是有限数值"
-        if not np.isfinite(angle):
-            return "旋转要素失败：角度必须是有限数值"
-
-        bounds = gdf.total_bounds
-        extent_error = _local_utm_extent_error(bounds)
-        if extent_error:
-            return f"旋转要素失败: {extent_error}；未修改图层"
-        lon, lat = (bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2
-        metric_crs = _get_utm_crs(lon, lat)
-        gdf_metric = gdf.to_crs(metric_crs)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            center = gdf_metric.dissolve().centroid.iloc[0]
-
-
-        gdf_metric.geometry = gdf_metric.geometry.rotate(angle, origin=(center.x, center.y), use_radians=False)
-        gdf_result = gdf_metric.to_crs("EPSG:4326")
-
-        geojson_data = gdf_result.__geo_interface__
-        geojson_data["name"] = layer_name
-        _update_registered_layer_data(layer_name, geojson_data)
-        _push_layer(layer_name, geojson_data)
-
-        direction = "逆时针" if angle > 0 else "顺时针"
-        return (f"已旋转图层「{layer_name}」{abs(angle)}°（{direction}），"
-                f"{len(gdf_result)} 个要素，已同步地图")
-    except Exception as e:
-        import traceback
-        return f"旋转要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
 
 
 # ============================================================
@@ -5566,6 +5511,7 @@ _TOOL_FAILURE_MARKERS = {
         "图表生成失败：", "未找到图层", "找到多个匹配：", "图层没有要素", "图层没有属性字段",
     ),
     "move_features": ("不支持的单位", "位移量 dx 和 dy 不能同时为 0"),
+    "rotate_features": ("图层「",),
     "scale_features": ("图层「", "缩放倍数必须大于 0"),
     "focus_map": (
         "未找到图层", "center 格式应为", "无法解析坐标：", "坐标范围无效", "请提供 layer_name",
