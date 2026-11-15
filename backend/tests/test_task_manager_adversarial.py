@@ -25,6 +25,14 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def isolate_task_storage(tmp_path, monkeypatch):
+    """Keep every adversarial task-manager case away from real task data."""
+    task_root = tmp_path / "tasks"
+    task_root.mkdir()
+    monkeypatch.setattr(task_manager, "_BASE_DIR", str(task_root))
+
+
 def test_adversarial_path_traversal_service_layer():
     """Verify that service-layer methods strictly reject or safely handle traversal payloads."""
     # Payloads that must be rejected by is_valid_task_id
@@ -301,9 +309,6 @@ def test_concurrent_api_delete_race(client):
 
 def test_disk_corruption_resilience(client, tmp_path, monkeypatch):
     """Verify resilience when encountering corrupt JSON or malformed folders on disk."""
-    isolated_task_root = tmp_path / "tasks"
-    isolated_task_root.mkdir()
-    monkeypatch.setattr(task_manager, "_BASE_DIR", str(isolated_task_root))
     corrupt_id = "corrupt_fixture_task_999"
     corrupt_dir = os.path.join(task_manager._BASE_DIR, corrupt_id)
     os.makedirs(corrupt_dir, exist_ok=True)

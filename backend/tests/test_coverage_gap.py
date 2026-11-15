@@ -31,7 +31,10 @@ create_fishnet = T.create_fishnet
 
 
 @pytest.fixture(autouse=True)
-def cleanup():
+def cleanup(tmp_path, monkeypatch):
+    from backend.services.tool_modules import runtime
+
+    monkeypatch.setattr(runtime, "_temp_output_dir", str(tmp_path))
     reset_state()
     init_temp_dir()
     yield
@@ -769,7 +772,8 @@ class TestExportLayer:
         assert second_name != first_name
         assert json.loads(first_path.read_text(encoding="utf-8")) == first_document
 
-    def test_export_csv(self):
+    def test_export_csv(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
         _setup("ex1", _POINTS)
         r = export_layer.invoke({"layer_name": "ex1", "format": "csv"})
         assert "CSV" in r
@@ -790,11 +794,12 @@ class TestExportLayer:
 
         assert "栅格图层" in result and "矢量导出" in result
 
-    def test_shapefile_export_preserves_colliding_truncated_field_names(self):
+    def test_shapefile_export_preserves_colliding_truncated_field_names(self, tmp_path, monkeypatch):
         import re
         import zipfile
         import geopandas as gpd
 
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
         layer = {"type": "FeatureCollection", "features": [{
             "type": "Feature",
             "properties": {"abcdefghijk": "long-name", "abcdefghij": "short-name"},
@@ -845,6 +850,8 @@ class TestExportLayer:
         from backend.services import result_guard, storage_service
 
         monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        monkeypatch.setattr(storage_service, "_CUSTOM_DB_PATH", [str(tmp_path / "workspace.db")])
+        storage_service.init_db()
         monkeypatch.setitem(result_guard._OUTPUT_DIRS, "output", str(tmp_path))
         layer_name = f"export_guard_{export_format}"
         _setup(layer_name, _POINTS)

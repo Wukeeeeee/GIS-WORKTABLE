@@ -17,8 +17,31 @@ from backend.services import tools as _tools_mod  # _temp_output_dir 会被 init
 pytestmark = [pytest.mark.e2e, pytest.mark.regression]
 
 
-def test_e2e_direct_tool_invocation_pipeline(client):
+def test_e2e_direct_tool_invocation_pipeline(client, tmp_path, monkeypatch):
     """端到端验证：通过接口调度工具链 → 注册图层 → 成果落盘完整流程"""
+    from backend.services import datav_service
+
+    monkeypatch.setattr(
+        datav_service,
+        "fetch_boundary",
+        lambda _name: {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "properties": {"name": "南京市鼓楼区"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[118.7, 32.0], [118.8, 32.0],
+                                     [118.8, 32.1], [118.7, 32.1],
+                                     [118.7, 32.0]]],
+                },
+            }],
+        },
+    )
+    _tools_mod.init_temp_dir()
+    monkeypatch.setattr(_tools_mod, "_temp_output_dir", str(tmp_path))
+    (tmp_path / "output").mkdir()
+
     # 1. 模拟调用边界获取工具
     resp1 = client.post("/api/tools/invoke", json={
         "name": "datav_boundary",
@@ -58,17 +81,18 @@ print(f'OUTPUT_IMAGE:{out_png}')
     assert os.path.getsize(expected_img) > 100
 
 
-def test_e2e_agent_workflow_full_stream_pipeline(client):
+def test_e2e_agent_workflow_full_stream_pipeline(client, tmp_path, monkeypatch):
     """端到端验证：从聊天流式接口输入用户需求，验证 SSE 事件流结构与最终结果交付"""
     from backend.services.graph import run_agent_stream
     from backend.services.llm_config import LLMConfig
+    from backend.services import task_manager, storage_service
 
-    # 构造一次由 Agent 完成的流式任务（可控 mock 驱动工具调用，检验真实 graph 调度链路）
-    fake_tool_call = {
-        "name": "datav_boundary",
-        "args": {"name": "南京市鼓楼区"},
-        "id": "call_123"
-    }
+    task_root = tmp_path / "tasks"
+    task_root.mkdir()
+    monkeypatch.setattr(task_manager, "_BASE_DIR", str(task_root))
+    monkeypatch.setattr(
+        storage_service, "_CUSTOM_DB_PATH", [str(tmp_path / "workspace.db")]
+    )
 
     # 验证流式生成器能正常流出 thinking 与 done 事件
     events = []

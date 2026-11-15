@@ -2,8 +2,12 @@
 
 ## 1. 核心现状与边界核验
 
-- **代码现状**：`backend/services/tools.py` 当前规模约为 **671 KB、14,115 行、273 个函数/类**，汇集了所有 GIS 算子逻辑与共享状态。
-- **全量测试基线**：经实际收集核验，仓库后端共有 **2,090 个测试**，全量通过是重构迁移的硬性验收红线。
+> 下方“迁移前规模”与“2,090 项测试”是本计划建立时的历史基线，不代表当前工作树规模或当前收集到的测试数。
+
+- **迁移前代码基线**：计划建立时记录 `backend/services/tools.py` 约 **671 KB、14,115 行、273 个函数/类**；这是历史快照。
+- **当前工作树核查（2026-11-15）**：`tools.py` 为 **6,448 行**；`tool_modules/` 包含 `common.py`、`io_export.py`、`network.py`、`raster.py`、`runtime.py`、`terrain.py`、`vector.py`。低耦合导出域已迁出 `export_layer` 实现与 GeoDataFrame 构造 helper；门面仍重导出 `_geojson_to_export_gdf` 兼容符号供其他工具调用。独立 `shared_state.py` 和 `registry.py` 仍未建立，`tools.py` 也远未收口为薄门面。
+- **当前验证边界**：2026-11-15 本轮针对测试隔离改动合并运行 453 项通过、1 条 pandas 日期解析 warning；未重跑后端全量测试。此前“2,090 项”仅为计划初始基线，后端全量通过仍是最终验收红线。
+- **兼容性门禁进度**：已新增 `backend/tests/test_tool_modules_compat.py`，检查门面重导出的可变共享状态身份、输出目录动态转发，以及 vector/network/raster/terrain 对 runtime 注册表的单一引用；首轮 3 项通过。它是当前覆盖点，不等于全部公开符号兼容性审计完成。
 - **核心风险点**：
   1. **导入遮蔽（Import Shadowing）**：绝不能同名共存 `backend/services/tools.py` 与 `backend/services/tools/`，否则在不同运行环境和导入语法下会触发模块与包的解析冲突。
   2. **隐式全局状态耦合**：文件中存在 `_registered_layers`、`_tile_cache`、`_geocode_cache`、`_custom_proxy`、任务上下文锁等，必须先确立“状态唯一归属”，严防拆分后产生状态分裂或多份副本。

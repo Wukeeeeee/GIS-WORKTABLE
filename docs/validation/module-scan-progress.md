@@ -3077,3 +3077,91 @@
 - **验证：**两文件定向测试 28/28；随后后端全量测试 2285 passed、6 skipped、2936 warnings，`git diff --check` 通过（仅有 Git 行尾格式提示）。
 - **缓存观察：**本轮全量测试结束后项目 `cache/tasks` 为 1622 个目录，比测试前已观察的 1621 多 1 个；最新目录为 `1033d92dcd77`。其来源尚未确认，文件内容为加密格式，因此保留未动；不能声称此次全量测试完全没有新增缓存。此前已确认的 14 个泄漏由本轮隔离改动针对性处理。
 - **边界：**未删除任何缓存或用户任务；未提交、推送或部署。
+
+### 2026-11-15 任务管理器对抗测试统一改用临时任务目录
+
+- **问题与证据：**对抗测试文件中的删除攻击测试此前针对真实 `task_manager._BASE_DIR`（仓库 `cache/tasks`）；文件内其他生命周期和并发测试也直接创建任务，仅靠各自 finally 清理不能覆盖异常中断情形。
+- **改动：**为整个测试文件增加自动隔离 fixture，使用 `tmp_path` 创建任务根目录并 monkeypatch `_BASE_DIR`；攻击载荷和根目录保护断言保持原有覆盖。
+- **验证：**`python -m pytest -q --tb=short backend/tests/test_task_manager_adversarial.py`：7 passed；`git diff --check` 通过（仅 Git 行尾格式提示）。
+- **边界：**仅改测试隔离和本条记录；未清理真实缓存，未提交或推送。
+
+### 2026-11-15 任务管理器挑战探测改用临时存储
+
+- **问题与证据：**test_challenger_probes.py 的自动清理 fixture 只清空内存缓存，多个探测用例直接调用 create_task/写入任务文件，默认会落入真实 cache/tasks；测试末尾的删除不能保证异常中断时清理成功。
+- **改动：**将该文件的自动 fixture 扩展为 tmp_path 临时任务根目录，并 monkeypatch task_manager._BASE_DIR；原有内存态清理保留。
+- **验证：**`python -m pytest -q --tb=short backend/tests/test_challenger_probes.py`：14 passed；`git diff --check` 通过。
+- **边界：**仅隔离该探测文件的任务存储并记录；未清理真实缓存，未提交或推送。
+
+### 2026-11-15 分层端到端测试隔离行政边界请求与图片产物
+
+- **问题与证据：**直接工具用例通过 `datav_boundary` 访问 DataV、并写入共享输出目录；流式 Agent 用例创建任务并写入默认 workspace SQLite 数据库。
+- **改动：**前者使用确定性南京鼓楼区 GeoJSON mock 和 `tmp_path` 输出目录；后者将任务目录与 workspace SQLite 路径重定向到 `tmp_path`，保留真实工具调度/图层注册/制图和 graph 流式执行路径。
+- **验证：**`python -m pytest -q --tb=short backend/tests/layered/test_layer5_e2e.py`：2 passed；`git diff --check` 通过。
+- **边界：**未运行整个后端套件；流式用例中的 Agent 工厂仍由 mock 提供，未验证真实模型或真实外部边界服务；未提交或推送。
+
+### 2026-11-15 GIS 工具集成测试隔离边界服务与产物
+
+- **问题与证据：**分层 GIS 工具测试的边界校验直接调用 `datav_boundary`，没有受控服务响应；制图校验将成果写进工具默认共享输出目录。
+- **改动：**为边界测试 mock 确定性南京鼓楼区 GeoJSON；为制图测试把工具输出目录重定向至 `tmp_path`，核心 GIS 工具执行与 PNG 格式校验保留。
+- **验证：**两个相关用例定向运行：2 passed；随后整个 `backend/tests/layered/test_layer3_gis_tools.py`：4 passed。
+- **边界：**未运行后端全套；未调用真实边界服务，未提交或推送。
+
+### 2026-11-15 Matplotlib 空间工具测试隔离输出目录
+
+- **问题与证据：**`test_savefig_with_output_prefix` 调用真实 `execute_python` 并通过 `init_temp_dir()` 写入共享的 `gis_worktable_output`，可能覆盖同名已有图片或与其他测试互相影响。
+- **改动：**将 Matplotlib PNG 用例改为自动 fixture，保留状态重置并把临时输出根目录设为每例独立的 `tmp_path`。
+- **验证：**`python -m pytest -q --tb=short backend/tests/test_spatial_tools.py::TestMatplotlibPNG`：1 passed；`git diff --check` 通过（仅 Git 行尾提示）。
+- **边界：**仅隔离该制图用例，未运行整个空间工具测试文件；未清理共享输出目录，未提交或推送。
+- **后续验证与处理：**C 盘空间耗尽时的完整文件运行出现 `_tiffWriteProc: No space left on device`；将 pytest/Python 临时根定向至 D 盘的唯一新目录后，文件仍在末尾 PNG 子进程报 OpenBLAS memory allocation failure。将该测试 fixture 的 `OPENBLAS_NUM_THREADS` 限为 1 后，完整 `backend/tests/test_spatial_tools.py`：271 passed、1 warning（同一不指定日期格式的 pandas warning）。未清理 C 盘临时目录或缓存；运行证据表明磁盘写入与 OpenBLAS 线程分配是两个需分别处理的问题。
+- **交叉验证：**将本轮涉及的 GIS 分层/输出、任务管理器隔离测试与完整空间工具文件合并运行（pytest/Python 临时目录定向至 D 盘，OpenBLAS 单线程）：298 passed、1 warning；跨文件顺序下未见状态互相污染。
+
+### 2026-11-15 直连工具 E2E 模块隔离上传/输出根目录
+
+- **问题与证据：**模块级 `dem_registered` fixture 调用 `init_temp_dir()` 后将固定名称 `uploads/e2e_dem.tif` 写进共享的 `gis_worktable_output`；同模块其他 API/工具用例也可使用默认输出目录。
+- **改动：**增加模块级临时输出 fixture，同时重定向 runtime、tools 门面和 FastAPI 输出根目录，并在 teardown 恢复之前的全局路径。
+- **验证：**`backend/tests/test_direct_invoke_e2e.py` 全文件：15 passed；运行时 pytest/Python 临时根定向至 D 盘；`git diff --check` 待执行。
+- **边界：**只验证该 E2E 模块；未运行后端全量测试，未清理共享输出目录，未提交或推送。
+
+### 2026-11-15 新工具栅格测试隔离模块级上传目录
+
+- **问题与证据：**`dem_tif_uploaded` 是模块级 fixture，调用 `init_temp_dir()` 后把固定名称 `uploads/dem.tif` 复制到共享 GIS 输出目录，可能覆盖已有同名上传文件。
+- **改动：**新增模块级自动 fixture，将 runtime 与 tools 输出目录重定向到 `tmp_path_factory` 创建的独立目录，并在模块结束时恢复全局路径。
+- **验证：**`backend/tests/test_new_tools.py` 全文件：28 passed；pytest/Python 临时根定向到 D 盘；`git diff --check` 待执行。
+- **边界：**仅验证新工具测试模块，未运行后端全量；未清理共享输出目录，未提交或推送。
+
+### 2026-11-15 export_layer 测试隔离导出文件与运行台账
+
+- **问题与证据：**`test_export_csv` 与 shapefile 字段冲突测试未覆盖工具默认输出根目录，会留下带随机名的 CSV/ZIP；结果守卫参数化测试已隔离文件目录，但使用默认 workspace SQLite 数据库写入 run 台账。文件中其他产物工具测试也可能使用默认输出根目录。
+- **改动：**将未隔离导出用例输出重定向到 `tmp_path`；结果守卫用例将存储服务数据库路径绑定至临时 DB 并显式初始化 schema；再把本文件自动 fixture 的 runtime 输出根重定向到每例独立的 `tmp_path`。
+- **验证：**先 `TestExportLayer` 26 passed；随后整个 `backend/tests/test_coverage_gap.py`：95 passed；pytest/Python 临时根定向至 D 盘。
+- **边界：**仅验证 coverage_gap 文件，不包括后端全量；未清理共享输出或默认数据库，未提交或推送。
+
+### 2026-11-15 result_guard_v2 测试隔离产物目录
+
+- **问题与证据：**数据库和任务目录已用 `tmp_path` 隔离，但 `test_result_guard_v2.py` 的固定 `OUTPUT_DIR` 指向共享 `gis_worktable_output`，各用例创建/删除固定文件名，可能覆盖或删除同名用户产物。
+- **改动：**自动 fixture 将模块 `OUTPUT_DIR` 与 `result_guard._OUTPUT_DIRS["output"]` 同时指向每例的 `tmp_path/output`；数据库、任务目录隔离保持不变。
+- **验证：**`backend/tests/test_result_guard_v2.py` 全文件：17 passed；pytest/Python 临时根定向至 D 盘；`git diff --check` 待执行。
+- **边界：**仅验证 result_guard_v2 文件，未运行后端全量；未清理共享输出目录，未提交或推送。
+- **交叉验证：**将本轮测试隔离相关的 9 个文件合并运行：453 passed、1 warning（空间工具日期解析 warning）；pytest/Python 临时根放在 D 盘，未见跨文件路径或状态污染。
+
+### 2026-11-15 增加工具门面与模块共享状态兼容门禁
+
+- **问题与证据：**阶段迁移计划要求冻结 `tools.py` 与 domain modules 的共享状态语义，但现有针对性门禁缺少明确的门面代理和 runtime 注册表身份断言。
+- **改动：**新增 `backend/tests/test_tool_modules_compat.py`，覆盖可变状态引用一致、输出目录动态转发、vector/network/raster/terrain 共用 runtime 注册表；计划文档更新当前门禁进度。
+- **验证：**该文件 3 passed；pytest/Python 临时目录位于 D 盘；`git diff --check` 待执行。
+- **边界：**仅锁定三项共享状态/代理不变量，尚未冻结完整公开 API 符号签名或注册表全量兼容；未运行后端全量，未提交或推送。
+
+### 2026-11-15 将 export_layer 实现迁入 io_export 域模块
+
+- **问题与证据：**阶段 2 计划要求先迁移低耦合导出实现；此前 `export_layer`（多个格式、真实性校验与产物登记）仍约 270 行留在 `tools.py`。
+- **改动：**新增 `backend/services/tool_modules/io_export.py` 承载实现；`tools.py` 保留 LangChain tool wrapper 和原参数/描述，通过显式依赖传递共享图层状态、安全文件名、输出目录、产物登记及 GeoDataFrame 构造器，避免 domain 模块反向导入门面。
+- **验证：**`TestExportLayer` + 导出失败反馈 + 门面兼容测试：30 passed；随后完整 `backend/tests/test_coverage_gap.py`：95 passed；`git diff --check` 通过。
+- **边界：**仅迁移 `export_layer` 实现，`_geojson_to_export_gdf` 仍在 `tools.py` 以供其他工具使用；未运行后端全量，未提交或推送。
+
+### 2026-11-15 将 GeoDataFrame 导出转换 helper 收拢至 io_export
+
+- **问题与证据：**首轮导出迁移后，`_geojson_to_export_gdf` 仍在门面内；除 `export_layer` 外的导出类工具也共用该 helper，导致导出转换逻辑仍分散。
+- **改动：**将实现移入 `tool_modules/io_export.py`，门面通过 `_geojson_to_export_gdf` 兼容别名转发，现有工具调用点不变。
+- **验证：**`test_coverage_gap.py`、`test_spatial_tools.py`、门面兼容与导出失败反馈合并运行：370 passed、1 条既有 pandas 日期解析 warning；`git diff --check` 通过。
+- **边界：**未运行后端全量；领域模块化仍未完成，未提交或推送。
+- **调用链补充验证：**`test_gis_operation_context.py`、`test_direct_invoke_e2e.py`、`test_tool_registry.py` 与门面兼容测试合并：41 passed，确认重构后的 export wrapper 仍由现有 operation-context、API 调用和工具注册链路使用。

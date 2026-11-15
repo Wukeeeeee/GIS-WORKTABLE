@@ -24,6 +24,27 @@ from backend.services import tools as tool_service, history_service
 client = TestClient(app)
 
 
+@pytest.fixture(scope="module", autouse=True)
+def isolated_e2e_output(tmp_path_factory):
+    """Keep module-level E2E uploads and tool outputs out of the shared temp tree."""
+    from backend.services.tool_modules import runtime
+
+    old_tool_output = tool_service._temp_output_dir
+    old_runtime_output = runtime._temp_output_dir
+    old_api_output = main_module._TEMP_OUTPUT_DIR
+    output_dir = str(tmp_path_factory.mktemp("direct-invoke-output"))
+    runtime._temp_output_dir = output_dir
+    tool_service._temp_output_dir = output_dir
+    main_module._TEMP_OUTPUT_DIR = output_dir
+    os.makedirs(os.path.join(output_dir, "uploads"), exist_ok=True)
+    try:
+        yield output_dir
+    finally:
+        runtime._temp_output_dir = old_runtime_output
+        tool_service._temp_output_dir = old_tool_output
+        main_module._TEMP_OUTPUT_DIR = old_api_output
+
+
 def _poly_fc(name, lon_min, lat_min, lon_max, lat_max, extra=None):
     props = {"name": name}
     if extra:

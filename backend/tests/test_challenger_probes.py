@@ -18,8 +18,11 @@ from backend.services import task_manager
 
 
 @pytest.fixture(autouse=True)
-def clean_memory_cache():
-    """Ensure in-memory caches are cleaned between stress test cases."""
+def isolate_task_storage(tmp_path, monkeypatch):
+    """Keep probe task files and in-memory state isolated from real user tasks."""
+    task_root = tmp_path / "tasks"
+    task_root.mkdir()
+    monkeypatch.setattr(task_manager, "_BASE_DIR", str(task_root))
     task_manager._tasks.clear()
     task_manager._session_active.clear()
     yield

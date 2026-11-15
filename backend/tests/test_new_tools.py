@@ -23,6 +23,23 @@ def _registry():
     return {t.name: t for t in TOOL_LIST}
 
 
+@pytest.fixture(scope="module", autouse=True)
+def isolated_tool_output(tmp_path_factory):
+    """Keep module-scoped raster uploads out of the shared GIS output directory."""
+    from backend.services.tool_modules import runtime
+
+    old_runtime_output = runtime._temp_output_dir
+    old_tool_output = T._temp_output_dir
+    output_dir = str(tmp_path_factory.mktemp("new-tools-output"))
+    runtime._temp_output_dir = output_dir
+    T._temp_output_dir = output_dir
+    try:
+        yield output_dir
+    finally:
+        runtime._temp_output_dir = old_runtime_output
+        T._temp_output_dir = old_tool_output
+
+
 @pytest.fixture(scope="module")
 def dem_tif(tmp_path_factory):
     """10x10 DEM 栅格，范围 116.0-116.1 / 39.0-39.1，值 = 行号递增"""

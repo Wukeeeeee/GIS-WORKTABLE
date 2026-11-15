@@ -23,10 +23,24 @@ from backend.services import tools as _tools_mod  # _temp_output_dir 每次请�
 pytestmark = [pytest.mark.gis_tools, pytest.mark.integration]
 
 
-def test_gis_tool_datav_boundary_real_or_controlled_execution():
+def test_gis_tool_datav_boundary_real_or_controlled_execution(monkeypatch):
     """验证边界查询工具生成符合 GIS 规范的 WGS-84 矢量边界。
     注：datav_boundary 现在返回状态文本并把 GeoJSON 注册为图层（_push_layer + _register_layer），
     因此这里从注册图层中取 GeoJSON 校验，而不是解析返回文本。"""
+    from backend.services import datav_service
+    monkeypatch.setattr(datav_service, "fetch_boundary", lambda _name: {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {"name": "南京市鼓楼区"},
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[118.7, 32.0], [118.8, 32.0],
+                                 [118.8, 32.1], [118.7, 32.1],
+                                 [118.7, 32.0]]],
+            },
+        }],
+    })
     # 查询南京市鼓楼区
     res_str = datav_boundary.invoke({"name": "南京市鼓楼区"})
     assert "成功获取" in res_str, f"工具未成功返回：{res_str[:120]}"
@@ -49,8 +63,11 @@ def test_gis_tool_datav_boundary_real_or_controlled_execution():
     assert 118.0 < sample_pt[0] < 119.5, f"经度异常: {sample_pt}"
     assert 31.5 < sample_pt[1] < 32.5, f"纬度异常: {sample_pt}"
 
-def test_gis_tool_execute_python_generates_real_image():
+def test_gis_tool_execute_python_generates_real_image(tmp_path, monkeypatch):
     """验证 execute_python 真实执行 Python/Matplotlib 制图，产出真实有效的 PNG 图片"""
+    _tools_mod.init_temp_dir()
+    monkeypatch.setattr(_tools_mod, "_temp_output_dir", str(tmp_path))
+    (tmp_path / "output").mkdir()
     script = """
 import matplotlib.pyplot as plt
 fig, ax = plt.subplots(figsize=(6, 4))

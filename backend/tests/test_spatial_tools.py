@@ -3487,9 +3487,15 @@ class TestSandboxSecurity:
 class TestMatplotlibPNG:
     """验证 execute_python 能真正执行 matplotlib 并产出 PNG"""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def isolated_output_directory(self, tmp_path, monkeypatch):
         reset_state()
         T.init_temp_dir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+        monkeypatch.setenv("OPENBLAS_NUM_THREADS", "1")
+        (tmp_path / "output").mkdir()
+        yield
+        reset_state()
 
     def test_savefig_with_output_prefix(self):
         """系统提示词告诉 Agent 用 plt.savefig('output/chart.png')，必须能成功"""
