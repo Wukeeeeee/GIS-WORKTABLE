@@ -5,6 +5,23 @@ import os
 import uuid
 
 
+def _remove_unverified_output(path: str, errors: list, artifact_label: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        errors.append(f"{artifact_label}清理失败:{error}")
+
+
+def _cleanup_failure_suffix(path: str | None, artifact_label: str) -> str:
+    if not path:
+        return ""
+    errors = []
+    _remove_unverified_output(path, errors, artifact_label)
+    return f"；{'; '.join(errors)}" if errors else ""
+
+
 def geojson_to_export_gdf(geojson: dict, serialize_nested: bool = False):
     """Build a WGS-84 GeoDataFrame without pandas coercing mixed property values."""
     import geopandas as gpd
@@ -61,41 +78,47 @@ def export_layer_impl(
     safe_name = safe_layer_export_stem(layer_name)
 
     if format == "geojson":
-        # 直接保存 GeoJSON
-        import datetime
-        ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        fname = f"{safe_name}_{ts}_{uuid.uuid4().hex}.geojson"
-        _output_dir = output_dir_getter()
-        path = os.path.join(_output_dir, fname)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(geojson, f, ensure_ascii=False, indent=2)
-        # === 导出真实性验证 ===
-        _verr = []
-        _src_count = len(geojson.get("features", []))
-        if not os.path.exists(path):
-            _verr.append("文件未生成")
-        elif os.path.getsize(path) < 20:
-            _verr.append("文件过小")
-        else:
-            try:
-                with open(path, "r", encoding="utf-8") as _f:
-                    _gj = json.load(_f)
-                if _gj.get("type") != "FeatureCollection":
-                    _verr.append("非FeatureCollection")
-                _feat_count = len(_gj.get("features", []))
-                if _feat_count != _src_count:
-                    _verr.append(f"Feature数不符({_feat_count}!={_src_count})")
-                if _feat_count > 0 and not all(ft.get("geometry") for ft in _gj["features"]):
-                    _verr.append("存在无geometry的Feature")
-            except Exception as _ve:
-                _verr.append(f"无法重新读取:{_ve}")
-        if _verr:
-            return "GeoJSON导出验证失败: " + "; ".join(_verr)
-        record_tool_artifact(fname, path, artifact_type="geojson")
-        return f"GeoJSON已生成：/output/{fname}（{_src_count}个Feature）\n如需要 Shapefile 格式，可再次调用 export_layer 并设 format='shp'"
+        path = None
+        try:
+            # 直接保存 GeoJSON
+            import datetime
+            ts = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+            fname = f"{safe_name}_{ts}_{uuid.uuid4().hex}.geojson"
+            _output_dir = output_dir_getter()
+            path = os.path.join(_output_dir, fname)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(geojson, f, ensure_ascii=False, indent=2)
+            # === 导出真实性验证 ===
+            _verr = []
+            _src_count = len(geojson.get("features", []))
+            if not os.path.exists(path):
+                _verr.append("文件未生成")
+            elif os.path.getsize(path) < 20:
+                _verr.append("文件过小")
+            else:
+                try:
+                    with open(path, "r", encoding="utf-8") as _f:
+                        _gj = json.load(_f)
+                    if _gj.get("type") != "FeatureCollection":
+                        _verr.append("非FeatureCollection")
+                    _feat_count = len(_gj.get("features", []))
+                    if _feat_count != _src_count:
+                        _verr.append(f"Feature数不符({_feat_count}!={_src_count})")
+                    if _feat_count > 0 and not all(ft.get("geometry") for ft in _gj["features"]):
+                        _verr.append("存在无geometry的Feature")
+                except Exception as _ve:
+                    _verr.append(f"无法重新读取:{_ve}")
+            if _verr:
+                _remove_unverified_output(path, _verr, "GeoJSON")
+                return "GeoJSON导出验证失败: " + "; ".join(_verr)
+            record_tool_artifact(fname, path, artifact_type="geojson")
+            return f"GeoJSON已生成：/output/{fname}（{_src_count}个Feature）\n如需要 Shapefile 格式，可再次调用 export_layer 并设 format='shp'"
+        except Exception as e:
+            return f"GeoJSON导出失败: {str(e)[:200]}{_cleanup_failure_suffix(path, 'GeoJSON')}"
 
     elif format == "shp":
         # 用 geopandas 转 Shapefile 并打包 zip
+        zip_path = None
         try:
             import geopandas as gpd
             import tempfile, zipfile, shutil
@@ -128,17 +151,19 @@ def export_layer_impl(
             fname = f"{safe_name}_{ts}_{uuid.uuid4().hex}.zip"
 
             tmp_dir = tempfile.mkdtemp(prefix="shp_export_")
-            shp_base = os.path.join(tmp_dir, safe_name)
-            gdf.to_file(shp_base + ".shp", driver="ESRI Shapefile", encoding="utf-8")
+            try:
+                shp_base = os.path.join(tmp_dir, safe_name)
+                gdf.to_file(shp_base + ".shp", driver="ESRI Shapefile", encoding="utf-8")
 
-            _output_dir = output_dir_getter()
-            zip_path = os.path.join(_output_dir, fname)
-            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for fn in os.listdir(tmp_dir):
-                    fp = os.path.join(tmp_dir, fn)
-                    if os.path.isfile(fp):
-                        zf.write(fp, fn)
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+                _output_dir = output_dir_getter()
+                zip_path = os.path.join(_output_dir, fname)
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for fn in os.listdir(tmp_dir):
+                        fp = os.path.join(tmp_dir, fn)
+                        if os.path.isfile(fp):
+                            zf.write(fp, fn)
+            finally:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
             # === 导出真实性验证 ===
             _verr = []
             if not os.path.exists(zip_path):
@@ -159,13 +184,28 @@ def export_layer_impl(
                 except Exception as _ve:
                     _verr.append("ZIP无法打开")
             if _verr:
+                try:
+                    os.remove(zip_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as cleanup_error:
+                    _verr.append(f"ZIP清理失败:{cleanup_error}")
                 return "SHP导出验证失败: " + "; ".join(_verr)
             record_tool_artifact(fname, zip_path, artifact_type="file")
             return f"Shapefile已生成：/output/{fname}（含.shp/.shx/.dbf/.prj/.cpg，{len(gdf)}个要素）"
         except Exception as e:
+            if zip_path and os.path.exists(zip_path):
+                try:
+                    os.remove(zip_path)
+                except OSError as cleanup_error:
+                    return (
+                        f"SHP 导出失败: {str(e)[:150]}；"
+                        f"不完整ZIP清理失败: {str(cleanup_error)[:100]}"
+                    )
             return f"SHP 导出失败: {str(e)[:200]}"
 
     elif format == "gpkg":
+        path = None
         try:
             import geopandas as gpd
             import datetime
@@ -199,13 +239,15 @@ def export_layer_impl(
                 except Exception as _ve:
                     _verr.append(f"无法重新读取:{_ve}")
             if _verr:
+                _remove_unverified_output(path, _verr, "GPKG")
                 return "GPKG导出验证失败: " + "; ".join(_verr)
             record_tool_artifact(fname, path, artifact_type="file")
             return f"GeoPackage已生成：/output/{fname}（{len(gdf)}个Feature，CRS={gdf.crs}）"
         except Exception as e:
-            return f"GPKG 导出失败: {str(e)[:200]}"
+            return f"GPKG 导出失败: {str(e)[:200]}{_cleanup_failure_suffix(path, 'GPKG')}"
 
     elif format == "csv":
+        path = None
         try:
             import geopandas as gpd
             import pandas as pd
@@ -240,15 +282,17 @@ def export_layer_impl(
                 except Exception as _ve:
                     _verr.append(f"无法重新读取:{_ve}")
             if _verr:
+                _remove_unverified_output(path, _verr, "CSV")
                 return "CSV导出验证失败: " + "; ".join(_verr)
             record_tool_artifact(fname, path, artifact_type="file")
             return (f"CSV属性表已生成：/output/{fname}"
                     f"（{len(attr_df.columns)}列, {len(attr_df)}行）"
                     f"\n如需含坐标的CSV，可用 format='csv_xy'")
         except Exception as e:
-            return f"CSV 导出失败: {str(e)[:200]}"
+            return f"CSV 导出失败: {str(e)[:200]}{_cleanup_failure_suffix(path, 'CSV')}"
 
     elif format == "csv_xy":
+        path = None
         try:
             import geopandas as gpd
             import pandas as pd
@@ -296,18 +340,19 @@ def export_layer_impl(
                     _df2 = pd.read_csv(path, encoding="utf-8-sig")
                     if len(_df2) != len(attr_df):
                         _verr.append(f"行数不符({len(_df2)}!={len(attr_df)})")
-                    if "longitude" not in _df2.columns:
-                        _verr.append("缺少longitude列")
-                    if "latitude" not in _df2.columns:
-                        _verr.append("缺少latitude列")
+                    if longitude_field not in _df2.columns:
+                        _verr.append(f"缺少{longitude_field}列")
+                    if latitude_field not in _df2.columns:
+                        _verr.append(f"缺少{latitude_field}列")
                 except Exception as _ve:
                     _verr.append(f"无法重新读取:{_ve}")
             if _verr:
+                _remove_unverified_output(path, _verr, "CSV")
                 return "CSV导出验证失败: " + "; ".join(_verr)
             record_tool_artifact(fname, path, artifact_type="file")
             return (f"CSV（含坐标）已生成：/output/{fname}"
                     f"（{len(attr_df.columns)}列, {len(attr_df)}行，含{longitude_field}/{latitude_field}坐标列）")
         except Exception as e:
-            return f"CSV 导出失败: {str(e)[:200]}"
+            return f"CSV 导出失败: {str(e)[:200]}{_cleanup_failure_suffix(path, 'CSV')}"
 
     return f"不支持的格式: {format}，可选 geojson / shp / gpkg / csv / csv_xy"

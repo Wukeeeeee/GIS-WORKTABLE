@@ -3165,3 +3165,73 @@
 - **验证：**`test_coverage_gap.py`、`test_spatial_tools.py`、门面兼容与导出失败反馈合并运行：370 passed、1 条既有 pandas 日期解析 warning；`git diff --check` 通过。
 - **边界：**未运行后端全量；领域模块化仍未完成，未提交或推送。
 - **调用链补充验证：**`test_gis_operation_context.py`、`test_direct_invoke_e2e.py`、`test_tool_registry.py` 与门面兼容测试合并：41 passed，确认重构后的 export wrapper 仍由现有 operation-context、API 调用和工具注册链路使用。
+
+### 2026-11-15 修正 csv_xy 坐标列真实性校验
+
+- **问题与复现：**当源属性已经包含 `longitude`/`latitude` 时，导出逻辑会把实际几何坐标改名为 `geometry_longitude`/`geometry_latitude`；但验证器仍只检查前两个固定列名。新增的故障注入用例让 CSV 写入器漏掉生成坐标列，原实现仍返回“CSV（含坐标）已生成”，确认成功反馈可误报。
+- **改动：**`io_export.export_layer_impl` 现在按本次实际选出的 `longitude_field`/`latitude_field` 名称验证重新读取的 CSV；回归测试覆盖源字段名冲突且导出结果缺失实际坐标列时必须返回验证失败。
+- **验证：**回归用例修复前失败、修复后通过；坐标字段冲突与故障注入两例 2 passed；`TestExportLayer` 27 passed；整个 `backend/tests/test_coverage_gap.py` 96 passed；`git diff --check` 通过（仅 Git 行尾转换提示）。pytest/Python 临时目录指向 D 盘唯一目录。
+- **边界：**未跑后端全量套件；未调用外部服务或修改真实用户数据/缓存/凭据；本轮改动尚未提交或推送。后续可审计其他导出格式的真实性验证，并继续按阶段收敛工具门面。
+
+### 2026-11-15 修复 Shapefile 写出失败时临时目录残留
+
+- **问题与复现：**Shapefile 导出只在写出和 ZIP 打包都成功后删除工作目录；通过将 `tempfile.mkdtemp` 定向到用例 `tmp_path` 并注入 `GeoDataFrame.to_file()` 写出异常，原实现返回失败信息但工作目录及部分文件仍存在。
+- **改动：**将 Shapefile 写出与 ZIP 打包置于 `try/finally`，不论成功或抛错都尝试递归删除本次唯一工作目录；新增回归用例验证失败反馈和临时目录不存在。
+- **验证：**修复前回归用例失败且确认目录残留；修复后回归用例 1 passed，`TestExportLayer` 28 passed，整个 `backend/tests/test_coverage_gap.py` 97 passed；`git diff --check` 通过（仅 Git 行尾转换提示）。pytest/Python 临时根指向 D 盘专用目录。
+- **边界：**未运行后端全量、未调用外部服务、未触及真实缓存/凭据；失败复现产生的测试目录保留在 D 盘测试临时根下，未做清理；本轮未提交或推送。下一步仍可检查 ZIP/验证失败时输出目录是否留下不完整产物。
+
+### 2026-11-15 清理 Shapefile 打包/验证失败的输出 ZIP
+
+- **问题与复现：**两个 `tmp_path` 故障注入分别模拟 ZIP 写入中途异常、以及写出空 ZIP 后真实性验证失败；原实现两种情况下都返回失败反馈，但输出目录都残留本次生成的 ZIP 文件。
+- **改动：**Shapefile 导出在 ZIP 打包异常时删除本次随机命名的部分文件；验证失败时删除不合格 ZIP。若删除本身失败，反馈中补充清理错误，避免把残留状态隐去。新增两条回归测试并使用 stub Shapefile/ZIP 隔离 GIS I/O。
+- **验证：**修复前两条回归测试均失败且确认各有残留 ZIP；修复后两条及写出异常清理用例合计 3 passed，`TestExportLayer` 30 passed，整个 `backend/tests/test_coverage_gap.py` 99 passed；`git diff --check` 通过（仅 Git 行尾转换提示）。pytest/Python 临时根指向 D 盘专用目录。
+- **边界：**未运行后端全量，真实 GIS 驱动/磁盘异常下删除失败的分支仅检查了反馈构造，未做权限/锁文件故障注入；未访问外部服务或触碰真实用户数据/缓存/凭据。本轮未提交或推送，测试失败留下的隔离复现目录仍保留。
+
+### 2026-11-15 清理非 Shapefile 导出验证失败产物
+
+- **问题与复现：**对 GeoJSON、GPKG、CSV、CSV 坐标 CSV 分别注入格式错误或过小输出；原实现四种格式都返回“导出验证失败”，但各自随机命名的未验证文件仍留在输出目录。
+- **改动：**在 `io_export.py` 增加统一的未验证文件清理函数，并用于上述四种格式的验证失败分支；若删除失败，将清理错误附加到验证失败反馈。新增参数化回归测试，输出目录均绑定到用例 `tmp_path`。
+- **验证：**修复前参数化测试 4/4 均失败并确认文件残留；修复后 4 passed，`TestExportLayer` 34 passed，整个 `backend/tests/test_coverage_gap.py` 103 passed；`git diff --check` 通过（仅 Git 行尾转换提示）。pytest/Python 临时根位于 D 盘唯一目录。
+- **边界：**此轮处理的是写出后真实性验证失败；GPKG/CSV 写入过程本身抛错时的部分文件清理、GeoJSON 写入异常反馈仍未覆盖，后续可单独审计。未运行后端全量，未访问外部服务或触碰真实用户数据/缓存/凭据；本轮未提交或推送，隔离复现目录保留。
+
+### 2026-11-15 处理 GeoJSON/GPKG/CSV 写入中断
+
+- **问题与复现：**对 GeoJSON JSON 编码、GPKG 驱动写出、CSV 与 csv_xy 写出分别注入“先创建部分文件再抛错”；原实现 GeoJSON 异常直接从工具冒泡，另外三种虽返回失败字符串但各留下部分文件。
+- **改动：**将 GeoJSON 写入纳入异常反馈与清理；GPKG、CSV、csv_xy 的异常分支也清理本次唯一命名输出。统一清理逻辑在删除失败时把清理错误附加到导出失败反馈。新增参数化故障注入测试，输出路径仅使用 `tmp_path`。
+- **验证：**修复前 4 个参数化用例均失败（GeoJSON 抛异常，其余留文件）；修复后 4 passed；`TestExportLayer` 38 passed；整个 `backend/tests/test_coverage_gap.py` 107 passed；`git diff --check` 通过（仅 Git 行尾转换提示）。pytest/Python 临时根位于 D 盘专用目录。
+- **边界：**未运行后端全量；未模拟 Windows 文件锁/权限导致的删除失败，只保留并检查了反馈分支；未调用外部服务或触碰真实缓存/凭据。本轮未提交或推送；失败复现产生的隔离目录保留。
+
+### 2026-11-15 验证导出文件清理失败反馈
+
+- **问题与证据：**此前已有代码在部分导出清理失败时将 `OSError` 附加到失败反馈，但没有故障注入覆盖；无法仅凭实现认定 Windows 文件占用时用户能看见残留原因。
+- **改动：**增加 CSV 写入中途失败后注入 `PermissionError` 的测试；断言工具仍报告原始写入失败、同时报告“CSV清理失败”和共享冲突原因，并确认仅在 `tmp_path` 中保留那一个部分文件。此轮没有改生产代码。
+- **验证：**故障注入用例 1 passed；`TestExportLayer` 39 passed；整个 `backend/tests/test_coverage_gap.py` 108 passed；`git diff --check` 通过（仅 Git 行尾转换提示）。pytest/Python 临时根指向 D 盘专用目录。
+- **边界：**使用的是受控 `PermissionError` 模拟，不是对真实 Windows 文件句柄锁定做集成验证；残留文件仅位于 pytest `tmp_path`，按要求未清理。未运行后端全量，未访问外部服务或真实用户数据/缓存/凭据；本轮未提交或推送。
+
+### 2026-11-15 将 spatial_kde 渐进迁入 vector 模块
+
+- **问题与证据：**当前源码显示 `spatial_moran`、`spatial_hotspot`、`spatial_kde` 仍在 `tools.py` 定义；其中 KDE 调用的 `_layer_to_gdf`、`_to_local_metric_gdf`、`_gdf_to_layer`、共享锁和命名冲突处理都已由 `vector.py` 提供，属于可按现有 domain 边界迁移的实现。迁移前新增的 facade 身份门禁失败，证实 `vector.spatial_kde` 尚不存在。另发现计划文档记录的 6,448 行已过期，实测迁移前为 7,207 行。
+- **改动：**将 `spatial_kde` 原实现（参数、docstring、`@tool` 装饰器不变）迁入 `vector.py` 并加入 `__all__`；`tools.py` 继续从 vector 重导出。兼容测试锁定门面与 domain tool 对象身份及注册表相邻顺序；模块化计划更新为迁移后实测 7,077 行，领域合同将 vector 目标工具数从 36 更正为 37 并登记 KDE。
+- **验证：**迁移前兼容门禁失败（`vector.spatial_kde` 不存在）；迁移后 `test_tool_modules_compat.py`、`test_tool_registry.py`、`test_spatial_stats.py` 合并 42 passed；独立 Python 进程断言 vector import 不加载 `backend.services.tools` 且包含 `spatial_kde`，输出 `VECTOR_ISOLATION_OK`；脚本比较迁移前后 `spatial_kde` AST 及完整 `tools` 列表顺序，结果 `KDE_AST_AND_TOOL_ORDER_PRESERVED`；`git diff --check` 通过（仅 Git 行尾转换提示）。
+- **边界：**未运行后端全量；未访问外部服务或更改用户数据/缓存/凭据；保持当前所有未提交改动，未提交或推送。`tools.py` 仍约 7,077 行，空间统计中的 Moran 与热点实现仍待按依赖逐步迁移。
+
+### 2026-11-15 将 spatial_moran 与密集分析上限迁入 vector
+
+- **问题与证据：**`spatial_moran` 仍在 facade 实现，其依赖的投影、邻接权重、Moran 统计和图层登记 helper 都已归 `vector.py`；新增门禁在迁移前因 `vector.spatial_moran` 不存在而失败。密集分析上限常量同时供 Moran 与仍在 facade 的热点分析使用，迁移时必须保留 facade 重绑定语义。
+- **改动：**原 `spatial_moran` 实现迁入 vector（签名、docstring、装饰器不变），将 `_MAX_DENSE_SPATIAL_STATS_FEATURES` 放到 vector 并由 facade 兼容导入；门禁锁定 facade/domain 对象身份、Moran/热点/KDE 注册表相邻顺序及上限常量动态重绑定；清掉 facade 中已过时的 Moran 段落标题。模块化计划行数更新为 6,915；领域合同 vector 目标数更新为 38 并登记 Moran。
+- **验证：**迁移前对象归属与常量重绑定门禁失败；修正迁移位置及注册顺序门禁后，`test_tool_modules_compat.py`、`test_tool_registry.py`、`test_spatial_stats.py` 合并 44 passed。AST 对比确认迁移函数体与基线完全一致、工具列表完整顺序不变；新进程 vector 导入隔离检查输出 `VECTOR_ISOLATION_OK`；`git diff --check` 通过（仅 Git 行尾转换提示）。
+- **边界：**未运行后端全量；`spatial_hotspot` 暂留 facade，但其共享上限已兼容代理，后续可单独迁移。未访问外部服务或触碰真实用户数据/缓存/凭据；本轮未提交或推送。
+
+### 2026-11-15 将 spatial_hotspot 迁入 vector
+
+- **问题与证据：**Getis-Ord Gi* 热点工具仍在 facade 实现，但其图层转 GeoDataFrame、米制坐标转换、坐标提取、共享锁、图层命名/登记和密集特征数上限均已由 vector 提供；新增门禁在迁移前因 `vector.spatial_hotspot` 不存在而失败。
+- **改动：**将热点工具原实现迁入 `vector.py` 并加入 `__all__`，`tools.py` 继续兼容重导出并保留 registry 顺序；删去 facade 中热点/KDE 已迁出的空标题。兼容门禁锁定 facade/domain 对象身份与 Moran/热点/KDE 的相邻注册次序；领域合同 vector 目标数更新为 39。
+- **验证：**迁移前身份门禁失败；迁移后 `test_tool_modules_compat.py`、`test_tool_registry.py`、`test_spatial_stats.py` 合并 45 passed。AST 对比确认 `spatial_hotspot` 函数体与基线一致、完整工具注册顺序不变；新进程 vector 导入隔离检查通过；`git diff --check` 通过（仅 Git 行尾转换提示）。`tools.py` 实测 6,822 行。
+- **边界：**未运行后端全量；未调用外部服务或触碰真实用户数据/缓存/凭据；前几轮导出可靠性与本轮模块化改动仍保持未提交，`.agents/` 未动。下一步可继续审计 facade 里的其他空间分析实现及共享状态门禁。
+
+### 2026-11-15 将 measure_distance 迁入 vector
+
+- **问题与证据：**WGS-84 Haversine 测距是无共享状态的纯计算工具；新增 facade 兼容门禁要求 vector 所有权与旧注册表位置不变。
+- **改动：**保留原函数实现及 `@tool` 装饰器，将 `measure_distance` 移入 `vector.py`，门面继续重导出，`measure_area`/`measure_distance` 注册相邻关系不变；vector 合同目标数更新为 40。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`、`test_spatial_stats.py`、`test_measure_distance_failure_feedback.py`、`test_coverage_gap.py`：159 passed。AST 对比确认函数体及完整工具列表顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且能导出测距工具；`git diff --check` 通过。`tools.py` 实测 6,792 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰。

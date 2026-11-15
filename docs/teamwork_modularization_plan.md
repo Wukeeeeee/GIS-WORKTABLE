@@ -5,9 +5,9 @@
 > 下方“迁移前规模”与“2,090 项测试”是本计划建立时的历史基线，不代表当前工作树规模或当前收集到的测试数。
 
 - **迁移前代码基线**：计划建立时记录 `backend/services/tools.py` 约 **671 KB、14,115 行、273 个函数/类**；这是历史快照。
-- **当前工作树核查（2026-11-15）**：`tools.py` 为 **6,448 行**；`tool_modules/` 包含 `common.py`、`io_export.py`、`network.py`、`raster.py`、`runtime.py`、`terrain.py`、`vector.py`。低耦合导出域已迁出 `export_layer` 实现与 GeoDataFrame 构造 helper；门面仍重导出 `_geojson_to_export_gdf` 兼容符号供其他工具调用。独立 `shared_state.py` 和 `registry.py` 仍未建立，`tools.py` 也远未收口为薄门面。
-- **当前验证边界**：2026-11-15 本轮针对测试隔离改动合并运行 453 项通过、1 条 pandas 日期解析 warning；未重跑后端全量测试。此前“2,090 项”仅为计划初始基线，后端全量通过仍是最终验收红线。
-- **兼容性门禁进度**：已新增 `backend/tests/test_tool_modules_compat.py`，检查门面重导出的可变共享状态身份、输出目录动态转发，以及 vector/network/raster/terrain 对 runtime 注册表的单一引用；首轮 3 项通过。它是当前覆盖点，不等于全部公开符号兼容性审计完成。
+- **当前工作树核查（2026-11-15）**：本轮迁移测距工具后 `tools.py` 为 **6,792 行**（前一轮迁移热点分析后为 6,822 行；此前记载的 6,448 行已过期）；`tool_modules/` 包含 `common.py`、`io_export.py`、`network.py`、`raster.py`、`runtime.py`、`terrain.py`、`vector.py`。`export_layer` 实现与 GeoDataFrame 构造 helper 已迁入 `io_export.py`；`spatial_kde`、`spatial_moran`、`spatial_hotspot` 和 `measure_distance` 已迁入 `vector.py`，门面继续重导出原名并保持工具注册顺序；空间统计特征数上限常量归 vector 所有，facade 仍提供兼容绑定。独立 `shared_state.py` 和 `registry.py` 仍未建立，`tools.py` 也远未收口为薄门面。
+- **当前验证边界**：2026-11-15 最近一次定向运行 `test_tool_modules_compat.py`、`test_tool_registry.py`、`test_spatial_stats.py`、`test_measure_distance_failure_feedback.py`、`test_coverage_gap.py`：159 passed；本次另通过 AST 比较确认 `measure_distance` 函数体和完整 `tools` 列表顺序与基线一致，独立进程导入隔离检查通过；未跑后端全量。此前测试隔离交叉运行的 453 passed、1 条 pandas 日期解析 warning 是单独历史结果，不代表当前全量通过。“2,090 项”仅为计划初始基线，后端全量通过仍是最终验收红线。
+- **兼容性门禁进度**：`backend/tests/test_tool_modules_compat.py` 检查门面重导出的可变共享状态身份、输出目录动态转发、domain modules 对 runtime 注册表的单一引用、`spatial_kde`/`spatial_moran`/`spatial_hotspot`/`measure_distance` 的 vector 所属关系和门面对象身份、注册表顺序及统计上限常量代理；最新定向测试合计 159 项通过。它仍不等于全部公开符号兼容性审计完成。
 - **核心风险点**：
   1. **导入遮蔽（Import Shadowing）**：绝不能同名共存 `backend/services/tools.py` 与 `backend/services/tools/`，否则在不同运行环境和导入语法下会触发模块与包的解析冲突。
   2. **隐式全局状态耦合**：文件中存在 `_registered_layers`、`_tile_cache`、`_geocode_cache`、`_custom_proxy`、任务上下文锁等，必须先确立“状态唯一归属”，严防拆分后产生状态分裂或多份副本。

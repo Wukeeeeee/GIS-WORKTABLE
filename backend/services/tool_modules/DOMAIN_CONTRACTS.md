@@ -126,7 +126,7 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 - `_spatial_feature_coordinates(gdf)`: Extracts coordinate points from point/multipoint features.
 - `_gdf_area_km2(gdf, unique=False)`: Computes surface area in km² using EPSG:6933.
 
-#### Tools to Migrate (36 tools):
+#### Tools to Migrate (40 tools):
 | Tool Name | Key Arguments | Return / Behavior |
 |:---|:---|:---|
 | `spatial_buffer` | `layer_name`, `distance`, `unit`, `dissolve` | Buffers vector features by metric distance. |
@@ -162,6 +162,10 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 | `generate_points_along_lines` | `layer_name`, `distance`, `unit` | Generates equidistant station points along line paths. |
 | `spatial_weights_matrix` | `layer_name`, `method`, `k` | Constructs spatial weights matrix (Queen, Rook, KNN). |
 | `spatial_regression` | `layer_name`, `dependent_var`, `independent_vars` | OLS and Spatial Error/Lag regression. |
+| `spatial_moran` | `layer_name`, `field`, `weight_type`, `threshold`, `k`, `local`, `threshold_m` | Computes global Moran's I and optional local LISA clusters. |
+| `spatial_hotspot` | `layer_name`, `field`, `threshold`, `threshold_m` | Computes Getis-Ord Gi* hotspots and coldspots. |
+| `spatial_kde` | `layer_name`, `bandwidth`, `grid_size`, `bandwidth_m`, `metric_units` | Estimates point-event density and registers a density grid layer. |
+| `measure_distance` | `lon1`, `lat1`, `lon2`, `lat2` | Computes WGS-84 Haversine distance and returns meters/km. |
 | `directional_distribution`| `layer_name`, `weight_field`, `std_dev` | Computes standard deviational ellipse (SDE). |
 | `central_tendency` | `layer_name`, `method` | Mean center, median center, or central feature. |
 | `create_fishnet` | `bounds`, `cell_width`, `cell_height`, `cell_type` | Creates regular square or hexagonal grid fishnet. |

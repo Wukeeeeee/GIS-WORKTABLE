@@ -709,6 +709,257 @@ class TestExportLayer:
         assert row["geometry_longitude"] == "113.5"
         assert row["geometry_latitude"] == "23.1"
 
+    def test_csv_xy_validation_requires_the_actual_coordinate_columns(self, tmp_path, monkeypatch):
+        from backend.services import csv_utils
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        geojson = {"type": "FeatureCollection", "features": [{
+            "type": "Feature",
+            "properties": {"longitude": "source lon", "latitude": "source lat"},
+            "geometry": {"type": "Point", "coordinates": [113.5, 23.1]},
+        }]}
+        _setup("csv_xy_missing_generated_coordinates", geojson)
+
+        def write_without_generated_coordinates(frame, path):
+            # Keep source columns with the expected names but omit the actual coordinates.
+            frame[["longitude", "latitude"]].to_csv(path, index=False, encoding="utf-8-sig")
+
+        monkeypatch.setattr(csv_utils, "write_formula_safe_csv", write_without_generated_coordinates)
+        result = export_layer.invoke({
+            "layer_name": "csv_xy_missing_generated_coordinates", "format": "csv_xy",
+        })
+
+        assert "CSV导出验证失败" in result
+        assert "geometry_longitude" in result
+        assert "geometry_latitude" in result
+
+    @pytest.mark.parametrize("export_format", ["geojson", "gpkg", "csv", "csv_xy"])
+    def test_exports_remove_files_that_fail_validation(self, tmp_path, monkeypatch, export_format):
+        import geopandas as gpd
+        import json
+        from pathlib import Path
+        from backend.services import csv_utils
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+
+        if export_format == "geojson":
+            def write_invalid_geojson(data, stream, **kwargs):
+                stream.write("{")
+
+            monkeypatch.setattr(json, "dump", write_invalid_geojson)
+        elif export_format == "gpkg":
+            def write_invalid_gpkg(self, path, *args, **kwargs):
+                Path(path).write_bytes(b"x")
+
+            monkeypatch.setattr(gpd.GeoDataFrame, "to_file", write_invalid_gpkg)
+        else:
+            def write_invalid_csv(frame, path):
+                Path(path).write_text("x", encoding="utf-8")
+
+            monkeypatch.setattr(csv_utils, "write_formula_safe_csv", write_invalid_csv)
+
+        layer_name = f"invalid_{export_format}"
+        _setup(layer_name, _POINTS)
+        result = export_layer.invoke({"layer_name": layer_name, "format": export_format})
+
+        assert "导出验证失败" in result
+        assert list(output_dir.iterdir()) == []
+
+    @pytest.mark.parametrize("export_format", ["geojson", "gpkg", "csv", "csv_xy"])
+    def test_exports_remove_partial_files_when_writing_raises(self, tmp_path, monkeypatch, export_format):
+        import geopandas as gpd
+        import json
+        from pathlib import Path
+        from backend.services import csv_utils
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+
+        if export_format == "geojson":
+            def write_then_fail(data, stream, **kwargs):
+                stream.write("{")
+                raise OSError("simulated GeoJSON write failure")
+
+            monkeypatch.setattr(json, "dump", write_then_fail)
+        elif export_format == "gpkg":
+            def write_then_fail(self, path, *args, **kwargs):
+                Path(path).write_bytes(b"partial GPKG")
+                raise OSError("simulated GPKG write failure")
+
+            monkeypatch.setattr(gpd.GeoDataFrame, "to_file", write_then_fail)
+        else:
+            def write_then_fail(frame, path):
+                Path(path).write_text("partial CSV", encoding="utf-8")
+                raise OSError("simulated CSV write failure")
+
+            monkeypatch.setattr(csv_utils, "write_formula_safe_csv", write_then_fail)
+
+        layer_name = f"write_failure_{export_format}"
+        _setup(layer_name, _POINTS)
+        result = export_layer.invoke({"layer_name": layer_name, "format": export_format})
+
+        assert "导出失败" in result
+        assert list(output_dir.iterdir()) == []
+
+    def test_csv_cleanup_failure_is_reported_without_hiding_partial_file(self, tmp_path, monkeypatch):
+        from backend.services import csv_utils
+        from backend.services.tool_modules import io_export
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+
+        def write_then_fail(frame, path):
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write("partial CSV")
+            raise OSError("simulated CSV write failure")
+
+        def deny_remove(path):
+            raise PermissionError("simulated sharing violation")
+
+        monkeypatch.setattr(csv_utils, "write_formula_safe_csv", write_then_fail)
+        monkeypatch.setattr(io_export.os, "remove", deny_remove)
+        _setup("csv_cleanup_denied", _POINTS)
+
+        result = export_layer.invoke({"layer_name": "csv_cleanup_denied", "format": "csv"})
+
+        assert "CSV 导出失败" in result
+        assert "CSV清理失败" in result
+        assert "simulated sharing violation" in result
+        leftovers = list(output_dir.iterdir())
+        assert len(leftovers) == 1
+        assert leftovers[0].read_text(encoding="utf-8") == "partial CSV"
+
+    def test_shapefile_export_cleans_temporary_directory_when_write_fails(self, tmp_path, monkeypatch):
+        import geopandas as gpd
+        import tempfile
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        work_dir = tmp_path / "shp-export-work"
+
+        def make_temp_dir(prefix):
+            assert prefix == "shp_export_"
+            work_dir.mkdir()
+            return str(work_dir)
+
+        def fail_write(self, *args, **kwargs):
+            (work_dir / "partial.shp").write_text("partial", encoding="utf-8")
+            raise OSError("simulated shapefile write failure")
+
+        monkeypatch.setattr(tempfile, "mkdtemp", make_temp_dir)
+        monkeypatch.setattr(gpd.GeoDataFrame, "to_file", fail_write)
+        _setup("shp_write_failure", _POINTS)
+
+        result = export_layer.invoke({"layer_name": "shp_write_failure", "format": "shp"})
+
+        assert "SHP 导出失败" in result
+        assert not work_dir.exists()
+
+    def test_shapefile_export_removes_partial_zip_when_packaging_fails(self, tmp_path, monkeypatch):
+        import geopandas as gpd
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        work_dir = tmp_path / "shp-export-work"
+
+        def make_temp_dir(prefix):
+            assert prefix == "shp_export_"
+            work_dir.mkdir()
+            return str(work_dir)
+
+        def create_shp_stub(self, path, *args, **kwargs):
+            Path(path).write_text("shapefile stub", encoding="utf-8")
+
+        class FailingZip:
+            def __init__(self, path, *args, **kwargs):
+                self.path = path
+
+            def __enter__(self):
+                Path(self.path).write_bytes(b"partial zip")
+                return self
+
+            def write(self, *args, **kwargs):
+                raise OSError("simulated zip write failure")
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr(tempfile, "mkdtemp", make_temp_dir)
+        monkeypatch.setattr(gpd.GeoDataFrame, "to_file", create_shp_stub)
+        monkeypatch.setattr(zipfile, "ZipFile", FailingZip)
+        _setup("shp_zip_failure", _POINTS)
+
+        result = export_layer.invoke({"layer_name": "shp_zip_failure", "format": "shp"})
+
+        assert "SHP 导出失败" in result
+        assert list(output_dir.iterdir()) == []
+        assert not work_dir.exists()
+
+    def test_shapefile_export_removes_zip_that_fails_validation(self, tmp_path, monkeypatch):
+        import geopandas as gpd
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        monkeypatch.setattr(T, "_temp_output_dir", str(output_dir))
+        work_dir = tmp_path / "shp-export-work"
+        original_zip_file = zipfile.ZipFile
+
+        def make_temp_dir(prefix):
+            assert prefix == "shp_export_"
+            work_dir.mkdir()
+            return str(work_dir)
+
+        def create_shp_stub(self, path, *args, **kwargs):
+            Path(path).write_text("shapefile stub", encoding="utf-8")
+
+        class EmptyZip:
+            def __init__(self, path, mode, *args, **kwargs):
+                self.path = path
+                self.mode = mode
+                self.args = args
+                self.kwargs = kwargs
+
+            def __enter__(self):
+                with original_zip_file(self.path, self.mode, *self.args, **self.kwargs):
+                    pass
+                return self
+
+            def write(self, *args, **kwargs):
+                pass
+
+            def __exit__(self, *args):
+                return False
+
+        def zip_file_factory(path, mode="r", *args, **kwargs):
+            if "w" in mode:
+                return EmptyZip(path, mode, *args, **kwargs)
+            return original_zip_file(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(tempfile, "mkdtemp", make_temp_dir)
+        monkeypatch.setattr(gpd.GeoDataFrame, "to_file", create_shp_stub)
+        monkeypatch.setattr(zipfile, "ZipFile", zip_file_factory)
+        _setup("shp_validation_failure", _POINTS)
+
+        result = export_layer.invoke({"layer_name": "shp_validation_failure", "format": "shp"})
+
+        assert "SHP导出验证失败" in result
+        assert list(output_dir.iterdir()) == []
+        assert not work_dir.exists()
+
     @pytest.mark.parametrize("export_format", ["csv", "csv_xy", "gpkg", "shp"])
     def test_export_preserves_unsafe_integer_when_other_rows_are_null(self, tmp_path, monkeypatch, export_format):
         import csv
