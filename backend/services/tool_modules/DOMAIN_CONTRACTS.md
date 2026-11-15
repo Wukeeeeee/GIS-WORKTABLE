@@ -22,7 +22,7 @@ All refactoring adheres to a strict four-layer unidirectional dependency archite
  ┌────────────────────────────────────────────────────────┐
  │   Layer 2: Domain Modules                              │
  │   - Agent B: vector.py, network.py                    │
- │   - Agent C: raster.py, terrain.py                    │
+ │   - Agent C: raster.py, terrain.py, map_ops.py         │
  └───────────────────────────┬────────────────────────────┘
                              │ imports shared state & helpers
                              ▼
@@ -43,13 +43,14 @@ All refactoring adheres to a strict four-layer unidirectional dependency archite
 ### Strict Dependency Rules
 Validation errors returned as plain text must start with `错误：` (or an existing explicit failure prefix). API responses, processing history, and workflow execution classify these returned values; an explanatory sentence alone can otherwise be recorded as success. Keep successful summaries free of an error prefix.
 
-1. **Zero Circular Imports**: Domain modules (`vector.py`, `network.py`, `raster.py`, `terrain.py`) MUST NEVER import `backend.services.tools` or `tools`.
+1. **Zero Circular Imports**: Domain modules (`vector.py`, `network.py`, `raster.py`, `terrain.py`, `map_ops.py`) MUST NEVER import `backend.services.tools` or `tools`.
 2. **Layer Invariance**:
    - `Layer 0 (common.py)` depends ONLY on the standard library and pure math libraries.
    - `Layer 1 (runtime.py)` depends ONLY on `common.py`, standard libraries, and foundational GIS libraries (`geopandas`, `shapely`).
-   - `Layer 2 (domain modules)` depend on `runtime.py`, `common.py`, and third-party domain libraries (`scipy`, `numpy`, `rasterio`, `networkx`, `matplotlib`, etc.). Network and terrain tools reuse the shared raster lookup/output helpers through one-way imports into `raster.py`; raster must not import network or terrain. Do not copy these helpers into domain modules, where state handling can diverge.
+   - `Layer 2 (domain modules)` depend on `runtime.py`, `common.py`, and third-party domain libraries (`scipy`, `numpy`, `rasterio`, `networkx`, `matplotlib`, etc.). `map_ops.py` owns layer-control and map-focus business logic, accessing runtime state dynamically through the runtime module so module-level mutable state is never copied. Network and terrain tools reuse the shared raster lookup/output helpers through one-way imports into `raster.py`; raster must not import network or terrain. Do not copy these helpers into domain modules, where state handling can diverge.
    - `Layer 3 (tools.py)` imports domain functions, binds `@tool` wrappers, maintains the public tool list, and delegates attribute accesses to `runtime.py`.
    - `io_export.py` owns file-export implementations plus map/PDF export-operation queueing. `tools.py` retains decorated compatibility wrappers and passes its authoritative `_pending_layer_ops` object explicitly; `io_export.py` must not create a second queue or import the facade.
+   - `map_ops.py` owns layer-control and map-focus implementations. It accesses the authoritative runtime module state directly; `runtime.py` must not import `map_ops.py`, and `map_ops.py` must not import the `tools.py` facade.
 
 ---
 
@@ -76,20 +77,23 @@ from backend.services.tool_modules.runtime import (
     _layer_to_gdf,           # (layer_name: str) -> (gdf, resolved_name) or (None, err_msg)
     _gdf_to_layer,           # (gdf, name: str, style: dict = None, provenance: dict = None) -> None
     _push_layer,             # (name: str, geojson: dict, style: dict = None, provenance: dict = None) -> None
-    _register_layer,         # (name: str, geojson: dict, ...) -> registration_token: str
-    _register_raster_layer,  # (name: str, raster: dict, ...) -> registration_token: str
+    _register_layer,         # (name: str, geojson: dict, ...) -> token or None on expected-token mismatch
+    _register_raster_layer,  # (name: str, raster: dict, ...) -> token or None on expected-token mismatch
     _unregister_layer,       # (name: str, registration_token: str = None) -> bool
-    _layer_control_impl,     # Shared registry mutations and map-operation queueing for tools.layer_control
-    _focus_map_impl,         # Layer resolution and validated fit/center operation queueing for tools.focus_map
     _disambiguate_layer_name,# (base_name: str) -> str
     _update_registered_layer_data, # (name: str, geojson: dict) -> None
-    _get_exact_registered_layer,   # (name: str) -> (name, layer_dict, err_msg)
+    _get_exact_registered_layer,   # (name: str) -> (name, layer_dict, err_msg); lookup holds _state_lock
     _add_pending_item,       # (url: str, file_path: str = None) -> None
     init_temp_dir,           # () -> None
 )
 ```
 
-### 2.2 Importing from `backend.services.tool_modules.common`
+### 2.2 Map operations
+`map_ops.py` implements `layer_control` and `focus_map` behavior on top of the single runtime state owner. Import those implementations from `backend.services.tool_modules.map_ops`; do not duplicate registry or queue objects.
+
+For HTTP re-registration, `expected_registration_token` is checked inside `_state_lock` when provided. A mismatch or missing current version returns `None` without replacing registry data; callers that omit it retain the legacy unconditional registration behavior.
+
+### 2.3 Importing from `backend.services.tool_modules.common`
 ```python
 from backend.services.tool_modules.common import (
     _compute_bbox,

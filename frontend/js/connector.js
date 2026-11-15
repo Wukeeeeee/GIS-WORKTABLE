@@ -610,6 +610,8 @@
           crs: 'WGS-84',
           geojson: gj,
           source: 'upload',
+          registry_name: result.name || name,
+          registration_token: result.registration_token || null,
         }, true);
       }
     }

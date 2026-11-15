@@ -100,6 +100,20 @@ test('non-success HTTP response preserves the URL and reports load failure', asy
   assert.equal(h.elements.get('onlineLoadBtn').disabled, false);
 });
 
+test('online vector load forwards the backend registration token to the layer panel', async () => {
+  const h = createHarness();
+  h.elements.get('onlineLoadBtn').fire('click');
+  h.requests[0].resolve({ ok: true, json: () => Promise.resolve({
+    name: 'data',
+    geojson: { type: 'FeatureCollection', features: [] },
+    registration_token: 'server-registration-token',
+  }) });
+  await flushPromises();
+
+  assert.equal(h.layers.length, 1);
+  assert.equal(h.layers[0].registration_token, 'server-registration-token');
+});
+
 test('ArcGIS home shortcut opens the online panel and focuses the address field', () => {
   const h = createHarness();
   h.elements.get('settingsModal').style.display = 'block';

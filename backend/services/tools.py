@@ -125,6 +125,7 @@ from backend.services.tool_modules.common import (
 
 from backend.services.tool_modules import runtime
 from backend.services.tool_modules import io_export as _io_export
+from backend.services.tool_modules import map_ops as _map_ops
 from backend.services.tool_modules.runtime import (
     _registered_layers,
     _pending_layers,
@@ -2296,7 +2297,7 @@ def get_session_logs(n: int = 20) -> str:
 @tool
 def layer_control(action: str, name: str = "", new_name: str = "", color: str = "", opacity: float = 1.0, weight: int = 2, fill_pattern: str = "") -> str:
     """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) set_style(设置完整样式+color+opacity+weight+fill_pattern) clear_symbology(清除分级/唯一值符号化和图例) rename(重命名+new_name) fit(缩放至图层)。opacity: 0~1，weight: 线宽像素数，fill_pattern: hatch/crosshatch/dots/grid/diagonal。"""
-    return runtime._layer_control_impl(
+    return _map_ops._layer_control_impl(
         action, name, new_name, color, opacity, weight, fill_pattern,
     )
 
@@ -2312,7 +2313,7 @@ def focus_map(layer_name: str = "", center: str = "", zoom: int = 13) -> str:
     1. layer_name: 定位到指定图层的范围（缩放至该图层），如 focus_map(layer_name="上海火车站")
     2. center: 定位到指定经纬度，格式"经度,纬度"，如 focus_map(center="121.4593,31.2513", zoom=15)
     不知道坐标时可先用 geocode 或 POI 搜索获取经纬度。"""
-    return runtime._focus_map_impl(layer_name, center, zoom)
+    return _map_ops._focus_map_impl(layer_name, center, zoom)
 
 
 # ============================================================

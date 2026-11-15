@@ -1,7 +1,9 @@
 """Compatibility checks for the tools facade and modular shared runtime."""
 
+import threading
+
 from backend.services import tools
-from backend.services.tool_modules import runtime
+from backend.services.tool_modules import map_ops, runtime
 
 
 def test_facade_reexports_authoritative_mutable_state(monkeypatch):
@@ -23,6 +25,38 @@ def test_facade_forwards_runtime_output_directory(monkeypatch, tmp_path):
 
     assert runtime._temp_output_dir == output_dir
     assert tools._temp_output_dir == output_dir
+
+
+def test_map_ops_uses_the_current_runtime_queue_object(monkeypatch):
+    pending_ops = []
+    monkeypatch.setattr(runtime, "_pending_layer_ops", pending_ops)
+
+    result = map_ops._focus_map_impl(center="121.5,31.2", zoom=15)
+
+    assert result == "已定位到 (31.2000, 121.5000)，缩放级别 15"
+    assert pending_ops == [{"action": "center", "center": [121.5, 31.2], "zoom": 15}]
+
+
+def test_layer_lookup_waits_for_registry_state_lock(monkeypatch):
+    monkeypatch.setattr(runtime, "_registered_layers", {"roads": {"name": "roads"}})
+    started = threading.Event()
+    finished = threading.Event()
+    result = []
+
+    def lookup():
+        started.set()
+        result.append(runtime._get_exact_registered_layer("roads"))
+        finished.set()
+
+    worker = threading.Thread(target=lookup)
+    with runtime._state_lock:
+        worker.start()
+        assert started.wait(timeout=1)
+        assert not finished.wait(timeout=0.05)
+    assert finished.wait(timeout=1)
+    worker.join(timeout=1)
+    assert not worker.is_alive()
+    assert result[0][0] == "roads"
 
 
 def test_domain_modules_use_runtime_layer_registry():
@@ -161,38 +195,40 @@ def test_map_and_pdf_export_tools_delegate_to_io_export(monkeypatch):
     ]
 
 
-def test_layer_control_tool_delegates_to_runtime_state_owner(monkeypatch):
+def test_layer_control_tool_delegates_to_map_ops(monkeypatch):
     pending_ops = []
     calls = []
     monkeypatch.setattr(tools, "_pending_layer_ops", pending_ops)
 
     def layer_control_impl(action, name, new_name, color, opacity, weight, fill_pattern):
         calls.append((action, name, new_name, color, opacity, weight, fill_pattern))
-        return "runtime layer control delegated"
+        return "map layer control delegated"
 
-    monkeypatch.setattr(runtime, "_layer_control_impl", layer_control_impl, raising=False)
+    monkeypatch.setattr(map_ops, "_layer_control_impl", layer_control_impl)
 
     assert tools.layer_control.invoke({
         "action": "toggle", "name": "roads", "color": "#123456",
-    }) == "runtime layer control delegated"
+    }) == "map layer control delegated"
     assert tools.layer_control.name == "layer_control"
+    assert not hasattr(runtime, "_layer_control_impl")
     assert runtime._pending_layer_ops is pending_ops
     assert calls == [("toggle", "roads", "", "#123456", 1.0, 2, "")]
 
 
-def test_focus_map_tool_delegates_to_runtime_state_owner(monkeypatch):
+def test_focus_map_tool_delegates_to_map_ops(monkeypatch):
     pending_ops = []
     calls = []
     monkeypatch.setattr(tools, "_pending_layer_ops", pending_ops)
 
     def focus_map_impl(layer_name, center, zoom):
         calls.append((layer_name, center, zoom))
-        return "runtime focus map delegated"
+        return "map focus map delegated"
 
-    monkeypatch.setattr(runtime, "_focus_map_impl", focus_map_impl, raising=False)
+    monkeypatch.setattr(map_ops, "_focus_map_impl", focus_map_impl)
 
-    assert tools.focus_map.invoke({"center": "121.5,31.2", "zoom": 15}) == "runtime focus map delegated"
+    assert tools.focus_map.invoke({"center": "121.5,31.2", "zoom": 15}) == "map focus map delegated"
     assert tools.focus_map.name == "focus_map"
+    assert not hasattr(runtime, "_focus_map_impl")
     assert runtime._pending_layer_ops is pending_ops
     assert calls == [("", "121.5,31.2", 15)]
 

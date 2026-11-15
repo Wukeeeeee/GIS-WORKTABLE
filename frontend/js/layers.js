@@ -69,7 +69,9 @@ window.GIS = window.GIS || {};
         return operation.failed ? _runRegistryOperation(operation) : operation.promise;
       });
       layerData.forEach(function(layer) {
-        if (layer._registrationFailed && layer._retryRegistration) layer._retryRegistration();
+        if (layer._registrationFailed && !layer._registrationStale && layer._retryRegistration) {
+          layer._retryRegistration();
+        }
         if (layer._registrationPromise) promises.push(layer._registrationPromise);
       });
       return Promise.all(promises).then(function(results) {
@@ -294,7 +296,15 @@ window.GIS = window.GIS || {};
         ? window.GIS.api.registerLayer(name, geojson, layer.raster, projectContext.id, layer.sensitive, registrationToken)
         : window.GIS.api.registerLayer(name, geojson, layer.raster, undefined, layer.sensitive, registrationToken);
     }).then(function(result) {
+      if (result && result.stale) {
+        layer._registrationStale = true;
+        if (GIS.toast && typeof GIS.toast.warn === 'function') {
+          GIS.toast.warn('后台图层已删除或替换，本次注册未生效：「' + name + '」，请刷新后重试');
+        }
+        return false;
+      }
       if (!_registryResultOk(result)) throw new Error('后台未确认图层注册成功');
+      layer._registrationStale = false;
       if (result && typeof result.sensitive === 'boolean') {
         layer.sensitive = result.sensitive;
         var stateRecord = GIS.state && GIS.state.getLayer ? GIS.state.getLayer(layer.layer_id) : null;
@@ -316,6 +326,9 @@ window.GIS = window.GIS || {};
 
   function _unregisterPanelName(layer, name) {
     var token = layer._registrationTokens && layer._registrationTokens[name];
+    if (typeof token !== 'string' || !token) {
+      return Promise.resolve({ success: true, removed: false, skipped: true });
+    }
     return Promise.resolve().then(function() { return GIS.api.unregisterLayer(name, token); }).then(function(result) {
       if (result && result.stale && GIS.toast && typeof GIS.toast.warn === 'function') {
         GIS.toast.warn('后台已更新同名图层，本次未删除新版本：「' + name + '」');
@@ -343,6 +356,7 @@ window.GIS = window.GIS || {};
       : window.GIS.project && typeof window.GIS.project.getCurrentProjectId === 'function'
         ? { provided: true, id: window.GIS.project.getCurrentProjectId() } : null;
     layer._registrationVersion = version;
+    layer._registrationStale = false;
     function attempt() {
       layer._registrationFailed = false;
       var promise = Promise.resolve(previous).catch(function() {}).then(function() {
@@ -440,6 +454,10 @@ window.GIS = window.GIS || {};
       var bridged = window.GIS.state.addLayer({
         layer_id: layer.layer_id,
         name: layer.filename || bridgeMapName,
+        registry_name: layer.registry_name || layer._registeredName || bridgeMapName,
+        _registeredName: layer._registeredName || layer.registry_name || (layer.registration_token ? bridgeMapName : null),
+        _registrationTokens: layer._registrationTokens,
+        registration_token: layer.registration_token,
         _mapName: bridgeMapName,   // 2D 已按此名渲染，地图操作沿用
         geojson: layer.geojson,
         style: layer.style || { color: color },
@@ -475,7 +493,16 @@ window.GIS = window.GIS || {};
     // 兜底生成 layer_id：工程恢复等场景可能不带 layer_id，缺失会导致删除按钮 data-id 为空而失效
     var _layerId = layer.layer_id || ('layer_' + Date.now().toString(36) + '_' + Math.floor(Math.random() * 1e6).toString(36));
     var isVisible = layer.visible !== false;
-    layerData.push({ ...layer, layer_id: _layerId, filename: name, _rawName, visible: isVisible, color, sensitive: true });
+    var panelLayer = { ...layer, layer_id: _layerId, filename: name, _rawName, visible: isVisible, color, sensitive: true };
+    if (typeof layer.registration_token === 'string' && layer.registration_token) {
+      var registryName = layer.registry_name || layer._registeredName || _rawName;
+      panelLayer._registeredName = registryName;
+      panelLayer._registrationTokens = Object.assign(
+        Object.create(null), layer._registrationTokens || {},
+        { [registryName]: layer.registration_token },
+      );
+    }
+    layerData.push(panelLayer);
     if (!layer._panelSync && GIS.map && GIS.map.setLayerColor) GIS.map.setLayerColor(_rawName, color);
     if (!isVisible && GIS.map && GIS.map.setLayerVisible) GIS.map.setLayerVisible(_rawName, false);
     renderList();

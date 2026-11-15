@@ -2493,7 +2493,8 @@ async def register_layer(request: RegisterLayerRequest):
         if request.raster is not None:
             from backend.services.tools import _register_raster_layer
             token = await asyncio.to_thread(_register_raster_layer, request.name, request.raster,
-                                            sensitive=True if request.sensitive else None)
+                                            sensitive=True if request.sensitive else None,
+                                            expected_registration_token=request.registration_token)
         elif request.geojson is not None:
             from backend.services.tools import _validate_wgs84_geojson
             _validate_wgs84_geojson(request.geojson)
@@ -2504,7 +2505,8 @@ async def register_layer(request: RegisterLayerRequest):
                         and current.get("registration_token") == request.registration_token):
                     geojson = _restore_registered_integer_properties(current.get("geojson"), geojson)
             token = _register_layer(request.name, geojson, group_name=request.group_name,
-                                    sensitive=True if request.sensitive else None)
+                                    sensitive=True if request.sensitive else None,
+                                    expected_registration_token=request.registration_token)
         else:
             raise ValueError("图层缺少矢量或栅格数据")
     except ValueError as e:
@@ -2512,8 +2514,24 @@ async def register_layer(request: RegisterLayerRequest):
     finally:
         if owns_shared_lock:
             registry_tools.release_shared_state_lock()
+    with registry_tools._state_lock:
+        current = registry_tools._registered_layers.get(request.name)
+        current_matches = bool(
+            token and current and current.get("registration_token") == token
+        )
+        # A token describes this registration, not a concurrently replaced one.
+        # If it was removed, fail closed and do not leak another version's metadata.
+        sensitive = current.get("sensitive") is True if current_matches else True
+    if not current_matches:
+        return {
+            "success": False,
+            "stale": True,
+            "registration_token": token,
+            "sensitive": sensitive,
+            "message": "图层注册期间已被删除或替换，请刷新后重试",
+        }
     return {"success": True, "registration_token": token,
-            "sensitive": registry_tools._registered_layers[request.name].get("sensitive") is True,
+            "sensitive": sensitive,
             "message": f"已注册图层: {request.name}"}
 
 
@@ -3380,8 +3398,13 @@ async def api_online_load(request: OnlineLoadRequest):
     geojson = result["geojson"]
     if not name:
         name = os.path.splitext(os.path.basename(src))[0] or "云原生图层"
-    _register_layer(name, geojson)
-    return {"geojson": _protect_geojson_property_integers(geojson), "name": name, "meta": result.get("meta") or result.get("info")}
+    registration_token = _register_layer(name, geojson)
+    return {
+        "geojson": _protect_geojson_property_integers(geojson),
+        "name": name,
+        "registration_token": registration_token,
+        "meta": result.get("meta") or result.get("info"),
+    }
 
 
 # ===== 工具直连执行（手动面板通道：不经 LLM，直接调用注册工具） =====

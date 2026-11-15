@@ -3466,3 +3466,46 @@
 - **改动：**将图层精确/包含式解析、坐标格式与 WGS-84 范围验证、缩放级别裁剪及 `fit`/`center` 队列写入移至 `runtime._focus_map_impl`。`tools.py` 保留原 `@tool` API、docstring 与注册位置并委托；扩充模块契约，计划记录更新为 5,030 行。
 - **验证：**compat、focus_map 功能/失败反馈、layer registry lifecycle、layer-control 失败反馈和 rename 同步组合 **119 passed**；新委托用例修复前失败、迁移后通过。图层样例为进程内合成状态；TEMP/TMP/MPLCONFIGDIR 隔离；无外部服务、凭据或用户数据。
 - **边界与下一步：**未跑后端全量；运行时层仍同时含共享状态、队列操作和若干高层实现，后续需审视职责是否过宽，再决定是否引入更小的 map-operations 模块或继续留在 runtime。
+
+### 2026-11-15 将 layer_control / focus_map 业务实现移至 map_ops
+
+- **问题与证据：**当前 `runtime.py` 同时负责唯一共享状态和地图 UI 操作业务逻辑；`layer_control` 与 `focus_map` 的操作规则、错误文案及队列指令可归到 Layer 2，而注册表、锁和队列仍应由 runtime 持有。
+- **改动：**新增 `tool_modules/map_ops.py`，将两项实现原样迁入并通过 runtime 模块对象动态访问注册表、锁和待处理队列，避免导入状态副本；`tools.py` 保留原 `@tool` 名称、签名、docstring、注册位置并委托到 map_ops。更新模块契约、兼容测试和当前行数（tools.py：工作树 5,031 行，HEAD 5,030 行）。
+- **验证：**使用独立 `D:\CodexTestTemp\gis-map-ops-20261115\{temp,tmp,mpl}`；compat、focus_map、图层生命周期、失败反馈、`TestLayerControl` 与重命名同步相关测试 **120 passed in 5.55s**；`git diff --check` 通过。测试使用进程内/合成图层及临时目录，无凭据、真实用户数据或外部服务访问。
+- **边界与下一步：**未运行后端全量，也未验证多进程部署和真实前端地图交互。本次提取不改变图层操作锁语义；下一步应审计 runtime 剩余 helper 的状态所有权边界，并继续按操作域补足兼容与失败反馈验证。
+### 2026-11-15 为注册表精确查找补齐状态锁
+
+- **问题与证据：**`_register_layer`、`_unregister_layer` 和重命名路径通过 `_state_lock` 修改注册表，但 `_get_exact_registered_layer` 曾无锁执行 membership、模糊匹配迭代和当前名称枚举；与并发注册/重命名交错时，查找无法保证读取同一注册表状态。新增线程屏障测试在修复前失败：持锁期间 helper 仍直接返回。
+- **改动：**将精确匹配、候选名查找和错误信息中的当前图层枚举放在 `_state_lock` 内；保持返回元组、原始 layer dict 对象和错误文案兼容。同步在 `DOMAIN_CONTRACTS.md` 标注此锁约束。
+- **验证：**修复前屏障回归 **1 failed**；修复后 compat、layer registry lifecycle、add/delete-field 失败反馈、focus_map、`TestLayerControl` 和 rename 同步组合 **131 passed in 5.76s**。TEMP/TMP/MPLCONFIGDIR 位于独立 `D:\CodexTestTemp\gis-resolver-lock-20261115\`；用例使用进程内合成注册表/图层，无凭据或外部服务访问。
+- **边界与下一步：**锁仅覆盖查找本身，helper 仍按兼容约定返回 live metadata；它不使后续完整的多步骤图层操作自动成为原子事务。需要继续核查 API shared-state lock 与直接工具调用边界，并只在证据表明存在竞态的操作上设计更大范围的原子性。
+### 2026-11-15 避免栅格注册响应读取已删除图层
+
+- **问题与证据：**`/api/layer/register` 的栅格分支在 `asyncio.to_thread` 中注册后，响应阶段直接用名称索引 `_registered_layers`。确定性并发测试让带 token 的 `/api/layer/unregister` 在 worker 注册完成、await 返回前删除图层；修复前端点以 `KeyError: 'raster'` 失败。测试进一步在同名位置放入另一个 token，覆盖旧请求误读新版本元数据的风险。
+- **改动：**响应组装时在 `_state_lock` 下读取注册表，并仅在当前 token 与本次 token 相同时采用该版本的 `sensitive`；图层已删除或被替换时返回 fail-closed 默认 `True`，不索引缺失项或泄漏新版本属性。未改变注册 token、删除条件或前端响应字段。
+- **验证：**回归用例修复前失败并确认堆栈指向 `main.py` 无锁索引；修复后 registration-version 与 layer-registry-lifecycle 套件 **53 passed in 4.14s**。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-raster-register-race-20261115\`；栅格注册函数被测试桩替代，使用合成注册表，无真实栅格文件、凭据或外部服务。
+- **边界与下一步：**这是确定性单次交错测试，未做重复压力或前端并发验收；同时请求的注册操作仍可按 token 覆盖同名项。后续可审计 register/unregister 返回语义及前端是否正确处理已过期注册响应。
+### 2026-11-15 将过期注册响应显式反馈到前端
+
+- **问题与证据：**上轮为栅格注册/删除竞态消除了 `KeyError`，但仅返回 fail-closed `sensitive=True`，仍将已删除或被同名新 token 替换的注册报告为成功。将并发回归断言改为要求 `success=False, stale=True` 后，旧逻辑失败；前端回归也确认旧逻辑不会提示过期响应。
+- **改动：**`/api/layer/register` 在 `_state_lock` 下核对响应 token；当前注册缺失或 token 不匹配时返回显式 stale 失败，不泄露新版本元数据。`layers.js` 识别 stale 响应、保留本地原 token、不应用返回的过期 token，将该轮同步标记失败并提示用户刷新后重试。
+- **验证：**registration-version + layer-registry-lifecycle 测试 **53 passed in 4.42s**；`frontend/tests/layer_panel_rename.test.cjs` **40 passed**。Python TEMP/TMP/MPLCONFIGDIR 隔离在 `D:\CodexTestTemp\gis-raster-register-race-20261115\`；服务端注册函数为测试桩，前端使用 VM 假后端，无真实文件/凭据/外部服务。
+- **边界与下一步：**未做真实浏览器或跨标签页端到端验收。随后检查发现 registration queue 会自动重试所有失败项，可能把 stale 状态当普通临时失败；该后续风险与修正在下一条记录。
+### 2026-11-15 阻止保存屏障自动重放过期图层注册
+
+- **问题与证据：**服务端现将 token 已失效的注册响应标为 `stale`，但前端 `_waitForRegistrySync` 会自动重试所有 `_registrationFailed` 图层；屏障回归用 mock 第一次返回 stale、第二次返回新版本成功，修复前断言只发一次请求失败，实际重试 2 次，可能覆盖后台较新的同名版本。
+- **改动：**前端为图层记录 `_registrationStale`；过期响应保留旧 token、显示警告并保持失败，保存屏障不自动重试 stale 项，从而使本次保存失败关闭。发生新的显式注册/编辑时才清除 stale 状态并提交新同步；成功后清除该标记。修正上一条进度中的过时下一步描述。
+- **验证：**前端 `layer_panel_rename`、`project_load_race`、`project_save_sync` 合计 **77 passed**；Python registration-version 与 layer-registry-lifecycle **53 passed in 4.42s**。后端测试使用独立 TEMP/TMP/MPLCONFIGDIR 和桩注册函数；前端为 VM 假后端，无真实服务或用户数据。
+- **边界与下一步：**未做真实浏览器、跨标签页或长时间并发压力测试；显式新注册仍按当前 API 的 last-writer 语义更新同名项。下一步可明确 stale token 是否仅用于条件删除，还是也应成为注册更新的乐观并发条件，并据此定契约和补冲突测试。
+### 2026-11-15 将图层注册 token 用作可选的条件写入版本
+
+- **问题与证据：**当前 `/api/layer/register` 收到旧 `registration_token` 时只跳过整数属性恢复，仍会继续覆盖同名注册。新增向量回归在第二版 token 已生效后用第一版 token 提交第三份数据，修复前失败：旧 token 写入覆盖了第二版。
+- **改动：**`_register_layer` / `_register_raster_layer` 增加可选 `expected_registration_token`，并在 `_state_lock` 内、实际替换注册表项前比较；当前版本缺失或不匹配时返回 `None` 且不改状态。HTTP 路由传入 request token 并转成现有 `success:false, stale:true` 响应。未携带 token 的旧调用保持既有 last-writer 行为；更新模块契约。
+- **验证：**向量与栅格 stale-token CAS、并发删除后响应、图层生命周期以及上传取消期间栅格注册组合 **56 passed in 8.94s**；前端 `layer_panel_rename`、`project_load_race`、`project_save_sync` **77 passed**。Python 使用隔离的 `D:\CodexTestTemp\gis-layer-token-cas-20261115\{temp,tmp,mpl}`；无真实数据文件、凭据或外部服务。
+- **边界与下一步：**条件写入只对提供 token 的 HTTP 更新生效；旧的无 token 注册仍保持兼容的无条件写入。未验证多进程或真实跨标签页竞态。后续可审计哪些生产调用仍省略 token，判断它们确属“新建/无版本”还是应先取得当前版本再做条件更新。
+### 2026-11-15 在线加载保留注册版本并安全删除
+
+- **问题与证据：**`/api/online/load` 先注册矢量图层却未回传 token；connector 以 `skipRegister` 加入面板，面板删除时可能无 token 按名称注销。栅格预览等本地面板项也可能误删同名后端数据。新增响应与 connector 回归确认原链路缺少 token；无 token 删除测试确认此前会调用无条件注销。
+- **改动：**在线加载响应返回后端注册 token，connector 传给图层面板；面板桥接/直接路径保存 token，删除时仅对拥有有效 token 的注册发起条件注销。测试夹具明确返回模拟 token，未持有注册版本的本地图层不注销同名后端项。
+- **验证：**`test_layer_registration_versions.py` **7 passed**；`test_tool_modules_compat.py` + `test_layer_registry_lifecycle.py` **81 passed**；前端 `connector_online_load` + `layer_panel_rename` **54 passed**；`git diff --check` 通过。pytest 临时目录隔离于 `D:\CodexTestTemp\gis-online-layer-token-20261115\{temp,tmp,mpl}`，测试未访问真实数据、凭据或外部服务。
+- **边界与下一步：**未做浏览器验收、多进程/跨标签压力测试或全套后端测试；无 token 的遗留前端注册项现在会跳过删除，需在后续兼容性审计中确认是否需迁移获取 token 的策略。

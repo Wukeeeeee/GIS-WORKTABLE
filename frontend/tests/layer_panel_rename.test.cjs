@@ -53,7 +53,7 @@ function loadLayerPanel() {
     registerLayer(name, geojson, raster, projectId, sensitive, token) {
       if (failRegistration) return Promise.reject(new Error('offline'));
       registrationArgs.push([name, token]);
-      registered.push(['register', name]); return Promise.resolve();
+      registered.push(['register', name]); return Promise.resolve({ success: true, registration_token: token || name + '-token' });
     },
     unregisterLayer(name) { registered.push(['unregister', name]); return Promise.resolve(); },
   };
@@ -137,6 +137,47 @@ test('new panel layers are protected by default without a per-layer toggle', () 
   assert.equal(layer.sensitive, true);
   assert.match(harness.tbody.innerHTML, /layer-privacy-badge/);
   assert.equal(harness.layers.setLayerPrivacy, undefined);
+});
+
+test('skip-register layers retain their server token for conditional deletion', async () => {
+  const h = loadLayerPanel();
+  await h.layers.waitForRegistrySync();
+  h.state.getLayer = undefined;
+  const layer = h.layers.addLayer({
+    layer_id: 'online-layer', filename: 'online-data',
+    geojson: { type: 'FeatureCollection', features: [] },
+    registration_token: 'online-owned-token',
+  }, true);
+  const deletions = [];
+  h.backend.unregisterLayer = (name, token) => {
+    deletions.push([name, token]);
+    return Promise.resolve({ success: true, removed: true });
+  };
+
+  h.layers.removeLayer(layer.layer_id);
+  await h.layers.waitForRegistrySync();
+
+  assert.deepEqual(deletions, [['online-data', 'online-owned-token']]);
+});
+
+test('skip-register local layers do not unregister an unowned backend name', async () => {
+  const h = loadLayerPanel();
+  await h.layers.waitForRegistrySync();
+  h.state.getLayer = undefined;
+  const layer = h.layers.addLayer({
+    layer_id: 'local-only', filename: 'same-name',
+    geojson: { type: 'FeatureCollection', features: [] },
+  }, true);
+  const deletions = [];
+  h.backend.unregisterLayer = (...args) => {
+    deletions.push(args);
+    return Promise.resolve({ success: true, removed: true });
+  };
+
+  h.layers.removeLayer(layer.layer_id);
+  await h.layers.waitForRegistrySync();
+
+  assert.deepEqual(deletions, []);
 });
 
 test('restored layer IDs cannot inject the attribute inspector toolbar', async () => {
@@ -630,6 +671,49 @@ test('a protected newer registration is reported without retrying its deletion',
   await h.layers.waitForRegistrySync();
   assert.equal(calls, 1);
   assert.match(warnings[0], /未删除新版本/);
+});
+
+test('stale registration responses keep the prior token and warn instead of reporting sync success', async () => {
+  const h = loadLayerPanel();
+  await h.layers.waitForRegistrySync();
+  const layer = h.layers.getLayers()[0];
+  layer._registrationTokens = { Original: 'previous-token' };
+  let sentToken;
+  h.backend.registerLayer = (_name, _data, _raster, _projectId, _sensitive, token) => {
+    sentToken = token;
+    return Promise.resolve({ success: false, stale: true, registration_token: 'expired-response-token' });
+  };
+
+  const synced = await h.layers.syncToolLayer('Original');
+
+  assert.equal(synced, false);
+  assert.equal(sentToken, 'previous-token');
+  assert.equal(layer._registrationTokens.Original, 'previous-token');
+  assert.equal(layer._registrationFailed, true);
+  assert.equal(layer._registrationStale, true);
+  assert.match(h.toastWarnings[0], /后台图层已删除或替换/);
+  assert.equal(h.toastErrors.length, 0);
+});
+
+test('registry save barrier does not auto-retry a stale registration over a newer version', async () => {
+  const h = loadLayerPanel();
+  await h.layers.waitForRegistrySync();
+  const layer = h.layers.getLayers()[0];
+  layer._registrationTokens = { Original: 'previous-token' };
+  let calls = 0;
+  h.backend.registerLayer = () => {
+    calls++;
+    return calls === 1
+      ? Promise.resolve({ success: false, stale: true, registration_token: 'expired-token' })
+      : Promise.resolve({ success: true, registration_token: 'newer-token' });
+  };
+
+  assert.equal(await h.layers.syncToolLayer('Original'), false);
+  const barrierResult = await h.layers.waitForRegistrySync();
+
+  assert.equal(calls, 1);
+  assert.equal(layer._registrationFailed, true);
+  assert.equal(barrierResult.includes(false), true);
 });
 
 test('tool aliases keep the canonical identity and are versioned during deletion', async () => {
