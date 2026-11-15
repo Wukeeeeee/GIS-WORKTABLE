@@ -683,6 +683,43 @@ def reset_registered_layers(layers: list = None, tolerate_invalid: bool = False)
     return skipped
 
 
+
+def geojson_to_export_gdf(geojson: dict, serialize_nested: bool = False):
+    """Build a WGS-84 GeoDataFrame without pandas coercing mixed property values."""
+    import geopandas as gpd
+    import pandas as pd
+
+    features = geojson["features"]
+    if not features:
+        return gpd.GeoDataFrame(
+            {"geometry": gpd.GeoSeries([], crs="EPSG:4326")},
+            crs="EPSG:4326",
+        )
+    gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+    property_rows = [
+        feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+        for feature in features
+    ]
+    property_keys = list(dict.fromkeys(
+        key for properties in property_rows for key in properties
+        if key != "geometry"
+    ))
+    for key in property_keys:
+        values = [properties.get(key) for properties in property_rows]
+        if serialize_nested:
+            values = [
+                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(value, (dict, list)) else value
+                for value in values
+            ]
+        gdf[key] = pd.Series(
+            values,
+            index=gdf.index,
+            dtype=object,
+        )
+    return gdf
+
+
 def _layer_to_gdf(layer_name: str) -> tuple:
     """从注册表读取图层并转为 GeoDataFrame，返回 (gdf, layer_name) 或 (None, 错误信息)。"""
     info = _registered_layers.get(layer_name)

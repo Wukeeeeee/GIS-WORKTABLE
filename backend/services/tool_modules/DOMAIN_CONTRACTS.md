@@ -126,7 +126,7 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 - `_spatial_feature_coordinates(gdf)`: Extracts coordinate points from point/multipoint features.
 - `_gdf_area_km2(gdf, unique=False)`: Computes surface area in km² using EPSG:6933.
 
-#### Tools to Migrate (50 tools):
+#### Tools to Migrate (56 tools, including attribute and geometry-edit migrations):
 | Tool Name | Key Arguments | Return / Behavior |
 |:---|:---|:---|
 | `spatial_buffer` | `layer_name`, `distance`, `unit`, `dissolve` | Buffers vector features by metric distance. |
@@ -173,6 +173,12 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 | `edit_vertices` | `layer_name` | Queues frontend vertex-edit mode for a registered vector layer. |
 | `draw_feature` | `geometry_type`, `coordinates`, `layer_name` | Creates and registers a point, line, polygon, rectangle, or circle layer. |
 | `add_legend` | `layer_name` | Queues a legend for a registered vector layer using its symbology. |
+| `update_attribute` | `layer_name`, `field`, `value`, `condition_field`, `condition_value` | Updates attributes on all or matching features and syncs the registered layer. |
+| `delete_features` | `layer_name`, `condition_field`, `condition_value` | Deletes matching features while retaining at least one feature in the registered layer. |
+| `add_field` | `layer_name`, `field_name`, `field_type`, `default_value` | Adds a typed attribute to all features while preserving existing properties. |
+| `delete_field` | `layer_name`, `field_name` | Removes an attribute field; protects geometry and stable `_fid` identity. |
+| `move_features` | `layer_name`, `dx`, `dy`, `unit` | Translates all vector features in local metric coordinates. |
+| `scale_features` | `layer_name`, `x_factor`, `y_factor` | Scales features around their projected geometry center. |
 | `add_labels` | `layer_name`, `field`, `font_size`, `color` | Queues per-feature text labels using a selected attribute field. |
 | `spatial_graduated_colors` | `layer_name`, `field`, `n_classes`, `color_scheme`, `method`, `fill_opacity` | Queues numeric graduated symbology with equal-interval or quantile breaks. |
 | `spatial_unique_values` | `layer_name`, `field`, `color_scheme` | Queues categorical symbology while preserving typed category distinctions. |

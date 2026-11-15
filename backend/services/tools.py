@@ -239,6 +239,11 @@ from backend.services.tool_modules.vector import (
     layer_add_geometry,
     spatial_unique_values,
     update_attribute,
+    delete_features,
+    add_field,
+    delete_field,
+    move_features,
+    scale_features,
     spatial_select_by_attribute,
     topology_check,
     spatial_fix_geometry,
@@ -2795,69 +2800,6 @@ def create_chart(layer_name: str, chart_type: str = "bar", field: str = "",
 # 工具: move_features — 移动要素
 # ============================================================
 
-@tool
-def move_features(layer_name: str, dx: float = 0, dy: float = 0, unit: str = "m") -> str:
-    """移动指定图层的所有要素。dx 为东西方向位移（正=东/负=西），dy 为南北方向位移（正=北/负=南）。
-    unit 可选 m(米) 或 km(公里)。自动 UTM 投影保证距离精确。"""
-    try:
-        import geopandas as gpd
-        import math
-        import warnings
-
-        layer_name, info, error = _get_exact_registered_layer(layer_name)
-        if error:
-            return error
-
-        gdf = _geojson_to_export_gdf(info["geojson"])
-        if gdf.empty:
-            return f"图层「{layer_name}」为空"
-
-        try:
-            dx, dy = float(dx), float(dy)
-        except (TypeError, ValueError, OverflowError):
-            return "移动要素失败：位移量必须是有限数值"
-        if not math.isfinite(dx) or not math.isfinite(dy):
-            return "移动要素失败：位移量必须是有限数值"
-
-        if dx == 0 and dy == 0:
-            return "位移量 dx 和 dy 不能同时为 0"
-
-        requested_dx, requested_dy = dx, dy
-        if unit == "km":
-            dx *= 1000
-            dy *= 1000
-        elif unit != "m":
-            return f"不支持的单位「{unit}」，请用 m 或 km"
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-        # 用 bounds 中心确定 UTM 带号（避免 geographic CRS 下计算 centroid 的 warning）
-        _b = gdf.total_bounds
-        extent_error = _local_utm_extent_error(_b)
-        if extent_error:
-            return f"移动要素失败: {extent_error}；未修改图层"
-        lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
-        crs_utm = _get_utm_crs(lon, lat)
-
-        gdf_utm = gdf.to_crs(crs_utm)
-        gdf_utm.geometry = gdf_utm.geometry.translate(xoff=dx, yoff=dy)
-
-        gdf_result = gdf_utm.to_crs("EPSG:4326")
-        geojson_data = gdf_result.__geo_interface__
-        geojson_data["name"] = layer_name
-        _update_registered_layer_data(layer_name, geojson_data)
-        _push_layer(layer_name, geojson_data)
-
-        dir_x = "东" if dx > 0 else ("西" if dx < 0 else "")
-        dir_y = "北" if dy > 0 else ("南" if dy < 0 else "")
-        dir_str = (dir_y + dir_x) if (dx != 0 and dy != 0) else (dir_y or dir_x)
-        unit_str = "km" if unit == "km" else "m"
-        return (f"已移动图层「{layer_name}」{dir_str}方向 "
-                f"（{requested_dx}{unit_str}, {requested_dy}{unit_str}），"
-                f"{len(gdf_result)} 个要素，已同步地图")
-    except Exception as e:
-        import traceback
-        return f"移动要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
 
 
 # ============================================================
@@ -2915,6 +2857,7 @@ def rotate_features(layer_name: str, angle: float = 90) -> str:
             warnings.simplefilter("ignore", UserWarning)
             center = gdf_metric.dissolve().centroid.iloc[0]
 
+
         gdf_metric.geometry = gdf_metric.geometry.rotate(angle, origin=(center.x, center.y), use_radians=False)
         gdf_result = gdf_metric.to_crs("EPSG:4326")
 
@@ -2935,53 +2878,6 @@ def rotate_features(layer_name: str, angle: float = 90) -> str:
 # 工具: scale_features — 缩放要素
 # ============================================================
 
-@tool
-def scale_features(layer_name: str, x_factor: float = 1, y_factor: float = 1) -> str:
-    """缩放指定图层的所有要素。x_factor 为 X 轴缩放倍数，y_factor 为 Y 轴缩放倍数。缩放中心为图层几何中心。大于 1 放大，小于 1 缩小。"""
-    try:
-        import geopandas as gpd
-        import math
-        import warnings
-
-        layer_name, info, error = _get_exact_registered_layer(layer_name)
-        if error:
-            return error
-
-        gdf = _geojson_to_export_gdf(info["geojson"])
-        if gdf.empty:
-            return f"图层「{layer_name}」为空"
-
-        try:
-            x_factor, y_factor = float(x_factor), float(y_factor)
-        except (TypeError, ValueError, OverflowError):
-            return "缩放倍数必须是有限且大于 0 的数值"
-        if not math.isfinite(x_factor) or not math.isfinite(y_factor) or x_factor <= 0 or y_factor <= 0:
-            return "缩放倍数必须大于 0"
-
-        bounds = gdf.total_bounds
-        extent_error = _local_utm_extent_error(bounds)
-        if extent_error:
-            return f"缩放要素失败: {extent_error}；未修改图层"
-        lon, lat = (bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2
-        gdf_metric = gdf.to_crs(_get_utm_crs(lon, lat))
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            center = gdf_metric.dissolve().centroid.iloc[0]
-
-        gdf_metric.geometry = gdf_metric.geometry.scale(
-            xfact=x_factor, yfact=y_factor, origin=(center.x, center.y))
-        gdf = gdf_metric.to_crs("EPSG:4326")
-
-        geojson_data = gdf.__geo_interface__
-        geojson_data["name"] = layer_name
-        _update_registered_layer_data(layer_name, geojson_data)
-        _push_layer(layer_name, geojson_data)
-
-        return (f"已缩放图层「{layer_name}」（X: {x_factor}倍, Y: {y_factor}倍），"
-                f"{len(gdf)} 个要素，已同步地图")
-    except Exception as e:
-        import traceback
-        return f"缩放要素失败: {str(e)[:300]}\n{traceback.format_exc()[:200]}"
 
 
 
@@ -3080,177 +2976,14 @@ def batch_geocode(addresses: str) -> str:
 # 工具: delete_features — 删除要素
 # ============================================================
 
-@tool
-def delete_features(layer_name: str, condition_field: str = "", condition_value: str = "") -> str:
-    """按条件删除图层的要素。必须指定条件（例如删除某个字段等于某值的所有要素）。
-    删除后地图自动同步。layer_name: 图层名；condition_field: 条件字段名（必填）；
-    condition_value: 要匹配的字段值（可为空字符串，例如删除空值记录）；用 condition_field="_fid" 可精准删除单条要素。"""
-    try:
-        layer_name, info, error = _get_exact_registered_layer(layer_name)
-        if error:
-            return error
-
-        if not condition_field:
-            return "请指定删除条件（condition_field 和 condition_value），例如删除 name=xx 的所有要素"
-
-        import copy
-        import geopandas as gpd
-
-        features = info["geojson"]["features"]
-        gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
-        if gdf.empty:
-            return f"图层「{layer_name}」为空"
-
-        if condition_field not in gdf.columns:
-            return f"条件字段「{condition_field}」不存在，可用字段：{', '.join([c for c in gdf.columns if c != 'geometry'])}"
-
-        raw_values = [
-            (feature.get("properties") or {}).get(condition_field)
-            for feature in features
-        ]
-        non_null_values = [value for value in raw_values if value is not None]
-        if non_null_values and all(isinstance(value, bool) for value in non_null_values):
-            cond_kind = "b"
-        elif non_null_values and all(
-            isinstance(value, int) and not isinstance(value, bool)
-            for value in non_null_values
-        ):
-            cond_kind = "i"
-        elif non_null_values and all(
-            isinstance(value, (int, float)) and not isinstance(value, bool)
-            for value in non_null_values
-        ):
-            cond_kind = "f"
-        else:
-            cond_kind = "O"
-        try:
-            if cond_kind in ('i', 'u', 'f'):
-                cond_val = _parse_numeric_condition(condition_value, cond_kind)
-            elif cond_kind == 'b':
-                normalized = str(condition_value).strip().casefold()
-                cond_val = normalized == "true" if normalized in ("true", "false") else condition_value
-            else:
-                cond_val = str(condition_value)
-        except ValueError:
-            cond_val = str(condition_value)
-
-        mask = [value == cond_val for value in raw_values]
-        to_delete = sum(mask)
-        if to_delete == 0:
-            return f"没有要素满足条件（{condition_field} = {condition_value}）"
-
-        remaining_indices = [index for index, matched in enumerate(mask) if not matched]
-        if not remaining_indices:
-            return f"条件（{condition_field} = {condition_value}）将删除全部 {to_delete} 个要素，操作已取消"
-
-        geojson_data = copy.deepcopy(info["geojson"])
-        geojson_data["features"] = [copy.deepcopy(features[index]) for index in remaining_indices]
-        geojson_data["name"] = layer_name
-        _update_registered_layer_data(layer_name, geojson_data)
-        _push_layer(layer_name, geojson_data)
-
-        return (f"已从图层「{layer_name}」删除 {to_delete}/{len(gdf)} 个要素"
-                f"（条件：{condition_field} = {condition_value}），剩余 {len(remaining_indices)} 个，已同步地图")
-    except Exception as e:
-        return f"删除要素失败: {str(e)[:300]}"
 
 
 # ============================================================
 # 工具: add_field / delete_field — 字段管理
 # ============================================================
 
-@tool
-def add_field(layer_name: str, field_name: str, field_type: str = "str", default_value: str = "") -> str:
-    """为图层添加新字段。field_type 可选 str(文本) / int(整数) / float(小数)。
-    default_value 可指定默认填充值。添加后地图自动同步。"""
-    try:
-        import pandas as pd
-
-        layer_name, info, error = _get_exact_registered_layer(layer_name)
-        if error:
-            return error
-
-        gdf = _geojson_to_export_gdf(info["geojson"])
-        if gdf.empty:
-            return f"图层「{layer_name}」为空"
-
-        if not isinstance(field_name, str) or not field_name.strip():
-            return "字段名不能为空"
-        field_name = field_name.strip()
-        if field_name in ("geometry", "_fid"):
-            return f"字段名「{field_name}」为保留字段，不能新增"
-        if field_name in gdf.columns:
-            return f"字段「{field_name}」已存在"
-
-        field_type = field_type.lower().strip()
-        if field_type not in ("str", "string", "text", "int", "integer", "float", "double", "number"):
-            return f"不支持字段类型「{field_type}」，请选择 str、int 或 float"
-        if field_type in ("string", "text"):
-            field_type = "str"
-        elif field_type in ("integer",):
-            field_type = "int"
-        elif field_type in ("double", "number"):
-            field_type = "float"
-
-        parsed_default = None
-        if default_value != "":
-            try:
-                parsed_default = int(default_value) if field_type == "int" else float(default_value) if field_type == "float" else str(default_value)
-            except (TypeError, ValueError):
-                return f"默认值「{default_value}」无法转换为字段类型 {field_type}"
-            if field_type == "float" and not math.isfinite(parsed_default):
-                return "浮点字段默认值必须是有限数值"
-        if field_type == "int":
-            gdf[field_name] = parsed_default if parsed_default is not None else pd.Series([None] * len(gdf), dtype="object")
-        elif field_type == "float":
-            gdf[field_name] = parsed_default if parsed_default is not None else pd.Series([None] * len(gdf), dtype="object")
-        else:
-            gdf[field_name] = parsed_default if parsed_default is not None else None
-
-        geojson_data = gdf.__geo_interface__
-        geojson_data["name"] = layer_name
-        _update_registered_layer_data(layer_name, geojson_data)
-        _push_layer(layer_name, geojson_data)
-
-        return (f"已为图层「{layer_name}」添加字段「{field_name}」（类型：{field_type}"
-                + (f"，默认值：{default_value}" if default_value != "" else "")
-                + "），已同步地图")
-
-    except Exception as e:
-        return f"添加字段失败: {str(e)[:300]}"
 
 
-@tool
-def delete_field(layer_name: str, field_name: str) -> str:
-    """删除图层的指定字段。字段删除后数据不可恢复。layer_name: 图层名；field_name: 要删除的字段名。"""
-    try:
-        layer_name, info, error = _get_exact_registered_layer(layer_name)
-        if error:
-            return error
-
-        gdf = _geojson_to_export_gdf(info["geojson"])
-        if gdf.empty:
-            return f"图层「{layer_name}」为空"
-
-        if field_name not in gdf.columns:
-            return f"错误：字段「{field_name}」不存在，可用字段：{', '.join([c for c in gdf.columns if c != 'geometry'])}"
-
-        if field_name == "geometry":
-            return "不能删除 geometry 字段"
-        if field_name == "_fid":
-            return "_fid 是要素稳定标识，不能删除"
-
-        gdf = gdf.drop(columns=[field_name])
-
-        geojson_data = gdf.__geo_interface__
-        geojson_data["name"] = layer_name
-        _update_registered_layer_data(layer_name, geojson_data)
-        _push_layer(layer_name, geojson_data)
-
-        return f"已从图层「{layer_name}」删除字段「{field_name}」，已同步地图"
-
-    except Exception as e:
-        return f"删除字段失败: {str(e)[:300]}"
 
 
 # Re-exported from backend.services.tool_modules.vector: spatial_select_by_attribute
@@ -5824,14 +5557,16 @@ _TOOL_FAILURE_MARKERS = {
     "scrape_page": ("未找到匹配",),
     "add_labels": ("标注失败:",),
     "add_field": (
-        "图层「", "字段名不能为空", "字段名「", "不支持字段类型", "默认值「",
+        "图层「", "字段名不能为空", "字段名「", "字段「", "不支持字段类型", "默认值「",
         "浮点字段默认值必须", "添加字段失败:",
     ),
+    "delete_field": ("图层「", "字段「", "不能删除", "_fid 是要素稳定标识"),
     "measure_area": ("未找到图层", "找到多个匹配："),
     "create_chart": (
         "图表生成失败：", "未找到图层", "找到多个匹配：", "图层没有要素", "图层没有属性字段",
     ),
     "move_features": ("不支持的单位", "位移量 dx 和 dy 不能同时为 0"),
+    "scale_features": ("图层「", "缩放倍数必须大于 0"),
     "focus_map": (
         "未找到图层", "center 格式应为", "无法解析坐标：", "坐标范围无效", "请提供 layer_name",
     ),

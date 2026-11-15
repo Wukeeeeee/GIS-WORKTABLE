@@ -201,6 +201,78 @@ def test_update_attribute_is_owned_by_vector_and_reexported_by_facade():
     ]
 
 
+def test_delete_features_is_owned_by_vector_and_reexported_by_facade():
+    from backend.services.tool_modules import vector
+
+    assert tools.delete_features is vector.delete_features
+    tool_names = [tool.name for tool in tools.tools]
+    delete_index = tool_names.index("delete_features")
+    assert tool_names[delete_index - 1:delete_index + 2] == [
+        "update_attribute", "delete_features", "add_field",
+    ]
+
+
+def test_add_field_is_owned_by_vector_and_reexported_by_facade():
+    from backend.services.tool_modules import vector
+
+    assert tools.add_field is vector.add_field
+    tool_names = [tool.name for tool in tools.tools]
+    add_index = tool_names.index("add_field")
+    assert tool_names[add_index - 1:add_index + 2] == [
+        "delete_features", "add_field", "delete_field",
+    ]
+
+
+def test_geojson_to_export_gdf_has_one_runtime_owner():
+    from backend.services.tool_modules import io_export, runtime, vector
+
+    assert io_export.geojson_to_export_gdf is runtime.geojson_to_export_gdf
+    assert vector._geojson_to_export_gdf is runtime.geojson_to_export_gdf
+
+
+def test_geojson_to_export_gdf_handles_empty_feature_collection():
+    from backend.services.tool_modules.runtime import geojson_to_export_gdf
+
+    gdf = geojson_to_export_gdf({"type": "FeatureCollection", "features": []})
+
+    assert gdf.empty
+    assert "geometry" in gdf.columns
+    assert gdf.crs.to_epsg() == 4326
+
+
+def test_delete_field_is_owned_by_vector_and_reexported_by_facade():
+    from backend.services.tool_modules import vector
+
+    assert tools.delete_field is vector.delete_field
+    tool_names = [tool.name for tool in tools.tools]
+    delete_index = tool_names.index("delete_field")
+    assert tool_names[delete_index - 1:delete_index + 2] == [
+        "add_field", "delete_field", "move_features",
+    ]
+
+
+def test_move_features_is_owned_by_vector_and_reexported_by_facade():
+    from backend.services.tool_modules import vector
+
+    assert tools.move_features is vector.move_features
+    tool_names = [tool.name for tool in tools.tools]
+    move_index = tool_names.index("move_features")
+    assert tool_names[move_index - 1:move_index + 3] == [
+        "delete_field", "move_features", "rotate_features", "scale_features",
+    ]
+
+
+def test_scale_features_is_owned_by_vector_and_reexported_by_facade():
+    from backend.services.tool_modules import vector
+
+    assert tools.scale_features is vector.scale_features
+    tool_names = [tool.name for tool in tools.tools]
+    scale_index = tool_names.index("scale_features")
+    assert tool_names[scale_index - 1:scale_index + 2] == [
+        "rotate_features", "scale_features", "draw_feature",
+    ]
+
+
 def test_facade_spatial_stats_limit_rebinds_to_vector(monkeypatch):
     from backend.services.tool_modules import vector
 

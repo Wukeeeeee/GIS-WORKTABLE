@@ -3305,3 +3305,45 @@
 - **改动：**原实现和 `@tool` 装饰器迁入 `vector.py`，门面继续重导出；保留 `spatial_graduated_colors` / `spatial_unique_values` / `spatial_select_by_attribute` / `add_legend` 注册顺序，保持 bool、数值和字符串类别的区分语义及 50 类限制。
 - **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`：35 passed；`test_spatial_tools.py` 的 `TestSpatialUniqueValues`：3 passed；direct-invoke 端到端缺字段失败反馈：1 passed。AST 比对确认原函数体和完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且共享 runtime pending-op 队列；`git diff --check` 通过。vector 合同表核实共 50 项，`tools.py` 实测 6,173 行。
 - **边界：**端到端用例使用本地 FastAPI TestClient 和伪造 GeoJSON，并隔离到 pytest 临时输出目录；未运行后端全量、未访问外部服务或真实用户数据/凭据；`.agents/` 未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 update_attribute 迁入 vector（补记）
+
+- **问题与证据：**属性更新仍位于 facade，所需的精确图层查找、注册数据同步、pending-layer 推送与数值条件解析 helper 已归 runtime/vector 所有；兼容测试已验证 facade 重导出对象应与 vector 实现同一对象。
+- **改动：**原实现和 `@tool` 装饰器迁入 `vector.py`，facade 继续重导出，保留 `add_legend` / `update_attribute` / `delete_features` / `add_field` 注册顺序；将 `_get_exact_registered_layer` 与 `_update_registered_layer_data` 作为 runtime 引用导入，未复制共享状态。
+- **验证：**初次定向运行发现 vector 缺少 `_get_exact_registered_layer` 导入并据此修复；修复后 compat、registry、`TestUpdateAttribute` 和 `test_layer_registry_lifecycle.py`：87 passed。此前 `git diff --check` 通过，未运行后端全量。
+- **边界：**无外部服务访问；`.agents/` 未触碰。迁移提交已在前一轮用户明确要求后推送；本补记是当前工作区文档修正，不额外提交或推送。
+
+### 2026-11-15 将 delete_features 迁入 vector
+
+- **问题与证据：**条件删除仍在 facade，与 `update_attribute` 使用同一组精确图层查找、typed numeric condition、注册数据同步与地图推送 helper；新增兼容门禁先于迁移失败，指出 `vector.delete_features` 尚不存在。
+- **改动：**将原实现与 `@tool` 装饰器整体迁入 `vector.py`，facade 重导出并维持 `update_attribute` / `delete_features` / `add_field` 注册顺序；现有共享 runtime helper 已足够，不增造状态副本；合同表新增两项属性管理工具，迁移数更新为 52。
+- **验证：**compat、registry、`TestDeleteFeatures`、`test_layer_registry_lifecycle.py`：88 passed；AST 比对确认迁移函数和 HEAD 原实现一致；独立进程导入 vector 不加载 facade；`git diff --check` 通过。当前 `tools.py` 实测 5,987 行、vector 有 52 个 `@tool` 实现。
+- **边界：**未运行后端全量；测试使用隔离 GeoJSON/pytest 临时目录，不访问外部服务或真实用户数据/凭据；`.agents/` 保留且未触碰；本轮未提交或推送。下一步可先审计 `add_field` 的条件/空字段与精度边界，再决定是否迁移。
+
+### 2026-11-15 将 add_field 迁入 vector，并统一 GeoJSON-GDF helper 所有权
+
+- **问题与证据：**`add_field` 仍留在 facade；该函数依赖 `io_export.geojson_to_export_gdf` 保持混合整数与 null 属性精度，而 vector 的分层约束限定为依赖 runtime/common/GIS 库。已有测试覆盖保留字段、整数与 null 保留、0 默认值、非有限 float 默认值及部分失败分类；新增所有权门禁在迁移前因 `vector.add_field` 不存在而失败。进一步复现发现重复字段返回「字段已存在」却未被 `_tool_result_failed` 识别。
+- **改动：**保持 `add_field` 原实现、装饰器与签名，迁入 `vector.py` 并由 facade 重导出；将 `geojson_to_export_gdf` 实现原样从 `io_export.py` 移至 `runtime.py`，`io_export.py` 继续重导出同一函数对象，vector 只从 runtime 引用；保留 `delete_features` / `add_field` / `delete_field` 注册顺序。新增窄化失败标记 `字段「`，并为重复字段及空白字段名补充失败分类/无副作用回归测试。合同表更新为 53 项。
+- **验证：**compat、registry、字段管理、图层生命周期与 add_field 失败反馈：93 passed；嵌套值/大整数导出相关筛选：8 passed；`test_delivery_safety.py`：8 passed。红测先复现重复字段未识别为失败，加入前缀标记后通过；AST 比对确认 add_field 与转换 helper 都未改函数结构；converter identity 测试通过；独立进程导入 vector 未加载 facade；`git diff --check` 通过。实测 `tools.py` 5,929 行，vector 53 个 `@tool` 实现。
+- **边界：**未运行后端全量；测试使用 pytest 临时目录与合成图层，无外部服务/凭据/用户数据；`.agents/` 未触碰；本轮未提交或推送。下一步建议审计 `delete_field` 对缺字段、geometry 与 `_fid` 的失败分类，再决定是否迁移。
+
+### 2026-11-15 将 delete_field 迁入 vector，并修复空图层及失败分类
+
+- **问题与证据：**`delete_field` 仍在 facade，缺字段、geometry、`_fid` 的拒绝文案没有对应 `_tool_result_failed` 规则；空图层经 GeoPandas `from_features([])` 会抛出无 geometry 列异常，变成不准确的通用失败。新增测试先复现这些失败，所有权测试也先因 vector 尚无该工具而失败。
+- **改动：**将 `geojson_to_export_gdf` 对空 `features` 转成带 EPSG:4326 geometry 列的空 GeoDataFrame，使字段工具返回预期“图层为空”；补 `delete_field` 的窄前缀失败规则，迁移原实现与装饰器至 vector 并由 facade 重导出，保持 `add_field` / `delete_field` / `move_features` 注册顺序。未复制共享层状态。
+- **验证：**compat、registry、字段管理、图层生命周期及 add/delete-field 失败反馈：101 passed；嵌套属性/大整数导出筛选：8 passed；`test_delivery_safety.py`：8 passed。add_field 与 delete_field AST 均与 HEAD 原实现一致；converter identity/empty-GDF 检查通过，原属性转换逻辑保留。vector 所属门禁从红转绿；`tools.py` 实测 5,900 行，vector 有 54 个 `@tool` 实现。
+- **边界：**未运行后端全量；测试仅使用本地合成 GeoJSON 与 pytest 临时路径，无外部服务/用户数据/凭据；`.agents/` 未触碰；本轮未提交或推送。下一步建议审计 `move_features` 的位移、投影范围和失败分类边界后再迁移。
+
+### 2026-11-15 将 move_features 迁入 vector，并防止公里换算溢出
+
+- **问题与证据：**有限输入 `dx=1e308, unit="km"` 在乘以 1000 后变成 `inf`，工具继续投影并最终报 GeoJSON 坐标结构异常；已复现无图层变化，但反馈把单位换算溢出误报成几何错误。新增 ownership 门禁迁移前因 `vector.move_features` 不存在而失败。
+- **改动：**在公里换算后立即检查 dx/dy 有限性，超界时返回明确失败；将 `move_features` 原实现和装饰器迁入 vector，facade 重导出并保持 `delete_field` / `move_features` / `rotate_features` / `scale_features` 顺序。修复失败反馈用例的隔离：每次通过 `tools.reset_state()` 清空 registry 与 pending queues，不再只 monkeypatch registry。
+- **验证：**迁移前溢出回归从红转绿；迁移后 compat、registry、字段管理、图层生命周期、move 特性与失败反馈组合：114 passed。`tools.py` 实测 5,838 行，vector 有 55 个 `@tool` 实现；测试使用隔离 `TEMP`、`TMP` 与 `MPLCONFIGDIR`。现有用户 Matplotlib 字体缓存文件时间戳仍为 2026-09/07，未见被本轮测试改写。
+- **边界：**未运行后端全量；未访问外部服务、凭据或真实用户数据；`.agents/` 未触碰；本轮未提交或推送。检查到的用户 Matplotlib 字体缓存仍为 2026-09-13 与 2026-07-14，未见被本轮改写。下一步建议审计 `rotate_features` / `scale_features` 共用的局部投影边界与异常返回，再决定继续迁移。
+
+### 2026-11-15 将 scale_features 迁入 vector 并补强比例边界/失败分类
+
+- **问题与证据：**`scale_features` 对 0、负数、NaN/Inf 返回拒绝文本，但 `_tool_result_failed` 未配置该工具，四种错误均被误判为成功。有限 `x_factor=1e308` 实际触发 Shapely overflow/invalid LinearRing，图层未变但返回笼统拓扑异常，并产生 RuntimeWarning。所有权测试确认该实现还留在 facade。
+- **改动：**为 scale 失败文案补足分类，空图层亦可分类；在应用仿射变换前用各轴坐标/中心的最大绝对值分别计算安全乘数上限，溢出时提前拒绝；缩放后验证 bounds 有限。随后保持签名/原逻辑迁入 `vector.py`，facade 重导出，注册顺序保留 `rotate_features` / `scale_features` / `draw_feature`。不在此处施加新的结果纬度上限，保留已有高纬度轴向缩放行为。
+- **验证：**新增回归先复现 4 种无效因子全部被误判、超大倍数导致 Shapely warning/坏环；修复迁移后 compat、registry、字段管理、图层生命周期、move/scale 特性与失败反馈组合：124 passed。覆盖原高纬度轴向缩放、大整数属性保留、失败不改 registry/pending 队列及成功不误判。`tools.py` 实测 5,794 行，vector 有 56 个 `@tool` 实现；测试的 TEMP/TMP/MPLCONFIGDIR 均隔离。
+- **边界：**未运行后端全量；未访问外部服务、凭据或真实用户数据；`.agents/` 未触碰；本轮未提交或推送。下一步建议审计 `rotate_features` 的空层反馈分类和高纬度旋转边界后，再决定迁移。

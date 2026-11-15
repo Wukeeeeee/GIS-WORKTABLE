@@ -4,6 +4,8 @@ import json
 import os
 import uuid
 
+from backend.services.tool_modules.runtime import geojson_to_export_gdf
+
 
 def _remove_unverified_output(path: str, errors: list, artifact_label: str) -> None:
     try:
@@ -22,35 +24,6 @@ def _cleanup_failure_suffix(path: str | None, artifact_label: str) -> str:
     return f"；{'; '.join(errors)}" if errors else ""
 
 
-def geojson_to_export_gdf(geojson: dict, serialize_nested: bool = False):
-    """Build a WGS-84 GeoDataFrame without pandas coercing mixed property values."""
-    import geopandas as gpd
-    import pandas as pd
-
-    features = geojson["features"]
-    gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
-    property_rows = [
-        feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
-        for feature in features
-    ]
-    property_keys = list(dict.fromkeys(
-        key for properties in property_rows for key in properties
-        if key != "geometry"
-    ))
-    for key in property_keys:
-        values = [properties.get(key) for properties in property_rows]
-        if serialize_nested:
-            values = [
-                json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-                if isinstance(value, (dict, list)) else value
-                for value in values
-            ]
-        gdf[key] = pd.Series(
-            values,
-            index=gdf.index,
-            dtype=object,
-        )
-    return gdf
 
 
 def export_layer_impl(
