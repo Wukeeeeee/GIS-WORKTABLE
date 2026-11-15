@@ -126,7 +126,7 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 - `_spatial_feature_coordinates(gdf)`: Extracts coordinate points from point/multipoint features.
 - `_gdf_area_km2(gdf, unique=False)`: Computes surface area in km² using EPSG:6933.
 
-#### Tools to Migrate (40 tools):
+#### Tools to Migrate (50 tools):
 | Tool Name | Key Arguments | Return / Behavior |
 |:---|:---|:---|
 | `spatial_buffer` | `layer_name`, `distance`, `unit`, `dissolve` | Buffers vector features by metric distance. |
@@ -166,6 +166,16 @@ Agent B is exclusively responsible for creating and maintaining `vector.py`.
 | `spatial_hotspot` | `layer_name`, `field`, `threshold`, `threshold_m` | Computes Getis-Ord Gi* hotspots and coldspots. |
 | `spatial_kde` | `layer_name`, `bandwidth`, `grid_size`, `bandwidth_m`, `metric_units` | Estimates point-event density and registers a density grid layer. |
 | `measure_distance` | `lon1`, `lat1`, `lon2`, `lat2` | Computes WGS-84 Haversine distance and returns meters/km. |
+| `measure_area` | `layer_name` | Measures feature area with local UTM or WGS-84 ellipsoidal area. |
+| `convert_coordinates` | `coords`, `source_crs`, `target_crs` | Converts coordinate pairs between CRSs, including automatic UTM selection. |
+| `convert_crs` | `layer_name`, `target_crs` | Reprojects a registered vector layer into a target CRS and registers a new layer. |
+| `add_length_field` | `layer_name`, `field_name` | Calculates per-feature projected length and registers an output vector layer. |
+| `edit_vertices` | `layer_name` | Queues frontend vertex-edit mode for a registered vector layer. |
+| `draw_feature` | `geometry_type`, `coordinates`, `layer_name` | Creates and registers a point, line, polygon, rectangle, or circle layer. |
+| `add_legend` | `layer_name` | Queues a legend for a registered vector layer using its symbology. |
+| `add_labels` | `layer_name`, `field`, `font_size`, `color` | Queues per-feature text labels using a selected attribute field. |
+| `spatial_graduated_colors` | `layer_name`, `field`, `n_classes`, `color_scheme`, `method`, `fill_opacity` | Queues numeric graduated symbology with equal-interval or quantile breaks. |
+| `spatial_unique_values` | `layer_name`, `field`, `color_scheme` | Queues categorical symbology while preserving typed category distinctions. |
 | `directional_distribution`| `layer_name`, `weight_field`, `std_dev` | Computes standard deviational ellipse (SDE). |
 | `central_tendency` | `layer_name`, `method` | Mean center, median center, or central feature. |
 | `create_fishnet` | `bounds`, `cell_width`, `cell_height`, `cell_type` | Creates regular square or hexagonal grid fishnet. |

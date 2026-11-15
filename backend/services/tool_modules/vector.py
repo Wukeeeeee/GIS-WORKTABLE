@@ -34,11 +34,14 @@ from backend.services.tool_args_guard import validate_tool_args
 from backend.services.tool_modules.runtime import (
     _registered_layers,
     _pending_layers,
+    _pending_layer_ops,
     _state_lock,
     get_temp_output_dir,
     _layer_to_gdf,
     _gdf_to_layer,
     _push_layer,
+    _get_exact_registered_layer,
+    _update_registered_layer_data,
     _register_layer,
     _disambiguate_layer_name,
     init_temp_dir,
@@ -374,6 +377,130 @@ def _parse_numeric_condition(value, dtype_kind):
 
 
 @tool
+def measure_area(layer_name: str) -> str:
+    """测量指定图层面积：局部范围使用 UTM，大范围/跨带范围使用 WGS-84 椭球面积，支持多要素汇总。
+
+【精度保障】
+- 内部自动投影到 UTM 投影坐标系，WGS84 数据可直接使用。
+- 返回平方公里（km2）、平方米（m2）、亩。
+
+【常见坑】
+- execute_python 中自定义面积计算必须先 to_crs 到投影坐标系，否则单位是平方度。
+- 面图层有重叠时总面积重复计算，先用 topology_check 或 spatial_dissolve。
+- 几何无效（自相交）会导致面积异常，先修复。"""
+    try:
+        info = _registered_layers.get(layer_name)
+        if not info:
+            matches = [n for n in _registered_layers.keys() if layer_name in n]
+            if len(matches) == 1:
+                info = _registered_layers[matches[0]]
+                layer_name = matches[0]
+            elif len(matches) > 1:
+                return f"找到多个匹配：{', '.join(matches)}，请指定完整名称"
+            else:
+                return f"未找到图层「{layer_name}」，当前图层：{', '.join(_registered_layers.keys()) or '无'}"
+
+        import geopandas as gpd
+        import numpy as np
+
+        gdf = gpd.GeoDataFrame.from_features(info["geojson"]["features"], crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层 {layer_name} 为空"
+
+        # 计算几何中心，选择最佳 UTM 投影带
+        # 用 bounds 中心确定 UTM 带号（避免在 geographic CRS 下计算 centroid 的 warning）
+        _b = gdf.total_bounds
+        lon, lat = (_b[0] + _b[2]) / 2, (_b[1] + _b[3]) / 2
+
+        min_zone = max(1, min(60, int(np.floor((_b[0] + 180) / 6)) + 1))
+        max_zone = max(1, min(60, int(np.floor((_b[2] + 180) / 6)) + 1))
+        use_geodesic_area = (
+            (_b[2] - _b[0]) > 6.0 or (_b[3] - _b[1]) > 6.0
+            or min_zone != max_zone or _b[1] < -80.0 or _b[3] > 84.0
+        )
+        cross_check = ""
+        if use_geodesic_area:
+            from pyproj import Geod
+            geod = Geod(ellps="WGS84")
+
+            def _geodesic_geometry_area(geometry):
+                if geometry is None or geometry.is_empty:
+                    return 0.0
+                if geometry.geom_type == "Polygon":
+                    def ring_area(ring):
+                        coordinates = list(ring.coords)
+                        return abs(geod.polygon_area_perimeter(
+                            [point[0] for point in coordinates],
+                            [point[1] for point in coordinates],
+                        )[0])
+                    return max(0.0, ring_area(geometry.exterior) - sum(
+                        ring_area(ring) for ring in geometry.interiors
+                    ))
+                if geometry.geom_type in ("MultiPolygon", "GeometryCollection"):
+                    return sum(_geodesic_geometry_area(part) for part in geometry.geoms)
+                return 0.0
+
+            area_m2 = sum(_geodesic_geometry_area(geometry) for geometry in gdf.geometry)
+            area_method = "WGS-84 椭球大地面积（大范围/跨 UTM 带）"
+        else:
+            # UTM 带号：zone = floor((lon + 180) / 6) + 1，严格限制在 1~60
+            utm_zone = int(np.floor((lon + 180) / 6)) + 1
+            utm_zone = max(1, min(60, utm_zone))
+            # 北/南半球 EPSG 编号
+            if lat >= 0:
+                epsg_code = 32600 + utm_zone  # 32601~32660
+                hemi = "北"
+            else:
+                epsg_code = 32700 + utm_zone  # 32701~32760
+                hemi = "南"
+
+            # 投影到 UTM 并计算面积（平方米）
+            gdf_proj = gdf.to_crs(f"EPSG:{epsg_code}")
+            area_m2 = gdf_proj.geometry.area.sum()
+            area_method = f"UTM {utm_zone}{hemi}（EPSG:{epsg_code}）"
+
+            # 同时用 Albers Equal Area（Krasovsky 1940 Albers）做交叉验证，用于提醒
+            try:
+                # 自定义 Albers Equal Area 投影参数（适合中国中低纬度）
+                albers_crs = (
+                    f"+proj=aea +lat_1={max(lat - 2, 0)} +lat_2={min(lat + 2, 50)} "
+                    f"+lat_0={lat} +lon_0={lon} +x_0=0 +y_0=0 "
+                    "+ellps=WGS84 +datum=WGS84 +units=m +no_defs"
+                )
+                gdf_albers = gdf.to_crs(albers_crs)
+                area_m2_albers = gdf_albers.geometry.area.sum()
+                area_km2_albers = area_m2_albers / 1_000_000
+                cross_check = f"（Albers 等面积交叉验证：{area_km2_albers:.2f} km²）"
+            except Exception:
+                cross_check = ""
+        area_km2 = area_m2 / 1_000_000
+
+        feat_count = len(gdf)
+        geom_types = gdf.geometry.type.unique().tolist()
+
+        result = (
+            f"图层「{layer_name}」面积测量结果：\n"
+            f"- 面积：{area_km2:.2f} 平方公里\n"
+            f"- 面积方法：{area_method}"
+        )
+        if cross_check:
+            result += f"\n- 交叉验证：{cross_check}"
+        result += (
+            f"\n- 几何类型：{', '.join(geom_types)}"
+            f"\n- 要素数：{feat_count}"
+            f"\n- 中心点：{lat:.4f}°, {lon:.4f}°"
+            f"\n- 坐标系：WGS-84"
+        )
+
+        return result
+
+    except Exception as e:
+        import traceback
+        return f"面积测量失败: {str(e)}\n{traceback.format_exc()}"
+
+
+
+@tool
 def measure_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> str:
     """测量两个经纬度坐标之间的地面距离。使用 Haversine 公式计算大圆距离。
     lon1/lat1: 起点经纬度；lon2/lat2: 终点经纬度。
@@ -402,6 +529,512 @@ def measure_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> str:
             return f"距离：{distance_m / 1000:.2f} 公里（{distance_m:.1f} 米）"
     except Exception as e:
         return f"距离测量失败: {str(e)[:200]}"
+
+
+@tool
+def convert_crs(layer_name: str, target_crs: str = "wgs84") -> str:
+    """转换矢量图层的坐标参考系并生成新图层（原图层保留）。
+    - layer_name: 待转换图层名。
+    - target_crs: 目标坐标系，可选 'wgs84'(EPSG:4326)、'web_mercator'(EPSG:3857)、'utm_auto'(自动UTM投影带) 或 'EPSG:xxxx'。进行长度/面积精确度量前需转为投影坐标系。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+        epsg_map = {
+            "wgs84": "EPSG:4326",
+            "web_mercator": "EPSG:3857",
+            "mercator": "EPSG:3857",
+            "gcj02": "EPSG:4326",  # 本系统全面使用WGS84，GCJ02暂不做偏移转换
+        }
+        target_key = target_crs.strip().lower()
+        target = epsg_map.get(target_key, target_crs.strip())
+        if target_key in ("utm_auto", "utm"):
+            extent_error = _local_utm_extent_error(gdf.total_bounds)
+            if extent_error:
+                return f"坐标系转换失败: {extent_error}"
+            bounds = gdf.total_bounds
+            center_lon = (bounds[0] + bounds[2]) / 2
+            center_lat = (bounds[1] + bounds[3]) / 2
+            target = _get_utm_crs(center_lon, center_lat)
+        if gdf.crs and gdf.crs.to_string() == target:
+            return f"图层 '{name}' 已经是 {target_crs} 坐标系"
+        if not gdf.crs and target == "EPSG:4326":
+            return f"图层 '{name}' 已经是 WGS84 坐标系"
+        gdf_proj = gdf.to_crs(target)
+        if gdf_proj is None or gdf_proj.empty:
+            return f"坐标系转换失败: {target}"
+        out_name = f"{name}_{target_crs}"
+        _gdf_to_layer(gdf_proj, out_name)
+        return f"已将图层 '{name}' 转换为 {target_crs}({target})，生成新图层 '{out_name}'"
+    except Exception as e:
+        return f"坐标系转换失败: {str(e)[:200]}"
+
+
+
+@tool
+def convert_coordinates(coords: str, source_crs: str = "wgs84",
+                         target_crs: str = "web_mercator") -> str:
+    """转换单个坐标点在两个坐标参考系之间。
+    coords格式: "lng,lat" 或 "lng1,lat1;lng2,lat2" 批处理。
+    source_crs/target_crs支持: wgs84, web_mercator, utm_auto。
+    返回转换后的坐标对。"""
+    try:
+        import math
+        import pyproj
+
+        def _resolve_crs(name: str) -> str:
+            """CRS 别名 → EPSG；源 UTM 必须提供明确分带。"""
+            n = str(name).lower().strip()
+            m = {"wgs84": "EPSG:4326", "mercator": "EPSG:3857",
+                 "web_mercator": "EPSG:3857", "gcj02": "EPSG:4326"}
+            if n in m:
+                return m[n]
+            if n in ("utm_auto", "utm"):
+                raise ValueError("源坐标为 UTM 时需指定 EPSG 分带（例如 EPSG:32719），不能使用 utm_auto")
+            return str(name).strip()
+
+        parts_raw = str(coords or "").replace("，", ",").replace("；", ";").split(";")
+        parsed = []
+        for part in parts_raw:
+            xy = part.strip().split(",")
+            if len(xy) != 2:
+                raise ValueError("坐标格式错误，请输入 lng,lat 或 lng1,lat1;lng2,lat2")
+            try:
+                x, y = float(xy[0].strip()), float(xy[1].strip())
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("坐标格式错误，请输入有效数字坐标") from exc
+            if not math.isfinite(x) or not math.isfinite(y):
+                raise ValueError("坐标必须是有限数值")
+            parsed.append((x, y))
+
+        p1 = _resolve_crs(source_crs)
+        source_definition = pyproj.CRS.from_user_input(p1)
+        if source_definition.is_geographic and any(
+            not -180 <= x <= 180 or not -90 <= y <= 90 for x, y in parsed
+        ):
+            raise ValueError("源坐标超出有效经纬度范围（经度 -180°–180°，纬度 -90°–90°）")
+        target_key = str(target_crs).lower().strip()
+        if target_key in ("utm_auto", "utm"):
+            to_wgs84 = pyproj.Transformer.from_crs(p1, "EPSG:4326", always_xy=True)
+            geographic = [to_wgs84.transform(x, y, errcheck=True) for x, y in parsed]
+            if any(not math.isfinite(lon) or not math.isfinite(lat)
+                   or not -180 <= lon <= 180 or not -90 <= lat <= 90
+                   for lon, lat in geographic):
+                raise ValueError("坐标转换后超出 WGS84 经纬度有效范围")
+            bounds = (
+                min(point[0] for point in geographic), min(point[1] for point in geographic),
+                max(point[0] for point in geographic), max(point[1] for point in geographic),
+            )
+            extent_error = _local_utm_extent_error(bounds)
+            if extent_error:
+                raise ValueError(extent_error)
+            center_lon = (bounds[0] + bounds[2]) / 2
+            center_lat = (bounds[1] + bounds[3]) / 2
+            p2 = _get_utm_crs(center_lon, center_lat)
+        else:
+            p2 = _resolve_crs(target_crs)
+        if p1 == p2:
+            return f"源和目标CRS相同: {source_crs} = {target_crs}, 无需转换"
+        transformer = pyproj.Transformer.from_crs(p1, p2, always_xy=True)
+        target_is_geographic = pyproj.CRS.from_user_input(p2).is_geographic
+        results = []
+        for x, y in parsed:
+            x2, y2 = transformer.transform(x, y, errcheck=True)
+            if not math.isfinite(x2) or not math.isfinite(y2):
+                raise ValueError("转换结果包含非有限坐标")
+            if target_is_geographic and (not -180 <= x2 <= 180 or not -90 <= y2 <= 90):
+                raise ValueError("目标经纬度超出有效范围")
+            results.append(f"{x2:.6f},{y2:.6f}")
+        return f"{source_crs}→{target_crs}: {'; '.join(results)}"
+    except Exception as e:
+        return f"坐标转换失败: {str(e)[:200]}"
+
+
+
+@tool
+def add_length_field(layer_name: str, field_name: str = "length_km") -> str:
+    """为线/面图层添加长度字段：每个要素的几何长度（千米，UTM 精确投影计算），
+    结果作为新图层上图。面积量测用 measure_area，本工具补逐要素长度统计。"""
+    gdf, name = _layer_to_gdf(layer_name)
+    if gdf is None:
+        return name
+    try:
+        utm = gdf.estimate_utm_crs()
+        if utm is None:
+            return "无法估算 UTM 投影带（图层范围异常）"
+        projected = gdf.to_crs(utm)
+        lengths_km = projected.geometry.length / 1000.0
+        out = gdf.copy()
+        out[field_name] = [round(float(v), 4) for v in lengths_km]
+        with _state_lock:
+            out_name = _disambiguate_layer_name(f"{name}_带长度")
+            _gdf_to_layer(out, out_name)
+        return (f"已添加字段「{field_name}」（单位 km，UTM {utm.to_string()} 计算）："
+                f"总长 {lengths_km.sum():.2f} km，最长 {lengths_km.max():.2f} km，"
+                f"结果图层「{out_name}」已上图")
+    except Exception as e:
+        return f"添加长度字段失败: {str(e)[:300]}"
+
+
+
+@tool
+def add_labels(layer_name: str, field: str, font_size: int = 12, color: str = "#333333") -> str:
+    """对图层添加属性标注，每个要素上显示指定字段的文本标签，类似于 ArcGIS 的"标注要素"功能。
+    layer_name: 图层名；field: 用于标注的字段名；font_size: 字体大小（6-72，默认12）；color: CSS 字体颜色（默认"#333333"）。"""
+    try:
+        import math
+        try:
+            requested_size = float(font_size)
+        except (TypeError, ValueError, OverflowError):
+            return "标注失败：font_size 必须是 6 到 72 之间的整数"
+        if not math.isfinite(requested_size) or not requested_size.is_integer() or not 6 <= requested_size <= 72:
+            return "标注失败：font_size 必须是 6 到 72 之间的整数"
+        font_size = int(requested_size)
+        if not isinstance(color, str) or not color.strip() or len(color) > 64:
+            return "标注失败：color 必须是非空 CSS 颜色值"
+        color = color.strip()
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        if field not in gdf.columns:
+            return f"错误：图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
+
+        _pending_layer_ops.append({
+            "action": "labels",
+            "name": name,
+            "field": field,
+            "font_size": font_size,
+            "color": color,
+        })
+
+        feat_count = len(gdf)
+        return (f"已为「{name}」添加标注，字段：{field}，{feat_count} 个要素已显示文字标签")
+    except Exception as e:
+        return f"标注失败: {str(e)[:200]}"
+
+
+
+@tool
+def add_legend(layer_name: str) -> str:
+    """显示图层的图例。图例根据图层的符号化配置（分级色彩或唯一值渲染）自动生成。
+    layer_name: 图层名。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        _pending_layer_ops.append({
+            "action": "legend",
+            "name": name,
+        })
+
+        return (f"已为「{name}」生成图例")
+    except Exception as e:
+        return f"图例生成失败: {str(e)[:200]}"
+
+
+
+@tool
+def draw_feature(geometry_type: str, coordinates: str, layer_name: str = "") -> str:
+    """根据坐标创建点/线/面几何图层并加载到地图。
+    - geometry_type: Point / LineString / Polygon / Rectangle / Circle。
+    - coordinates: Point("lon,lat")；LineString("lon1,lat1;lon2,lat2;...")；Polygon("lon1,lat1;...;lon1,lat1"闭合)；
+      Rectangle("lon1,lat1;lon2,lat2"对角线)；Circle("lon,lat;radius_m"圆心+半径米)。
+    - layer_name: 自定义图层名（空则自动命名）。"""
+    try:
+        import geopandas as gpd
+        from shapely.geometry import Point, LineString, Polygon
+        import json, re, math
+
+        gt = geometry_type.strip().lower()
+        norm_map = {"point": "Point", "linestring": "LineString", "polygon": "Polygon",
+                    "rectangle": "Rectangle", "circle": "Circle"}
+        if gt in norm_map:
+            gt = norm_map[gt]
+        else:
+            return f"不支持的几何类型：{geometry_type}，请用 Point / LineString / Polygon / Rectangle / Circle"
+
+        # 解析坐标
+        parts = [p.strip() for p in coordinates.replace("，", ",").replace("；", ";").split(";") if p.strip()]
+        if not parts:
+            return "未提供有效坐标"
+
+        def parse_xy(s):
+            s = s.replace("，", ",")
+            xy = [x.strip() for x in s.split(",") if x.strip()]
+            if len(xy) != 2:
+                return None
+            try:
+                x, y = float(xy[0]), float(xy[1])
+                if not math.isfinite(x) or not math.isfinite(y):
+                    return None
+                if not (-180 <= x <= 180 and -90 <= y <= 90):
+                    return None
+                return (x, y)
+            except (ValueError, TypeError, OverflowError):
+                return None
+
+        pts = [parse_xy(p) for p in parts]
+        pts = [p for p in pts if p is not None]
+
+        if gt == "Point":
+            if not pts:
+                return "无法解析坐标，请使用「lon,lat」格式（经度 -180~180，纬度 -90~90）"
+            geom = Point(pts[0])
+            node_count = 1
+        elif gt == "LineString":
+            if len(pts) < 2:
+                return "无法解析坐标，LineString 至少需要 2 个有效点"
+            geom = LineString(pts)
+            node_count = len(pts)
+        elif gt == "Polygon":
+            if len(pts) < 3:
+                return "无法解析坐标，Polygon 至少需要 3 个有效点"
+            if pts[0] != pts[-1]:
+                pts.append(pts[0])
+            geom = Polygon(pts)
+            node_count = len(pts)
+        elif gt == "Rectangle":
+            if len(pts) != 2:
+                return "Rectangle 需要 2 个有效坐标（对角线）：lon1,lat1;lon2,lat2"
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            minx, maxx = min(xs), max(xs)
+            miny, maxy = min(ys), max(ys)
+            if minx == maxx or miny == maxy:
+                return "Rectangle 对角线两点不能在同一经度或同一纬度上"
+            geom = Polygon([(minx, miny), (maxx, miny), (maxx, maxy), (minx, maxy), (minx, miny)])
+            node_count = 4
+        else:  # Circle
+            if len(pts) < 1 or len(parts) < 2:
+                return "Circle 需要圆心坐标和半径：lon,lat;radius_m"
+            try:
+                radius = float(parts[1])
+            except (ValueError, TypeError, OverflowError):
+                return "Circle 半径必须是有限数值"
+            if not math.isfinite(radius) or radius <= 0:
+                return "Circle 半径必须大于 0"
+            if radius > 50_000_000:
+                return "Circle 半径超出合理地理范围"
+            lon, lat = pts[0]
+            if lat < -80 or lat > 84:
+                return "Circle 圆心纬度必须在 UTM 投影适用范围（80°S 至 84°N）内"
+            center_pt = Point(pts[0])
+            crs_utm = _get_utm_crs(lon, lat)
+            center_gdf = gpd.GeoDataFrame({"geometry": [center_pt]}, crs="EPSG:4326")
+            center_utm = center_gdf.to_crs(crs_utm)
+            circle_utm = center_utm.geometry.buffer(radius)
+            circle_gdf = gpd.GeoDataFrame({"geometry": circle_utm}, crs=crs_utm).to_crs("EPSG:4326")
+            geom = circle_gdf.geometry.iloc[0]
+            node_count = len(geom.exterior.coords) if hasattr(geom, 'exterior') else 0
+
+        base_name = layer_name.strip() or f"绘制_{gt}_{len(_registered_layers) + 1}"
+        with _state_lock:
+            name = _disambiguate_layer_name(base_name)
+            gdf = gpd.GeoDataFrame({"geometry": [geom]}, crs="EPSG:4326")
+            provenance = {"tool": "draw_feature", "geometry_type": gt}
+            _gdf_to_layer(gdf, name, provenance=provenance)
+        pts_str = f"，含 {node_count} 个节点" if node_count else ""
+        return f"已创建{gt}图层「{name}」，含 1 个要素{pts_str}，已加载到地图"
+    except Exception as e:
+        return f"绘制失败: {str(e)[:300]}"
+
+
+
+@tool
+def edit_vertices(layer_name: str) -> str:
+    """对图层要素启用折点拖拽编辑模式。用户可通过鼠标拖拽几何图形的顶点进行编辑。
+    layer_name: 图层名。"""
+    try:
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        _pending_layer_ops.append({
+            "action": "edit_vertices",
+            "name": name,
+        })
+
+        feat_count = len(gdf)
+        return (f"已为「{name}」启用折点编辑，{feat_count} 个要素进入编辑模式。拖拽顶点修改后保存即可。")
+    except Exception as e:
+        return f"启用折点编辑失败: {str(e)[:200]}"
+
+
+
+# ============================================================
+# 工具: spatial_graduated_colors — 分级色彩渲染
+# ============================================================
+
+@tool
+def spatial_graduated_colors(layer_name: str, field: str, n_classes: int = 5, color_scheme: str = "blues",
+                            method: str = "equal_interval", fill_opacity: float = 0.35) -> str:
+    """对图层应用分级色彩渲染（Choropleth），按数值字段将要素分为N个等级，每级用不同颜色显示。
+    注意：要求图层包含至少2个要素且数值存在差异。如果是单要素图层（如单个行政区边界），无法分级，请使用 datav_boundary 默认边界在地图展示，并结合指标面板或图表交付。
+    layer_name: 图层名；field: 数值字段名；n_classes: 分级数（2-20，默认5）；
+    color_scheme: 色带 ylorrd(黄橙红/暖色)/blues(蓝)/reds(红)/greens(绿)/oranges(橙)/purples(紫)/ylgnbu(黄绿蓝)/spectral(光谱)；
+    method: 分级方法 equal_interval(等间距，默认) 或 quantile(分位数)；fill_opacity: 面填充透明度（0-1，默认0.35）。"""
+    try:
+        import geopandas as gpd
+        import numpy as np
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        if field not in gdf.columns:
+            return f"图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
+
+        if gdf[field].dtype.kind not in ('i', 'u', 'f'):
+            return f"字段「{field}」不是数值类型（{gdf[field].dtype}），分级色彩仅支持数值字段"
+
+        n_classes = max(2, min(20, n_classes if n_classes else 5))
+        values = gdf[field].dropna()
+        values = values[np.isfinite(values.to_numpy(dtype=float, na_value=np.nan))]
+        if values.empty:
+            return f"字段「{field}」无有效数值"
+
+        vmin, vmax = float(values.min()), float(values.max())
+        if vmin == vmax:
+            return f"字段「{field}」所有值相同（{vmin}）或仅有单个要素，无法进行分级设色。单行政区要素已在地图上展示，建议结合指标面板或统计图表交付专题成果。"
+
+        method_names = {
+            "equal_interval": "equal_interval", "equal interval": "equal_interval", "等间距": "equal_interval",
+            "quantile": "quantile", "分位数": "quantile", "quantiles": "quantile",
+        }
+        method = method_names.get(str(method or "").strip().lower(), "")
+        if not method:
+            return "不支持该分级方法，可选：equal_interval（等间距）或 quantile（分位数）"
+        n_classes = min(n_classes, int(values.nunique()))
+        if n_classes < 2:
+            return f"字段「{field}」的不同数值不足，无法分级设色"
+        if method == "quantile":
+            quantiles = values.quantile([i / n_classes for i in range(n_classes + 1)]).tolist()
+            breaks = [float(v) for v in quantiles]
+            # 重复值可能使部分等级边界相同；保留真实断点并减少重复等级。
+            breaks = sorted(set(breaks))
+            if len(breaks) < 3:
+                return f"字段「{field}」的数值分布无法形成至少两个分位数等级"
+            n_classes = len(breaks) - 1
+        else:
+            step = (vmax - vmin) / n_classes
+            breaks = [vmin + i * step for i in range(n_classes + 1)]
+        # Floating-point step accumulation can leave the final break a few
+        # ulps below vmax, causing the browser to assign the maximum to no class.
+        breaks[0], breaks[-1] = vmin, vmax
+        try:
+            fill_opacity = max(0.0, min(1.0, float(fill_opacity)))
+        except (TypeError, ValueError):
+            return "面填充透明度必须是 0 到 1 之间的数值"
+
+        cs_norm = str(color_scheme or "").strip().lower()
+        _scheme_map = {
+            "ylorrd": "ylorrd", "yellow_orange_red": "ylorrd", "warm": "ylorrd",
+            "黄橙红": "ylorrd", "黄到橙到红": "ylorrd", "黄红": "ylorrd", "暖色": "ylorrd",
+            "blues": "blues", "蓝": "blues", "蓝色": "blues",
+            "reds": "reds", "红": "reds", "红色": "reds",
+            "greens": "greens", "绿": "greens", "绿色": "greens",
+            "oranges": "oranges", "橙": "oranges", "橙色": "oranges",
+            "purples": "purples", "紫": "purples", "紫色": "purples",
+            "ylgnbu": "ylgnbu", "黄绿蓝": "ylgnbu",
+            "spectral": "spectral", "彩虹": "spectral", "光谱": "spectral",
+            "viridis": "viridis", "翠绿": "viridis",
+            "scheme": "scheme"
+        }
+        color_scheme = _scheme_map.get(cs_norm, "blues")
+
+        _pending_layer_ops.append({
+            "action": "symbology",
+            "name": name,
+            "symbology_type": "graduated",
+            "field": field,
+            "classes": n_classes,
+            "scheme": color_scheme,
+            "method": method,
+            "breaks": breaks,
+            "fill_opacity": fill_opacity,
+        })
+
+        breaks_str = ", ".join(f"{b:.2f}" for b in breaks)
+        method_label = "等间距" if method == "equal_interval" else "分位数"
+        return (f"已对「{name}」应用分级色彩渲染，字段：{field}，{n_classes} 级，"
+                f"方法：{method_label}，色带：{color_scheme}，填充透明度：{fill_opacity:.2f}，值域：{vmin:.2f} ~ {vmax:.2f}\n"
+                f"分界值：{breaks_str}")
+    except Exception as e:
+        import traceback
+        return f"分级色彩渲染失败: {str(e)[:200]}"
+
+
+
+@tool
+def spatial_unique_values(layer_name: str, field: str, color_scheme: str = "scheme") -> str:
+    """对图层应用唯一值渲染，按分类字段每个唯一值分配不同颜色。
+    layer_name: 图层名；field: 分类字段（字符串或数值）；
+    color_scheme: 色带 scheme(默认)/blues(蓝)/reds(红)/greens(绿)/purples(紫)/oranges(橙)。"""
+    try:
+        import numpy as np
+        gdf, name = _layer_to_gdf(layer_name)
+        if gdf is None:
+            return name
+
+        if field not in gdf.columns:
+            return f"图层「{name}」没有字段「{field}」，可用字段：{', '.join(gdf.columns)}"
+
+        unique_vals = []
+        seen_values = set()
+        for value in gdf[field].dropna().tolist():
+            if isinstance(value, (bool, np.bool_)):
+                key = ("boolean", bool(value))
+            elif isinstance(value, (int, float, np.number)):
+                key = ("number", value.item() if isinstance(value, np.generic) else value)
+            else:
+                key = (type(value).__name__, value)
+            if key not in seen_values:
+                seen_values.add(key)
+                unique_vals.append(value)
+        n_unique = len(unique_vals)
+        if n_unique == 0:
+            return f"字段「{field}」无有效值"
+
+        if n_unique > 50:
+            return (f"字段「{field}」有 {n_unique} 个唯一值（超出最大50），"
+                    f"建议改用 spatial_graduated_colors 分级色彩或缩小范围后再试")
+
+        color_scheme = color_scheme if color_scheme in ("scheme","blues","reds","greens","purples","oranges") else "scheme"
+
+        _pending_layer_ops.append({
+            "action": "symbology",
+            "name": name,
+            "symbology_type": "unique",
+            "field": field,
+            "scheme": color_scheme,
+        })
+
+        display_values = []
+        display_counts = {}
+        for value in unique_vals:
+            if isinstance(value, (bool, np.bool_)):
+                label, value_type = str(value).lower(), "boolean"
+            elif isinstance(value, (int, float, np.number)):
+                number = value.item() if isinstance(value, np.generic) else value
+                label = str(int(number)) if isinstance(number, float) and number.is_integer() else str(number)
+                value_type = "number"
+            else:
+                label, value_type = str(value), "string"
+            display_values.append((label, value_type))
+            display_counts[label] = display_counts.get(label, 0) + 1
+        vals_str = ", ".join(
+            f"{label} ({value_type})" if display_counts[label] > 1 else label
+            for label, value_type in display_values[:20]
+        )
+        if n_unique > 20:
+            vals_str += f" ... 等共 {n_unique} 个值"
+        return (f"已对「{name}」应用唯一值渲染，字段：{field}，{n_unique} 个类别，"
+                f"色带：{color_scheme}\n"
+                f"值列表：{vals_str}")
+    except Exception as e:
+        return f"唯一值渲染失败: {str(e)[:200]}"
+
 
 
 @tool
@@ -1334,6 +1967,120 @@ def layer_add_geometry(layer_name: str, lon_field: str = "", lat_field: str = ""
         return f"已从 {lon_field}/{lat_field} 创建 {len(gdf)} 个点，图层「{result_name}」已加载到地图"
     except Exception as e:
         return f"创建几何失败: {str(e)[:300]}"
+
+
+@tool
+def update_attribute(layer_name: str, field: str, value: str, condition_field: str = "", condition_value: str = "") -> str:
+    """更新图层要素的属性值。不指定条件则更新所有要素；只改一条要素时优先用 condition_field="_fid" 和 get_layer_detail 返回的稳定 ID。
+    支持数值和文本字段。更新后地图自动同步。
+    layer_name: 必须为注册图层完整名称；field: 要更新的字段名；value: 新值（自动转换类型）；
+    condition_field: 条件字段名（可选）；condition_value: 条件字段值（可选，仅更新匹配要素）。"""
+    try:
+        layer_name, info, error = _get_exact_registered_layer(layer_name)
+        if error:
+            return error
+
+        import copy
+        import geopandas as gpd
+
+        features = info["geojson"]["features"]
+        gdf = gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+        if gdf.empty:
+            return f"图层「{layer_name}」为空"
+
+        if field not in gdf.columns:
+            return f"图层「{layer_name}」没有字段「{field}」，可用字段：{', '.join([c for c in gdf.columns if c != 'geometry'])}"
+        if field == "_fid":
+            return "_fid 是要素稳定标识，不能修改"
+
+        def property_kind(values, fallback):
+            present = [item for item in values if item is not None]
+            if not present:
+                return fallback
+            if all(isinstance(item, bool) for item in present):
+                return "b"
+            if all(isinstance(item, int) and not isinstance(item, bool) for item in present):
+                return "i"
+            if all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in present):
+                return "f"
+            return "O"
+
+        raw_field_values = [
+            (feature.get("properties") or {}).get(field) for feature in features
+        ]
+        # Convert against source values so mixed nulls do not make large integer
+        # properties appear to be floating point.
+        dtype_kind = property_kind(raw_field_values, gdf[field].dtype.kind)
+        try:
+            if dtype_kind in ('i', 'u'):
+                typed_value = int(value)
+            elif dtype_kind == 'f':
+                typed_value = float(value)
+            elif dtype_kind == 'b':
+                normalized = str(value).strip().casefold()
+                if normalized not in ("true", "false"):
+                    return f"字段「{field}」为布尔类型，请使用 true 或 false"
+                typed_value = normalized == "true"
+            else:
+                typed_value = str(value)
+        except ValueError:
+            return f"字段「{field}」类型为 {gdf[field].dtype}，但值「{value}」无法转换"
+        if dtype_kind == "f" and not math.isfinite(typed_value):
+            return f"字段「{field}」只接受有限浮点数"
+
+        # 筛选要更新的行
+        if condition_field:
+            if condition_field not in gdf.columns:
+                return f"条件字段「{condition_field}」不存在"
+            raw_condition_values = [
+                (feature.get("properties") or {}).get(condition_field) for feature in features
+            ]
+            cond_kind = property_kind(raw_condition_values, gdf[condition_field].dtype.kind)
+            try:
+                if cond_kind in ('i', 'u', 'f'):
+                    cond_value = _parse_numeric_condition(condition_value, cond_kind)
+                elif cond_kind == 'b':
+                    normalized = str(condition_value).strip().casefold()
+                    cond_value = normalized == "true" if normalized in ("true", "false") else condition_value
+                else:
+                    cond_value = str(condition_value)
+            except ValueError:
+                cond_value = str(condition_value)
+
+            matches_mask = [item == cond_value for item in raw_condition_values]
+            match_count = sum(matches_mask)
+            if match_count == 0:
+                return f"没有要素满足条件（{condition_field} = {condition_value}）"
+            target_indices = [index for index, matched in enumerate(matches_mask) if matched]
+            affected_geojson = copy.deepcopy(info["geojson"])
+            for index in target_indices:
+                properties = affected_geojson["features"][index].get("properties")
+                if not isinstance(properties, dict):
+                    properties = {}
+                    affected_geojson["features"][index]["properties"] = properties
+                properties[field] = typed_value
+            affected = match_count
+        else:
+            affected_geojson = copy.deepcopy(info["geojson"])
+            for feature in affected_geojson["features"]:
+                properties = feature.get("properties")
+                if not isinstance(properties, dict):
+                    properties = {}
+                    feature["properties"] = properties
+                properties[field] = typed_value
+            affected = len(gdf)
+
+        geojson_data = affected_geojson
+        geojson_data["name"] = layer_name
+        _update_registered_layer_data(layer_name, geojson_data)
+        _push_layer(layer_name, geojson_data)
+
+        condition_str = f"（条件：{condition_field} = {condition_value}）" if condition_field else ""
+        return (f"已更新图层「{layer_name}」字段「{field}」为 {value}，"
+                f"影响 {affected}/{len(gdf)} 个要素{condition_str}，已同步地图")
+    except Exception as e:
+        return f"属性更新失败: {str(e)[:300]}"
+
 
 
 @tool
@@ -2991,7 +3738,12 @@ def create_fishnet(extent_layer: str = "", cell_size: float = 0.0, rows: int = 0
 
 
 __all__ = [
+    "measure_area",
     "measure_distance",
+    "convert_crs",
+    "convert_coordinates",
+    "spatial_graduated_colors",
+    "spatial_unique_values",
     "spatial_buffer",
     "spatial_multi_ring_buffer",
     "spatial_intersect",
@@ -3012,12 +3764,18 @@ __all__ = [
     "layer_merge",
     "layer_split",
     "layer_add_geometry",
+    "update_attribute",
     "spatial_select_by_attribute",
     "topology_check",
     "spatial_fix_geometry",
     "spatial_check_duplicates",
     "spatial_explode",
     "geometry_convert",
+    "add_length_field",
+    "edit_vertices",
+    "draw_feature",
+    "add_legend",
+    "add_labels",
     "join_field",
     "geometry_attributes",
     "minimum_bounding_geometry",

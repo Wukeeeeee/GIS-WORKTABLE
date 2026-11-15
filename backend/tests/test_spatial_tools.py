@@ -2066,6 +2066,10 @@ class TestEditVertices:
     def test_edit_vertices_basic(self):
         r = edit_vertices.invoke({"layer_name": "test_polygon"})
         assert "已为" in r or "启用" in r
+        from backend.services.tool_modules import runtime
+        assert runtime._pending_layer_ops == [{
+            "action": "edit_vertices", "name": "test_polygon",
+        }]
 
 
 

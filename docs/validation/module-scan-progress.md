@@ -3235,3 +3235,73 @@
 - **改动：**保留原函数实现及 `@tool` 装饰器，将 `measure_distance` 移入 `vector.py`，门面继续重导出，`measure_area`/`measure_distance` 注册相邻关系不变；vector 合同目标数更新为 40。
 - **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`、`test_spatial_stats.py`、`test_measure_distance_failure_feedback.py`、`test_coverage_gap.py`：159 passed。AST 对比确认函数体及完整工具列表顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且能导出测距工具；`git diff --check` 通过。`tools.py` 实测 6,792 行。
 - **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰。
+
+### 2026-11-15 将 measure_area 迁入 vector
+
+- **问题与证据：**面积测量仍在 facade，但只依赖 runtime 图层注册表和本地 GeoPandas/NumPy/pyproj 计算；新增兼容门禁在迁移前因 `vector.measure_area` 不存在而失败。
+- **改动：**原实现与 `@tool` 装饰器整体迁入 `vector.py`，门面从 vector 重导出；保留 `measure_area`/`measure_distance` 注册相邻顺序。vector 合同目标数更新为 41。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`、`test_spatial_stats.py`、`test_measure_area_failure_feedback.py`、`test_measure_distance_failure_feedback.py`、`test_coverage_gap.py`：162 passed。AST 对比确认函数体及完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且包含 `measure_area`/`measure_distance`；`git diff --check` 通过。`tools.py` 实测 6,667 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰。
+
+### 2026-11-15 将 convert_coordinates 迁入 vector
+
+- **问题与证据：**坐标转换为纯 CRS 计算，不读写共享图层状态；UTM 自动选带所需的 `_get_utm_crs` 和范围校验 helper 已由 vector 提供。新增兼容门禁在迁移前因 `vector.convert_coordinates` 不存在而失败。
+- **改动：**保持参数、实现和 `@tool` 装饰器不变，迁入 `vector.py` 并加入 `__all__`；facade 重导出，注册表中 `convert_crs` / `convert_coordinates` / `extract_contours` 顺序保持不变。vector 合同目标数更新为 42。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`、`test_geo_coords.py`：43 passed；`test_datav_service.py` 坐标转换用例：1 passed；`test_spatial_tools.py` 的 `TestConvertCoordinates`：4 passed。AST 比对确认函数体及完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且导出该工具；`git diff --check` 通过。`tools.py` 实测 6,591 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 convert_crs 迁入 vector
+
+- **问题与证据：**图层 CRS 转换仍由 facade 实现，但只调用 vector 已持有的 runtime `_layer_to_gdf`、`_gdf_to_layer`、UTM 选择与范围校验 helper；新增兼容门禁在迁移前因 `vector.convert_crs` 不存在而失败。
+- **改动：**原 `convert_crs` 实现和 `@tool` 装饰器整体迁入 `vector.py`，facade 从 vector 重导出；保留 `convert_crs` / `convert_coordinates` / `extract_contours` 工具注册顺序。vector 合同目标数更新为 43。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`、`test_tool_docstring_guards.py`：41 passed；`test_spatial_tools.py` 的 `TestConvertCRS`：4 passed；`test_integration_e2e_v3.py` 筛选 CRS 转换：2 passed。AST 比对确认函数体及完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade；`git diff --check` 通过。`tools.py` 实测 6,551 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 add_length_field 迁入 vector
+
+- **问题与证据：**逐要素长度字段工具依赖的 GeoDataFrame 转换、状态锁、唯一名称分配与图层登记 helper 已归 vector/runtime 所有；新增兼容门禁在迁移前因 `vector.add_length_field` 不存在而失败。
+- **改动：**保持原实现及装饰器，将 `add_length_field` 迁入 `vector.py` 并加入 `__all__`，门面继续重导出；注册表中的 `zonal_statistics` / `add_length_field` / `spatial_explode` / `geometry_convert` 顺序不变。vector 合同目标数更新为 44。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`：29 passed；`test_new_tools.py` 筛选长度字段：3 passed；`test_layer_registry_lifecycle.py`：49 passed。AST 比对确认原函数体及完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade；`git diff --check` 通过。`tools.py` 实测 6,529 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 edit_vertices 迁入 vector
+
+- **问题与证据：**顶点编辑工具仅查验图层并将编辑请求加入 `_pending_layer_ops`；runtime 已是该列表唯一所有者，terrain/raster 也直接依赖它。兼容门禁在迁移前确认 `vector.edit_vertices` 尚不存在。审查旧兼容断言时另发现 terrain 不消费 `_registered_layers`，因此改为断言它实际使用的 runtime `_pending_layer_ops` 身份。
+- **改动：**将原实现和装饰器迁入 `vector.py`，从 runtime 显式导入共享 `_pending_layer_ops`，门面继续重导出；注册表中的 `scale_features` / `draw_feature` / `edit_vertices` / `export_map` 顺序不变。回归测试还断言调用后 runtime 队列中的操作数据准确。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`：30 passed；`test_spatial_tools.py` 的 `TestEditVertices`：1 passed；`test_clear_layers_discards_stale_ops.py`：1 passed。AST 比对确认函数体及完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且与 runtime 共享同一个 pending-op 列表；`git diff --check` 通过。vector 合同目标数更新为 45，`tools.py` 实测 6,508 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 draw_feature 迁入 vector
+
+- **问题与证据：**绘制点/线/面工具使用 vector 已持有的几何构造、UTM、唯一命名、状态锁和 runtime `_gdf_to_layer`；新增兼容门禁在迁移前因 `vector.draw_feature` 不存在而失败。
+- **改动：**原实现与 `@tool` 装饰器整体迁入 `vector.py`，门面重导出并保持 `scale_features` / `draw_feature` / `edit_vertices` 注册相邻次序；绘制结果仍通过 runtime 层登记，不创建 facade 私有状态。vector 合同目标数更新为 46。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`：31 passed；`test_spatial_tools.py` 的 `TestDrawFeature`：8 passed。AST 比对确认原函数体及完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade；`git diff --check` 通过。vector 合同表核实共 46 项，`tools.py` 实测 6,401 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 add_legend 迁入 vector
+
+- **问题与证据：**图例工具只读取注册图层并向共享 `_pending_layer_ops` 队列追加前端操作；`_layer_to_gdf` 与队列均由 vector/runtime 提供。新增兼容门禁在迁移前因 `vector.add_legend` 不存在而失败。
+- **改动：**将原实现和装饰器迁入 `vector.py`，facade 继续重导出；保留注册表中 `spatial_select_by_attribute` / `add_legend` / `update_attribute` 顺序。vector 合同目标数更新为 47。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`：32 passed；`test_spatial_tools.py` 的 `TestAddLegend`：1 passed。AST 对比确认原函数体和完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且与 runtime 使用同一 pending-op 队列；`git diff --check` 通过。`tools.py` 实测 6,381 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 add_labels 迁入 vector
+
+- **问题与证据：**属性标注工具只通过 `_layer_to_gdf` 读取共享注册图层、向 runtime `_pending_layer_ops` 队列写入标注请求；新增兼容门禁在迁移前因 `vector.add_labels` 不存在而失败。
+- **改动：**原实现和 `@tool` 装饰器整体迁入 `vector.py`，门面继续重导出；保留 `layer_add_geometry` / `add_labels` / `spatial_graduated_colors` / `spatial_unique_values` 注册顺序，输入验证和失败文案保持不变。vector 合同目标数更新为 48。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`：33 passed；`test_spatial_tools.py` 的 `TestAddLabels`：3 passed；`test_add_labels_failure_feedback.py`：2 passed。AST 比对确认原函数体和完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且共享 runtime pending-op 队列；`git diff --check` 通过。`tools.py` 实测 6,343 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 spatial_graduated_colors 迁入 vector
+
+- **问题与证据：**分级渲染工具只用 `_layer_to_gdf` 读取注册图层、numpy 计算断点并向 runtime `_pending_layer_ops` 排入样式请求；新增兼容门禁在迁移前因 `vector.spatial_graduated_colors` 不存在而失败。
+- **改动：**原实现与 `@tool` 装饰器迁入 `vector.py`，门面继续重导出；保留 `add_labels` / `spatial_graduated_colors` / `spatial_unique_values` / `spatial_select_by_attribute` 工具注册顺序，分级请求仍使用 runtime 共享队列。vector 合同目标数更新为 49。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`：34 passed；`test_spatial_tools.py` 的 `TestSpatialGraduatedColors`：6 passed；`test_layer3_gis_tools.py` 分级渲染筛选：2 passed。AST 比对确认原函数体及完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且共享 pending-op 队列；`git diff --check` 通过。`tools.py` 实测 6,244 行。
+- **边界：**未运行后端全量；`.agents/` 为未跟踪本地目录且未触碰；本轮变更未提交或推送。
+
+### 2026-11-15 将 spatial_unique_values 迁入 vector
+
+- **问题与证据：**唯一值渲染仍在 facade，但依赖的图层读取与样式操作队列均已归 runtime/vector；新增兼容门禁在迁移前因 `vector.spatial_unique_values` 不存在而失败。
+- **改动：**原实现和 `@tool` 装饰器迁入 `vector.py`，门面继续重导出；保留 `spatial_graduated_colors` / `spatial_unique_values` / `spatial_select_by_attribute` / `add_legend` 注册顺序，保持 bool、数值和字符串类别的区分语义及 50 类限制。
+- **验证：**`test_tool_modules_compat.py`、`test_tool_registry.py`：35 passed；`test_spatial_tools.py` 的 `TestSpatialUniqueValues`：3 passed；direct-invoke 端到端缺字段失败反馈：1 passed。AST 比对确认原函数体和完整工具注册顺序与 HEAD 基线一致；独立进程 vector 导入不加载 facade 且共享 runtime pending-op 队列；`git diff --check` 通过。vector 合同表核实共 50 项，`tools.py` 实测 6,173 行。
+- **边界：**端到端用例使用本地 FastAPI TestClient 和伪造 GeoJSON，并隔离到 pytest 临时输出目录；未运行后端全量、未访问外部服务或真实用户数据/凭据；`.agents/` 未触碰；本轮变更未提交或推送。
