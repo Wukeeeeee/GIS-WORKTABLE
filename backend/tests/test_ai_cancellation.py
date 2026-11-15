@@ -10,6 +10,18 @@ from backend.services import ai_service
 from backend.services import graph
 
 
+@pytest.fixture(autouse=True)
+def isolate_history_storage(monkeypatch, tmp_path):
+    """Isolate history markers and workspace layers from persistent test state."""
+    tools_module = graph._tools_mod
+    tools_module._registered_layers.clear()
+    monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
+    try:
+        yield
+    finally:
+        tools_module._registered_layers.clear()
+
+
 def test_cancelled_request_stays_cancelled_after_same_session_starts_next_request():
     session_id = "cancel-race-session"
     old_generation = ai_service.clear_session_cancel(session_id, "old-request")

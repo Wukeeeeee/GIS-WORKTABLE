@@ -15,6 +15,7 @@ def local_map(monkeypatch, tmp_path):
     monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
     task_manager._tasks.clear()
     task_manager._session_active.clear()
+    gis_tools._registered_layers.clear()
     history_service.set_history_file(str(tmp_path / "history.json"))
     old_db = storage_service.get_db_path()
     storage_service.set_db_path(str(tmp_path / "workspace.db"))
@@ -38,10 +39,24 @@ def local_map(monkeypatch, tmp_path):
         yield task_id, wrapped
     finally:
         gis_tools.reset_state()
+        gis_tools._registered_layers.clear()
         task_manager._tasks.clear()
         task_manager._session_active.clear()
         history_service.set_history_file(None)
         storage_service.set_db_path(old_db)
+
+
+@pytest.fixture
+def normal_agent_for_synthetic_workspace(monkeypatch):
+    """Keep cartography regressions on the normal agent path.
+
+    Registering any layer protects a workspace by design. Privacy routing is
+    covered separately in test_privacy_mode.py; these tests target normal-mode
+    cartography prompts and tool-chain behavior for synthetic fixtures.
+    """
+    from backend.services import privacy_service
+
+    monkeypatch.setattr(privacy_service, "session_protected", lambda session_id="default": False)
 
 
 def test_classification_and_light_color_edits_reuse_the_same_layer(local_map):
@@ -95,7 +110,9 @@ def test_failed_map_edit_keeps_last_success_and_ambiguous_layer_is_rejected(loca
     assert "多个匹配" in ambiguous
 
 
-def test_cartography_skill_is_added_for_brief_style_followups(monkeypatch):
+def test_cartography_skill_is_added_for_brief_style_followups(
+    monkeypatch, normal_agent_for_synthetic_workspace,
+):
     from backend.services import ai_service
     from backend.services.llm_config import LLMConfig
 
@@ -126,7 +143,9 @@ def test_map_task_context_does_not_leak_to_another_session(local_map):
     assert "population" in own_context
 
 
-def test_explicitly_referenced_task_context_is_restored(local_map, monkeypatch):
+def test_explicitly_referenced_task_context_is_restored(
+    local_map, monkeypatch, normal_agent_for_synthetic_workspace,
+):
     task_id, _ = local_map
     other_task_id = task_manager.create_task("其他会话的无关任务", "cartography-reference-other-session")
     assert task_manager.find_or_create_task(
@@ -159,7 +178,9 @@ def test_explicitly_referenced_task_context_is_restored(local_map, monkeypatch):
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["invoke", "stream"])
-def test_controlled_model_routes_style_followups_to_real_tool_chain(local_map, monkeypatch, streaming):
+def test_controlled_model_routes_style_followups_to_real_tool_chain(
+    local_map, monkeypatch, normal_agent_for_synthetic_workspace, streaming,
+):
     task_id, wrapped = local_map
     from backend.services import graph
     from backend.services.llm_config import LLMConfig

@@ -10,10 +10,24 @@ import io
 import os
 import re
 import sys
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from backend.services.graph import _looks_like_incomplete_promise
+
+
+@pytest.fixture(autouse=True)
+def isolate_workspace_mode(monkeypatch, tmp_path):
+    """Fast-path tests use synthetic sessions and must not inherit privacy state."""
+    from backend.services import ai_service, tools
+
+    tools._registered_layers.clear()
+    monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
+    try:
+        yield
+    finally:
+        tools._registered_layers.clear()
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GRAPH = os.path.join(ROOT, "backend", "services", "graph.py")

@@ -1,9 +1,21 @@
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 import threading
 import time
+import pytest
 
-from backend.services import graph, tools
+from backend.services import ai_service, graph, tools
 from backend.services.llm_config import LLMConfig
+
+
+@pytest.fixture(autouse=True)
+def isolate_history_storage(monkeypatch, tmp_path):
+    """Prevent stale privacy markers or registered layers changing retry-mode tests."""
+    tools._registered_layers.clear()
+    monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
+    try:
+        yield
+    finally:
+        tools._registered_layers.clear()
 
 
 def _patch_agent_run(monkeypatch, agent):

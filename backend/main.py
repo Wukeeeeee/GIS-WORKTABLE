@@ -1285,28 +1285,46 @@ async def get_boundary_api(place: str = "长沙市", adcode: str = ""):
     """从阿里云 DataV 获取行政边界（国内可访问），返回 GeoJSON。
 
     两种模式：
-    - place=名称：取该行政区自身边界（兼容旧调用，错误以 {"error":...} 返回）
+    - place=名称：取该行政区自身边界，WGS-84 已转换
     - adcode=6位码：取该行政区的下一级全集边界（下钻用），WGS-84 已转换
     """
+    loop = asyncio.get_event_loop()
     if adcode:
         from backend.services.datav_service import fetch_boundary_by_adcode
         if not (adcode.isdigit() and len(adcode) == 6):
             raise HTTPException(status_code=400, detail="adcode 必须是 6 位数字")
-        # 阻塞 IO 放线程池，避免卡事件循环
-        loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(
-            None, functools.partial(fetch_boundary_by_adcode, adcode))
-        if data is None:
+        try:
+            # 阻塞 IO 放线程池，避免卡事件循环
+            data = await loop.run_in_executor(
+                None, functools.partial(fetch_boundary_by_adcode, adcode))
+            if not data or not isinstance(data, dict):
+                raise HTTPException(status_code=404, detail=f"未找到 adcode={adcode} 的边界数据")
+            return {"geojson": data, "name": f"adcode {adcode} 下级边界", "adcode": adcode}
+        except HTTPException:
+            raise
+        except (ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
             raise HTTPException(status_code=404, detail=f"未找到 adcode={adcode} 的边界数据")
-        return {"geojson": data, "name": f"adcode {adcode} 下级边界", "adcode": adcode}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"获取边界数据失败: {str(e)}")
+
+    clean_place = (place or "").strip()
+    if not clean_place:
+        raise HTTPException(status_code=400, detail="place 不能为空")
+
     try:
         from backend.services.datav_service import fetch_boundary
-        data = fetch_boundary(place)
-        if data is None:
-            return {"error": f"DataV 未找到「{place}」的边界数据"}
-        return {"geojson": data, "name": f"{place}边界"}
+        # 阻塞 IO 放线程池，避免卡事件循环
+        data = await loop.run_in_executor(
+            None, functools.partial(fetch_boundary, clean_place))
+        if not data or not isinstance(data, dict):
+            raise HTTPException(status_code=404, detail=f"DataV 未找到「{clean_place}」的边界数据")
+        return {"geojson": data, "name": f"{clean_place}边界"}
+    except HTTPException:
+        raise
+    except (ValueError, KeyError, TypeError, AttributeError, json.JSONDecodeError):
+        raise HTTPException(status_code=404, detail=f"DataV 未找到「{clean_place}」的边界数据")
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=f"获取边界数据失败: {str(e)}")
 
 class _MissingGeoTiffCrsError(Exception):
     pass
@@ -3548,6 +3566,8 @@ async def list_tasks(session_id: str = "default"):
 async def get_task(task_id: str):
     """获取任务详情"""
     from backend.services import task_manager
+    if not task_manager.is_valid_task_id(task_id):
+        raise HTTPException(status_code=400, detail="无效的任务 ID")
     task = task_manager.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -3563,7 +3583,14 @@ async def get_task(task_id: str):
 async def get_task_code(task_id: str, step: int = None):
     """获取任务的 Python 源代码"""
     from backend.services import task_manager
-    if step:
+    if not task_manager.is_valid_task_id(task_id):
+        raise HTTPException(status_code=400, detail="无效的任务 ID")
+    if step is not None and step < 1:
+        raise HTTPException(status_code=400, detail="step 必须是大于等于 1 的整数")
+    task = task_manager.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if step is not None:
         code = task_manager.get_code_version(task_id, step)
     else:
         code = task_manager.get_latest_code(task_id)
@@ -3576,6 +3603,10 @@ async def get_task_code(task_id: str, step: int = None):
 async def archive_task(task_id: str):
     """归档任务"""
     from backend.services import task_manager
+    if not task_manager.is_valid_task_id(task_id):
+        raise HTTPException(status_code=400, detail="无效的任务 ID")
+    if task_manager.get_task(task_id) is None:
+        raise HTTPException(status_code=404, detail="Task not found")
     ok = task_manager.archive_task(task_id)
     return {"success": ok}
 
@@ -3584,6 +3615,10 @@ async def archive_task(task_id: str):
 async def restore_task(task_id: str):
     """恢复任务"""
     from backend.services import task_manager
+    if not task_manager.is_valid_task_id(task_id):
+        raise HTTPException(status_code=400, detail="无效的任务 ID")
+    if task_manager.get_task(task_id) is None:
+        raise HTTPException(status_code=404, detail="Task not found")
     ok = task_manager.restore_task(task_id)
     return {"success": ok}
 
@@ -3592,6 +3627,10 @@ async def restore_task(task_id: str):
 async def delete_task(task_id: str):
     """删除任务"""
     from backend.services import task_manager
+    if not task_manager.is_valid_task_id(task_id):
+        raise HTTPException(status_code=400, detail="无效的任务 ID")
+    if task_manager.get_task(task_id) is None:
+        raise HTTPException(status_code=404, detail="Task not found")
     ok = task_manager.delete_task(task_id)
     return {"success": ok}
 

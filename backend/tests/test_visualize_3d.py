@@ -47,6 +47,16 @@ class TestVisualize3d:
     def test_layer_not_found(self):
         out = visualize_3d.invoke({"layer_name": "不存在", "field": "population"})
         assert "未找到" in out
+        assert T._tool_result_failed("visualize_3d", out)
+        assert all(o["action"] != "visualize" for o in T._pending_layer_ops)
+
+    def test_empty_layer_is_classified_as_failure(self):
+        _register_layer("empty", {"type": "FeatureCollection", "features": []})
+
+        out = visualize_3d.invoke({"layer_name": "empty", "field": "population"})
+
+        assert "无要素" in out
+        assert T._tool_result_failed("visualize_3d", out)
         assert all(o["action"] != "visualize" for o in T._pending_layer_ops)
 
     def test_unsupported_type(self):

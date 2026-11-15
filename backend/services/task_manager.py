@@ -20,6 +20,7 @@ import uuid
 import threading
 import datetime
 import shutil
+import urllib.parse
 from typing import Optional
 
 # ============================================================
@@ -43,20 +44,50 @@ def _now() -> str:
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _task_dir(task_id: str) -> str:
-    if not isinstance(task_id, str) or not task_id or task_id in {".", ".."}:
+def is_valid_task_id(task_id: str) -> bool:
+    """验证 task_id 格式是否安全有效（非空、无首尾空白、无路径穿越、无斜杠/空字节、严格在 _BASE_DIR 内部且不等于 _BASE_DIR）。"""
+    if not isinstance(task_id, str) or not task_id:
+        return False
+    if task_id.strip() != task_id:
+        return False
+    if task_id in {".", ".."}:
+        return False
+    if "/" in task_id or "\\" in task_id or "\0" in task_id:
+        return False
+    if os.path.basename(task_id) != task_id:
+        return False
+    unquoted = urllib.parse.unquote(task_id)
+    if unquoted != task_id:
+        if unquoted in {".", ".."} or "/" in unquoted or "\\" in unquoted or "\0" in unquoted or unquoted.strip() != unquoted:
+            return False
+        if os.path.basename(unquoted) != unquoted:
+            return False
+    try:
+        base = os.path.realpath(_BASE_DIR)
+        task_dir = os.path.realpath(os.path.join(base, task_id))
+        if os.path.normcase(task_dir) == os.path.normcase(base):
+            return False
+        common = os.path.commonpath((base, task_dir))
+        if os.path.normcase(common) != os.path.normcase(base):
+            return False
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def validate_task_id(task_id: str) -> str:
+    """验证 task_id，非法时抛出 ValueError，合法时返回原 task_id"""
+    if not is_valid_task_id(task_id):
         raise ValueError("无效 task_id")
-    if os.path.basename(task_id) != task_id or "/" in task_id or "\\" in task_id or "\0" in task_id:
+    return task_id
+
+
+def _task_dir(task_id: str) -> str:
+    if not is_valid_task_id(task_id):
         raise ValueError("无效 task_id")
     base = os.path.realpath(_BASE_DIR)
-    task_dir = os.path.realpath(os.path.join(base, task_id))
-    try:
-        common = os.path.commonpath((base, task_dir))
-    except ValueError as exc:
-        raise ValueError("无效 task_id") from exc
-    if os.path.normcase(common) != os.path.normcase(base):
-        raise ValueError("无效 task_id")
-    return task_dir
+    return os.path.realpath(os.path.join(base, task_id))
+
 
 
 def _task_json_path(task_id: str) -> str:
@@ -179,7 +210,10 @@ def _save_task_to_disk(task: dict):
 
 
 def _load_task_from_disk(task_id: str) -> Optional[dict]:
-    path = _task_json_path(task_id)
+    try:
+        path = _task_json_path(task_id)
+    except (ValueError, OSError):
+        return None
     if not os.path.exists(path):
         return None
     try:
@@ -190,11 +224,18 @@ def _load_task_from_disk(task_id: str) -> Optional[dict]:
 
 
 def _save_artifacts_to_disk(task_id: str, artifacts: list):
-    _write_json_atomic(_artifacts_json_path(task_id), artifacts)
+    try:
+        path = _artifacts_json_path(task_id)
+    except (ValueError, OSError):
+        return
+    _write_json_atomic(path, artifacts)
 
 
 def _load_artifacts_from_disk(task_id: str) -> list:
-    path = _artifacts_json_path(task_id)
+    try:
+        path = _artifacts_json_path(task_id)
+    except (ValueError, OSError):
+        return []
     if not os.path.exists(path):
         return []
     try:
@@ -205,11 +246,18 @@ def _load_artifacts_from_disk(task_id: str) -> list:
 
 
 def _save_exec_log_to_disk(task_id: str, log: list):
-    _write_json_atomic(_exec_log_json_path(task_id), log)
+    try:
+        path = _exec_log_json_path(task_id)
+    except (ValueError, OSError):
+        return
+    _write_json_atomic(path, log)
 
 
 def _load_exec_log_from_disk(task_id: str) -> list:
-    path = _exec_log_json_path(task_id)
+    try:
+        path = _exec_log_json_path(task_id)
+    except (ValueError, OSError):
+        return []
     if not os.path.exists(path):
         return []
     try:
@@ -263,7 +311,7 @@ def create_task(user_goal: str, session_id: str = "default") -> str:
 
 def get_task(task_id: str) -> Optional[dict]:
     """获取任务（内存优先，磁盘兜底），双检锁保证并发放大读盘后写回导致老数据覆盖新值"""
-    if not isinstance(task_id, str) or not task_id:
+    if not is_valid_task_id(task_id):
         return None
     with _lock:
         if task_id in _tasks:
@@ -281,7 +329,11 @@ def get_task(task_id: str) -> Optional[dict]:
         if existing:
             return existing
         # 删除任务也持有同一把锁；若磁盘读取期间任务已被删除，不要把旧快照复活到缓存。
-        if not os.path.isfile(_task_json_path(task_id)):
+        try:
+            task_json_file = _task_json_path(task_id)
+        except (ValueError, OSError):
+            return None
+        if not os.path.isfile(task_json_file):
             return None
         _tasks[task_id] = loaded
         return loaded
@@ -374,14 +426,14 @@ def list_tasks(session_id: str = None, include_archived: bool = False) -> list:
             if not include_archived and task.get("archived"):
                 continue
             result.append({
-                "task_id": task["task_id"],
-                "user_goal": task["user_goal"][:100],
-                "status": task["status"],
-                "current_step": task["current_step"],
-                "created_at": task["created_at"],
-                "updated_at": task["updated_at"],
+                "task_id": task.get("task_id", tid_dir),
+                "user_goal": (task.get("user_goal") or "")[:100],
+                "status": task.get("status", "active"),
+                "current_step": task.get("current_step", 0),
+                "created_at": task.get("created_at"),
+                "updated_at": task.get("updated_at"),
             })
-    result.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    result.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
     return result
 
 
@@ -394,23 +446,31 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
 
     每次调用创建新版本：step_001.py, step_002.py, ... 并更新 latest.py
     """
+    if not is_valid_task_id(task_id):
+        return 0
     with _lock:
         task = _tasks.get(task_id)
         if not task:
             # 尝试从磁盘加载
-            task = _load_task_from_disk(task_id)
+            try:
+                task = _load_task_from_disk(task_id)
+            except (ValueError, OSError):
+                return 0
             if not task:
                 return 0
             _tasks[task_id] = task
 
-        step = task.get("current_step", 0) + 1
+        step = (task.get("current_step") or 0) + 1
         candidate = dict(task)
         candidate["current_step"] = step
         candidate["latest_code_version"] = step
         candidate["updated_at"] = _now()
 
         # 写入版本文件
-        code_dir = _code_dir(task_id)
+        try:
+            code_dir = _code_dir(task_id)
+        except (ValueError, OSError):
+            return 0
         os.makedirs(code_dir, exist_ok=True)
         version_file = os.path.join(code_dir, f"step_{step:03d}.py")
         latest_file = os.path.join(code_dir, "latest.py")
@@ -432,6 +492,8 @@ def save_code(task_id: str, source_code: str, label: str = None) -> int:
                         meta = json.loads(_read_text(meta_path))
                     except Exception:
                         pass
+                if not isinstance(meta, dict):
+                    meta = {}
                 meta[f"step_{step:03d}"] = {"label": label, "saved_at": _now()}
                 _write_json_atomic(meta_path, meta)
 
@@ -515,6 +577,8 @@ def register_artifact(task_id: str, filename: str, filepath: str,
                        mime_type: str = "", artifact_type: str = "",
                        created_by_step: int = 0, derived_from: str = None) -> dict:
     """注册一个生成的 Artifact"""
+    if not is_valid_task_id(task_id):
+        return {"status": "failed", "error": "invalid task_id"}
     size = _file_size(filepath)
 
     artifact = _new_artifact(
@@ -535,6 +599,8 @@ def register_artifact(task_id: str, filename: str, filepath: str,
         artifact["status"] = "failed"
 
     with _lock:
+        if not (_tasks.get(task_id) or _load_task_from_disk(task_id)):
+            return {"status": "failed", "error": "task not found"}
         artifacts = _load_artifacts_from_disk(task_id)
         artifacts.append(artifact)
         _save_artifacts_to_disk(task_id, artifacts)
@@ -555,8 +621,14 @@ def get_artifact_summary(task_id: str) -> str:
         return ""
     lines = ["### 已生成的文件"]
     for a in artifacts:
-        status_icon = "✅" if a["status"] == "success" else "❌"
-        lines.append(f"- {status_icon} {a['filename']} ({a['type']}, {a['size']} bytes, step_{a['created_by_step']:03d})")
+        if not isinstance(a, dict):
+            continue
+        status_icon = "✅" if a.get("status") == "success" else "❌"
+        filename = a.get("filename") or ""
+        art_type = a.get("type") or ""
+        size = a.get("size") or 0
+        step = a.get("created_by_step") or 0
+        lines.append(f"- {status_icon} {filename} ({art_type}, {size} bytes, step_{step:03d})")
     return "\n".join(lines)
 
 
@@ -570,6 +642,8 @@ def log_execution(task_id: str, step_id: int, source_code: str,
                    input_artifacts: list = None,
                    output_artifacts: list = None) -> dict:
     """记录一次 Python 执行"""
+    if not is_valid_task_id(task_id):
+        return {"status": "failed", "error": "invalid task_id"}
     record = _new_exec_record(
         task_id=task_id,
         step_id=step_id,
@@ -583,6 +657,8 @@ def log_execution(task_id: str, step_id: int, source_code: str,
         output_artifacts=output_artifacts,
     )
     with _lock:
+        if not (_tasks.get(task_id) or _load_task_from_disk(task_id)):
+            return {"status": "failed", "error": "task not found"}
         log = _load_exec_log_from_disk(task_id)
         log.append(record)
         _save_exec_log_to_disk(task_id, log)
@@ -601,9 +677,13 @@ def get_exec_log_summary(task_id: str) -> str:
         return ""
     lines = ["### 执行历史"]
     for rec in log:
-        status_icon = "✅" if rec["status"] == "success" else "❌"
+        if not isinstance(rec, dict):
+            continue
+        status_icon = "✅" if rec.get("status") == "success" else "❌"
+        step_id = rec.get("step_id") or 0
+        status_text = rec.get("status") or "unknown"
         code_preview = rec["source_code"][:80].replace("\n", " ") if rec.get("source_code") else ""
-        lines.append(f"- Step {rec['step_id']:03d} {status_icon} ({rec['status']}): `{code_preview}...`")
+        lines.append(f"- Step {step_id:03d} {status_icon} ({status_text}): `{code_preview}...`")
     return "\n".join(lines)
 
 
@@ -673,14 +753,15 @@ def build_task_context(task_id: str) -> str:
 
     # 任务基本信息
     parts.append(f"## 当前任务 (task_id: {task_id})")
-    parts.append(f"目标: {task['user_goal']}")
-    parts.append(f"状态: {task['status']}")
-    parts.append(f"当前步骤: Step {task['current_step']:03d}")
+    parts.append(f"目标: {task.get('user_goal') or ''}")
+    parts.append(f"状态: {task.get('status', 'active')}")
+    step_num = task.get("current_step") or 0
+    parts.append(f"当前步骤: Step {step_num:03d}")
 
     # 最新代码
     latest_code = get_latest_code(task_id)
     if latest_code:
-        parts.append(f"\n### 上一轮执行的 Python 源代码 (step_{task['current_step']:03d}.py)")
+        parts.append(f"\n### 上一轮执行的 Python 源代码 (step_{step_num:03d}.py)")
         parts.append("```python")
         parts.append(latest_code)
         parts.append("```")
@@ -828,15 +909,15 @@ def task_snapshot(task_id: str) -> dict:
     if not task:
         return {}
     return {
-        "task_id": task["task_id"],
-        "user_goal": task["user_goal"],
-        "status": task["status"],
-        "current_step": task["current_step"],
+        "task_id": task.get("task_id", task_id),
+        "user_goal": task.get("user_goal") or "",
+        "status": task.get("status", "unknown"),
+        "current_step": task.get("current_step", 0),
         "latest_code_version": task.get("latest_code_version"),
         "gis_context": task.get("gis_context", {}),
         "artifacts_count": len(get_artifacts(task_id)),
         "exec_log_count": len(get_exec_log(task_id)),
         "code_versions": len(get_code_versions(task_id)),
-        "created_at": task["created_at"],
-        "updated_at": task["updated_at"],
+        "created_at": task.get("created_at"),
+        "updated_at": task.get("updated_at"),
     }

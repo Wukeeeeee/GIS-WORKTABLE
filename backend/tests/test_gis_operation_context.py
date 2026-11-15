@@ -6,17 +6,19 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
-from backend.services import history_service, storage_service, task_manager
+from backend.services import ai_service, history_service, storage_service, task_manager
 from backend.services import tools as gis_tools
 from backend.services.graph import _should_use_agent
 
 
 @pytest.fixture
 def local_gis_task(tmp_path, monkeypatch):
+    gis_tools._registered_layers.clear()
     monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
     task_manager._tasks.clear()
     task_manager._session_active.clear()
     history_service.set_history_file(str(tmp_path / "history.json"))
+    monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "ai-history"))
     old_db = storage_service.get_db_path()
     storage_service.set_db_path(str(tmp_path / "workspace.db"))
     monkeypatch.setattr(gis_tools, "_temp_output_dir", str(tmp_path / "output"))
@@ -42,10 +44,19 @@ def local_gis_task(tmp_path, monkeypatch):
         yield task_id, wrapped, tmp_path
     finally:
         gis_tools.reset_state()
+        gis_tools._registered_layers.clear()
         task_manager._tasks.clear()
         task_manager._session_active.clear()
         history_service.set_history_file(None)
         storage_service.set_db_path(old_db)
+
+
+@pytest.fixture
+def normal_agent_for_synthetic_workspace(monkeypatch):
+    """These agent-routing checks target normal mode, not privacy-mode routing."""
+    from backend.services import privacy_service
+
+    monkeypatch.setattr(privacy_service, "session_protected", lambda session_id="default": False)
 
 
 def test_local_buffer_parameter_edit_and_export_are_recorded(local_gis_task):
@@ -55,6 +66,7 @@ def test_local_buffer_parameter_edit_and_export_are_recorded(local_gis_task):
     })
     assert "500.0m缓冲区" in first
     buffer_layer = next(layer for layer in gis_tools._pending_layers if layer["name"] == "长沙市_缓冲区")
+    original_buffer = gis_tools._registered_layers["长沙市_缓冲区"]
     assert buffer_layer["style"]["fillOpacity"] <= 0.1
     assert buffer_layer["style"]["color"]
     state = task_manager.get_gis_context(task_id)
@@ -69,7 +81,7 @@ def test_local_buffer_parameter_edit_and_export_are_recorded(local_gis_task):
         gis_tools._registered_layers["长沙市_缓冲区"]["geojson"]["features"][0]["geometry"]
     )).area
 
-    # A parameter edit invokes the same operation on its original input, replacing the named output.
+    # Re-running the same operation preserves the prior output and allocates a unique result name.
     gis_tools.set_current_run("run-four-turn-2")
     second = wrapped["spatial_buffer"].invoke({
         "layer_name": "长沙市", "distance": 1, "unit": "km", "dissolve": False,
@@ -79,18 +91,21 @@ def test_local_buffer_parameter_edit_and_export_are_recorded(local_gis_task):
     assert state["last_successful_operation"]["arguments"]["distance"] == 1
     assert state["last_successful_operation"]["arguments"]["unit"] == "km"
     assert state["last_successful_operation"]["input_layers"][0]["name"] == "长沙市"
-    assert state["last_successful_output"]["name"] == "长沙市_缓冲区"
+    latest_buffer_name = state["last_successful_output"]["name"]
+    assert latest_buffer_name.startswith("长沙市_缓冲区_")
+    assert gis_tools._registered_layers["长沙市_缓冲区"] is original_buffer
+    assert latest_buffer_name in gis_tools._registered_layers
     area_1000 = transform(project, shape(
-        gis_tools._registered_layers["长沙市_缓冲区"]["geojson"]["features"][0]["geometry"]
+        gis_tools._registered_layers[latest_buffer_name]["geojson"]["features"][0]["geometry"]
     )).area
     assert area_1000 > area_500
 
     gis_tools.set_current_run("run-four-turn-3")
-    exported = wrapped["export_layer"].invoke({"layer_name": "长沙市_缓冲区", "format": "geojson"})
+    exported = wrapped["export_layer"].invoke({"layer_name": latest_buffer_name, "format": "geojson"})
     assert "GeoJSON已生成" in exported
     state = task_manager.get_gis_context(task_id)
     assert state["current_operation"]["tool"] == "export_layer"
-    assert state["last_successful_output"]["filename"].startswith("长沙市_缓冲区_")
+    assert state["last_successful_output"]["filename"].startswith(latest_buffer_name + "_")
     assert (output / "output" / state["last_successful_output"]["filename"]).is_file()
     prompt = task_manager.build_task_context(task_id)
     assert "最近成功结果" in prompt
@@ -157,7 +172,9 @@ def test_streaming_and_non_streaming_use_same_agent_router():
 
 
 @pytest.mark.parametrize("streaming", [False, True], ids=["invoke", "stream"])
-def test_four_turn_controlled_agent_uses_real_local_tool_chain(local_gis_task, monkeypatch, streaming):
+def test_four_turn_controlled_agent_uses_real_local_tool_chain(
+    local_gis_task, monkeypatch, normal_agent_for_synthetic_workspace, streaming,
+):
     task_id, wrapped, _ = local_gis_task
     from backend.services import graph
     from backend.services.llm_config import LLMConfig
@@ -254,5 +271,5 @@ def test_four_turn_controlled_agent_uses_real_local_tool_chain(local_gis_task, m
     assert operations[-2]["arguments"]["unit"] == "km"
     assert operations[-2]["input_layers"][0]["name"] == "长沙市"
     assert state["recent_operations"][-1]["tool"] == "export_layer"
-    assert state["recent_operations"][-1]["arguments"]["layer_name"] == "长沙市_缓冲区"
+    assert state["recent_operations"][-1]["arguments"]["layer_name"] == operations[-2]["output_layers"][-1]["name"]
     assert state["last_successful_output"]["filename"].endswith(".geojson")

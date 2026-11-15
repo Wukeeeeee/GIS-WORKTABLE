@@ -177,8 +177,18 @@ def encrypt_stream(source, target, context: str) -> None:
     target.write(aes.encrypt(_nonce(counter), b"", final_aad))
 
 
+def _read_exact(source, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = source.read(size - len(chunks))
+        if not chunk:
+            break
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
 def decrypt_stream(source, target, context: str) -> None:
-    header = source.read(_HEADER_SIZE)
+    header = _read_exact(source, _HEADER_SIZE)
     if len(header) != _HEADER_SIZE or not header.startswith(_MAGIC):
         raise ValueError("本地加密文件格式无效")
     chunk_size = struct.unpack(">I", header[len(_MAGIC):len(_MAGIC) + 4])[0]
@@ -189,7 +199,7 @@ def decrypt_stream(source, target, context: str) -> None:
     counter = 0
     total = 0
     while True:
-        size_raw = source.read(4)
+        size_raw = _read_exact(source, 4)
         if len(size_raw) != 4:
             raise ValueError("本地加密文件不完整")
         size = struct.unpack(">I", size_raw)[0]
@@ -197,7 +207,7 @@ def decrypt_stream(source, target, context: str) -> None:
             break
         if size > _CHUNK_SIZE or counter >= 0xFFFFFFFFFFFFFFFF:
             raise ValueError("本地加密文件分块无效")
-        encrypted = source.read(size + 16)
+        encrypted = _read_exact(source, size + 16)
         if len(encrypted) != size + 16:
             raise ValueError("本地加密文件不完整")
         clear = aes.decrypt(_nonce(counter), encrypted,
@@ -205,7 +215,7 @@ def decrypt_stream(source, target, context: str) -> None:
         target.write(clear)
         counter += 1
         total += size
-    final_tag = source.read(16)
+    final_tag = _read_exact(source, 16)
     if len(final_tag) != 16:
         raise ValueError("本地加密文件缺少完整性标记")
     final_aad = context.encode("utf-8") + b"\0final\0" + struct.pack(">QQ", counter, total)

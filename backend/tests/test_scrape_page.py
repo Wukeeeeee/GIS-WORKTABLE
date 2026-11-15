@@ -43,6 +43,30 @@ def test_scrape_page_does_not_fake_css_selector_fallback(monkeypatch):
     assert "仅支持 selector='body'" in result
 
 
+def test_scrape_page_selector_no_match_is_recorded_as_failure(monkeypatch):
+    import scrapling.fetchers
+
+    class FakePage:
+        status = 200
+
+        def css(self, _selector):
+            return []
+
+    class FakeFetcher:
+        @staticmethod
+        def get(_url, timeout):
+            assert timeout == 20
+            return FakePage()
+
+    monkeypatch.setattr(scrapling.fetchers, "Fetcher", FakeFetcher)
+    result = gis_tools.scrape_page.func(
+        url="https://example.test", selector="article.main"
+    )
+
+    assert "未找到匹配" in result
+    assert gis_tools._tool_result_failed("scrape_page", result)
+
+
 def test_scrape_and_fetch_unwrap_markdown_links(monkeypatch):
     expected = "https://example.test/page?a=1&b=2"
     markdown_url = f"[{expected}]({expected})"

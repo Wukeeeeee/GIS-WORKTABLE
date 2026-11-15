@@ -19,6 +19,8 @@ CITY_B = "上海保密站"
 
 @pytest.fixture
 def workspace(monkeypatch, tmp_path):
+    # Clear any prior test's layer state before monkeypatch restores this object.
+    tools._registered_layers.clear()
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
     monkeypatch.setattr(privacy, "_vaults", {})
     monkeypatch.setattr(tools, "_registered_layers", {})

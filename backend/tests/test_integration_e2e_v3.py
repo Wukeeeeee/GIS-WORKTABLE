@@ -145,8 +145,14 @@ class TestHTTPRoutes:
         # 网络可能失败，但不应 500
         assert resp.status_code in [200, 400, 500, 502]
 
-    def test_project_crud(self):
+    def test_project_crud(self, tmp_path, monkeypatch):
         """项目管理：创建→查询→删除完整链路"""
+        from backend.services import project_service
+
+        project_dir = tmp_path / "projects"
+        monkeypatch.setattr(project_service, "_PROJECT_DIR", str(project_dir))
+        monkeypatch.setattr(project_service, "_BLOB_DIR", str(project_dir / "blobs"))
+        monkeypatch.setattr(project_service, "_INDEX_PATH", str(project_dir / "index.json"))
         # 创建项目
         proj_name = f"test_proj_{uuid.uuid4().hex[:6]}"
         create_resp = client.post("/api/projects", json={

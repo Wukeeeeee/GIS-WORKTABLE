@@ -2,7 +2,7 @@
 """阶段二：云原生格式流式加载（COG / PMTiles / GeoParquet / FlatGeobuf）
 
 单测全部用本地夹具（离线确定性）；
-集成测试访问公开测试 URL，无网络环境自动 skip。
+集成测试访问公开测试 URL，只有设置 GIS_WORKTABLE_RUN_REMOTE_TESTS=1 时才运行；默认跳过，避免常规回归依赖或挂住在外网。
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -1308,8 +1308,14 @@ PQ_URL = "https://github.com/opengeospatial/geoparquet/raw/v1.1.0/examples/examp
 FGB_URL = "https://raw.githubusercontent.com/flatgeobuf/flatgeobuf/master/test/data/UScounties.fgb"
 
 
+def _require_remote_test_opt_in():
+    if os.environ.get("GIS_WORKTABLE_RUN_REMOTE_TESTS") != "1":
+        pytest.skip("远程集成测试默认禁用；显式设置 GIS_WORKTABLE_RUN_REMOTE_TESTS=1 后运行")
+
+
 @pytest.mark.slow
 def test_integration_cog_remote():
+    _require_remote_test_opt_in()
     if not _network_ok(GITHUB_RAW):
         pytest.skip("无网络环境，跳过远程 COG 集成测试")
     r = _registry()["load_cog"].invoke({"url": GITHUB_RAW, "layer_name": "远程影像"})
@@ -1318,6 +1324,7 @@ def test_integration_cog_remote():
 
 @pytest.mark.slow
 def test_integration_pmtiles_remote():
+    _require_remote_test_opt_in()
     if not _network_ok(PM_URL.replace("(", "%28").replace(")", "%29")):
         pytest.skip("无网络环境，跳过远程 PMTiles 集成测试")
     reset_state()
@@ -1329,6 +1336,7 @@ def test_integration_pmtiles_remote():
 
 @pytest.mark.slow
 def test_integration_geoparquet_remote():
+    _require_remote_test_opt_in()
     if not _network_ok(PQ_URL):
         pytest.skip("无网络环境，跳过远程 GeoParquet 集成测试")
     reset_state()
@@ -1338,6 +1346,7 @@ def test_integration_geoparquet_remote():
 
 @pytest.mark.slow
 def test_integration_flatgeobuf_remote():
+    _require_remote_test_opt_in()
     if not _network_ok(FGB_URL):
         pytest.skip("无网络环境，跳过远程 FlatGeobuf 集成测试")
     reset_state()

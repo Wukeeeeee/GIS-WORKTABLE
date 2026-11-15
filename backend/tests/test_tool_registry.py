@@ -23,19 +23,27 @@ def _defined_tools():
 
 
 def _ast_tool_definitions(path):
-    """用 AST 扫出文件里所有被 @tool 装饰的函数名（按出现顺序，不去重）。
+    """用 AST 扫出文件及 tool_modules/*.py 里所有被 @tool 装饰的函数名（按出现顺序，不去重）。
 
     为什么需要它：`vars(T)` 是按名字索引的字典，两个同名 def 只会剩一个，
     "后定义的把先定义的静默覆盖"这种问题靠运行时对象查不出来，只能看源码。
     """
-    import ast
-    tree = ast.parse(open(path, encoding="utf-8").read())
+    import ast, glob
+    paths_to_scan = [path]
+    modules_dir = os.path.join(os.path.dirname(os.path.abspath(path)), "tool_modules")
+    if os.path.isdir(modules_dir):
+        for mod_file in sorted(glob.glob(os.path.join(modules_dir, "*.py"))):
+            if not os.path.basename(mod_file).startswith("__"):
+                paths_to_scan.append(mod_file)
+
     names = []
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        if any(isinstance(d, ast.Name) and d.id == "tool" for d in node.decorator_list):
-            names.append(node.name)
+    for file_path in paths_to_scan:
+        tree = ast.parse(open(file_path, encoding="utf-8").read())
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if any(isinstance(d, ast.Name) and d.id == "tool" for d in node.decorator_list):
+                names.append(node.name)
     return names
 
 

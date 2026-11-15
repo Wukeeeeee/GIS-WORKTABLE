@@ -47,6 +47,23 @@ def isolated_task_dir(tmp_path, monkeypatch):
 # 测试 1: Python source code 保存
 # ============================================================
 
+@pytest.mark.parametrize("record_kind", ["artifact", "execution"])
+def test_late_result_does_not_recreate_deleted_task(tmp_path, record_kind):
+    tid = task_manager.create_task("deleted while running", "deletion-test")
+    task_dir = task_manager._task_dir(tid)
+    artifact = tmp_path / "late-result.txt"
+    artifact.write_text("completed after deletion", encoding="utf-8")
+    assert task_manager.delete_task(tid)
+    if record_kind == "artifact":
+        result = task_manager.register_artifact(tid, artifact.name, str(artifact))
+    else:
+        result = task_manager.log_execution(tid, 1, "print(1)", "", "success")
+    assert result["status"] == "failed"
+    assert result.get("error")
+    assert not os.path.exists(task_dir)
+    assert task_manager.get_task(tid) is None
+
+
 def test_code_save_and_retrieve():
     """保存 Python 源代码后可以正确读取"""
     tid = task_manager.create_task("生成广州地图", "test_session")
@@ -317,80 +334,297 @@ def test_parallel_gis_operation_records_do_not_overwrite_each_other(monkeypatch)
 
 
 # ============================================================
-# 测试 2: Task 持久化（磁盘恢复）
+# 测试 2: Task 持久化（磁盘恢复）与快照
 # ============================================================
 
+def test_task_disk_persistence_and_snapshot():
+    """验证任务从磁盘重新加载及快照字段完整性"""
+    tid = task_manager.create_task("磁盘恢复测试目标", "session-persist")
+    task_manager.save_code(tid, "print('step 1')", label="初始化")
 
+    # 清空内存缓存以强制磁盘回读
+    task_manager._tasks.clear()
 
-# ============================================================
-# 测试 3: latest.py 恢复
-# ============================================================
+    task = task_manager.get_task(tid)
+    assert task is not None
+    assert task["user_goal"] == "磁盘恢复测试目标"
+    assert task["current_step"] == 1
 
-
-
-# ============================================================
-# 测试 4: Artifact 持久化
-# ============================================================
-
-
-
-
-
-# ============================================================
-# 测试 5: 同一个 task_id 跨多轮
-# ============================================================
-
-
-
-# ============================================================
-# 测试 6: Context Builder 提供上一轮完整 Python source code
-# ============================================================
-
-
-
+    snap = task_manager.task_snapshot(tid)
+    assert snap["task_id"] == tid
+    assert snap["user_goal"] == "磁盘恢复测试目标"
+    assert snap["current_step"] == 1
+    assert snap["code_versions"] == 1
+    assert snap["artifacts_count"] == 0
+    assert snap["exec_log_count"] == 0
 
 
 # ============================================================
-# 测试 7: Sandbox failure 后 Task State 正确
+# 测试 3: latest.py 恢复与多版本管理
 # ============================================================
 
+def test_multistep_code_versions_and_latest_recovery():
+    """验证多轮代码更新（step_001 → step_002 → step_003）及 latest.py 恢复"""
+    tid = task_manager.create_task("多轮代码版本测试", "session-multistep")
+
+    s1 = task_manager.save_code(tid, "print('v1')", label="版本1")
+    s2 = task_manager.save_code(tid, "print('v2')", label="版本2")
+    s3 = task_manager.save_code(tid, "print('v3')", label="版本3")
+
+    assert s1 == 1 and s2 == 2 and s3 == 3
+    assert task_manager.get_code_version(tid, 1) == "print('v1')"
+    assert task_manager.get_code_version(tid, 2) == "print('v2')"
+    assert task_manager.get_code_version(tid, 3) == "print('v3')"
+    assert task_manager.get_latest_code(tid) == "print('v3')"
+
+    versions = task_manager.get_code_versions(tid)
+    assert len(versions) == 3
+    assert [v["step"] for v in versions] == [1, 2, 3]
 
 
+def test_get_code_version_edge_cases():
+    """验证 get_code_version 边界异常输入（step <= 0, bool, 越界版本, 非法 task_id）"""
+    tid = task_manager.create_task("版本边界测试", "session-step-bounds")
+    task_manager.save_code(tid, "print('v1')")
 
-
-# ============================================================
-# 测试 8: Archive / Restore
-# ============================================================
-
-
-
-# ============================================================
-# 测试 9: 不同 Task 之间 Context 不串
-# ============================================================
-
-
-
-# ============================================================
-# 测试 10: 多轮 Python 修改（step_001 → step_002 → step_003）
-# ============================================================
-
-
-
-# ============================================================
-# 测试: set_current_task / get_current_task_id
-# ============================================================
-
-
-
-# ============================================================
-# 测试: find_or_create_task 策略
-# ============================================================
-
-
-
+    # 非法 step 输入安全返回 None
+    assert task_manager.get_code_version(tid, 0) is None
+    assert task_manager.get_code_version(tid, -1) is None
+    assert task_manager.get_code_version(tid, True) is None
+    assert task_manager.get_code_version(tid, 999) is None
+    assert task_manager.get_code_version("..", 1) is None
+    assert task_manager.get_latest_code("..") is None
 
 
 # ============================================================
-# 测试: delete_task
+# 测试 4: Artifact 持久化与摘要
 # ============================================================
 
+def test_artifact_registration_and_persistence(tmp_path):
+    """验证 Artifact 注册、大小检测、状态判定与磁盘恢复"""
+    tid = task_manager.create_task("产物注册测试", "session-artifact")
+
+    real_file = tmp_path / "result.png"
+    real_file.write_bytes(b"\x89PNG\r\n\x1a\nfake-png-data")
+
+    art1 = task_manager.register_artifact(
+        tid, filename="result.png", filepath=str(real_file),
+        artifact_type="image", created_by_step=1,
+    )
+    assert art1["status"] == "success"
+    assert art1["size"] > 0
+
+    art2 = task_manager.register_artifact(
+        tid, filename="missing.geojson", filepath=str(tmp_path / "missing.geojson"),
+        artifact_type="geojson", created_by_step=1,
+    )
+    assert art2["status"] == "failed"
+    assert art2["size"] == 0
+
+    artifacts = task_manager.get_artifacts(tid)
+    assert len(artifacts) == 2
+
+    summary = task_manager.get_artifact_summary(tid)
+    assert "result.png" in summary
+    assert "missing.geojson" in summary
+
+
+# ============================================================
+# 测试 5: ExecutionLog 持久化与摘要
+# ============================================================
+
+def test_execution_log_lifecycle_and_summary():
+    """验证执行日志记录、截断与摘要"""
+    tid = task_manager.create_task("日志记录测试", "session-log")
+
+    rec1 = task_manager.log_execution(
+        task_id=tid, step_id=1, source_code="print('ok')",
+        source_file="step_001.py", status="success", stdout="output lines",
+    )
+    assert rec1["status"] == "success"
+
+    rec2 = task_manager.log_execution(
+        task_id=tid, step_id=2, source_code="raise ValueError('fail')",
+        source_file="step_002.py", status="failed", stderr="error trace", exit_code=1,
+    )
+    assert rec2["status"] == "failed"
+
+    log = task_manager.get_exec_log(tid)
+    assert len(log) == 2
+    assert log[0]["step_id"] == 1
+    assert log[1]["step_id"] == 2
+
+    summary = task_manager.get_exec_log_summary(tid)
+    assert "Step 001" in summary
+    assert "Step 002" in summary
+
+
+# ============================================================
+# 测试 6: 服务层防御与容错能力 (Task 1.d & 1.e)
+# ============================================================
+
+def test_service_level_invalid_task_id_defensive():
+    """验证服务层 save_code('..', ...), get_artifacts('..'), get_exec_log('..') 安全返回无未捕获异常 (1.d)"""
+    bad_ids = ["..", ".", " ", "", "a/b", "a\\b", None]
+    for bad_id in bad_ids:
+        assert task_manager.save_code(bad_id, "print('fail')") == 0
+        assert task_manager.get_artifacts(bad_id) == []
+        assert task_manager.get_exec_log(bad_id) == []
+
+
+def test_list_tasks_tolerates_none_fields(tmp_path):
+    """验证 list_tasks 能够容忍 task.json 中 user_goal 或 updated_at 为 None (1.e)"""
+    corrupt_dir = tmp_path / "tasks" / "task_with_nulls"
+    corrupt_dir.mkdir(parents=True, exist_ok=True)
+    (corrupt_dir / "task.json").write_text(
+        json.dumps({
+            "task_id": "task_with_nulls",
+            "user_goal": None,
+            "status": "active",
+            "current_step": 0,
+            "created_at": None,
+            "updated_at": None,
+            "session_id": "default",
+        }),
+        encoding="utf-8"
+    )
+
+    normal_id = task_manager.create_task("正常任务", "default")
+
+    tasks = task_manager.list_tasks(include_archived=True)
+    task_ids = [t["task_id"] for t in tasks]
+    assert normal_id in task_ids
+    assert "task_with_nulls" in task_ids
+    null_task = next(t for t in tasks if t["task_id"] == "task_with_nulls")
+    assert null_task["user_goal"] == ""
+
+
+# ============================================================
+# 测试 7: 任务删除与清理
+# ============================================================
+
+def test_delete_task_lifecycle():
+    """验证 delete_task 清除磁盘、内存及活跃会话索引"""
+    session_id = "session-del"
+    tid = task_manager.create_task("待删除任务", session_id)
+    assert task_manager.find_active_task_for_session(session_id) == tid
+
+    assert task_manager.delete_task(tid) is True
+    assert task_manager.get_task(tid) is None
+    assert task_manager.find_active_task_for_session(session_id) is None
+
+    assert task_manager.delete_task(tid) is False
+    assert task_manager.delete_task("..") is False
+    assert task_manager.delete_task("") is False
+
+
+# ============================================================
+# API 集成测试: 路由契约与错误处理 (Task 1.a, 1.b, 1.c)
+# ============================================================
+
+def test_api_invalid_task_id_returns_400():
+    """验证传入非法或路径穿越 task_id 时所有路由统一返回 HTTP 400 (1.a)"""
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    client = TestClient(app)
+    invalid_ids = ["%2e%2e", "bad%5csub", "%20", " "]
+    for bad_id in invalid_ids:
+        r_get = client.get(f"/api/tasks/{bad_id}")
+        assert r_get.status_code == 400, f"GET {bad_id} expected 400, got {r_get.status_code}"
+
+        r_code = client.get(f"/api/tasks/{bad_id}/code")
+        assert r_code.status_code == 400, f"GET code {bad_id} expected 400, got {r_code.status_code}"
+
+        r_arch = client.post(f"/api/tasks/{bad_id}/archive")
+        assert r_arch.status_code == 400, f"POST archive {bad_id} expected 400, got {r_arch.status_code}"
+
+        r_rest = client.post(f"/api/tasks/{bad_id}/restore")
+        assert r_rest.status_code == 400, f"POST restore {bad_id} expected 400, got {r_rest.status_code}"
+
+        r_del = client.delete(f"/api/tasks/{bad_id}")
+        assert r_del.status_code == 400, f"DELETE {bad_id} expected 400, got {r_del.status_code}"
+
+
+def test_api_nonexistent_task_returns_404():
+    """验证操作不存在的任务时统一返回 HTTP 404 而不是 HTTP 200 (1.b)"""
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    client = TestClient(app)
+    non_existent = "nonexistent_task_999"
+
+    assert client.get(f"/api/tasks/{non_existent}").status_code == 404
+    assert client.get(f"/api/tasks/{non_existent}/code").status_code == 404
+    assert client.post(f"/api/tasks/{non_existent}/archive").status_code == 404
+    assert client.post(f"/api/tasks/{non_existent}/restore").status_code == 404
+    assert client.delete(f"/api/tasks/{non_existent}").status_code == 404
+
+
+def test_api_get_task_code_step_validation():
+    """验证 get_task_code 的 step 参数校验 (step >= 1) (1.c)"""
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    client = TestClient(app)
+    tid = task_manager.create_task("测试步骤参数校验", "test_step_session")
+    task_manager.save_code(tid, "print('step 1')", label="v1")
+
+    # step = 0 不能被当成 falsy 偷偷返回 latest，必须返回 400
+    r_zero = client.get(f"/api/tasks/{tid}/code?step=0")
+    assert r_zero.status_code == 400, f"step=0 expected 400, got {r_zero.status_code}"
+
+    # step < 0 必须返回 400
+    r_neg = client.get(f"/api/tasks/{tid}/code?step=-1")
+    assert r_neg.status_code == 400, f"step=-1 expected 400, got {r_neg.status_code}"
+
+    # 合法 step 获取指定版本
+    r_valid = client.get(f"/api/tasks/{tid}/code?step=1")
+    assert r_valid.status_code == 200
+    assert r_valid.json()["code"] == "print('step 1')"
+    assert r_valid.json()["step"] == 1
+
+    # 合法但不存在的版本号返回 404
+    r_missing_step = client.get(f"/api/tasks/{tid}/code?step=2")
+    assert r_missing_step.status_code == 404
+
+    # 不带 step 返回 latest
+    r_latest = client.get(f"/api/tasks/{tid}/code")
+    assert r_latest.status_code == 200
+    assert r_latest.json()["code"] == "print('step 1')"
+    assert r_latest.json()["step"] == "latest"
+
+
+def test_api_task_lifecycle_happy_path():
+    """验证任务创建后的正常生命周期 API 调用 (GET -> ARCHIVE -> RESTORE -> DELETE)"""
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    client = TestClient(app)
+    tid = task_manager.create_task("完整生命周期", "lifecycle_session")
+    task_manager.save_code(tid, "print('live')", label="v1")
+
+    # 1. GET task
+    r_get = client.get(f"/api/tasks/{tid}")
+    assert r_get.status_code == 200
+    assert r_get.json()["task_id"] == tid
+
+    # 2. Archive
+    r_arch = client.post(f"/api/tasks/{tid}/archive")
+    assert r_arch.status_code == 200
+    assert r_arch.json() == {"success": True}
+    assert task_manager.get_task(tid)["archived"] is True
+
+    # 3. Restore
+    r_rest = client.post(f"/api/tasks/{tid}/restore")
+    assert r_rest.status_code == 200
+    assert r_rest.json() == {"success": True}
+    assert task_manager.get_task(tid)["archived"] is False
+
+    # 4. Delete
+    r_del = client.delete(f"/api/tasks/{tid}")
+    assert r_del.status_code == 200
+    assert r_del.json() == {"success": True}
+
+    # 5. Subsequent access returns 404
+    assert client.get(f"/api/tasks/{tid}").status_code == 404

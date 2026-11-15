@@ -5,6 +5,8 @@ DataV 行政区划边界获取工具
 import hashlib
 import json
 import os
+import threading
+import time
 import requests
 from urllib.parse import quote
 from backend.services.geo_coords import gcj02_to_wgs84
@@ -14,6 +16,23 @@ _CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "cache", "aoi")
 # 缓存版本号：坐标转换算法修复后 +1，旧版本缓存自动失效
 _CACHE_VERSION = 2
 _HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+
+def _atomic_write_json(path: str, data: any) -> None:
+    """线程与进程安全的原子化 JSON 磁盘缓存写入"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{threading.get_ident()}_{time.time_ns()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+
 
 # 省级 adcode 字典
 _ADCODES = {
@@ -28,17 +47,26 @@ _ADCODES = {
     '台湾省': 710000, '香港特别行政区': 810000, '澳门特别行政区': 820000,
 }
 
+# 内存缓存：避免重复读取和反序列化庞大的 _city_adcodes.json 磁盘文件
+_CITY_ADCODES_MEM_CACHE: dict | None = None
+
+
 def _load_city_adcodes():
     """
     从所有省份的 DataV GeoJSON 中提取城市/区县 adcode，构建名称→adcode 映射。
     结果缓存到本地文件，仅首次需要遍历所有省份+地级市。
     """
+    global _CITY_ADCODES_MEM_CACHE
+    if _CITY_ADCODES_MEM_CACHE is not None:
+        return _CITY_ADCODES_MEM_CACHE
+
     cache_path = os.path.join(_CACHE_DIR, "_city_adcodes.json")
     # 尝试读缓存
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                _CITY_ADCODES_MEM_CACHE = json.load(f)
+                return _CITY_ADCODES_MEM_CACHE
         except Exception:
             pass
 
@@ -89,12 +117,9 @@ def _load_city_adcodes():
             continue
 
     # 写缓存
-    try:
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(city_map, f, ensure_ascii=False)
-    except Exception:
-        pass
+    _atomic_write_json(cache_path, city_map)
 
+    _CITY_ADCODES_MEM_CACHE = city_map
     return city_map
 
 
@@ -233,10 +258,17 @@ def _find_adcode(name: str) -> int:
 
 def _convert(coords):
     """递归将 GCJ-02 坐标转为 WGS-84"""
-    if not coords:
+    if not coords or not isinstance(coords, (list, tuple)):
         return coords
-    if isinstance(coords[0], (int, float)):
-        return [*gcj02_to_wgs84(coords[0], coords[1]), *coords[2:]]
+    if not any(isinstance(c, (list, tuple)) for c in coords):
+        if (len(coords) >= 2
+                and isinstance(coords[0], (int, float)) and not isinstance(coords[0], bool)
+                and isinstance(coords[1], (int, float)) and not isinstance(coords[1], bool)):
+            try:
+                return [*gcj02_to_wgs84(coords[0], coords[1]), *coords[2:]]
+            except Exception:
+                return coords
+        return coords
     return [_convert(c) for c in coords]
 
 
@@ -267,15 +299,20 @@ def fetch_boundary_by_adcode(adcode: int | str) -> dict | None:
         if resp.status_code != 200:
             return None
         data = resp.json()
-        if not data.get("features"):
+        if not isinstance(data, dict) or not isinstance(data.get("features"), list) or not data["features"]:
             return None
         for feat in data["features"]:
-            if feat.get("geometry", {}).get("coordinates"):
-                feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
+            if not isinstance(feat, dict):
+                continue
+            geom = feat.get("geometry")
+            if isinstance(geom, dict) and geom.get("coordinates"):
+                try:
+                    geom["coordinates"] = _convert(geom["coordinates"])
+                except Exception:
+                    pass
         try:
             data["_cache_version"] = _CACHE_VERSION
-            with open(cache_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False)
+            _atomic_write_json(cache_path, data)
         except Exception:
             pass
         data.pop("_cache_version", None)
@@ -289,14 +326,14 @@ def fetch_boundary(name: str) -> dict | None:
     从 DataV 获取行政区划边界，返回 GeoJSON（已转 WGS-84）
     支持省/市/区三级，例如：广东省、广州市、天河区
     """
-    name = (name or "").strip()
-    if not name:
+    clean_name = (name or "").strip()
+    if not clean_name:
         return None
     os.makedirs(_CACHE_DIR, exist_ok=True)
-    cache_key = hashlib.sha256(name.encode("utf-8")).hexdigest()[:32]
+    cache_key = hashlib.sha256(clean_name.encode("utf-8")).hexdigest()[:32]
     cache_path = os.path.join(_CACHE_DIR, f"datav_{cache_key}.json")
 
-    # 检查缓存（校验版本：坐标转换算法升级后旧缓存自动失效，防止错误坐标永久命中）
+    # 1. 检查名称哈希缓存（校验版本：坐标转换算法升级后旧缓存自动失效，防止错误坐标永久命中）
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'r', encoding='utf-8') as f:
@@ -307,70 +344,131 @@ def fetch_boundary(name: str) -> dict | None:
         except Exception:
             pass
 
-    # 先用名称直接请求
-    url = f"https://geo.datav.aliyun.com/areas_v3/bound/{quote(name, safe='')}_full.json"
-    resp = requests.get(url, timeout=15, headers=_HEADERS)
+    # 2. 优先解析 6 位数字 adcode（彻底消除无谓的中文名 404 网络请求）
+    if clean_name.isdigit() and len(clean_name) == 6:
+        target_code = int(clean_name)
+    else:
+        target_code = _find_adcode(clean_name)
 
-    # 失败则用 adcode
-    target_code = None
-    if resp.status_code != 200:
-        code = _find_adcode(name)
-        if code:
-            target_code = code
-            resp = requests.get(f"https://geo.datav.aliyun.com/areas_v3/bound/{code}_full.json", timeout=15, headers=_HEADERS)
-
-    # 区级 adcode 直接请求会 404，需从市级 GeoJSON 中提取
-    if resp.status_code != 200 and target_code and isinstance(target_code, (int, str)):
-        code_str = str(target_code)
-        if len(code_str) == 6 and not code_str.endswith('00'):
-            # 推断市级 adcode（前四位 + 00）
-            city_code = code_str[:4] + '00'
-            city_resp = requests.get(f"https://geo.datav.aliyun.com/areas_v3/bound/{city_code}_full.json", timeout=15, headers=_HEADERS)
-            if city_resp.status_code == 200:
-                city_data = city_resp.json()
-                # 从市级 GeoJSON 中过滤出目标区级
-                target_features = []
-                for feat in city_data.get('features', []):
-                    props = feat.get('properties', {})
-                    feat_code = str(props.get('adcode', ''))
-                    feat_name = props.get('name', '')
-                    if feat_code == code_str or feat_name == name or feat_name == name.rstrip('区县市'):
-                        target_features.append(feat)
-                if target_features:
-                    data = {'type': 'FeatureCollection', 'features': target_features}
-                    # 转换坐标
-                    if data.get("features"):
-                        for feat in data["features"]:
-                            if feat.get("geometry", {}).get("coordinates"):
-                                feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
-                    # 写缓存（打版本标记）
-                    try:
-                        data["_cache_version"] = _CACHE_VERSION
-                        with open(cache_path, 'w', encoding='utf-8') as f:
-                            json.dump(data, f, ensure_ascii=False)
-                    except Exception:
-                        pass
-                    data.pop("_cache_version", None)
-                    return data
-
-    if resp.status_code != 200:
+    if not target_code:
         return None
 
-    data = resp.json()
+    code_str = str(target_code)
 
-    # DataV areas_v3 返回的是 GCJ-02 坐标，需转换为 WGS-84
-    if data.get("features"):
-        for feat in data["features"]:
-            if feat.get("geometry", {}).get("coordinates"):
-                feat["geometry"]["coordinates"] = _convert(feat["geometry"]["coordinates"])
+    # 3. 检查 adcode 磁盘缓存（与 fetch_boundary_by_adcode 共享省市缓存）
+    adcode_cache_path = os.path.join(_CACHE_DIR, f"datav_adcode_{code_str}.json")
+    if code_str.endswith('00') and os.path.exists(adcode_cache_path):
+        try:
+            with open(adcode_cache_path, 'r', encoding='utf-8') as f:
+                cached = json.load(f)
+            if isinstance(cached, dict) and cached.get("_cache_version") == _CACHE_VERSION:
+                cached.pop("_cache_version", None)
+                return cached
+        except Exception:
+            pass
 
-    # 写缓存（已转 WGS-84，打版本标记供读取侧校验）
+    # 4. 根据层级请求 DataV
+    target_data = None
+    if code_str.endswith('00'):
+        # 省市级直接请求下一级全集
+        try:
+            resp = requests.get(
+                f"https://geo.datav.aliyun.com/areas_v3/bound/{code_str}_full.json",
+                timeout=15,
+                headers=_HEADERS,
+            )
+            if resp.status_code == 200:
+                target_data = resp.json()
+            elif resp.status_code == 404:
+                resp2 = requests.get(
+                    f"https://geo.datav.aliyun.com/areas_v3/bound/{code_str}.json",
+                    timeout=15,
+                    headers=_HEADERS,
+                )
+                if resp2.status_code == 200:
+                    target_data = resp2.json()
+        except Exception:
+            pass
+    else:
+        # 区县级：DataV 单区县自身边界在 {adcode}.json
+        try:
+            resp = requests.get(
+                f"https://geo.datav.aliyun.com/areas_v3/bound/{code_str}.json",
+                timeout=15,
+                headers=_HEADERS,
+            )
+            if resp.status_code == 200:
+                target_data = resp.json()
+        except Exception:
+            pass
+
+        # 若单区县 json 失败，尝试 {adcode}_full.json
+        if not target_data:
+            try:
+                resp = requests.get(
+                    f"https://geo.datav.aliyun.com/areas_v3/bound/{code_str}_full.json",
+                    timeout=15,
+                    headers=_HEADERS,
+                )
+                if resp.status_code == 200:
+                    target_data = resp.json()
+            except Exception:
+                pass
+
+        # 兜底：从市级/直辖市 GeoJSON 中过滤出目标区级（直辖市前两位+0000，其它前四位+00）
+        if not target_data:
+            if code_str[:2] in {'11', '12', '31', '50'}:
+                parent_code = code_str[:2] + '0000'
+            else:
+                parent_code = code_str[:4] + '00'
+            try:
+                parent_resp = requests.get(
+                    f"https://geo.datav.aliyun.com/areas_v3/bound/{parent_code}_full.json",
+                    timeout=15,
+                    headers=_HEADERS,
+                )
+                if parent_resp.status_code == 200:
+                    parent_data = parent_resp.json()
+                    target_features = []
+                    for feat in parent_data.get('features', []):
+                        props = feat.get('properties', {})
+                        feat_code = str(props.get('adcode', ''))
+                        feat_name = props.get('name', '')
+                        if (feat_code == code_str or
+                            feat_name == clean_name or
+                            feat_name == clean_name.rstrip('区县市') or
+                            (feat_name and clean_name.endswith(feat_name))):
+                            target_features.append(feat)
+                    if target_features:
+                        target_data = {'type': 'FeatureCollection', 'features': target_features}
+            except Exception:
+                pass
+
     try:
-        data["_cache_version"] = _CACHE_VERSION
-        with open(cache_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False)
-    except Exception:
-        pass
-    data.pop("_cache_version", None)
+        if not isinstance(target_data, dict) or not isinstance(target_data.get("features"), list) or not target_data["features"]:
+            return None
 
-    return data
+        # 5. DataV areas_v3 返回的是 GCJ-02 坐标，需转换为 WGS-84
+        for feat in target_data["features"]:
+            if not isinstance(feat, dict):
+                continue
+            geom = feat.get("geometry")
+            if isinstance(geom, dict) and geom.get("coordinates"):
+                try:
+                    geom["coordinates"] = _convert(geom["coordinates"])
+                except Exception:
+                    pass
+
+        # 6. 写缓存（已转 WGS-84，打版本标记供读取侧校验）
+        try:
+            target_data["_cache_version"] = _CACHE_VERSION
+            _atomic_write_json(cache_path, target_data)
+            if code_str.endswith('00'):
+                _atomic_write_json(adcode_cache_path, target_data)
+        except Exception:
+            pass
+        target_data.pop("_cache_version", None)
+
+        return target_data
+    except Exception:
+        return None

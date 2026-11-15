@@ -9,6 +9,8 @@ import uuid
 import random
 import sys
 import types
+import pytest
+from cryptography.fernet import Fernet
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -293,12 +295,26 @@ class TestKnowledgeBaseE2E:
 class TestCredentialSecurityE2E:
     """凭据安全端到端"""
 
+    @pytest.fixture(autouse=True)
+    def isolate_credential_store(self, tmp_path, monkeypatch):
+        from backend.services import credential_store
+
+        credential_dir = tmp_path / "credentials"
+        monkeypatch.setattr(credential_store, "_CRED_DIR", str(credential_dir))
+        monkeypatch.setattr(credential_store, "_KEY_FILE", str(credential_dir / ".key"))
+        monkeypatch.setattr(credential_store, "_CRED_FILE", str(credential_dir / "credentials.enc"))
+        fernet = Fernet(Fernet.generate_key())
+        monkeypatch.setattr(credential_store, "_get_fernet", lambda: fernet)
+
     def test_credential_store_encrypts(self):
         """凭据存储应加密，不存明文"""
-        from backend.services.credential_store import save_credential, get_credential, has_credential
+        from backend.services.credential_store import save_credential, get_credential, has_credential, _CRED_FILE
         service = f"test_svc_{uuid.uuid4().hex[:6]}"
-        save_credential(service, "testuser", "testpass123")
-        assert has_credential(service) == True
+        assert save_credential(service, "testuser", "testpass123") is True
+        assert has_credential(service) is True
+        assert os.path.isfile(_CRED_FILE)
+        with open(_CRED_FILE, "rb") as f:
+            assert b"testpass123" not in f.read()
         # get_credential 应能取回（内部解密）
         cred = get_credential(service)
         assert cred is not None
@@ -309,20 +325,20 @@ class TestCredentialSecurityE2E:
         """凭据文件中不应有明文密码"""
         from backend.services.credential_store import save_credential, _CRED_FILE
         service = f"test_plain_{uuid.uuid4().hex[:6]}"
-        save_credential(service, "user1", "mysecretpassword_xyz")
-        if os.path.exists(_CRED_FILE):
-            with open(_CRED_FILE, encoding="utf-8") as f:
-                content = f.read()
-            assert "mysecretpassword_xyz" not in content, "密码明文存储在文件中！"
+        assert save_credential(service, "user1", "mysecretpassword_xyz") is True
+        assert os.path.isfile(_CRED_FILE)
+        with open(_CRED_FILE, "rb") as f:
+            content = f.read()
+        assert b"mysecretpassword_xyz" not in content, "密码明文存储在文件中！"
 
     def test_delete_credential(self):
         """删除凭据后应不存在"""
         from backend.services.credential_store import save_credential, delete_credential, has_credential
         service = f"test_del_{uuid.uuid4().hex[:6]}"
-        save_credential(service, "user", "pass")
-        assert has_credential(service) == True
-        delete_credential(service)
-        assert has_credential(service) == False
+        assert save_credential(service, "user", "pass") is True
+        assert has_credential(service) is True
+        assert delete_credential(service) is True
+        assert has_credential(service) is False
 
 
 class TestLayerLifecycleE2E:

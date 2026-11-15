@@ -19,7 +19,13 @@ OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "gis_worktable_output")
 def isolate_storage_service_db(tmp_path, monkeypatch):
     """Keep run artifact tests out of the user's persistent workspace ledger."""
     monkeypatch.setattr(storage_service, "_CUSTOM_DB_PATH", [str(tmp_path / "result_guard_test.db")])
+    monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
+    task_manager._tasks.clear()
+    task_manager._session_active.clear()
     storage_service.init_db()
+    yield
+    task_manager._tasks.clear()
+    task_manager._session_active.clear()
 
 
 def _create_file(filename, content="hello"):

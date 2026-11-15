@@ -24,10 +24,14 @@ from backend.services import history_service
 
 @pytest.fixture(autouse=True)
 def _isolated_history(tmp_path, request):
-    """每个测试独立历史文件，测完恢复"""
+    """每个测试独立历史文件和图层注册表，测完恢复"""
+    T._registered_layers.clear()
     history_service.set_history_file(str(tmp_path / "tool_history.json"))
-    yield
-    history_service.set_history_file(None)
+    try:
+        yield
+    finally:
+        T._registered_layers.clear()
+        history_service.set_history_file(None)
 
 
 def _registry():
@@ -235,6 +239,7 @@ def test_rerun_history_produces_new_layer_not_overwrite():
     reg["draw_feature"].invoke({
         "geometry_type": "Point", "coordinates": "116.4,39.9", "layer_name": "测试点",
     })
+    original_layer = T._registered_layers["测试点"]
     get_pending_state()
     # 通过 list_history 拿到 draw_feature 的编号
     entries = history_service.list_entries()
@@ -243,8 +248,10 @@ def test_rerun_history_produces_new_layer_not_overwrite():
     assert "已重跑" in r
     new_layers = get_pending_state()["layers"]
     assert len(new_layers) == 1  # 产物作为新图层推送
-    # 原图层保留
-    assert "测试点_原" in T._registered_layers
+    # draw_feature allocates a unique name on replay, so the original entry
+    # remains untouched while a distinct output layer is registered.
+    assert T._registered_layers["测试点"] is original_layer
+    assert len(set(T._registered_layers) - {"测试点"}) == 1
 
 
 def test_rerun_history_preserves_replaced_raster_metadata(tmp_path, monkeypatch):

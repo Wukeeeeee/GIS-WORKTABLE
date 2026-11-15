@@ -171,7 +171,7 @@ def test_prompt_forbids_echoing_executed_source():
 # 跨会话上下文污染：新会话不得被注入旧会话的任务上下文
 # ============================================================
 
-def test_build_system_content_no_cross_session_task_leak():
+def test_build_system_content_no_cross_session_task_leak(tmp_path, monkeypatch):
     """新会话构建 system prompt 时，全局 current_task_id 还残留着别的会话
     （上一请求）的任务 → 不允许把那个任务的目标/源码/历史注入新会话。"""
     import types
@@ -179,6 +179,7 @@ def test_build_system_content_no_cross_session_task_leak():
     from backend.services import tools as _tools
     from backend.services.ai_service import _build_system_content
 
+    monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
     _tid = task_manager.create_task("广东各市GDP排名（旧会话任务）", "session_OLD")
     try:
         # 模拟真实时序：全局 current_task_id 停留在旧会话的任务上
