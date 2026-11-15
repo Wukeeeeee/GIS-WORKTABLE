@@ -268,7 +268,7 @@ def test_concurrency_and_race_conditions():
 
 
 def test_concurrent_api_delete_race(client):
-    """Verify that concurrent reads/archives during deletion never produce HTTP 500."""
+    """Concurrent task API reads/mutations may conflict, but must never produce HTTP 500."""
     tid = task_manager.create_task("Delete race test", "del_session")
     task_manager.save_code(tid, "print('race')", label="v1")
 
@@ -304,7 +304,7 @@ def test_concurrent_api_delete_race(client):
 
     assert 500 not in observed_statuses, f"500 observed in race: {observed_statuses}"
     for s in observed_statuses:
-        assert s in (200, 404), f"Unexpected status code {s} in delete race"
+        assert s in (200, 404, 409), f"Unexpected status code {s} in delete race"
 
 
 def test_disk_corruption_resilience(client, tmp_path, monkeypatch):

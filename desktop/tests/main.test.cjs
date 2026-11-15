@@ -256,6 +256,8 @@ test('failed process termination is reported without an uncaught quit error', ()
 test('an exited child PID is never targeted again', () => {
   const h = boot({ platform: 'win32' });
   h.run('PORT = 8000; startBackend("python");');
+  assert.deepEqual(Array.from(h.calls.spawn[0].args.slice(-2)), ['--workers', '1']);
+  assert.equal(h.calls.spawn[0].opts.env.WEB_CONCURRENCY, '1');
   h.proc.exitCode = 1;
   h.run('shutdownBackend()');
   assert.equal(h.calls.treeKill.length, 0);

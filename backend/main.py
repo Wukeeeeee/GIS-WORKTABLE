@@ -94,6 +94,29 @@ _GIT_COMMIT, _GIT_DIRTY = _read_git_version()
 
 app = FastAPI()
 
+
+async def _acquire_shared_state_lock_cancellation_safe(acquire, release) -> bool:
+    """Acquire the process lock without leaking it if this request is cancelled mid-acquire."""
+    acquisition = asyncio.create_task(asyncio.to_thread(acquire, 0))
+    try:
+        return await asyncio.shield(acquisition)
+    except asyncio.CancelledError as cancellation:
+        while not acquisition.done():
+            try:
+                await asyncio.shield(acquisition)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        try:
+            acquired = acquisition.result()
+        except BaseException:
+            acquired = False
+        if acquired:
+            release()
+        raise cancellation
+
+
 _project_open_generation = 0
 _project_open_generation_lock = threading.Lock()
 _UPLOAD_REQUEST_CACHE_TTL_SECONDS = 15 * 60
@@ -1151,7 +1174,9 @@ async def list_layers():
 @app.post("/api/reset_state")
 async def api_reset_state():
     from backend.services.tools import reset_state, acquire_shared_state_lock, release_shared_state_lock
-    if not await asyncio.to_thread(acquire_shared_state_lock, 0):
+    if not await _acquire_shared_state_lock_cancellation_safe(
+        acquire_shared_state_lock, release_shared_state_lock,
+    ):
         raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
     try:
         reset_state()
@@ -2423,7 +2448,9 @@ class ActiveProjectResetRequest(BaseModel):
 @app.get("/api/projects/active/context")
 async def get_active_project_context():
     from backend.services import tools as registry_tools
-    owns_shared_lock = await asyncio.to_thread(registry_tools.acquire_shared_state_lock, 0)
+    owns_shared_lock = await _acquire_shared_state_lock_cancellation_safe(
+        registry_tools.acquire_shared_state_lock, registry_tools.release_shared_state_lock,
+    )
     if not owns_shared_lock:
         raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
     try:
@@ -2435,7 +2462,9 @@ async def get_active_project_context():
 @app.post("/api/projects/active/reset")
 async def reset_active_project_context(request: ActiveProjectResetRequest):
     from backend.services import tools as registry_tools
-    owns_shared_lock = await asyncio.to_thread(registry_tools.acquire_shared_state_lock, 0)
+    owns_shared_lock = await _acquire_shared_state_lock_cancellation_safe(
+        registry_tools.acquire_shared_state_lock, registry_tools.release_shared_state_lock,
+    )
     if not owns_shared_lock:
         raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
     try:
@@ -2453,7 +2482,9 @@ async def register_layer(request: RegisterLayerRequest):
     owns_shared_lock = False
     try:
         if request.project_context:
-            owns_shared_lock = await asyncio.to_thread(registry_tools.acquire_shared_state_lock, 0)
+            owns_shared_lock = await _acquire_shared_state_lock_cancellation_safe(
+                registry_tools.acquire_shared_state_lock, registry_tools.release_shared_state_lock,
+            )
             if not owns_shared_lock:
                 raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
             active_project_id = registry_tools._active_project_id
@@ -2495,7 +2526,9 @@ class LayerPrivacyRequest(BaseModel):
 @app.post("/api/layer/privacy")
 async def set_layer_privacy(request: LayerPrivacyRequest):
     from backend.services import tools as registry
-    if not await asyncio.to_thread(registry.acquire_shared_state_lock, 0):
+    if not await _acquire_shared_state_lock_cancellation_safe(
+        registry.acquire_shared_state_lock, registry.release_shared_state_lock,
+    ):
         raise HTTPException(status_code=409, detail="当前工作区正在处理操作，请结束后设置图层保护")
     try:
         with registry._state_lock:
@@ -3215,7 +3248,9 @@ async def api_history_rerun(request: HistoryRerunRequest):
         tools as _tool_list, get_pending_state, reset_state,
         acquire_shared_state_lock, release_shared_state_lock,
     )
-    if not await asyncio.to_thread(acquire_shared_state_lock, 0):
+    if not await _acquire_shared_state_lock_cancellation_safe(
+        acquire_shared_state_lock, release_shared_state_lock,
+    ):
         raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
     try:
         reg = {t.name: t for t in _tool_list}
@@ -3500,7 +3535,9 @@ async def api_tools_invoke(request: ToolInvokeRequest):
     args = request.arguments or {}
     if not isinstance(args, dict):
         raise HTTPException(status_code=400, detail="arguments 应为对象")
-    if not await asyncio.to_thread(acquire_shared_state_lock, 0):
+    if not await _acquire_shared_state_lock_cancellation_safe(
+        acquire_shared_state_lock, release_shared_state_lock,
+    ):
         return {"ok": False, "busy": True, "error": "当前 GIS 工作区正在处理另一项操作"}
     try:
         # 在工作区锁内检查图层参数，避免与并行图层更新竞争。
@@ -3520,11 +3557,28 @@ async def api_tools_invoke(request: ToolInvokeRequest):
         response = ""
         ok = False
         loop = asyncio.get_event_loop()
+        tool_future = loop.run_in_executor(
+            None, functools.partial(tool.invoke, args),
+        )
         try:
-            response = await loop.run_in_executor(
-                None, functools.partial(tool.invoke, args))
+            response = await asyncio.shield(tool_future)
             from backend.services.tools import _tool_result_failed
             ok = not _tool_result_failed(request.name, response)
+        except asyncio.CancelledError as cancellation:
+            # Cancelling an asyncio wrapper does not stop an already-running
+            # executor thread. Keep the workspace lock and task context until it exits.
+            while not tool_future.done():
+                try:
+                    await asyncio.shield(tool_future)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            try:
+                tool_future.result()
+            except BaseException:
+                pass
+            raise cancellation
         except Exception as e:
             response = f"工具执行失败: {str(e)[:400]}"
             ok = False
@@ -3603,36 +3657,66 @@ async def get_task_code(task_id: str, step: int = None):
 async def archive_task(task_id: str):
     """归档任务"""
     from backend.services import task_manager
+    from backend.services.tools import acquire_shared_state_lock, release_shared_state_lock
     if not task_manager.is_valid_task_id(task_id):
         raise HTTPException(status_code=400, detail="无效的任务 ID")
     if task_manager.get_task(task_id) is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    ok = task_manager.archive_task(task_id)
-    return {"success": ok}
+    if not await _acquire_shared_state_lock_cancellation_safe(
+        acquire_shared_state_lock, release_shared_state_lock,
+    ):
+        raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
+    try:
+        if task_manager.get_task(task_id) is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        ok = task_manager.archive_task(task_id)
+        return {"success": ok}
+    finally:
+        release_shared_state_lock()
 
 
 @app.post("/api/tasks/{task_id}/restore")
 async def restore_task(task_id: str):
     """恢复任务"""
     from backend.services import task_manager
+    from backend.services.tools import acquire_shared_state_lock, release_shared_state_lock
     if not task_manager.is_valid_task_id(task_id):
         raise HTTPException(status_code=400, detail="无效的任务 ID")
     if task_manager.get_task(task_id) is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    ok = task_manager.restore_task(task_id)
-    return {"success": ok}
+    if not await _acquire_shared_state_lock_cancellation_safe(
+        acquire_shared_state_lock, release_shared_state_lock,
+    ):
+        raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
+    try:
+        if task_manager.get_task(task_id) is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        ok = task_manager.restore_task(task_id)
+        return {"success": ok}
+    finally:
+        release_shared_state_lock()
 
 
 @app.delete("/api/tasks/{task_id}")
 async def delete_task(task_id: str):
     """删除任务"""
     from backend.services import task_manager
+    from backend.services.tools import acquire_shared_state_lock, release_shared_state_lock
     if not task_manager.is_valid_task_id(task_id):
         raise HTTPException(status_code=400, detail="无效的任务 ID")
     if task_manager.get_task(task_id) is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    ok = task_manager.delete_task(task_id)
-    return {"success": ok}
+    if not await _acquire_shared_state_lock_cancellation_safe(
+        acquire_shared_state_lock, release_shared_state_lock,
+    ):
+        raise HTTPException(status_code=409, detail="当前 GIS 工作区正在处理另一项操作")
+    try:
+        if task_manager.get_task(task_id) is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        ok = task_manager.delete_task(task_id)
+        return {"success": ok}
+    finally:
+        release_shared_state_lock()
 
 
 @app.get("/api/storage/stats")

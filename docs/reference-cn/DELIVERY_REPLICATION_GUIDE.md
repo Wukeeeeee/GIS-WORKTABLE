@@ -27,7 +27,7 @@
   - 方式 B（命令行手动）：
     ```bat
     .venv\Scripts\activate
-    python -m uvicorn backend.main:app --host 127.0.0.1 --port 8010
+    python -m uvicorn backend.main:app --host 127.0.0.1 --port 8010 --workers 1
     ```
 - **预期现象**：
   - 控制台显示 `Uvicorn running on http://127.0.0.1:8010`；

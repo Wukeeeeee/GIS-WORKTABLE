@@ -126,13 +126,14 @@ function startBackend(python) {
 
   const args = ['-m', 'uvicorn', 'backend.main:app', '--host', '127.0.0.1', '--port', String(PORT)];
   if (process.argv.includes('--dev')) args.push('--reload');
+  else args.push('--workers', '1');
 
   console.log(`[GIS-Desktop] 启动后端: ${python} ${args.join(' ')} (cwd=${PROJECT_ROOT})`);
   backendStartError = null;
   try {
     backendProc = spawn(python, args, {
       cwd: PROJECT_ROOT,
-      env: { ...process.env },
+      env: { ...process.env, WEB_CONCURRENCY: '1' },
       stdio: ['ignore', logFd, logFd],
       windowsHide: true,
       detached: process.platform !== 'win32',

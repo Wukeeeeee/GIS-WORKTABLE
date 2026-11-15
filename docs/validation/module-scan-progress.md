@@ -3410,3 +3410,59 @@
 - **改动：**将 `archive_task` 的状态写入和所有 session 活跃索引清理放入同一 `_lock` 临界区，使并发 restore/explicit resume 排在归档转换之后。另补跨会话 delete 失败用例，确认 rmtree 抛错时文件、内存 task 与全部 session 索引保持不变。
 - **验证：**两个新回归修复前归档竞态用例失败、删除失败用例通过；锁修正后 `test_task_manager.py`、`test_task_manager_adversarial.py` 与显式跨会话 cartography 引用组合 **45 passed**。所有 task 文件位于 pytest tmp_path，TEMP/TMP/MPLCONFIGDIR 隔离；`git diff --check` 通过。
 - **边界与下一步：**本轮测试覆盖单进程线程竞态，不代表多进程/多 worker 同步；未跑后端全量。无外部服务、凭据或真实用户任务；未提交或推送，`.agents/` 和其他未提交改动保持不变。下一步可核查跨会话归档/恢复后 API 列表（含 archived 筛选）和主动索引恢复路径。
+
+### 2026-11-15 验证跨会话任务归档/恢复列表一致性
+
+- **问题与证据：**实现已让 `list_tasks(session_id)` 按 owner/`linked_sessions` 过滤，并让 `/api/tasks` 返回归档任务；但此前没有验证 owner 与 borrower 在归档、恢复全生命周期中看到同一任务，也没有验证恢复后 borrower 活跃索引的回填路径。
+- **改动：**新增 `test_linked_task_lists_follow_archive_restore_for_owner_and_borrower`，覆盖归档前后的 API 和 manager 列表、`include_archived` 筛选，以及恢复后 owner 索引和 borrower 按需回扫回填。
+- **验证：**新回归单测 **1 passed**；`test_task_manager.py`、`test_task_manager_adversarial.py` 与显式跨会话 cartography 引用测试组合 **46 passed**。任务目录使用 pytest `tmp_path`；TEMP/TMP/MPLCONFIGDIR 使用独立目录。仅本地 TestClient 和文件系统，无外部服务、凭据或真实用户任务。
+- **边界与下一步：**验证覆盖单进程 API/manager 路径，不代表多进程 worker 的持久索引同步；未跑后端全量。下一步可检查跨会话任务生命周期和 `tools.py` 兼容共享状态之间是否还有未覆盖的一致性边界。
+
+### 2026-11-15 串行化任务生命周期 API 与共享 GIS 操作
+
+- **问题与证据：**`/api/reset_state`、直接工具调用和 `clear_memory` 使用 process-wide shared-state lock，但任务 archive/restore/delete 路由未使用。新增持锁状态下调用三路由的测试先失败 **3 项**，确认当工作区正被占用时这些 API 仍会执行状态转换/删除。
+- **改动：**三个路由现在先验证 ID/任务存在，再非阻塞获取共享锁；忙时返回 HTTP 409。进入临界区后再次确认任务仍存在，以保留 404 语义并避免等待锁期间资源被删除；操作后始终释放共享锁。
+- **验证：**回归用例修复前 **3 failed**；修正后忙锁用例及任务 API 成功/无效/不存在路径 **6 passed**；任务管理、adversarial 与显式跨会话 cartography 引用组合 **49 passed**。task_manager 使用 pytest `tmp_path`，TEMP/TMP/MPLCONFIGDIR 为独立目录；无外部服务、凭据或真实用户数据。
+- **边界与下一步：**锁为进程内锁，只协调经过该 API/运行时锁的同进程操作，不覆盖多 worker 或绕过 API 直接调用 manager 的并发；未跑后端全量。下一步可检查锁持有期间请求取消/异常是否会释放锁，以及工具运行状态清理是否可靠。
+
+### 2026-11-15 保持取消请求的直接工具线程锁租约
+
+- **问题与证据：**`/api/tools/invoke` 将同步 GIS 工具放入 executor，但直接 `await run_in_executor(...)` 被取消时只会取消 asyncio 包装 Future，不会停止已运行的线程；`finally` 因而提前清除 task/run 上下文并释放共享工作区锁。新增屏障测试在 worker 阻塞期间取消请求，修复前观测到锁已可被其他操作取得（回归失败）。
+- **改动：**用 `asyncio.shield` 等待 executor Future；请求取消后继续等待实际线程完成（包括重复取消和 worker 异常路径），之后才重抛取消并执行上下文清理/解锁。扩展 adversarial API 竞态测试接受同一共享锁竞争时的预期 HTTP 409。
+- **验证：**取消屏障回归修复前失败、修复后对 worker 正常返回和异常退出两种路径均通过；`test_ai_cancellation.py`、task manager/adversarial、runtime state、tools facade 兼容及跨会话引用组合 **106 passed**。TEMP/TMP/MPLCONFIGDIR 独立隔离；新测试任务文件在 `tmp_path`，存储服务写入替身，不触碰用户数据库/外部服务/凭据。
+- **边界与下一步：**尚未覆盖 executor 工具永不返回时取消请求会一直保留工作区锁（这是避免并发污染的保守行为），也未验证多 worker。异步路由通过 `to_thread` 获取锁时存在“协程刚取消、后台获取线程随后成功”的待审查边界；未跑后端全量。`git diff --check` 通过。
+
+### 2026-11-15 取消异步锁获取时回收迟到的锁
+
+- **问题与证据：**任务归档路由在 `await asyncio.to_thread(acquire_shared_state_lock, 0)` 期间被取消后，to_thread 的后台线程仍可能继续；屏障测试让该线程在路由取消后成功拿锁，修复前确认锁仍被占用（回归失败）。这会阻塞整个进程的 GIS 操作。
+- **改动：**新增 `_acquire_shared_state_lock_cancellation_safe`：通过 shield 保留后台获取任务；若请求取消，则等待获取结束、读取获取结果，并在后台线程已拿到锁时立即释放，然后重抛取消。替换 `main.py` 所有异步共享锁获取点，包括任务、工具、历史、图层和活动工程路由。
+- **验证：**延迟获取屏障用例修复前失败、修复后通过；取消、任务管理/adversarial、runtime/facade、工程打开竞态、隐私模式、图层生命周期与跨会话引用组合 **206 passed**。TEMP/TMP/MPLCONFIGDIR 隔离；task_manager 使用 pytest `tmp_path`，未触碰真实用户数据库、凭据或外部服务。
+- **边界与下一步：**辅助函数只处理进程内锁；真实获取使用非阻塞调用，测试延迟仅用于确定性复现。未跑后端全量或多 worker；可继续审查锁释放函数和跨进程部署语义。随后完成的 `git diff --check` 通过。
+
+### 2026-11-15 将支持的 Uvicorn 启动方式固定为单 worker
+
+- **问题与证据：**`runtime.py` 的图层、任务上下文及共享锁均为进程内对象；桌面启动器和 Python launcher 未传 worker 数，Uvicorn 可从 `WEB_CONCURRENCY` 读取进程数。本机 `uvicorn --help` 明示此环境变量覆盖默认 worker 数；当前安装版为 0.51.0，而 `backend/requirements.txt` 固定 0.31.1，因此不把本机版本当作锁定依赖的运行证明。
+- **改动：**Python launcher 显式传 `--workers 1`；Electron 正常启动同样传单 worker，并对子进程固定 `WEB_CONCURRENCY=1`（开发 `--reload` 模式不额外传 workers）；README、英文 README、分析工具手册、复现指南和前端启动提示均明确单 worker要求。
+- **验证：**`backend/tests/test_launcher.py` **38 passed**；Electron 主进程测试 `node --test desktop/tests/main.test.cjs` **29 passed**，覆盖单 worker 参数/环境。`npm --prefix desktop test` 因 C: 盘可用空间为 0 而报 ENOSPC；直接 Node 测试已通过，未清理任何用户文件。后端全量未运行。
+- **边界与下一步：**自定义部署命令若绕过 launcher 仍需单 worker，当前代码不支持多进程共享图层/任务运行状态。未在依赖锁定版本 0.31.1 的干净环境启动验收；可后续决定是否添加启动时显式检测并拒绝多 worker 配置。
+
+### 2026-11-15 将地图与 PDF 导出操作实现迁入 io_export
+
+- **问题与证据：**`tools.py` 已将 `export_layer` 委托给 `io_export.py`，但 `export_map` 和 `export_pdf` 仍在兼容门面内直接校验/写入 `_pending_layer_ops`，与阶段 2 的 I/O 导出归属不一致。新增的 facade 委托测试在迁移前失败。
+- **改动：**在 `io_export.py` 增加 `export_map_impl` / `export_pdf_impl`，由门面原名、原签名、原 docstring 的 `@tool` wrapper 显式传入权威 `_pending_layer_ops`；补充模块契约，禁止复制队列状态或反向导入 facade。
+- **验证：**兼容性测试及 map/PDF 失败反馈、GIS 操作上下文组合 **37 passed**；覆盖委托、队列对象身份、工具名/顺序相关兼容、格式失败反馈、队列异常分类和本地 GIS 上下文。使用隔离 TEMP/TMP/MPLCONFIGDIR 与测试临时目录；无外部服务、凭据或真实用户数据。
+- **边界与下一步：**只迁移了 map/PDF 的队列实现，实际渲染仍由前端消费 `layer_ops` 完成；未跑后端全量。下一步可审计 `tools.py` 剩余未迁移工具，优先选择有稳定 domain owner 和兼容测试覆盖的 I/O/状态辅助逻辑。
+
+### 2026-11-15 将 layer_control 的状态实现收拢到 runtime
+
+- **问题与证据：**`layer_control` 仍直接在 `tools.py` 操作 `_registered_layers`、`_pending_layer_ops`、`_state_lock`，包括删除和带 token 失效的重命名；这与 runtime 单一状态归属冲突。新增 facade 委托回归在迁移前失败，执行原逻辑而未调用 runtime。
+- **改动：**将实际分支与注册表改动移入 `runtime._layer_control_impl`；`tools.py` 保留原 `@tool`、参数签名、文档和工具注册位置，并委托给 runtime。扩展 `DOMAIN_CONTRACTS.md` 明确所有权与共享队列约束；修正计划文档中 `tools.py` 行数为当前 5,054（HEAD 5,121）。
+- **验证：**compat、layer registry lifecycle、`TestLayerControl`、失败反馈和 `layer_control` rename 同步测试组合 **99 passed**；委托回归从修复前失败转为通过。TEMP/TMP/MPLCONFIGDIR 隔离；本地合成图层，无外部服务、凭据或真实用户数据。
+- **边界与下一步：**未跑后端全量；runtime 仍承载多类状态 helper，`shared_state.py`/`registry.py` 尚未建立。下一步可评估 `focus_map` 是否属于 runtime 状态操作，或应保持为门面中的薄领域包装；按现有前端处理语义确认后再迁。
+
+### 2026-11-15 将 focus_map 的图层解析与定位队列实现迁入 runtime
+
+- **问题与证据：**`focus_map` 在 `tools.py` 直接读 `_registered_layers`、向 `_pending_layer_ops` 写入 `fit`/`center` 指令；前端 `chat.js` 已明确消费这两类指令。compat 委托回归在迁移前失败，工具仍在 facade 内实现而非 runtime。
+- **改动：**将图层精确/包含式解析、坐标格式与 WGS-84 范围验证、缩放级别裁剪及 `fit`/`center` 队列写入移至 `runtime._focus_map_impl`。`tools.py` 保留原 `@tool` API、docstring 与注册位置并委托；扩充模块契约，计划记录更新为 5,030 行。
+- **验证：**compat、focus_map 功能/失败反馈、layer registry lifecycle、layer-control 失败反馈和 rename 同步组合 **119 passed**；新委托用例修复前失败、迁移后通过。图层样例为进程内合成状态；TEMP/TMP/MPLCONFIGDIR 隔离；无外部服务、凭据或用户数据。
+- **边界与下一步：**未跑后端全量；运行时层仍同时含共享状态、队列操作和若干高层实现，后续需审视职责是否过宽，再决定是否引入更小的 map-operations 模块或继续留在 runtime。

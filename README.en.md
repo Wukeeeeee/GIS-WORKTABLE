@@ -78,10 +78,10 @@ Activate the environment, then install dependencies and start the local server:
 
 ```bash
 python -m pip install -r backend/requirements.txt
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-Open <http://127.0.0.1:8000> in a browser. The launcher and dependency setup are currently documented and primarily verified on Windows. Other operating systems may require platform-specific dependency setup.
+Open <http://127.0.0.1:8000> in a browser. GIS layers and task runtime state are process-local, so run exactly one worker and do not configure multiple `WEB_CONCURRENCY` workers. For development, add `--reload` instead of `--workers 1`. The launcher and dependency setup are currently documented and primarily verified on Windows. Other operating systems may require platform-specific dependency setup.
 
 ## Reproduce the sample buffer workflow
 

@@ -304,6 +304,77 @@ def test_cancelled_nonstream_result_is_not_committed_as_an_assistant_reply(monke
     assert result["execution_status"] == "cancelled"
 
 
+@pytest.mark.parametrize("worker_raises", [False, True], ids=["success", "worker-error"])
+def test_cancelled_direct_tool_request_holds_workspace_lock_until_worker_stops(
+    monkeypatch, tmp_path, worker_raises,
+):
+    import asyncio
+    from backend.services import storage_service, task_manager, tools
+
+    started = threading.Event()
+    release_worker = threading.Event()
+    worker_stopped = threading.Event()
+    task_dir = tmp_path / "tasks"
+    output_dir = tmp_path / "output"
+    workspace_dir = tmp_path / "workspace"
+    output_dir.mkdir()
+    workspace_dir.mkdir()
+    monkeypatch.setattr(task_manager, "_BASE_DIR", str(task_dir))
+    monkeypatch.setattr(storage_service, "record_run_start", lambda *_args: None)
+    monkeypatch.setattr(storage_service, "record_run_finish", lambda *_args: None)
+    monkeypatch.setattr(tools, "_temp_output_dir", str(output_dir))
+    monkeypatch.setattr(tools, "_workspace_dir", str(workspace_dir))
+    monkeypatch.setattr(
+        "backend.services.tool_args_guard.validate_tool_args",
+        lambda _name, arguments: (arguments, []),
+    )
+    task_manager._tasks.clear()
+    task_manager._session_active.clear()
+    tools.reset_state()
+
+    class BlockingTool:
+        name = "blocking_cancellation_probe"
+
+        def invoke(self, _arguments):
+            started.set()
+            release_worker.wait(5)
+            worker_stopped.set()
+            if worker_raises:
+                raise RuntimeError("simulated worker failure after cancellation")
+            return "finished"
+
+    monkeypatch.setattr(tools, "tools", [BlockingTool()])
+
+    async def cancel_request_while_worker_runs():
+        request = main.ToolInvokeRequest(name=BlockingTool.name, arguments={})
+        request_task = asyncio.create_task(main.api_tools_invoke(request))
+        assert await asyncio.to_thread(started.wait, 3)
+        request_task.cancel()
+        await asyncio.sleep(0.02)
+
+        lock_was_available = tools.acquire_shared_state_lock(0)
+        if lock_was_available:
+            tools.release_shared_state_lock()
+        task_context_is_bound = bool(tools.get_current_task_id())
+
+        release_worker.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+        assert await asyncio.to_thread(worker_stopped.wait, 3)
+        assert tools.get_current_task_id() == ""
+        assert tools.acquire_shared_state_lock(0)
+        tools.release_shared_state_lock()
+        return lock_was_available, task_context_is_bound
+
+    try:
+        assert asyncio.run(cancel_request_while_worker_runs()) == (False, True)
+    finally:
+        release_worker.set()
+        tools.reset_state()
+        task_manager._tasks.clear()
+        task_manager._session_active.clear()
+
+
 def test_blocked_model_stream_observes_cancel_promptly_and_retains_shared_lock_until_worker_stops():
     started = threading.Event()
     release_model = threading.Event()

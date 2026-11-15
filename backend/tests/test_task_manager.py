@@ -219,6 +219,112 @@ def test_explicit_cross_session_task_reference_survives_cache_restart():
     assert task_manager.find_active_task_for_session(owner_session) == task_id
 
 
+def test_linked_task_lists_follow_archive_restore_for_owner_and_borrower():
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    owner_session = "lifecycle-list-owner"
+    borrower_session = "lifecycle-list-borrower"
+    task_id = task_manager.create_task("跨会话列表生命周期", owner_session)
+    assert task_manager.find_or_create_task(
+        borrower_session, "继续引用任务", task_id=task_id,
+    ) == task_id
+    client = TestClient(app)
+
+    def api_task_ids(session_id):
+        response = client.get("/api/tasks", params={"session_id": session_id})
+        assert response.status_code == 200
+        return {task["task_id"] for task in response.json()["tasks"]}
+
+    for session_id in (owner_session, borrower_session):
+        assert task_id in api_task_ids(session_id)
+        assert [task["task_id"] for task in task_manager.list_tasks(session_id)] == [task_id]
+
+    assert task_manager.archive_task(task_id)
+    for session_id in (owner_session, borrower_session):
+        assert task_id not in task_manager.list_tasks(session_id)
+        assert [task["task_id"] for task in task_manager.list_tasks(
+            session_id, include_archived=True,
+        )] == [task_id]
+        assert task_id in api_task_ids(session_id)
+
+    assert task_manager.restore_task(task_id)
+    assert task_manager._session_active[owner_session] == task_id
+    assert borrower_session not in task_manager._session_active
+    assert task_manager.find_active_task_for_session(borrower_session) == task_id
+    for session_id in (owner_session, borrower_session):
+        assert task_id in api_task_ids(session_id)
+        assert [task["task_id"] for task in task_manager.list_tasks(session_id)] == [task_id]
+
+
+@pytest.mark.parametrize(
+    ("action", "initially_archived"),
+    [("archive", False), ("restore", True), ("delete", False)],
+)
+def test_task_lifecycle_api_rejects_mutation_while_shared_workspace_is_busy(
+    action, initially_archived,
+):
+    from fastapi.testclient import TestClient
+    from backend.main import app
+    from backend.services import tools
+
+    task_id = task_manager.create_task("共享工作区忙时的任务生命周期", "busy-lifecycle")
+    if initially_archived:
+        assert task_manager.archive_task(task_id)
+    assert tools.acquire_shared_state_lock(timeout=0)
+    try:
+        client = TestClient(app)
+        if action == "archive":
+            response = client.post(f"/api/tasks/{task_id}/archive")
+        elif action == "restore":
+            response = client.post(f"/api/tasks/{task_id}/restore")
+        else:
+            response = client.delete(f"/api/tasks/{task_id}")
+    finally:
+        tools.release_shared_state_lock()
+
+    assert response.status_code == 409
+    task = task_manager.get_task(task_id)
+    assert task is not None
+    assert task.get("archived", False) is initially_archived
+
+
+def test_cancelled_task_lifecycle_api_releases_lock_acquired_by_background_thread(monkeypatch):
+    import asyncio
+    from backend import main
+    from backend.services import tools
+
+    task_id = task_manager.create_task("取消期间延迟获取的锁", "cancel-lock-acquire")
+    real_acquire = tools.acquire_shared_state_lock
+    started = threading.Event()
+    allow_acquire = threading.Event()
+    acquired = threading.Event()
+
+    def delayed_acquire(timeout):
+        started.set()
+        allow_acquire.wait(3)
+        result = real_acquire(timeout)
+        acquired.set()
+        return result
+
+    monkeypatch.setattr(tools, "acquire_shared_state_lock", delayed_acquire)
+
+    async def cancel_archive_request():
+        request_task = asyncio.create_task(main.archive_task(task_id))
+        assert await asyncio.to_thread(started.wait, 3)
+        request_task.cancel()
+        await asyncio.sleep(0)
+        allow_acquire.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+        assert await asyncio.to_thread(acquired.wait, 3)
+        lock_was_available = real_acquire(0)
+        tools.release_shared_state_lock()
+        return lock_was_available
+
+    assert asyncio.run(cancel_archive_request()) is True
+
+
 def test_explicit_reference_restores_archived_task_for_continuation():
     owner_session = "archived-reference-owner"
     borrowing_session = "archived-reference-borrower"

@@ -177,7 +177,10 @@ def start_backend(port):
             print(f"GIS-WORKTABLE is already running on port {port} (PID {data.get('pid')}).")
             return 0
 
-        cmd = [sys.executable, "-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", str(port)]
+        cmd = [
+            sys.executable, "-m", "uvicorn", "backend.main:app",
+            "--host", "127.0.0.1", "--port", str(port), "--workers", "1",
+        ]
         flags = 0
         if os.name == "nt":
             flags = subprocess.CREATE_NEW_CONSOLE | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)

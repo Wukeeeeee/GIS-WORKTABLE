@@ -2073,7 +2073,7 @@ function scrollMessages() {
       // 显示错误消息
       var _errMsg = (err && err.message) ? err.message : String(err);
       if (_errMsg === 'Failed to fetch' || _errMsg.indexOf('ERR_CONNECTION') >= 0 || _errMsg.indexOf('NetworkError') >= 0) {
-        addMessage('无法连接到后端服务，请确认后端已启动（默认地址 127.0.0.1:8000）。可在项目目录运行 start.bat 或 uvicorn backend.main:app --host 127.0.0.1 --port 8000', 'system');
+        addMessage('无法连接到后端服务，请确认后端已启动（默认地址 127.0.0.1:8000）。可在项目目录运行 start.bat 或 uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1', 'system');
       } else {
         addMessage('请求失败: ' + _errMsg, 'system');
       }

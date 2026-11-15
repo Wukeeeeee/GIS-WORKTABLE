@@ -49,6 +49,7 @@ Validation errors returned as plain text must start with `错误：` (or an exis
    - `Layer 1 (runtime.py)` depends ONLY on `common.py`, standard libraries, and foundational GIS libraries (`geopandas`, `shapely`).
    - `Layer 2 (domain modules)` depend on `runtime.py`, `common.py`, and third-party domain libraries (`scipy`, `numpy`, `rasterio`, `networkx`, `matplotlib`, etc.). Network and terrain tools reuse the shared raster lookup/output helpers through one-way imports into `raster.py`; raster must not import network or terrain. Do not copy these helpers into domain modules, where state handling can diverge.
    - `Layer 3 (tools.py)` imports domain functions, binds `@tool` wrappers, maintains the public tool list, and delegates attribute accesses to `runtime.py`.
+   - `io_export.py` owns file-export implementations plus map/PDF export-operation queueing. `tools.py` retains decorated compatibility wrappers and passes its authoritative `_pending_layer_ops` object explicitly; `io_export.py` must not create a second queue or import the facade.
 
 ---
 
@@ -78,6 +79,8 @@ from backend.services.tool_modules.runtime import (
     _register_layer,         # (name: str, geojson: dict, ...) -> registration_token: str
     _register_raster_layer,  # (name: str, raster: dict, ...) -> registration_token: str
     _unregister_layer,       # (name: str, registration_token: str = None) -> bool
+    _layer_control_impl,     # Shared registry mutations and map-operation queueing for tools.layer_control
+    _focus_map_impl,         # Layer resolution and validated fit/center operation queueing for tools.focus_map
     _disambiguate_layer_name,# (base_name: str) -> str
     _update_registered_layer_data, # (name: str, geojson: dict) -> None
     _get_exact_registered_layer,   # (name: str) -> (name, layer_dict, err_msg)

@@ -132,6 +132,71 @@ def test_edit_vertices_is_owned_by_vector_and_reexported_by_facade():
     ]
 
 
+def test_map_and_pdf_export_tools_delegate_to_io_export(monkeypatch):
+    from backend.services.tool_modules import io_export, runtime
+
+    pending_ops = []
+    calls = []
+    monkeypatch.setattr(tools, "_pending_layer_ops", pending_ops)
+
+    def export_map_impl(format, *, pending_layer_ops):
+        calls.append(("map", format, pending_layer_ops))
+        return "map implementation delegated"
+
+    def export_pdf_impl(title, rotation_degrees, *, pending_layer_ops):
+        calls.append(("pdf", title, rotation_degrees, pending_layer_ops))
+        return "pdf implementation delegated"
+
+    monkeypatch.setattr(io_export, "export_map_impl", export_map_impl, raising=False)
+    monkeypatch.setattr(io_export, "export_pdf_impl", export_pdf_impl, raising=False)
+
+    assert tools.export_map.invoke({"format": "jpg"}) == "map implementation delegated"
+    assert tools.export_pdf.invoke({"title": "验收", "rotation_degrees": 15}) == "pdf implementation delegated"
+    assert tools.export_map.name == "export_map"
+    assert tools.export_pdf.name == "export_pdf"
+    assert runtime._pending_layer_ops is pending_ops
+    assert calls == [
+        ("map", "jpg", pending_ops),
+        ("pdf", "验收", 15, pending_ops),
+    ]
+
+
+def test_layer_control_tool_delegates_to_runtime_state_owner(monkeypatch):
+    pending_ops = []
+    calls = []
+    monkeypatch.setattr(tools, "_pending_layer_ops", pending_ops)
+
+    def layer_control_impl(action, name, new_name, color, opacity, weight, fill_pattern):
+        calls.append((action, name, new_name, color, opacity, weight, fill_pattern))
+        return "runtime layer control delegated"
+
+    monkeypatch.setattr(runtime, "_layer_control_impl", layer_control_impl, raising=False)
+
+    assert tools.layer_control.invoke({
+        "action": "toggle", "name": "roads", "color": "#123456",
+    }) == "runtime layer control delegated"
+    assert tools.layer_control.name == "layer_control"
+    assert runtime._pending_layer_ops is pending_ops
+    assert calls == [("toggle", "roads", "", "#123456", 1.0, 2, "")]
+
+
+def test_focus_map_tool_delegates_to_runtime_state_owner(monkeypatch):
+    pending_ops = []
+    calls = []
+    monkeypatch.setattr(tools, "_pending_layer_ops", pending_ops)
+
+    def focus_map_impl(layer_name, center, zoom):
+        calls.append((layer_name, center, zoom))
+        return "runtime focus map delegated"
+
+    monkeypatch.setattr(runtime, "_focus_map_impl", focus_map_impl, raising=False)
+
+    assert tools.focus_map.invoke({"center": "121.5,31.2", "zoom": 15}) == "runtime focus map delegated"
+    assert tools.focus_map.name == "focus_map"
+    assert runtime._pending_layer_ops is pending_ops
+    assert calls == [("", "121.5,31.2", 15)]
+
+
 def test_draw_feature_is_owned_by_vector_and_reexported_by_facade():
     from backend.services.tool_modules import vector
 

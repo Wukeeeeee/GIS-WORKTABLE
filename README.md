@@ -151,10 +151,10 @@ source .venv/bin/activate
 
 ```bash
 python -m pip install -r backend/requirements.txt
-python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-浏览器打开 <http://127.0.0.1:8000>。开发时可在启动命令末尾添加 `--reload`。
+浏览器打开 <http://127.0.0.1:8000>。GIS 图层和运行任务状态保存在单进程内；启动时必须保持单 worker，不要设置多个 `WEB_CONCURRENCY` worker。开发时可在启动命令末尾添加 `--reload`（不要同时添加 `--workers`）。
 
 Windows 可运行 `start.bat` 或 `scripts/start-desktop.bat`。启动器只复用当前仓库的 GIS 服务；默认固定使用 8000，冲突时报错，不自动切换端口，以保持浏览器本地存储地址稳定。可以用环境变量 `GIS_PORT` 手动指定其他端口。`scripts/stop.bat` 只停止默认端口（或 `GIS_PORT` 指定端口上）身份匹配的服务；更新前启动的旧服务请在原窗口按 Ctrl+C 关闭。
 

@@ -26,6 +26,35 @@ def _cleanup_failure_suffix(path: str | None, artifact_label: str) -> str:
 
 
 
+def export_map_impl(format: str = "png", *, pending_layer_ops) -> str:
+    """Queue a frontend map-image export operation."""
+    format = str(format or "png").strip().lower().lstrip(".")
+    if format == "jpeg":
+        format = "jpg"
+    if format not in {"png", "jpg"}:
+        return f"不支持的图片格式：{format}，仅支持 png/jpg"
+    try:
+        pending_layer_ops.append({"action": "export_map", "format": format})
+        return f"已触发地图导出（{format}）"
+    except Exception as error:
+        return f"导出失败: {str(error)[:200]}"
+
+
+def export_pdf_impl(
+    title: str = "地图导出", rotation_degrees: float = 0, *, pending_layer_ops,
+) -> str:
+    """Queue a frontend print-layout PDF export operation."""
+    try:
+        pending_layer_ops.append({
+            "action": "export_pdf",
+            "title": title,
+            "rotation_degrees": rotation_degrees,
+        })
+        return f"已触发 PDF 出图，标题：{title}，旋转：{rotation_degrees}°"
+    except Exception as error:
+        return f"PDF 出图失败: {str(error)[:200]}"
+
+
 def export_layer_impl(
     layer_name: str, format: str = "geojson", *, registered_layers,
     safe_layer_export_stem, output_dir_getter, record_tool_artifact,

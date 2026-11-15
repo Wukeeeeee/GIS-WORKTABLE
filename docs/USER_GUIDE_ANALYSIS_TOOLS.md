@@ -4,7 +4,7 @@
 
 ## 一、入口与启动
 
-1. 启动：双击项目根目录 `start.bat`（或手动 `python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000`）。
+1. 启动：双击项目根目录 `start.bat`（或手动 `python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1`）。GIS 图层与任务运行状态是进程内状态，必须使用单 worker；开发热重载时使用 `--reload` 代替 `--workers 1`。
 2. 浏览器打开 `http://127.0.0.1:8000`。
 3. **改过后端代码必须重启服务**（启动命令未开 `--reload`），否则改动不生效  本次就出现过一次
    「graph 兜底已写好但服务未重启，看起来没效果」的情况。

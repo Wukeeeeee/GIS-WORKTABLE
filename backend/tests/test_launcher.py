@@ -175,6 +175,8 @@ def test_start_timeout_cleans_up_owned_process_and_lock(tmp_path, monkeypatch, f
     monkeypatch.setattr(launcher.subprocess, "Popen", MagicMock(return_value=proc))
     with pytest.raises(RuntimeError, match="not ready"):
         launcher.start_backend(8010)
+    command = launcher.subprocess.Popen.call_args.args[0]
+    assert command[command.index("--workers") + 1] == "1"
     proc.terminate.assert_called_once()
     assert proc.kill.call_count == int(force_kill)
     assert list((tmp_path / ".bootstrap").iterdir()) == []

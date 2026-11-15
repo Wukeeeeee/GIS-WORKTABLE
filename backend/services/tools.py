@@ -2296,58 +2296,9 @@ def get_session_logs(n: int = 20) -> str:
 @tool
 def layer_control(action: str, name: str = "", new_name: str = "", color: str = "", opacity: float = 1.0, weight: int = 2, fill_pattern: str = "") -> str:
     """控制地图上的图层。action 参数：remove(删除) toggle(显隐) set_color(改色+color) set_style(设置完整样式+color+opacity+weight+fill_pattern) clear_symbology(清除分级/唯一值符号化和图例) rename(重命名+new_name) fit(缩放至图层)。opacity: 0~1，weight: 线宽像素数，fill_pattern: hatch/crosshatch/dots/grid/diagonal。"""
-    if action in ("remove", "toggle", "set_color", "set_style", "clear_symbology", "fit", "rename"):
-        resolved, _, error = _get_exact_registered_layer(name)
-        if not resolved:
-            return error.replace("未执行修改", "未执行操作")
-        name = resolved
-    if action == "remove":
-        _pending_layer_ops.append({"action": "remove", "name": name})
-        _unregister_layer(name)
-        return f"已删除图层: {name}（当前剩余 {len(_registered_layers)} 个图层）"
-    elif action == "toggle":
-        _pending_layer_ops.append({"action": "toggle", "name": name})
-        return f"已标记切换图层显隐: {name}"
-    elif action == "set_color":
-        _pending_layer_ops.append({"action": "set_color", "name": name, "color": color})
-        return f"已标记修改图层颜色: {name} → {color}"
-    elif action == "set_style":
-        style = {"color": color}
-        if opacity != 1.0:
-            style["opacity"] = max(0.0, min(1.0, opacity))
-        if weight != 2:
-            style["weight"] = max(1, weight)
-        if fill_pattern:
-            style["fillPattern"] = fill_pattern
-        _pending_layer_ops.append({"action": "set_style", "name": name, "style": style})
-        parts = [f"颜色={color}"]
-        if "opacity" in style: parts.append(f"透明度={style['opacity']}")
-        if "weight" in style: parts.append(f"线宽={style['weight']}")
-        if "fillPattern" in style: parts.append(f"填充图案={style['fillPattern']}")
-        return f"已标记修改图层样式: {name} → {'，'.join(parts)}"
-    elif action == "clear_symbology":
-        _pending_layer_ops.append({"action": "clear_symbology", "name": name})
-        return f"已标记清除图层「{name}」的分级/唯一值符号化与对应图例"
-    elif action == "rename":
-        if not isinstance(new_name, str) or not new_name.strip():
-            return "图层重命名失败: 新图层名不能为空；未重命名任何图层"
-        new_name = new_name.strip()
-        with _state_lock:
-            if name not in _registered_layers:
-                return f"图层重命名失败: 图层「{name}」已被移除，请刷新后重试"
-            if new_name != name and new_name in _registered_layers:
-                return f"图层重命名失败: 图层「{new_name}」已存在；未重命名任何图层"
-            _registered_layers[new_name] = _registered_layers.pop(name)
-            _registered_layers[new_name]["name"] = new_name
-            # Invalidate session-scoped AI handles bound to the previous name.
-            _registered_layers[new_name]["registration_token"] = uuid.uuid4().hex
-            _pending_layer_ops.append({"action": "rename", "name": name, "new_name": new_name})
-        return f"已重命名图层: {name} → {new_name}"
-    elif action == "fit":
-        _pending_layer_ops.append({"action": "fit", "name": name})
-        return f"已标记缩放到图层: {name}"
-    else:
-        return f"未知操作: {action}，可选：remove / toggle / set_color / set_style / clear_symbology / rename / fit"
+    return runtime._layer_control_impl(
+        action, name, new_name, color, opacity, weight, fill_pattern,
+    )
 
 
 # ============================================================
@@ -2361,31 +2312,7 @@ def focus_map(layer_name: str = "", center: str = "", zoom: int = 13) -> str:
     1. layer_name: 定位到指定图层的范围（缩放至该图层），如 focus_map(layer_name="上海火车站")
     2. center: 定位到指定经纬度，格式"经度,纬度"，如 focus_map(center="121.4593,31.2513", zoom=15)
     不知道坐标时可先用 geocode 或 POI 搜索获取经纬度。"""
-    if layer_name:
-        if layer_name in _registered_layers:
-            _pending_layer_ops.append({"action": "fit", "name": layer_name})
-            return f"已定位到图层「{layer_name}」（缩放至其范围）"
-        for _key in list(_registered_layers.keys()):
-            if layer_name in _key or _key in layer_name:
-                _pending_layer_ops.append({"action": "fit", "name": _key})
-                return f"已定位到图层「{_key}」（缩放至其范围）"
-        _names = "、".join(_registered_layers.keys()) or "无"
-        return f"未找到图层「{layer_name}」，当前图层：{_names}。可改用 center 参数按坐标定位。"
-    if center:
-        try:
-            parts = center.replace("，", ",").split(",")
-            if len(parts) != 2:
-                return f"center 格式应为「经度,纬度」，收到：{center}"
-            lon, lat = float(parts[0].strip()), float(parts[1].strip())
-            if (not math.isfinite(lon) or not math.isfinite(lat)
-                    or not -180 <= lon <= 180 or not -90 <= lat <= 90):
-                return "坐标范围无效：经度须在 -180 到 180 之间，纬度须在 -90 到 90 之间。"
-            _z = max(3, min(19, int(zoom)))
-            _pending_layer_ops.append({"action": "center", "center": [lon, lat], "zoom": _z})
-            return f"已定位到 ({lat:.4f}, {lon:.4f})，缩放级别 {_z}"
-        except ValueError:
-            return f"无法解析坐标：{center}，格式应为「经度,纬度」（如 121.4593,31.2513）"
-    return "请提供 layer_name（图层名）或 center（「经度,纬度」）进行定位"
+    return runtime._focus_map_impl(layer_name, center, zoom)
 
 
 # ============================================================
@@ -2947,19 +2874,7 @@ def batch_geocode(addresses: str) -> str:
 @tool
 def export_map(format: str = "png") -> str:
     """将当前地图导出为图片。format: png(默认) / jpg。"""
-    format = str(format or "png").strip().lower().lstrip(".")
-    if format == "jpeg":
-        format = "jpg"
-    if format not in {"png", "jpg"}:
-        return f"不支持的图片格式：{format}，仅支持 png/jpg"
-    try:
-        _pending_layer_ops.append({
-            "action": "export_map",
-            "format": format,
-        })
-        return f"已触发地图导出（{format}）"
-    except Exception as e:
-        return f"导出失败: {str(e)[:200]}"
+    return _io_export.export_map_impl(format, pending_layer_ops=_pending_layer_ops)
 
 
 # ============================================================
@@ -2971,15 +2886,9 @@ def export_pdf(title: str = "地图导出", rotation_degrees: float = 0) -> str:
     """将当前地图导出为 PDF 文档（打印布局），包含地图、标题、比例尺、图例、经纬度和指北针。
     title: 文档标题（默认"地图导出"）。
     rotation_degrees: 地图顺时针旋转角度（度），北针随地图旋转；默认 0。"""
-    try:
-        _pending_layer_ops.append({
-            "action": "export_pdf",
-            "title": title,
-            "rotation_degrees": rotation_degrees,
-        })
-        return f"已触发 PDF 出图，标题：{title}，旋转：{rotation_degrees}°"
-    except Exception as e:
-        return f"PDF 出图失败: {str(e)[:200]}"
+    return _io_export.export_pdf_impl(
+        title, rotation_degrees, pending_layer_ops=_pending_layer_ops,
+    )
 
 
 # ============================================================
