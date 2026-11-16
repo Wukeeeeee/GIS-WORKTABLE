@@ -18,35 +18,7 @@ def _points():
     }
 
 
-def _isolate_layer_registry_runtime(monkeypatch, tmp_path):
-    isolated_state = {
-        "_registered_layers": {},
-        "_pending_layers": [],
-        "_pending_layer_ops": [],
-        "_pending_images": [],
-        "_pending_qa_warnings": [],
-        "_pending_aoi_suggestions": {},
-        "_pending_heatmap": {"latest": None},
-        "_domain_fail": {},
-        "_search_cache": {},
-        "_search_last_hit": {},
-        "_exec_log": [],
-        "_clear_layers_flag": False,
-        "_current_amap_key": "",
-        "_search_call_count": 0,
-        "_exec_call_count": 0,
-        "_current_task_id": "",
-        "_last_user_message": "",
-        "_current_run_id": "",
-        "_conversation_context": "",
-        "_active_project_id": None,
-        "_temp_output_dir": str(tmp_path),
-        "_workspace_dir": str(tmp_path / "workspace"),
-    }
-    with tools._state_lock:
-        for name, value in isolated_state.items():
-            monkeypatch.setattr(tools, name, value)
-
+def _isolate_layer_registry_project_store(monkeypatch, tmp_path):
     project_root = tmp_path / "projects"
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(project_root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(project_root / "blobs"))
@@ -55,16 +27,11 @@ def _isolate_layer_registry_runtime(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def isolate_layer_registry_state(tmp_path, monkeypatch):
-    _isolate_layer_registry_runtime(monkeypatch, tmp_path)
-    tools.reset_registered_layers([])
-    tools.reset_state()
-    yield
-    tools.reset_registered_layers([])
-    tools.reset_state()
+def isolate_layer_registry_state(isolated_tool_runtime, tmp_path, monkeypatch):
+    _isolate_layer_registry_project_store(monkeypatch, tmp_path)
 
 
-def test_layer_registry_fixture_restores_runtime_and_project_cache(tmp_path):
+def test_layer_registry_fixture_restores_runtime_and_project_cache(tmp_path, isolated_tool_runtime):
     from backend.services.tool_modules import runtime
 
     outer_registry = runtime._registered_layers
@@ -80,7 +47,9 @@ def test_layer_registry_fixture_restores_runtime_and_project_cache(tmp_path):
 
     patcher = pytest.MonkeyPatch()
     try:
-        _isolate_layer_registry_runtime(patcher, tmp_path / "nested-isolation")
+        nested_root = tmp_path / "nested-isolation"
+        isolated_tool_runtime(patcher, nested_root)
+        _isolate_layer_registry_project_store(patcher, nested_root)
         tools.reset_registered_layers([])
         tools.reset_state()
         tools._register_layer("nested-layer", _points())

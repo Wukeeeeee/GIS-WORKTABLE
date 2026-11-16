@@ -14,7 +14,6 @@ import json
 import os
 import sys
 import tempfile
-import threading
 from unittest import mock
 
 import numpy as np
@@ -72,56 +71,21 @@ from backend.services.dem_providers.aws_terrain import (
 # Fixtures
 # ============================================================
 
-def _isolate_dem_provider_runtime(monkeypatch, tmp_path):
-    from backend.services.tool_modules import runtime, terrain
-
-    output_dir = str(tmp_path / "output")
-    isolated_runtime = {
-        "_registered_layers": {},
-        "_pending_layers": [],
-        "_pending_layer_ops": [],
-        "_pending_images": [],
-        "_pending_qa_warnings": [],
-        "_pending_aoi_suggestions": {},
-        "_pending_heatmap": {"latest": None},
-        "_clear_layers_flag": False,
-        "_current_amap_key": "",
-        "_search_call_count": 0,
-        "_domain_fail": {},
-        "_search_cache": {},
-        "_search_last_hit": {},
-        "_exec_call_count": 0,
-        "_exec_log": [],
-        "_temp_output_dir": output_dir,
-        "_workspace_dir": str(tmp_path / "workspace"),
-        "_raster_output_scope": threading.local(),
-        "_active_project_id": None,
-        "_current_task_id": "",
-        "_last_user_message": "",
-        "_current_run_id": "",
-        "_conversation_context": "",
-        "_session_locks": {},
-    }
-    for path in (output_dir, os.path.join(output_dir, "uploads"),
-                 os.path.join(output_dir, "output"), isolated_runtime["_workspace_dir"]):
-        os.makedirs(path, exist_ok=True)
-    with runtime._state_lock, runtime._session_locks_guard:
-        for name, value in isolated_runtime.items():
-            monkeypatch.setattr(T, name, value)
-    monkeypatch.setattr(sys.modules[__name__], "_pending_layer_ops", isolated_runtime["_pending_layer_ops"])
-    monkeypatch.setattr(terrain, "_pending_layer_ops", isolated_runtime["_pending_layer_ops"])
-
-
 @pytest.fixture(autouse=True)
-def _clean_state(tmp_path, monkeypatch):
-    """每个测试独立 tmp_path + uploads 目录，避免污染项目真实 cache/。"""
-    _isolate_dem_provider_runtime(monkeypatch, tmp_path)
-    reset_state()
-    yield
+def _clean_state(tmp_path, isolated_tool_runtime):
+    """Use the shared runtime fixture and keep DEM artifacts/cache under tmp_path."""
+    output_dir = T._temp_output_dir
+    from backend.services.dem_providers.cache import default_cache_root
+
+    test_root = os.path.normcase(os.path.abspath(str(tmp_path)))
+    cache_root = os.path.normcase(os.path.abspath(default_cache_root()))
+    assert os.path.commonpath([test_root, cache_root]) == test_root
+    for path in (os.path.join(output_dir, "uploads"), os.path.join(output_dir, "output")):
+        os.makedirs(path, exist_ok=True)
     reset_state()
 
 
-def test_dem_provider_fixture_restores_existing_runtime_state(tmp_path):
+def test_dem_provider_fixture_restores_existing_runtime_state(tmp_path, isolated_tool_runtime):
     from backend.services.tool_modules import runtime, terrain
 
     pending_ops = runtime._pending_layer_ops
@@ -131,7 +95,7 @@ def test_dem_provider_fixture_restores_existing_runtime_state(tmp_path):
 
     patcher = pytest.MonkeyPatch()
     try:
-        _isolate_dem_provider_runtime(patcher, tmp_path / "nested-isolation")
+        isolated_tool_runtime(patcher, tmp_path / "nested-isolation")
         assert runtime._pending_layer_ops is not pending_ops
         assert T._pending_layer_ops is runtime._pending_layer_ops
         assert sys.modules[__name__]._pending_layer_ops is runtime._pending_layer_ops

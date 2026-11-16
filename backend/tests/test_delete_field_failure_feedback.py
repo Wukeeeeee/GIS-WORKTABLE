@@ -5,6 +5,8 @@ import pytest
 from backend.services import tools
 from backend.services.tool_modules import runtime
 
+pytestmark = pytest.mark.usefixtures("isolated_tool_runtime")
+
 
 def _isolate_delete_field_runtime_state(monkeypatch):
     with runtime._state_lock:
@@ -12,17 +14,6 @@ def _isolate_delete_field_runtime_state(monkeypatch):
         monkeypatch.setattr(tools, "_pending_layers", [])
         monkeypatch.setattr(tools, "_pending_layer_ops", [])
         monkeypatch.setattr(tools, "_pending_qa_warnings", [])
-
-
-@pytest.fixture(autouse=True)
-def isolate_delete_field_runtime_state_fixture(monkeypatch):
-    _isolate_delete_field_runtime_state(monkeypatch)
-    yield
-    with runtime._state_lock:
-        runtime._registered_layers.clear()
-        runtime._pending_layers.clear()
-        runtime._pending_layer_ops.clear()
-        runtime._pending_qa_warnings.clear()
 
 
 def test_delete_field_runtime_isolation_restores_existing_state():

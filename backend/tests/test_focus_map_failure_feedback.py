@@ -3,18 +3,12 @@ import pytest
 from backend.services import tools
 from backend.services.tool_modules import runtime
 
+pytestmark = pytest.mark.usefixtures("isolated_tool_runtime")
+
 
 def _isolate_pending_layer_ops(monkeypatch):
     with runtime._state_lock:
         monkeypatch.setattr(tools, "_pending_layer_ops", [])
-
-
-@pytest.fixture(autouse=True)
-def isolate_pending_layer_ops_fixture(monkeypatch):
-    _isolate_pending_layer_ops(monkeypatch)
-    yield
-    with runtime._state_lock:
-        runtime._pending_layer_ops.clear()
 
 
 def test_pending_layer_ops_isolation_restores_existing_state():
@@ -44,10 +38,7 @@ def test_pending_layer_ops_isolation_restores_existing_state():
         ({}, "请提供 layer_name"),
     ],
 )
-def test_focus_map_invalid_requests_are_classified_as_failures(monkeypatch, arguments, expected):
-    with runtime._state_lock:
-        monkeypatch.setattr(tools, "_registered_layers", {})
-
+def test_focus_map_invalid_requests_are_classified_as_failures(arguments, expected):
     result = tools.focus_map.invoke(arguments)
 
     assert expected in result

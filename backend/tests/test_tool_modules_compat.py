@@ -112,6 +112,42 @@ def test_pytest_unconfigure_restores_pyarrow_thread_counts(monkeypatch):
     assert arrow.counts == [("cpu", 6), ("io", 4)]
 
 
+def test_pytest_configure_limits_pyarrow_thread_counts(monkeypatch):
+    import sys
+    import conftest
+
+    class FakeArrow:
+        def __init__(self):
+            self.counts = {"cpu": 6, "io": 4}
+
+        def cpu_count(self):
+            return self.counts["cpu"]
+
+        def io_thread_count(self):
+            return self.counts["io"]
+
+        def set_cpu_count(self, count):
+            self.counts["cpu"] = count
+
+        def set_io_thread_count(self, count):
+            self.counts["io"] = count
+
+    arrow = FakeArrow()
+    monkeypatch.setitem(sys.modules, "pyarrow", arrow)
+    monkeypatch.setattr(conftest, "_PREVIOUS_PROJ_ENV", {})
+    monkeypatch.setattr(conftest, "_PREVIOUS_THREAD_LIMIT_ENV", {})
+
+    conftest.pytest_configure(None)
+    try:
+        assert conftest._PREVIOUS_ARROW_THREAD_COUNTS == (6, 4)
+        assert conftest._ARROW_MODULE is arrow
+        assert arrow.counts == {"cpu": 1, "io": 1}
+    finally:
+        conftest.pytest_unconfigure(None)
+
+    assert arrow.counts == {"cpu": 6, "io": 4}
+
+
 def test_map_ops_uses_the_current_runtime_queue_object(monkeypatch):
     pending_ops = []
     monkeypatch.setattr(runtime, "_pending_layer_ops", pending_ops)

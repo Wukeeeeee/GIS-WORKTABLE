@@ -21,48 +21,10 @@ _SQUARE = {"type": "FeatureCollection", "features": [{
     "properties": {}}]}
 
 
-def _isolate_focus_map_runtime(monkeypatch, tmp_path):
-    module = sys.modules[__name__]
-    isolated_state = {
-        "_registered_layers": {},
-        "_pending_layers": [],
-        "_pending_layer_ops": [],
-        "_pending_images": [],
-        "_pending_qa_warnings": [],
-        "_pending_aoi_suggestions": {},
-        "_pending_heatmap": {"latest": None},
-        "_domain_fail": {},
-        "_search_cache": {},
-        "_search_last_hit": {},
-        "_exec_log": [],
-        "_clear_layers_flag": False,
-        "_current_amap_key": "",
-        "_search_call_count": 0,
-        "_exec_call_count": 0,
-        "_current_task_id": "",
-        "_last_user_message": "",
-        "_current_run_id": "",
-        "_conversation_context": "",
-        "_active_project_id": None,
-        "_temp_output_dir": str(tmp_path),
-        "_workspace_dir": str(tmp_path / "workspace"),
-    }
-    with runtime._state_lock:
-        for name, value in isolated_state.items():
-            monkeypatch.setattr(T, name, value)
-            if name == "_registered_layers":
-                monkeypatch.setattr(module, name, value)
+pytestmark = pytest.mark.usefixtures("isolated_tool_runtime")
 
 
-@pytest.fixture(autouse=True)
-def isolate_focus_map_state(tmp_path, monkeypatch):
-    _isolate_focus_map_runtime(monkeypatch, tmp_path)
-    reset_state()
-    yield
-    reset_state()
-
-
-def test_focus_map_fixture_restores_shared_runtime_state(tmp_path):
+def test_focus_map_fixture_restores_shared_runtime_state(tmp_path, isolated_tool_runtime):
     outer_registry = runtime._registered_layers
     outer_ops = runtime._pending_layer_ops
     outer_pending = runtime._pending_layers
@@ -74,7 +36,7 @@ def test_focus_map_fixture_restores_shared_runtime_state(tmp_path):
 
     patcher = pytest.MonkeyPatch()
     try:
-        _isolate_focus_map_runtime(patcher, tmp_path / "nested-isolation")
+        isolated_tool_runtime(patcher, tmp_path / "nested-isolation")
         reset_state()
         T._pending_layer_ops.clear()
         T._register_layer("测试图层", _SQUARE)
@@ -104,7 +66,8 @@ def _setup(name="测试图层", geojson=None):
 
 
 class TestFocusMapByLayer:
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def setup_layer(self, isolated_tool_runtime):
         _setup()
 
     def test_focus_by_exact_layer_name(self):
@@ -132,7 +95,8 @@ class TestFocusMapByLayer:
 
 
 class TestFocusMapByCenter:
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def setup_layer(self, isolated_tool_runtime):
         _setup()
 
     def test_focus_by_center_lonlat(self):
