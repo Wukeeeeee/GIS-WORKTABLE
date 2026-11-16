@@ -3509,3 +3509,340 @@
 - **改动：**在线加载响应返回后端注册 token，connector 传给图层面板；面板桥接/直接路径保存 token，删除时仅对拥有有效 token 的注册发起条件注销。测试夹具明确返回模拟 token，未持有注册版本的本地图层不注销同名后端项。
 - **验证：**`test_layer_registration_versions.py` **7 passed**；`test_tool_modules_compat.py` + `test_layer_registry_lifecycle.py` **81 passed**；前端 `connector_online_load` + `layer_panel_rename` **54 passed**；`git diff --check` 通过。pytest 临时目录隔离于 `D:\CodexTestTemp\gis-online-layer-token-20261115\{temp,tmp,mpl}`，测试未访问真实数据、凭据或外部服务。
 - **边界与下一步：**未做浏览器验收、多进程/跨标签压力测试或全套后端测试；无 token 的遗留前端注册项现在会跳过删除，需在后续兼容性审计中确认是否需迁移获取 token 的策略。
+### 2026-11-15 隔离任务管理对抗测试的进程缓存
+
+- **问题与证据：**`test_task_manager_adversarial.py` 每个用例将 `_BASE_DIR` 指向独立 `tmp_path`，但没有清理 `_tasks` / `_session_active` 进程级缓存；最小探针在任务目录从临时 `first` 切到 `second` 后仍由 `get_task` 命中旧缓存（`stale_cache_survives_new_base=True`），说明只隔离磁盘目录不足以隔离测试状态。
+- **改动：**该文件的 autouse 夹具现在在每个用例前后都持 `task_manager._lock` 清空任务缓存和 session 活跃索引，并在说明中标明磁盘及进程状态双重隔离。未改生产任务管理行为。
+- **验证：**`test_task_manager.py`、`test_task_manager_adversarial.py` 与 `test_cartography_reuse.py` **58 passed in 13.74s**。改动前另对取消、任务管理、隐私、图层生命周期、工具兼容及 runtime 状态组合做当前树复核：**212 passed in 28.84s**。pytest 临时目录与 TEMP/TMP/MPLCONFIGDIR 均隔离于 `D:\CodexTestTemp\gis-task-cache-isolation-20261115\`（改前复核另用 `gis-longgoal-recheck-20261115`）；无真实用户任务、凭据或外部服务。
+- **边界与下一步：**本次只补任务管理对抗测试夹具，不代表全库 pytest 隔离审计完成；建议继续抽查会修改模块级共享状态、但只隔离文件路径的测试套件。
+### 2026-11-15 隔离 AI 取消回归的进程级标记
+
+- **问题与证据：**`test_ai_cancellation.py` 的 autouse 夹具隔离了历史目录并清空图层，但服务中的 `_cancelled_requests`、`_cancelled_sessions`、`_session_cancel_generation` 和 `_global_cancel_generation` 仍是进程级状态。最小探针调用 `clear_session_cancel` 与 `request_cancel` 后确认请求标记仍留在字典（`request_marker_persists=True`），当前多个测试使用固定 session/request ID。
+- **改动：**夹具在每例前后于 `_CANCEL_LOCK` 内清空取消标记、重置全局代次；同时若活动取消请求/会话越过用例边界则直接报错，避免把仍运行的 worker 当作普通缓存清理。
+- **验证：**`backend/tests/test_ai_cancellation.py` 单独 **22 passed in 4.08s**；与任务管理、adversarial、cartography 的同进程组合 **80 passed in 22.74s**。TEMP/TMP/MPLCONFIGDIR 分别隔离于 `D:\CodexTestTemp\gis-cancel-state-isolation-20261115\` 和 `D:\CodexTestTemp\gis-cross-fixture-20261115\`；用例采用本地替身和屏障线程，不访问真实模型、用户历史、凭据或外部服务。
+- **边界与下一步：**验证限于取消服务测试文件，尚未对全库其他模块级队列、缓存与上下文 fixture 做系统审计；可继续检查失败反馈测试是否隔离 runtime 的 pending 操作队列。
+### 2026-11-15 隔离 focus_map 失败反馈测试的待执行操作队列
+
+- **问题与证据：**`test_focus_map_failure_feedback.py` 的失败用例断言无副作用，但有效中心定位会向 runtime 的 `_pending_layer_ops` 追加操作；测试只在调用前清队列，文件结束后会把该全局队列留给同进程后续测试。最小探针确认成功定位后队列含 `center` 操作。
+- **改动：**新增 autouse 夹具在每例前后清理 `_pending_layer_ops`；有效路径回归同时断言准确入队内容，以区分合法的成功副作用与错误路径的空副作用。
+- **验证：**`backend/tests/test_focus_map_failure_feedback.py` **9 passed in 2.02s**。pytest 的 TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-focus-map-queue-20261115\`。单独最小探针未设置隔离的 TEMP/MPLCONFIGDIR，导入 runtime 会触发目录初始化、Matplotlib 字体初始化；默认临时输出目录/字体缓存可能被访问，具体写入未核实，未清理任何缓存。定向 pytest 本身使用隔离目录，未访问外部服务或真实数据。
+- **边界与下一步：**仅收口 focus_map 的操作队列；其他成功路径（如标注、绘制）也可能留下 runtime 队列，尚待逐项核对。后续探针应始终设置独立 TEMP/TMP/MPLCONFIGDIR。
+
+### 2026-11-15 隔离标注与绘制成功路径的 runtime 队列
+
+- **问题与证据：**标注成功会写入 `_pending_layer_ops`，绘制成功会注册图层并写入 `_pending_layers`；两个 failure-feedback 测试文件没有 teardown 清理。使用独立 TEMP/TMP/MPLCONFIGDIR 的最小探针确认分别留下一个 labels 操作和 `probe-point` 图层。
+- **改动：**标注与绘制测试新增 autouse 夹具，在 runtime `_state_lock` 下清理涉及的注册表/待处理队列；错误路径增加无副作用断言，成功路径断言准确入队结果。绘制测试移除逐例 `reset_state()`，避免额外调用默认临时输出目录初始化。
+- **验证：**`test_focus_map_failure_feedback.py`、`test_add_labels_failure_feedback.py`、`test_draw_feature_failure_feedback.py` 合并 **16 passed in 2.01s**。TEMP/TMP/MPLCONFIGDIR 均隔离于 `D:\CodexTestTemp\gis-vector-queue-isolation-20261115\`；无外部服务、真实数据或凭据。
+- **边界与下一步：**仅核对 focus-map、标注和绘制三个队列生产者；其他失败反馈套件及全后端测试未运行。此前一次未隔离的 focus-map 探针可能访问默认临时输出目录/字体缓存，未核实、未清理。
+
+### 2026-11-15 隔离 convert_crs 成功测试的注册与发送队列
+
+- **问题与证据：**`test_convert_crs_failure_feedback.py` 在每例开头调用 `tools.reset_state()`，但成功转换会注册输出图层并推入 `_pending_layers`；没有用例结束清理。独立 TEMP/TMP/MPLCONFIGDIR 的探针确认 `near_polar_EPSG:3857` 同时留在注册表和待发送列表。
+- **改动：**新增 autouse 夹具在 runtime `_state_lock` 下清理注册表、待发送图层、图层操作和 QA 警告；移除测试体内的 `reset_state()`，成功路径断言转换输出只进入预期队列。
+- **验证：**改动相关四个文件（focus_map、add_labels、draw_feature、convert_crs）同进程 **18 passed in 2.09s**；全部 **27 个 `*failure_feedback.py` 文件 97 passed in 6.69s**。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-geospatial-queue-isolation-20261115\` 和 `D:\CodexTestTemp\gis-all-failure-feedback-20261115\`；对这些测试的请求调用检索未发现直接 URL/HTTP 调用，所见服务边界由 mock 或输入前置条件覆盖。
+- **边界与下一步：**全量范围是 27 个失败反馈文件，不等于全后端回归；其他会成功写入 pending 队列的测试仍需筛查。未提交或推送。
+
+### 2026-11-15 隔离 delete_field 成功路径的待发送图层
+
+- **问题与证据：**`test_delete_field_failure_feedback.py::_setup_layer` 在每个用例开始调用 `reset_state()`，成功删除字段后会通过 `_push_layer` 将更新图层放入 `_pending_layers`，但用例结束不清理。TEMP/TMP/MPLCONFIGDIR 隔离的最小探针确认成功后队列仍含 `roads`。
+- **改动：**新增 autouse 夹具，在 runtime `_state_lock` 下清理注册表和 pending/QA 队列；移除辅助函数中的 `reset_state()`，成功路径断言 `roads` 被推入待发送列表。
+- **验证：**修改后全部 **27 个 `*failure_feedback.py` 文件 97 passed in 5.63s**。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-all-failure-feedback-recheck-20261115\`；这些测试无直接网络请求/真实数据调用，外部边界使用 mock 或输入前置条件。
+- **边界与下一步：**失败反馈测试组合仍不覆盖全后端；还需筛查其他成功写入待处理队列或 runtime 状态的测试文件。未提交或推送。
+
+### 2026-11-15 隔离 scale_features 与 rotate_features 测试状态
+
+- **问题与证据：**两组测试均在测试体调用 `tools.reset_state()`，但没有结束清理；隔离探针证实有效缩放把 `parcel` 留在 `_pending_layers`，而 0° 旋转虽为成功 no-op 仍在 `_registered_layers` 保留输入图层。
+- **改动：**为两文件增加 autouse runtime-state 夹具，在 `_state_lock` 下清空注册表、待发送图层、图层操作和 QA 队列；移除测试体内的 `reset_state()`，成功缩放断言更新图层入队，0° 旋转断言输入数据不变且不产生 pending 操作。
+- **验证：**修改后全部 **27 个 `*failure_feedback.py` 文件 97 passed in 5.41s**。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-all-failure-feedback-transform-recheck-20261115\`；无真实数据或凭据访问，测试请求边界使用 mock/本地前置条件。
+- **边界与下一步：**这仍是失败反馈测试子集，不覆盖全后端；需继续审计其他写入 runtime 全局状态的测试模块，并在汇总这些夹具后做更广的跨模块运行。
+
+### 2026-11-15 将 create_workflow 执行逻辑迁入 workflow_tools
+
+- **问题与证据：**`tools.py::create_workflow` 的顺序执行、`$prev`/`$N` 引用解析和内部失败分类实现约 60 行，直接读取 facade 的工具列表及 `_tool_result_failed`，是一个清晰的 facade/业务逻辑耦合点；原工具测试只覆盖了坏 JSON，不验证引用解析和 facade 注册契约。
+- **改动：**新增无 facade 反向导入的 `tool_modules/workflow_tools.py`，把实现改为接收工具提供器和失败分类器；保留 `tools.py` 的 `@tool` 包装对象、名称和列表顺序。更新模块导出与依赖合同，增加 `$prev`/`$1`、错误分类、唯一注册和相邻顺序回归。`tools.py` 从 5650 行降至 5597 行。
+- **验证：**改动前坏 JSON 回归 **1 passed**；改动后 compat 加坏 JSON 回归 **35 passed in 2.69s**；`git diff --check` 通过。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-workflow-module-recheck-20261115\`；stub 工具、无外部服务或用户数据访问。
+- **边界与下一步：**只抽出 create_workflow 的执行逻辑，`execute_workflow`/`materialize_workflow` 仍留在 facade；未跑完整 `test_workflow.py` 或后端全量。下一步可沿依赖注入边界审查 `list_history`/`rerun_history` 或工作流执行工具，继续保持公开工具注册顺序与记录语义。
+
+### 2026-11-15 将 materialize_workflow 的纯编排逻辑迁入 workflow_tools
+
+- **问题与证据：**`materialize_workflow` 在 facade 内直接读取 runtime 当前任务、导入 workflow history/saver 服务、组装输出目录与用户摘要，单体工具混合了状态提供、服务调用和格式化；现有磁盘保存失败分类回归可作为 facade 行为基线。
+- **改动：**将校验任务、调用历史物化、构造保存路径及摘要格式化移入 `workflow_tools.materialize_workflow_impl`；facade 仅注入当前 task-id provider、输出目录、历史加载器和 saver。扩展工具合同说明及注入式成功路径测试，保留原装饰工具对象和错误前缀。`tools.py` 从 5597 行降至 5580 行。
+- **验证：**改动前保存失败回归 **1 passed**；改动后 `test_tool_modules_compat.py`、`test_workflow_failure_feedback.py` 与 create-workflow 坏 JSON 回归合计 **38 passed in 3.00s**；`git diff --check` 通过。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-workflow-materialize-20261115\`；保存通过 tmp_path/mock，无真实任务、用户目录或外部服务。
+- **边界与下一步：**`execute_workflow` 仍留在 facade，因为它编排事件流、executor、注册表和共享图层快照；未跑完整 `test_workflow.py` 或后端全量。下一步先梳理其注入边界及 event-stream 回归，再决定是否迁移核心实现。
+
+### 2026-11-15 将 execute_workflow 的 DAG 编排迁入 workflow_tools
+
+- **问题与证据：**`tools.py::execute_workflow` 仍内联 workflow 校验、事件封装、工具注册、executor 构造和摘要格式化，约 110 行；其共享状态依赖实际可收束为 facade 注入的工具列表、图层注册/快照回调、workflow API、失败分类器和 LangGraph stream-writer provider。既有 `test_workflow.py` 包含有效执行、结构化工具调用、节点事件、图层向下游传递、非法 JSON 与未知工具等回归。
+- **改动：**把 DAG 校验/执行、节点事件映射与结果摘要搬入 `workflow_tools.execute_workflow_impl`；`tools.py` 保留 `@tool` 兼容接口并注入当前 workflow API、真实工具对象、运行时图层回调、失败分类器与惰性 stream-writer provider。更新依赖合同；未改变工具注册表或共享图层状态来源。
+- **验证：**执行 `test_workflow.py`、`test_tool_modules_compat.py`、`test_workflow_failure_feedback.py` 共 **74 passed in 2.48s**；TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-execute-workflow-refactor-20261115\`。工作流单测使用 stub/本地 GIS 图层；有效工具测试给 amap_geocode 传入不匹配的 `name` 参数，会在函数调用参数绑定阶段失败，未触发请求；其余 mock 与流式图测试不调用外部服务。`git diff --check` 通过，只有 Windows 行尾提示；workflow_tools 未反向导入 facade。
+- **边界与下一步：**这轮只验证工作流相关模块，没有运行全后端回归；更广的 failure-feedback 及 runtime 队列隔离改动仍待跨模块组合验证。当前分支没有新提交，本轮未提交/推送；`.agents/` 保持未跟踪且未读取/修改。下一步优先筛查其它成功路径测试对 runtime 队列/注册表的泄漏，再选取相邻模块做组合隔离验证。
+
+### 2026-11-15 隔离 add_field 成功测试的 runtime 状态
+
+- **问题与证据：**`test_add_field_failure_feedback.py::_setup_layer` 每例调用 `reset_state()`，但没有用例结束清理。定向探针在独立 TEMP/TMP/MPLCONFIGDIR 中直接运行成功路径后，确认 `_registered_layers` 留有 `roads`、`_pending_layers` 留有 `roads`；该测试的 reset 还会触发临时目录/字体初始化。
+- **改动：**为该文件添加 autouse 夹具，在 runtime `_state_lock` 下对注册表、待发送图层、图层操作和 QA 队列作前后隔离；去掉测试体 `reset_state()`，并让有效字段新增路径断言准确的 pending layer 副作用。
+- **验证：**修改后的全部 **27 个 `*failure_feedback.py` 文件 + `test_tool_modules_compat.py` 共 132 passed in 8.33s**。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-all-failure-feedback-post-add-field-20261115\`；add_field 使用本地合成 GeoJSON，无真实数据、凭据或网络调用。
+- **边界与下一步：**本轮只修复确认的 add_field 泄漏；其它工具测试的共享状态清理仍需逐项审计，未运行全后端套件。下一步审查 POI fallback 与其它有成功 pending 队列副作用的测试，优先复现再改；未提交或推送。
+
+### 2026-11-15 隔离 cloud-native 工具测试的注册图层
+
+- **审计与问题证据：**先复核 `test_amap_poi_fallback.py`：它通过 `monkeypatch` 替换 runtime 列表/字典，测试结束能恢复原对象；隔离探针执行 **2 passed**，pending 队列、注册表和操作队列的对象 identity 均恢复。此 probe 先导入了被测模块再启动 pytest，因此产生 2 条 `PytestAssertRewriteWarning`。随后对 `test_cloud_native.py::test_load_cog_tool_registers_layer_and_overlay` 做单例探针，测试通过但结束仍留有 `测试影像` 注册图层；`reset_state()` 会清 pending 状态但不清 `_registered_layers`。
+- **改动：**`test_cloud_native.py` 增加 autouse 注册表夹具，在 runtime `_state_lock` 下用原对象清空 `_registered_layers`，每例开始前隔离、结束后清理并断言为空；未重置其余 runtime 状态，也未更改生产代码。
+- **验证：**整个 `test_cloud_native.py` **65 passed, 4 skipped in 8.47s**；明确将 `GIS_WORKTABLE_RUN_REMOTE_TESTS=0`，因此跳过公开 URL 集成测试；TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-cloud-native-registry-isolation-20261115\`。本地 TIFF 和临时目录作为夹具，未访问外部服务或凭据。
+- **边界与下一步：**本轮只验证 cloud-native 测试文件及 POI 回退隔离，不代表其它栅格/矢量测试的注册表生命周期均无泄漏；远端集成测试未运行。继续审查有跨用例 runtime 状态副作用、但未使用 autouse 隔离的测试文件，优先逐个构造安全的隔离探针；未提交或推送。
+
+### 2026-11-15 隔离 coverage-gap 工具测试的注册图层
+
+- **问题与证据：**`test_coverage_gap.py` 的 autouse `cleanup` 每例在独立 `tmp_path` 下调用 `reset_state()`，但该函数不清 runtime `_registered_layers`。隔离探针运行 `TestFieldCalculate::test_calc_simple_expression` 后确认仍留有 `poly`；pending 队列被 reset 清空。探针的 pytest 内嵌启动产生 2 条预期的 `PytestAssertRewriteWarning`（预先导入 runtime 后启动 pytest）。
+- **改动：**扩展现有 `cleanup` 夹具：每例前后都在 runtime `_state_lock` 下原位清空注册表，结束后断言注册表为空；继续保留现有 `tmp_path` 输出目录和队列 reset 行为。
+- **验证：**整个 `test_coverage_gap.py` **108 passed in 6.29s**；与 `test_cloud_native.py` 同进程组合 **173 passed, 4 skipped in 12.83s**，明确设置 `GIS_WORKTABLE_RUN_REMOTE_TESTS=0`。`coverage_gap` 未发现直接外部 HTTP 请求，文件输出由夹具 `tmp_path` 隔离；TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-coverage-cloud-native-cross-isolation-20261115\`。未访问真实用户数据、凭据或外部服务。
+- **边界与下一步：**本轮覆盖 coverage-gap 和 cloud-native 两个状态测试文件，不代表其它工具测试的 runtime registry 均已隔离；远程 cloud-native 集成测试仍未运行。继续核对无 autouse fixture 的剩余 runtime 测试（如直接工具生命周期/取消场景），对确定的残留再补最小夹具；未提交或推送。
+
+### 2026-11-15 隔离 move_features 失败反馈测试状态并复核跨套件资源
+
+- **问题与证据：**`test_move_features_failure_feedback.py::_setup_layer` 在每例开头调用 `reset_state()`，但不清注册表；独立探针执行一个失败路径后仍留下 `point-layer`。该路径不涉及网络，输入是本地合成点图层。
+- **改动：**给该测试文件增加 autouse runtime 夹具，在 `_state_lock` 下前后清空注册表、待发送图层、图层操作及 QA 队列，并在结束时断言注册表为空；移除 setup 中的 `reset_state()`，避免测试体初始化临时输出目录。
+- **验证：**`test_move_features_failure_feedback.py` **2 passed in 1.92s**。随后将 27 个失败反馈文件、compat、coverage-gap 与 cloud-native 合并为 309 项同进程验证：**293 passed、4 skipped、12 failed in 19.81s**；失败集中于 `test_tool_failure_feedback` 的 PROJ SQLite “out of memory”及后续 `can't start new thread`、一个工作流 `StructuredTool._run` 缺少 config、compat 的线程启动失败。单独重跑 `test_tool_failure_feedback.py`、`test_workflow_failure_feedback.py`、`test_tool_modules_compat.py` 合计 **55 passed in 4.90s**，这些失败在隔离文件组未复现，不能据此归因为本轮夹具回归。TEMP/TMP/MPLCONFIGDIR 均隔离，远程服务关闭。
+- **边界与下一步：**超大同进程组合出现累计资源/顺序相关异常，其根因尚未确认；未把此结果记为通过，也未归为生产代码回归。后续分小批复跑失败文件并观察 GDAL/PROJ/线程资源，避免用整套超大组合掩盖单文件结果；当前仍未跑全后端测试，未提交或推送。
+
+### 2026-11-15 拆分复核大批测试组合中的资源异常
+
+- **复核证据：**保留上轮 309 项组合的真实失败记录。其后仍收集全部 309 个测试项但只运行 5 个 raster precondition 用例，结果 **5 passed、304 deselected**；再运行此前按文件顺序在该 raster 测试前的 25 个失败反馈文件及该 raster 用例前置场景，共 **88 passed**。这两种有界组合均未复现 PROJ/线程错误；单独重跑 workflow feedback、tool feedback 和 compat 的 **55 passed** 也未复现。
+- **结论：**目前证据更支持大批连续执行时的资源/时序敏感问题，但不足以定位触发条件，也不能排除偶发依赖/系统资源波动；不把 309 项组合改记为通过，也不将一次失败归为生产代码回归。
+- **边界与下一步：**仍需在可控资源条件下观察 GDAL/PROJ 状态或按逐步扩大的有序批次复跑；暂不反复执行完整 309 项同进程组合，以免继续触发系统资源耗尽。各已隔离文件的定向套件保持通过；未访问外部服务，未提交或推送。
+
+### 2026-11-15 隔离选项交互测试的 pending-action 缓存与上下文
+
+- **问题与证据：**`pending_action._STORE_DIR` 默认位于仓库 `cache/history`，`set_pending_action` / `clear_pending_action` 会写入或删除 sidecar；`test_choose_option.py` 和 `test_thematic_context.py` 用固定 session ID 执行这些操作，却未替换持久化目录。安全探针将 store 手动改到隔离目录后运行 `test_datav_boundary_disambiguation`，通过但 `ContextVar` 活跃会话从 `default` 留成 `test_disambig`。该用例使用静态歧义候选，在调用真实边界读取前就返回选择项。
+- **改动：**两文件夹具现改为每例将 pending-action store 与 `_memory` 替换到 `tmp_path`，把工具输出/工作区路径也定向到 `tmp_path`，并以 ContextVar token 恢复活跃会话，避免真实 session sidecar、内存缓存和测试会话上下文泄漏。未读取、覆盖或删除原 `cache/history` 内容。
+- **验证：**`test_choose_option.py` + `test_thematic_context.py` 同进程 **17 passed in 3.24s**；边界获取使用 mock，歧义选择由静态表返回，无外部服务或真实数据访问。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-pending-action-test-isolation-20261115\`。
+- **边界与下一步：**只覆盖选项交互与专题上下文这两个使用真实 pending-action CRUD 的测试文件；其它测试虽有部分已把 `_STORE_DIR` 指向 `tmp_path`，仍需核对其缓存/ContextVar teardown。未运行全后端测试，未提交或推送。
+
+### 2026-11-15 组合验证 pending-action 会话隔离
+
+- **复核：**复读 `test_multi_turn_state.py` 与 `test_ai_cancellation.py` 当前夹具：前者已将 pending/history 目录指向每例 `tmp_path` 并清进程内缓存，后者的实际 pending CRUD 用例也单独指向 `tmp_path` 并在结束清除；其余会话切换调用被 mock。此次 `rg` 对测试目录核验后，真实 `set_active_session` 调用集中在已隔离的选项/专题上下文文件。
+- **验证：**`test_choose_option.py`、`test_thematic_context.py`、`test_multi_turn_state.py`、`test_ai_cancellation.py` 同进程 **40 passed in 4.65s**；TEMP/TMP/MPLCONFIGDIR 隔离，涉及边界数据的测试使用静态歧义表或 mock，pending/history 存储均在临时目录，无真实缓存、凭据或外部服务访问。
+- **边界与下一步：**这组验证覆盖当前识别到的 pending-action 会话状态测试，不代表全库其它缓存（tool history、task manager、栅格/矢量注册表）全部完成审计；上轮 309 项大组合的资源异常仍未定位，暂按有界批次验证。未提交或推送。
+
+### 2026-11-15 恢复 materialize-workflow 测试的历史缓存配置
+
+- **问题与证据：**`test_materialize_workflow.py::clean_history` 使用 `history_service.set_history_file(tmp_path)` 隔离磁盘，但 teardown 只清空历史，没有恢复 `_CUSTOM_PATH`。将单例测试安全重定向到 D 盘临时目录后运行，测试通过却留下 `_CUSTOM_PATH[0]` 指向即将退出作用域的 pytest 临时文件路径；该行为可能让同进程后续测试沿用失效路径。
+- **改动：**fixture 现在用 `monkeypatch` 临时替换 history service 的路径与缓存对象（entries/index/load/error），只在 tmp_path 上执行清理/写入；用例结束自动恢复原有缓存对象和 custom-path 引用，不调用会清空原历史缓存的 `set_history_file(None)`。
+- **验证：**整个 `test_materialize_workflow.py` **6 passed in 0.09s**；通过同进程 pytest 探针确认测试后 `_CUSTOM_PATH[0] is None`。TEMP/TMP/MPLCONFIGDIR 隔离于 `D:\CodexTestTemp\gis-materialize-workflow-history-isolation-20261115\`；无外部请求或真实用户数据访问。
+- **边界与下一步：**本轮仅收口 materialize-workflow 测试的缓存配置恢复；其它使用 `set_history_file` 的 fixtures 有的在 teardown 设为默认路径，但对已有内存历史的保留语义尚未逐项核查。继续审查历史服务/任务管理测试的存储恢复，再分批验证；未提交或推送。
+
+### 2026-11-16 隔离 cartography 与 GIS operation-context 测试历史缓存
+
+- **问题与证据：**`test_cartography_reuse.py::local_map` 和 `test_gis_operation_context.py::local_gis_task` 调用 `history_service.set_history_file(tmp_path)`，该 API 会清空进程级 `_ENTRIES`、索引和错误状态；teardown 再调用 `set_history_file(None)`，仍会清空测试前的历史缓存并把路径状态改成默认值。测试路径虽在临时目录，进程内共享状态未恢复。
+- **改动：**两个 fixture 改为通过 `monkeypatch` 将 history service 的自定义路径、entries、索引、loaded 和读写错误状态替换为每例独立对象；删除 teardown 的全局切换，不动原有缓存引用和值。
+- **验证：**两文件同进程运行 **15 passed in 7.74s**。另以预置 sentinel 历史记录、索引、自定义路径和错误状态的同进程 pytest 探针运行相同 15 项，测试后确认六个缓存对象的引用和值均恢复（`history_cache_refs_and_values_restored=True`）。TEMP/TMP/MPLCONFIGDIR 定向到 `D:\CodexTestTemp\gis-history-fixture-20261116\` 或 `D:\CodexTestTemp\gis-history-restore-probe-20261116\`，关闭远程测试开关；测试处理本地合成图层，历史文件写入 tmp_path，未访问真实缓存、凭据或外部服务。
+- **边界与下一步：**仅修复上述两套 fixture 的 history-service 状态隔离；其 task-manager、GIS runtime registry 和 storage-service fixture 的既有恢复语义未在本轮扩展审计。继续核对其余历史/任务管理测试的进程级状态隔离，再按受控小批次验证；309 项组合中曾出现的 PROJ/线程异常根因仍未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 task-manager 测试进程缓存
+
+- **问题与证据：**`test_task_manager.py::isolated_task_dir` 和 `test_task_manager_adversarial.py::isolate_task_storage` 会在测试前后直接清空模块级 `_tasks` 与 `_session_active` 字典。虽然 `_BASE_DIR` 已指向 `tmp_path`，但同进程运行时仍会丢弃测试开始前的缓存与活跃任务索引。
+- **改动：**两个 fixture 改为在共享锁下把 `_tasks`、`_session_active` 替换成每例新字典；fixture 收尾只清理这两个隔离字典，之后由 `monkeypatch` 恢复原对象。磁盘目录仍仅使用每例 `tmp_path`。
+- **验证：**`test_task_manager.py` + `test_task_manager_adversarial.py` 同进程 **49 passed in 11.75s**。随后以含 sentinel task 和 session index 的同进程探针重跑相同 49 项，测试后确认原字典对象及其 sentinel 值完整恢复（`task_manager_cache_refs_and_values_restored=True`）。TEMP/TMP/MPLCONFIGDIR 定向到 `D:\CodexTestTemp\gis-task-manager-final-20261116\` 或 `D:\CodexTestTemp\gis-task-manager-restore-final-20261116\`；后端测试目录、任务目录均使用临时路径，未请求真实外部服务或凭据。
+- **边界与下一步：**本轮只证明这两个 task-manager 测试文件的进程缓存引用和值恢复；其它测试中直接清理 `_tasks`、`_session_active` 的测试体操作发生在各自 fixture 建立的上下文内，但全库仍可能有未发现的缓存别名或后台线程生命周期问题。继续搜索 task manager 及周边 runtime 状态的 fixture/teardown，并分批验证；未提交、推送或部署。
+
+### 2026-11-16 扩展 task-manager 缓存隔离到工具状态测试夹具
+
+- **问题与证据：**继续检索发现 `test_cartography_reuse.py`、`test_gis_operation_context.py`、`test_challenger_probes.py`、`test_result_guard_v2.py` 和 `test_ai_cancellation.py` 也会清空 `task_manager._tasks` / `_session_active`。这些夹具已隔离磁盘目录，但仍会覆盖同进程预存缓存。
+- **改动：**五处夹具改为在 `task_manager._lock` 下替换两个全局映射，并仅清理夹具自己的映射；原映射通过 `monkeypatch` 恢复。取消测试先等后台工作线程停止，再收尾隔离映射。
+- **验证：**cartography、GIS operation-context、challenger probes、result guard 四文件 **46 passed in 12.75s**；AI cancellation **22 passed in 4.76s**。对五文件同进程组合运行 **68 passed in 13.24s**，并以预置 sentinel task/session 映射核实执行后原字典引用和值完整恢复。随后将映射替换放入共享锁保护内，最终复跑 task-manager 两文件 **49 passed in 10.89s**，五文件组合 **68 passed in 12.81s**。TEMP/TMP/MPLCONFIGDIR 及被测任务、workspace、输出、DB 路径均指向临时目录；远程测试关闭，AI 路径使用 mock，无真实缓存、凭据或外部服务访问。
+- **边界与下一步：**本轮只隔离这些文件中的 task-manager 缓存；GIS 注册表、工具运行上下文及 storage-service 的其它共享状态没有一并变更。继续核对余下测试夹具是否直接重置 task-manager/runtime 全局状态，并保留此前 309 项大组合资源异常的未决状态；未提交、推送或部署。
+
+### 2026-11-16 隔离 agent-retry 测试的全局图层注册表
+
+- **问题与证据：**`test_agent_retry_safety.py::isolate_history_storage` 在每例前后对共享 `_registered_layers` 原地 `clear()`。以同进程预置 synthetic sentinel 图层运行原有 4 项，测试均通过但 `sentinel_survived=False`，确认测试夹具会删除调用前的注册表内容。
+- **改动：**fixture 现在在 runtime 状态锁下创建独立注册表，并同时替换 `runtime._registered_layers` 与 `tools._registered_layers` 两个别名，确保 runtime API 与 `tools.py` 函数看到同一个隔离字典；移除对真实共享注册表的清空。
+- **验证：**`test_agent_retry_safety.py` **4 passed in 4.79s**。同进程 sentinel 探针再次运行全部 4 项后，确认 tools/runtime 两个别名及 sentinel 均恢复（`registered_layer_registry_restored=True`）。TEMP/TMP/MPLCONFIGDIR 和 AI 历史目录指向 D 盘临时目录；agent/LLM 路径使用 mock，无真实图层、凭据或外部服务访问。探针因先导入 pytest 插件出现 2 条 `PytestAssertRewriteWarning`，不影响测试退出码与状态断言。
+- **边界与下一步：**只修复 agent-retry fixture 的图层注册表隔离；`test_coverage_gap.py` 等通过 `from tools import _registered_layers` 持有额外别名的测试需单独追踪，不能只 monkeypatch runtime 模块变量。继续核对其它全局状态夹具并为每种别名关系验证恢复；未提交、推送或部署。
+
+### 2026-11-16 隔离 coverage-gap 测试的运行时共享状态与导入别名
+
+- **问题与证据：**`test_coverage_gap.py::cleanup` 会调用 `reset_state()` 并清空 runtime 注册表；该测试模块还通过 `from tools import _registered_layers, _pending_layers, _pending_layer_ops` 持有独立引用。以 synthetic sentinel 预置注册表并运行单个本地表达式用例后，测试虽通过但 sentinel 消失，证明夹具改动了调用前的进程状态。
+- **改动：**fixture 现在通过 `tools.py` 兼容 facade 为 runtime 与工具模块替换独立的注册表、pending 队列、图片/QA/AOI/heatmap 状态、执行日志、搜索缓存及 reset_state 涉及的标量；同时替换测试模块的三个 `from` 导入别名。输出和 workspace 路径定向到每例 `tmp_path`，reset/清理仅作用于隔离状态。
+- **验证：**改前最小表达式用例 **1 passed** 但 sentinel 丢失；改后同进程 sentinel 探针确认 registry、pending 队列、tools/runtime/测试模块别名、当前 run 和目录配置均恢复（`coverage_runtime_aliases_and_values_restored=True`）。新增持久回归测试 `test_runtime_state_isolation_restores_existing_aliases` **1 passed**；完整 `test_coverage_gap.py` 最终 **109 passed in 5.26s**。TEMP/TMP/MPLCONFIGDIR 与输出/workspace 指向临时目录；静态检查未发现该文件直接发起 HTTP、凭据或真实 cache 访问，远程测试开关关闭。pytest 同进程探针有 2 条插件重写警告，不影响结果。
+- **边界与下一步：**这次只收口 coverage-gap 的 runtime/reset_state 别名；其它测试通过 `from tools import ...` 保存共享状态引用的夹具仍需逐项审计。此前 309 项大批测试组合的 PROJ/线程异常仍未定位；未提交、推送或部署。
+
+### 2026-11-16 隔离标签与绘制失败反馈测试的 runtime 状态
+
+- **问题与证据：**`test_add_labels_failure_feedback.py` 和 `test_draw_feature_failure_feedback.py` 的 autouse fixture 在每例前后原地清空共享注册表及 pending 队列。预置 synthetic sentinel 后运行标签缺字段用例与四种绘制输入错误用例，共 **5 项通过**，但注册表、layer ops、pending layers、QA warnings 均被清空。
+- **改动：**两个 fixture 改为通过 `tools` 兼容 facade 在锁内替换各自使用的 runtime 状态对象；清理只操作隔离对象。各增加一项回归测试，验证 nested monkeypatch 后 registry/pending 原对象和值完整恢复。
+- **验证：**两文件合计 **9 passed in 3.16s**；同进程预置 sentinel 后再次执行 **9 passed**，确认 tools/runtime 别名和四类共享状态都恢复（`feedback_runtime_state_restored=True`）。测试仅使用合成点图层和非法坐标，不访问外部服务、真实缓存或凭据；TEMP/TMP/MPLCONFIGDIR 指向临时目录。探针有 2 条插件重写警告，不影响验证。
+- **边界与下一步：**仅覆盖标签与绘制失败反馈两个 fixture；其它失败反馈夹具和共享状态测试尚未逐个做 sentinel 验证。此前 309 项组合的 PROJ/线程异常仍未定位；未提交、推送或部署。
+
+### 2026-11-16 隔离删除字段与 CRS 失败反馈测试的 runtime 状态
+
+- **问题与证据：**`test_delete_field_failure_feedback.py`、`test_convert_crs_failure_feedback.py` 的 autouse fixture 均在锁内原地清空注册表、pending layer/ops 和 QA warnings。预置 sentinel 后运行失败场景时，这些共享对象和值被删除。
+- **改动：**两个 fixture 改为通过 `tools` facade 在 runtime 状态锁下替换四个状态对象；teardown 只清理隔离对象。每个文件新增回归测试，核验旧对象引用和值在 nested monkeypatch 后恢复。
+- **验证：**两文件合计 **9 passed in 12.25s**；同进程预置 sentinel 后复跑 **9 passed**，验证 runtime/tools 别名和四类状态完整恢复（`delete_crs_runtime_state_restored=True`）。这些测试仅处理合成图层和本地 CRS 运算，无外部服务、凭据或真实缓存访问。首次验证探针在本地原生库导入时遇到 OpenBLAS/Matplotlib `MemoryError`；将测试进程 BLAS 线程数限制为 1 后，定向套件与同进程探针均通过。TEMP/TMP/MPLCONFIGDIR 指向临时目录。
+- **边界与下一步：**只覆盖删除字段和 CRS 两个 fixture；其它失败反馈 fixtures 仍有同类状态清理模式待审计。`MemoryError` 的系统级触发原因尚未确认，不据此归为代码回归；此前 309 项测试组合的 PROJ/线程异常仍未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离添加字段与移动要素失败反馈测试的 runtime 状态
+
+- **问题与证据：**`test_add_field_failure_feedback.py` 与 `test_move_features_failure_feedback.py` 的 autouse fixture 在测试前后原地清空注册表、pending 图层/操作和 QA warnings。用 synthetic sentinel 运行一个添加字段失败用例与一个移动单位失败用例后，夹具均通过但四类共享状态全被清空。
+- **改动：**两 fixture 改为在 runtime 状态锁内通过 `tools` facade 替换各自的四个状态对象，teardown 只清理隔离状态；每个文件增加回归测试核实原对象和 sentinel 内容在 nested monkeypatch 后恢复。
+- **验证：**两文件完整定向套件 **9 passed in 3.77s**；同进程 sentinel 探针复跑 **9 passed**，确认 runtime/tools 别名、registry、pending queues 和 warnings 均恢复（`add_move_runtime_state_restored=True`）。测试使用合成图层和本地几何计算，无外部服务、凭据或真实缓存访问；TEMP/TMP/MPLCONFIGDIR 指向临时目录。首次启动探针遇到 OpenBLAS/Matplotlib `MemoryError`，设置 BLAS 线程数为 1 后，复现、定向测试和恢复探针均通过；不推断该暂时性错误的系统根因。
+- **边界与下一步：**只覆盖这两个失败反馈 fixture；其余仍原地清理 runtime 状态的失败反馈夹具待审计。309 项测试组合中的 PROJ/线程异常仍未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 focus-map 失败反馈测试的 pending 操作队列
+
+- **问题与证据：**`test_focus_map_failure_feedback.py::isolate_pending_layer_ops` 在每例前后原地清空共享 `_pending_layer_ops`。同进程预置 sentinel 后运行 8 个 invalid-request 参数用例，均通过但 `sentinel_survived=False`。
+- **改动：**fixture 改为在 runtime 锁下经 `tools` facade 换成独立 pending-ops 列表，并仅清理隔离列表；每个 invalid-request 用例替换 `_registered_layers` 时也置于同一状态锁下。新增回归测试验证原列表引用和值恢复。
+- **验证：**完整 `test_focus_map_failure_feedback.py` **10 passed in 5.38s**；同进程 sentinel 探针复跑 **10 passed**，确认 runtime/tools 队列引用和值恢复（`focus_map_pending_ops_restored=True`）。测试只覆盖本地中心点解析和合成参数，不访问外部服务、缓存或凭据；TEMP/TMP/MPLCONFIGDIR 使用临时目录。pytest 探针有 2 条插件重写警告，不影响结果。
+- **边界与下一步：**只修复 focus-map 夹具的 pending 操作队列隔离；剩余失败反馈夹具和其它 runtime 状态仍待审计。309 项组合中的 PROJ/线程异常仍未定位；未提交、推送或部署。
+
+### 2026-11-16 隔离旋转与缩放失败反馈测试的 runtime 状态
+
+- **问题与证据：**`test_rotate_features_failure_feedback.py` 与 `test_scale_features_failure_feedback.py` 的 fixture 对注册表、pending 图层/操作和 QA warnings 原地清空。以 synthetic sentinel 运行一个空图层旋转错误及四个缩放因子错误用例后，全部通过但四类 sentinel 状态被清除。
+- **改动：**两 fixture 改为在 runtime 锁下经 `tools` facade 替换四个共享状态对象；teardown 只清理隔离对象。各增加回归测试验证原对象引用和值恢复。
+- **验证：**两文件完整定向套件 **11 passed in 5.77s**；同进程 sentinel 探针复跑 **11 passed**，确认 runtime/tools aliases 及 registry、pending 队列、QA warnings 均恢复（`rotate_scale_runtime_state_restored=True`）。测试使用本地合成图层和几何运算，无外部服务、真实缓存或凭据访问；TEMP/TMP/MPLCONFIGDIR 使用临时目录，BLAS 线程限制为 1。
+- **边界与下一步：**仅覆盖旋转与缩放两个 fixture；剩余失败反馈夹具及非失败反馈测试仍需审计。309 项组合中的 PROJ/线程异常仍未定位；未提交、推送或部署。
+
+### 2026-11-16 复核 workflow-tools 模块迁移兼容边界
+
+- **复核范围：**检查当前 `tools.py` 中 `create_workflow`、`execute_workflow`、`materialize_workflow` facade 与 `workflow_tools.py` 的实现/依赖注入；核对工具顺序、失败分类、DAG 进度事件与图层注册行为对应的测试。未修改实现代码。
+- **验证：**工作流引擎、失败反馈、物化工作流、模块兼容和工具注册五组测试同进程 **97 passed in 8.00s**；在全新 Python 进程单独导入 `workflow_tools`，确认 `backend.services.tools` 未进入 `sys.modules`（`WORKFLOW_TOOLS_ISOLATION_OK`）。相关测试覆盖 facade 工具注册、`create_workflow` 参数引用与失败分类、物化路径注入、execute_workflow DAG / 流式事件 / 注册图层传递，以及工具定义与 registry 一致性。测试使用 mock 或本地数据，远程测试关闭；未访问外部服务、用户缓存或凭据。
+- **边界与下一步：**此轮仅复核 workflow-tools 迁移，没有跑全后端套件；流式事件由本地 LangGraph 测试模拟，不代表真实前端/服务端运行态。继续核验其他提取模块的干净进程导入与兼容门槛，并分小组处理 309 项组合里的 PROJ/线程异常；未提交、推送或部署。
+
+### 2026-11-16 隔离 swipe-history 与 direct-invoke E2E 的历史缓存
+
+- **问题与证据：**`test_swipe_history.py` 的旧 fixture 直接清空 runtime 注册表并调用 `history_service.set_history_file()`，会覆盖进程共享历史缓存/路径；单例同进程探针显示用例通过但预置的 runtime/history sentinel 状态丢失。另发现 `test_direct_invoke_e2e.py` 模块级 fixture 仅隔离了输出目录；文件内三组历史用例会在 teardown 调用 `set_history_file(None)`，令后续 API 工具写入默认仓库 `cache/tool_history.json`。同时 `storage_service` 在导入时执行 `init_db()`，因此测试进程启动前需用 `GIS_WORKSPACE_DB_PATH` 将初始化也重定向。
+- **改动：**`test_swipe_history.py` 用 monkeypatch 替换测试期 runtime/history 状态对象，隔离输出目录并新增 sentinel 回归检查，teardown 不再修改原 history cache。`test_direct_invoke_e2e.py` 的 module fixture 现在先将 `GIS_WORKSPACE_DB_PATH` 指向 fixture 临时目录，再导入会执行 `init_db()` 的 storage service；同时隔离 history cache 并将默认历史文件指向 fixture 输出目录，显式历史路径用例仍可覆盖；SQLite 在该临时目录初始化，fixture teardown 恢复原引用和环境变量；新增默认路径回归测试。
+- **验证：**两个文件同进程 **38 passed**；以 pytest 内嵌探针重跑仍为 **38 passed**，预置 history entries/index/custom-path sentinel 的引用和值均恢复（`history_cache_restored=True`）。另在未预设 `GIS_WORKSPACE_DB_PATH` 的新进程单独运行 direct-invoke 文件 **16 passed**，并确认仓库默认 `data/workspace.db` 及 WAL/SHM 状态不变（`default_workspace_db_unchanged=True`）。嵌套 pytest 启动产生 2 条 `PytestAssertRewriteWarning`，不影响结果。测试 TEMP/TMP/MPLCONFIGDIR 指向 `D:\CodexTestTemp\gis-history-direct-e2e-20261116\` 或 `D:\CodexTestTemp\gis-history-sentinel-20261116\`，远程测试关闭；用例使用本地合成 GeoJSON/栅格和 TestClient，无外部服务或凭据访问。此前一次 rtk 包装调用仅返回 Windows exit `-1073741502` 且无 pytest 输出；之后直接 pytest 的定向运行均通过。
+- **边界与下一步：**只覆盖 swipe-history 与 direct-invoke E2E 的历史缓存/存储路径；direct-invoke 的其它 runtime 注册表、任务上下文及 storage 记录状态还未做完整 sentinel 审计；全后端测试未运行，309 项组合中的 PROJ/线程异常仍未定位。继续按文件核查仍可能写默认缓存/数据库的测试及其 teardown 恢复语义；未提交、推送或部署。
+
+### 2026-11-16 隔离 direct-invoke E2E 的 runtime 与任务持久化状态
+
+- **问题与证据：**追踪 `/api/tools/invoke` 实际调用发现，每个请求会 `reset_state()`，并通过 `task_manager.find_or_create_task("default", ...)` 创建/复用默认会话任务、写入任务目录；原 E2E module fixture 未隔离 runtime 或 `task_manager`。`cache/tasks` 中有目录时间戳为当日 18:14 的任务目录，与此前 direct-invoke 定向测试运行时间接近；未读取目录内容，无法确认该目录是测试新建还是测试复用了既有任务，未删除或改动。
+- **改动：**扩展 `test_direct_invoke_e2e.py::isolated_e2e_output`：通过 tools facade 临时替换 runtime 的注册表、待发送队列、搜索/执行缓存、任务/run 上下文和输出目录；将 `task_manager._BASE_DIR`、`_tasks` 与 `_session_active` 换为临时隔离状态；新增断言核对任务目录及 SQLite 路径均位于模块临时目录。原有 module 级 E2E 内部仍共享本模块隔离态，避免改变既有场景串联方式；fixture 结束还原外部引用。
+- **验证：**direct-invoke E2E 全文件 **17 passed**；同进程 sentinel 探针确认 runtime 注册表、pending layer/op 队列、task-manager 缓存引用和值及 current-task context 均恢复（`runtime_task_state_restored=True`）；测试前后 `cache/tasks` 树的名称/目录项大小/mtime 元数据相同（`default_task_cache_unchanged=True`）。另确认仓库默认 workspace DB 元数据未改变。TEMP/TMP/MPLCONFIGDIR 和数据库/任务/历史路径都隔离，远程测试关闭；嵌套 pytest 有 2 条插件重写警告，不影响结果。
+- **边界与下一步：**无法仅凭目录元数据判定之前的 18:14 任务目录来源，已保留未动；本 fixture 是模块级隔离，不代表整个后端测试进程的 task-manager 状态生命周期已经审计。继续审查仍可能调用 `find_or_create_task` 或写 history/storage 的其它集成测试；全后端测试未运行，309 项组合的 PROJ/线程异常仍未定位。未提交、推送或部署。
+
+### 2026-11-16 避免 storage-service 测试 teardown 初始化仓库默认数据库
+
+- **问题与证据：**`test_storage_service.py::temp_db` 每例先 `SS.set_db_path(tmp_path_db)`，teardown 再 `SS.set_db_path(None)`；该 API 不只是恢复变量，还会调用 `init_db()`。在隔离探针中把 `_DEFAULT_DB_PATH` 指到临时路径后复现：从测试库切换到 `None` 会创建/初始化“默认”SQLite 文件（`set_db_path(None)_initializes_default_database=True`）。当前仓库 `data/workspace.db` 已存在，未读取其内容。
+- **改动：**`backend/tests/conftest.py` 在测试收集前把 `GIS_WORKSPACE_DB_PATH` 指向独立 session 临时库，并在结束时恢复原环境变量、清理该临时目录，保护所有测试模块的 import-time `init_db()`；storage-service 测试模块另保留临时 bootstrap 防线。每例用 monkeypatch 替换 `_CUSTOM_DB_PATH` 并切换到 tmp_path，teardown 还原原引用，不再调用 `set_db_path(None)`。`test_cartography_reuse.py` 与 `test_gis_operation_context.py` 的本地 fixture 也采用同一引用替换方式，移除 teardown 时重新初始化旧/默认 DB 的调用。增加路径恢复及 session DB 重定向回归检查。
+- **验证：**`test_storage_service.py` 最新 **7 passed**；同进程预置 `_CUSTOM_DB_PATH` sentinel 后运行仍 **7 passed**，原引用和值恢复（`storage_path_cache_restored=True`）。storage-service 与 `test_tool_failure_feedback.py` 同进程 **25 passed**，且 pytest 结束后环境变量恢复、仓库默认 DB/WAL/SHM 元数据不变（`pytest_db_env_restored=True`）。单独收集顶层导入 storage_service 的 `test_tool_failure_feedback.py` **18 项**，收集期间默认 DB 元数据不变（`collection_import_isolated_db=True`）。`test_cartography_reuse.py` 与 `test_gis_operation_context.py` 同进程 **15 passed**，默认 workspace DB 元数据未变化。以上测试进程在无预设 `GIS_WORKSPACE_DB_PATH` 下执行，DB 都被重定向到临时目录；无外部服务、凭据或真实数据读写。
+- **边界与下一步：**明确覆盖 storage-service、cartography、GIS operation-context 和 tool-failure-feedback 收集/定向测试；尚未运行全后端测试，其他 app import / 多进程启动路径仍需单独核验。继续审计其它持久化服务与 runtime 测试；未提交、推送或部署。
+
+### 2026-11-16 隔离 layered 测试的 GIS runtime 与任务状态
+
+- **问题与证据：**`backend/tests/layered/conftest.py::clean_gis_state` 每例前后直接调用 `reset_state()`；对 `test_build_system_content_no_cross_session_task_leak` 做同进程探针，测试通过但外部 `_current_task_id` sentinel 被夹具清空（`context_was_restored=False`）。此外 Layer 5 的 direct-tool E2E 会走 `/api/tools/invoke`，而旧 layered fixture 未重定向该路由所用的 `task_manager` 磁盘目录和缓存。
+- **改动：**autouse fixture 改为每例通过 tools facade 替换 runtime 注册表、pending queues、缓存、任务/run 上下文、会话锁映射与输出目录；`task_manager._BASE_DIR`、`_tasks`、`_session_active` 也换为 tmp_path 状态。`reset_state()` 仅作用于隔离对象，fixture teardown 后由 monkeypatch 恢复原 runtime/任务引用；测试本身恢复 current-task context。首次定向全套验证发现两个既有用例需自行创建 `tmp_path/output`，故将 fixture runtime 输出根改为 `tmp_path/tool-runtime`，避免目录冲突。
+- **验证：**`backend/tests/layered` 全部 **24 passed in 1.95s**；同进程 sentinel 探针覆盖 registry、pending layers、task caches/session map 和 current-task context，确认测试后原引用和值恢复（`layered_runtime_and_task_state_restored=True`）。第一次全套运行有 2 个 `FileExistsError`，证实是 fixture 与两用例共用 `tmp_path/output` 导致；调整路径后整组重跑通过。测试采用本地合成 GIS 数据、mock 边界与 agent，不调用远程服务；任务/数据库路径由分层 fixture 和全局 pytest hook 重定向。sentinel 探针嵌套启动 pytest 出现 2 条插件重写警告，不影响结果。
+- **边界与下一步：**验证只覆盖 layered 5 个测试文件，未代表其余 backend/tests 的 runtime teardown 均已隔离；大规模 309 项组合此前的 PROJ/线程异常仍未定位。继续检查其他目录级 autouse fixture 是否直接 reset 或清空共享 runtime/task 状态；未提交、推送或部署。
+
+### 2026-11-16 隔离 hydrology 测试的 runtime 与历史缓存
+
+- **问题与证据：**`test_hydrology.py::_clean` 每例直接 `reset_state()` 并原地清空 `_pending_layer_ops`，仅恢复输出目录字符串。单例同进程 sentinel 探针确认测试通过后外部 pending-op sentinel 消失、current-task context 从 sentinel 变为空（`pending_sentinel_after=False`、`task_context_after=''`）。此外测试模块通过 `from ... import _pending_layer_ops` 捕获了列表别名，单改 tools facade 不足以覆盖该本地引用。
+- **改动：**抽出 `_isolate_hydrology_state`，monkeypatch 替换每例 runtime 注册表、pending queues、缓存、task/run 上下文、session-lock 映射与临时输出目录，并隔离 history-service 的路径/缓存对象；同步替换测试模块导入的 `_pending_layer_ops` 别名。`reset_state()` 只清理隔离对象；新增 nested-monkeypatch 回归测试验证 runtime/history 原引用和值及 task context 恢复。
+- **验证：**`test_hydrology.py` 全部 **10 passed**；同进程预置 runtime registry、pending layers/ops、history entries/path 和 current-task sentinel 后重跑仍 **10 passed**，均确认恢复（`hydrology_runtime_and_history_state_restored=True`）。嵌套 pytest 探针有 2 条插件重写警告，不影响结果。测试只处理本地合成栅格，TEMP/TMP/MPLCONFIGDIR 与 history/output 路径临时隔离；数据库由全局 pytest hook 重定向，未访问外部服务、凭据或真实数据。
+- **边界与下一步：**本轮只覆盖 hydrology 文件；其余 root-level 测试仍有多个 autouse fixture 调用 `reset_state()` 或清共享列表，需逐项复现并隔离。309 项组合的 PROJ/线程异常仍未定位；未提交、推送或部署。
+
+### 2026-11-16 隔离 interpolation 测试的 runtime 与历史状态
+
+- **问题与证据：**`test_interpolation.py::_clean` 原地执行 `reset_state()`、清理注册表/pending ops，且未恢复进程历史缓存。以 `test_idw_produces_overlay` 做同进程探针，测试通过但外部 pending-op sentinel 被清除、current-task context 变空（`pending_op_sentinel_after=False`）。测试模块还通过 `from tools import _registered_layers, _pending_layer_ops` 捕获对象别名。
+- **改动：**抽出 `_isolate_interpolation_state`，用 monkeypatch 替换 runtime registry/queues/cache/context/session locks、输出目录及 history-service 路径/缓存；同步替换测试模块的 registry/pending-op 本地别名。fixture 的 reset 仅针对隔离对象；加入 nested-monkeypatch sentinel 回归测试。输出目录生命周期用例现在将 `tempfile.gettempdir()` 定向到其 `tmp_path`，明确验证 `reset_state()` 创建目录，不落到共享系统临时目录。
+- **验证：**`test_interpolation.py` 全部 **10 passed**；同进程预置 registry、pending layers/ops、history entries/path 和 current-task sentinel 后重跑仍通过并确认引用和值恢复（`interpolation_runtime_and_history_state_restored=True`）。嵌套 pytest 探针有 2 条插件重写警告，不影响结果。测试使用本地合成点图层和插值栅格；TEMP/TMP/MPLCONFIGDIR、历史和输出目录隔离，无外部服务、凭据或真实数据访问。
+- **边界与下一步：**本轮只覆盖 interpolation 文件；仍有其他 root-level fixture 会直接重置共享 runtime，需继续按最小复现逐项核查。309 项组合的 PROJ/线程异常仍未定位；未提交、推送或部署。
+
+### 2026-11-16 隔离 report-quality 测试的 runtime 与历史缓存
+
+- **问题与证据：**`test_report_quality.py::_clean` 每例直接 `reset_state()`、清空共享注册表和 pending-images 队列。单例 `test_fix_invalid_polygon` 同进程探针显示通过后外部 registry sentinel 被删除、current-task context 被清空（`registry_sentinel_after=False`）。该 fixture 没有替换 history-service 单例缓存，也会让报告输出目录沿用默认临时路径。
+- **改动：**抽出 `_isolate_report_quality_state`，每例 monkeypatch runtime registry/queues/cache/context/session locks、测试输出目录和 history-service 路径/缓存；同步替换测试模块导入的 registry/pending-images 别名。`reset_state()` 现在只清理隔离状态；新增 nested-monkeypatch 回归测试核对原引用和值及 task context 恢复。
+- **验证：**`test_report_quality.py` 全部 **5 passed**；同进程预置 registry、pending-images、history entries/path 和 current-task sentinel 后重跑仍通过，均确认恢复（`report_quality_runtime_and_history_state_restored=True`）。嵌套 pytest 探针产生 2 条插件重写警告，不影响结果。输入为本地合成 GeoJSON，报告输出、history、数据库与 TEMP/TMP/MPLCONFIGDIR 均隔离；无外部服务、凭据或真实数据访问。
+- **边界与下一步：**本轮只覆盖 report-quality 文件；其他 root-level 测试 fixture 仍需逐项复现检查。309 项组合的 PROJ/线程异常仍未定位；未提交、推送或部署。
+
+### 2026-11-16 隔离 raster-gap 工具测试的 runtime 状态
+
+- **问题与证据：**`test_raster_gap_tools.py::_clean` 每例对共享 runtime 调用 `reset_state()` 并原地清空 `_pending_layer_ops`，且只恢复输出目录；该测试模块从 tools 直接导入 `_pending_layer_ops`，所以 facade 级别替换时也必须同步模块别名。原 fixture 会清除同一进程内其他调用方的注册表、pending 队列和 task context。
+- **改动：**新增 `_isolate_raster_gap_state`，在每例使用 monkeypatch 替换 runtime 注册表、pending queues、缓存、task/run context、session locks 和 workspace，并替换测试模块中的 `_pending_layer_ops` 别名；重置只针对隔离状态。输出根保持 `tmp_path`（而非其子目录），因为 GeoTIFF helper 与栅格工具共同约定在 `<output-root>/uploads` 下读写。增加 sentinel 回归测试核实原 runtime 引用和值在撤销隔离后保留。
+- **验证：**`backend/tests/test_raster_gap_tools.py` **81 passed**。第一次整文件验证得到 66 个失败，错误都表明测试栅格未在工具预期的 `tmp_path/uploads` 下被发现；将隔离输出根改为 `tmp_path` 后重跑全部通过。测试使用本地合成 GeoTIFF / GeoJSON，TEMP/TMP/MPL 配置与 pytest 数据库隔离；未调用外部服务或使用真实用户数据、凭据。`git diff --check` 通过（仅有仓库现存 LF→CRLF 提示）。
+- **边界与下一步：**只覆盖 raster-gap 工具测试文件；其他 root-level fixture 仍需按实际状态逐项审计，309 项组合中的 PROJ/线程异常尚未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 DEM analysis 测试的 runtime 状态
+
+- **问题与证据：**`test_dem_analysis.py::_clean` 原地调用共享 `reset_state()` 并清空导入的 `_pending_layer_ops`。在 `test_aspect_cardinals` 前注入同进程 sentinel 后，旧 fixture 跑完的探针结果为 `ops_sentinel=False`、`task_context=''`，确认 pending 操作与当前任务上下文被清除；注册表对象未被替换。
+- **改动：**新增 `_isolate_dem_analysis_state`，每例用 monkeypatch 替换 runtime registry、pending queues、缓存、task/run context、session locks、workspace 和输出目录，并替换测试模块已导入的 `_pending_layer_ops` 别名；`reset_state()` 仅作用于隔离对象。新增 sentinel 回归测试检查原 registry、pending-op 引用和值及 task context 经隔离撤销后保留。
+- **验证：**`backend/tests/test_dem_analysis.py` **10 passed**。同进程 pytest hook 在目标测试 setup 前植入 registry、pending-op 和 task-context sentinel，teardown 后确认 `registry_same=True`、`registry_sentinel=True`、`ops_same=True`、`ops_sentinel=True`、task context 保留。探针嵌套 pytest 有 2 条插件断言重写警告；不影响测试。TEMP/TMP/MPL 与测试数据库隔离，输入为本地合成 DEM，无外部服务、凭据或真实用户数据。
+- **边界与下一步：**本轮只覆盖 DEM analysis；仍有其他 root-level fixture 会直接重置共享 runtime，需逐项复现与隔离；309 项组合的 PROJ/线程异常仍未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 drill 测试的 runtime 状态
+
+- **问题与证据：**`test_drill.py::_clean_state` 调用共享 `reset_state()`，并在用例前后原地清空 `_pending_layer_ops`、`_registered_layers`。在 `TestMakeFid::test_adcode_priority` 前注入同进程 sentinel 后，旧 fixture teardown 探针显示 `registry_sentinel=False`、`ops_sentinel=False`、`task_context=''`，确认会清除其他调用方的共享状态。
+- **改动：**新增 `_isolate_drill_runtime`，每例 monkeypatch 替换 runtime registry、pending queues、缓存、task/run context、session locks、workspace 与输出目录；同步替换 `test_drill.py` 直接导入的 `_registered_layers` 别名。移除对共享 registry/pending list 的直接清空，增加 sentinel 回归测试确保隔离撤销后引用和值保留。
+- **验证：**`backend/tests/test_drill.py` **18 passed**。再次以 pytest hook 在 setup 前注入 sentinel，teardown 后确认 `registry_same=True`、`registry_sentinel=True`、`ops_same=True`、`ops_sentinel=True`，task context 保留。嵌套 pytest 探针产生 2 条插件断言重写警告；不影响结果。TEMP/TMP/MPL 与测试数据库隔离；行政区边界服务调用均为 mock，未触达外网、凭据或真实用户数据。
+- **边界与下一步：**本轮只覆盖 drill 测试文件；其他 root-level autouse fixture 仍需逐项复现、隔离；此前 309 项组合的 PROJ/线程异常仍待定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 nearest-pair 测试的 runtime 状态
+
+- **问题与证据：**`test_nearest_pair.py::cleanup_layers` 在每例前后直接调用共享 `reset_state()`。独立同进程复现显示这会让已有 `_pending_layer_ops` sentinel 消失、current-task context 变成空值；因此该 fixture 会影响同进程中其它测试/调用方的共享运行状态。
+- **改动：**新增 `_isolate_nearest_pair_runtime`，用 monkeypatch 替换 runtime registry、pending queues、缓存、task/run context、session locks 和输出/workspace 路径，再对隔离状态调用 `reset_state()`；加入 sentinel 回归测试校验撤销隔离后原对象和值保留。
+- **验证：**`backend/tests/test_nearest_pair.py` **6 passed**。另以 pytest hook 在测试 setup 前设置 pending-op 与 task-context sentinel，teardown 后确认 `ops_same=True`、`ops_sentinel=True`、task context 保留。该嵌套探针出现 2 条 pytest 插件重写警告，不影响结果。用例只操作内存合成 GeoJSON；TEMP/TMP/MPL 与测试数据库隔离，无外部服务、凭据或真实用户数据。
+- **边界与下一步：**只覆盖 nearest-pair 测试文件；其它直接 reset runtime 的 root-level fixture 仍需逐项复现和隔离；此前 309 项组合中的 PROJ/线程异常尚未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 new-tools 测试的 runtime 与栅格夹具
+
+- **问题与证据：**`test_new_tools.py::_clean_layers` 对共享 runtime 调用 `reset_state()`，在 `test_add_length_field_lines` 前注入 sentinel 后复现为 pending-op sentinel 丢失、task context 变空。原 `isolated_tool_output` 是 module-scoped fixture，直接改写 runtime/tools 输出目录，并让 `dem_tif_uploaded` 在该共享路径只复制一次，不利于并行或跨测试隔离。
+- **改动：**新增 `_isolate_new_tools_runtime`，按测试替换 registry、pending queues、缓存、task/run context、session locks、output/workspace；改为 function-scoped autouse fixture。在 `dem_tif_uploaded` 中按当前测试的隔离 output root 复制 DEM，使栅格输入与输出都位于每例独立目录；移除 module-scoped runtime 输出目录改写。新增 runtime sentinel 恢复回归测试。
+- **验证：**`backend/tests/test_new_tools.py` **29 passed**（2 条已有 rasterio affine 运算弃用警告）。同进程探针确认测试期间 output/registry/ops 均使用隔离对象，fixture teardown 后原 output 路径、对象和值及 task context 均恢复。探针嵌套 pytest 另有 2 条插件断言重写警告。TEMP/TMP/MPL 与 pytest 数据库隔离，DEM 为本地合成栅格，未触达外部服务、凭据或真实用户数据。
+- **边界与下一步：**只覆盖 new-tools 测试模块；其它 root-level fixtures 仍有直接重置 runtime 的候选，需继续逐个复现；此前 309 项组合的 PROJ/线程异常尚未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 spatial-stats 测试的 runtime 状态
+
+- **问题与证据：**`test_spatial_stats.py::_clean` 直接调用共享 `reset_state()` 并清空 `_registered_layers`。对 `test_point_coordinate_extraction_preserves_lonlat_without_centroid_warning` 注入 sentinel 后，旧 fixture teardown 探针观察到 registry 与 pending-op sentinel 均丢失、task context 被清空；该文件的其它统计测试还会在函数体中再次 `reset_state()` / `_registered_layers.clear()`。
+- **改动：**新增 `_isolate_spatial_stats_runtime`，以 monkeypatch 替换 runtime registry、pending queues、缓存、task/run context、session locks 与输出/workspace；同步替换模块直接导入的 `_registered_layers` 别名。fixture 的 setup、teardown 和测试体内的 reset/clear 只触及隔离状态；新增 sentinel 回归测试。
+- **验证：**`backend/tests/test_spatial_stats.py` **22 passed**。对含测试体内 `reset_state()` 与 registry 清理的 `TestSpatialMoran::test_strong_cluster_is_significant` 注入 sentinel，teardown 后确认原 registry/pending 引用和值及 task context 均保留。探针嵌套 pytest 有 2 条插件重写警告，不影响结果。数据为内存合成点集，输出/TEMP/TMP/MPL 与测试数据库隔离，无外部服务、凭据或真实用户数据。
+- **边界与下一步：**只覆盖 spatial-stats 测试文件；其他仍直接清理 runtime 的 root-level fixture 待逐项复现与隔离；此前 309 项组合的 PROJ/线程异常仍未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 spectral-indices 测试的 runtime 状态
+
+- **问题与证据：**`test_spectral_indices.py::_clean` 在每例前后直接调用共享 `reset_state()`，并原地清空从 tools 导入的 `_registered_layers` 与 `_pending_layer_ops`。针对 `test_ndwi_water_positive` 的同进程 setup sentinel 探针复现 `registry_sentinel=False`、`ops_sentinel=False`、`task_context=''`。
+- **改动：**新增 `_isolate_spectral_indices_runtime`，以 monkeypatch 替换 runtime registry、pending queues、缓存、task/run context、session locks 和输出/workspace；同步替换测试模块导入的 registry/pending-op 别名。fixture 及用例内的 reset 仅作用于隔离 runtime；新增 sentinel 回归测试。
+- **验证：**`backend/tests/test_spectral_indices.py` **10 passed**。同进程 pytest hook 重跑目标用例，teardown 后 `registry_same=True`、`registry_sentinel=True`、`ops_same=True`、`ops_sentinel=True`，task context 保留。嵌套 pytest 有 2 条插件重写警告，不影响结果。测试用合成多波段 GeoTIFF，TEMP/TMP/MPL、每例 uploads/output 和测试数据库均隔离；无外部服务、凭据或真实用户数据。
+- **边界与下一步：**只覆盖 spectral-indices 测试文件；其它 root-level fixture 的共享状态清理仍需继续排查；此前 309 项组合中的 PROJ/线程异常尚未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 stats-gap 工具测试的 runtime 状态
+
+- **问题与证据：**`test_stats_gap_tools.py::_clean` 在测试前后对共享 runtime 调用 `reset_state()` 并原地清理 `_registered_layers`。以 `TestRegistration::test_five_stats_tools_registered` 做同进程 sentinel 探针，旧 fixture teardown 后 registry/pending sentinel 均消失、task context 变空。
+- **改动：**新增 `_isolate_stats_gap_runtime`，通过 monkeypatch 替换 runtime registry、pending queues、缓存、task/run context、session locks、输出与 workspace；同时替换本模块捕获的 `_registered_layers` 别名。fixture 仅 reset 隔离状态，并加入 sentinel 恢复回归测试。
+- **验证：**`backend/tests/test_stats_gap_tools.py` **38 passed**。再次注入同进程 sentinel 后，teardown 确认原 registry/pending 引用和值及 task context 保留。该嵌套 pytest 探针产生 2 条插件重写警告，不影响结果。统计输入为合成 GeoJSON，sidecar 和输出位于每例 `tmp_path`，TEMP/TMP/MPL 与测试数据库隔离；无外部服务、凭据或真实用户数据。
+- **边界与下一步：**只覆盖 stats-gap 工具测试；其他仍直接清理共享 runtime 的 root-level fixture 待逐项审计；此前 309 项组合的 PROJ/线程异常仍未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 vector-gap 测试并修正顺序依赖
+
+- **问题与证据：**`test_vector_gap_tools.py::cleanup` 直接 `reset_state()`，同进程 probe 显示 pending-op sentinel 丢失、task context 被清空；该测试模块还导入 `_registered_layers` 别名。工具实现位于 `tool_modules/vector.py`，它也直接捕获 runtime 的 `_registered_layers`、`_pending_layers`、`_pending_layer_ops`，仅替换 facade 与测试模块别名会留下不一致引用。隔离后首次运行发现 `test_join_field_inner_drops_unmatched` 依赖之前测试留下的 `tgt`/`jn` 注册状态，初始快照位置错误导致 1 项失败。
+- **改动：**新增 `_isolate_vector_gap_runtime`，隔离 runtime 状态和输出/workspace，并同步替换测试模块及 `vector.py` 捕获的 registry/pending 别名。修正 inner-join 测试：先注册自身输入层，再记录 `existing_names`，不再依赖其他测试的残留状态。添加 sentinel 引用和值恢复回归测试。
+- **验证：**`backend/tests/test_vector_gap_tools.py` 最终 **25 passed**；另对 inner-join 用例做同进程 sentinel probe，teardown 后原 registry/pending 引用和值、task context 均保留。第一次整文件运行 1 failed / 24 passed，调整用例快照顺序后重跑全过。嵌套 pytest probe 有 2 条插件重写警告，不影响结果。测试采用合成 GeoJSON；TEMP/TMP/MPL、输出和测试数据库隔离，无外部服务、凭据或真实用户数据。
+- **边界与下一步：**只覆盖 vector-gap 测试模块；仍需继续审计其它 runtime 重置 fixture 及按值导入共享状态的模块；此前 309 项组合的 PROJ/线程异常仍未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 visualize-3d 测试的注册表与待发送操作
+
+- **问题与证据：**`test_visualize_3d.py::_clean_state` 每例直接清空全局 `_registered_layers`、`_pending_layer_ops`。在 `test_emits_spec` 前注入两个 sentinel 后，旧 fixture teardown 探针观察到两者均丢失。
+- **改动：**将 fixture 改为 monkeypatch 替换两项运行状态后再运行用例，不再清理进程共享容器；新增回归测试检查原引用和值可恢复。检查 `tools.py::visualize_3d` 的状态依赖限于注册表和 pending ops，故此处只隔离相关容器。
+- **验证：**`backend/tests/test_visualize_3d.py` **10 passed**。同进程探针再次注入 sentinel 后，fixture teardown 确认原注册表与 pending-op 引用和值均保留。嵌套 pytest 有 2 条插件重写警告，不影响结果。测试只用合成 GeoJSON 和内存 runtime，不访问外部服务、凭据或真实用户数据；`git diff --check` 通过（仅现存 LF→CRLF 提示）。
+- **边界与下一步：**只覆盖 visualize-3d 测试模块；其它仍会清理共享 runtime 的测试夹具与跨模块按值导入路径待继续审计；此前 309 项组合的 PROJ/线程异常未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 DEM provider 测试的 runtime 与缓存目录
+
+- **问题与证据：**`test_dem_providers.py::_clean_state` 在每例开始时先对共享 runtime 调用 `reset_state()`、清空从 tools 导入的 `_pending_layer_ops`，再改写输出根；同进程探针显示 pending-op sentinel 被清空且 task context 被复位。缓存模块 `default_cache_root()` 依赖 `tools._temp_output_dir`，所以需在 reset 前先切到每例临时输出根。
+- **改动：**新增 `_isolate_dem_provider_runtime`，先用 monkeypatch 替换 runtime registry、pending queues、缓存、task/run context、锁映射和输出/workspace，再执行 reset；同步替换测试模块别名与 `terrain.py` 导入的 pending-op 别名。新增 sentinel 回归测试，覆盖 runtime 引用、任务上下文和输出根恢复。
+- **验证：**`backend/tests/test_dem_providers.py` **61 passed**。同进程端到端 mock-provider 用例探针确认 teardown 后 pending-op 引用和值、task context、输出路径均恢复。首次全套有 1 项回归断言误复用了外层 `tmp_path`，改用独立 nested temp 后重跑全过。网络请求均通过 mock；TEMP/TMP/MPL、DEM cache、uploads、输出和测试数据库均隔离，无凭据或真实用户数据访问。嵌套 pytest probe 有 2 条插件重写警告，不影响结果。
+- **边界与下一步：**只覆盖 DEM provider 测试模块；其它直接重置共享 runtime 的 fixture 和按值导入路径仍待继续审计；此前 309 项组合的 PROJ/线程异常尚未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离 stream-step 测试的隐私标记与历史目录
+
+- **问题与证据：**`test_stream_step_events.py::clean_stream_session_isolation` 清空全局图层注册表、调用 `reset_state()`，并对四个固定 session 的 `_marker(session)` 直接 `unlink()`。`_marker` 解析到 `ai_service._HISTORY_DIR` 下真实 history 同名 `.privacy` 文件，因此旧 fixture 会删除可能存在的持久化隐私保护标记；没有运行旧 fixture 来避免触碰该数据。fixture 还通过原地清空/回填 registry 暂时改写进程共享状态。
+- **改动：**新增 `_isolate_stream_test_state`，逐测试 monkeypatch 替换 runtime 容器、任务状态、输出/workspace，并将 `ai_service._HISTORY_DIR` 和 `conversation_history` 重定向到该用例的 `tmp_path`。删除对固定 session marker 的所有手动清理，不再改写真实 history/隐私标记；加入回归测试验证 `_marker` 位于临时 history 目录且原 runtime/history 引用和值恢复。
+- **验证：**`backend/tests/test_stream_step_events.py` **24 passed**。同进程 pytest probe 注入原 history、registry、pending-op 与 task-context sentinel 后，teardown 确认引用和值及 history 路径恢复。嵌套 probe 产生 2 条插件重写警告，不影响结果。测试数据库、输出、临时 history 均隔离；无外部服务或真实用户数据读写。
+- **边界与下一步：**本轮只覆盖 stream-step 测试；仍需审计其他 runtime reset fixture 及隐私/历史持久化路径；此前 309 项组合的 PROJ/线程异常仍未定位。未提交、推送或部署。
+
+### 2026-11-16 隔离空间工具测试的 runtime 与输出目录
+
+- **问题与证据：**`test_spatial_tools.py::cleanup` 每例直接对共享 runtime 调用 `reset_state()`。新增隔离后首次整文件运行为 7 failed、264 passed、1 error：检查确认失败均由 fixture 预创建 `uploads`/`output` 目录，与用例自身 `mkdir()` 冲突，并非工具断言失败。
+- **改动：**新增 `_isolate_spatial_tools_runtime`，逐例替换 runtime 容器、任务上下文、锁、输出/workspace 路径，并同步替换已加载工具模块按值导入的可变 runtime 别名；去掉预创建子目录。新增 sentinel 回归测试验证 registry、pending queues、vector 模块别名、任务上下文和输出根在 teardown 后恢复。
+- **验证：**修正后 `backend/tests/test_spatial_tools.py` **272 passed**。测试 TEMP/TMP/MPL 位于隔离临时目录，`GIS_DISABLE_REMOTE_TESTS=1`，未配置外部 workspace DB。剩余 1691 条警告（主要为 Deprecation/PendingDeprecation 与日期解析警告）。
+- **边界与下一步：**只覆盖该测试模块；此前 309 项组合的 PROJ/线程异常仍待定位。该项本轮尚未提交或推送。

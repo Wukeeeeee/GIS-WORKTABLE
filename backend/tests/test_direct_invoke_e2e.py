@@ -9,6 +9,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import json
+import threading
 import uuid
 
 import pytest
@@ -26,22 +27,79 @@ client = TestClient(app)
 
 @pytest.fixture(scope="module", autouse=True)
 def isolated_e2e_output(tmp_path_factory):
-    """Keep module-level E2E uploads and tool outputs out of the shared temp tree."""
+    """Keep module-level E2E outputs and persistent service state in temp storage."""
     from backend.services.tool_modules import runtime
 
-    old_tool_output = tool_service._temp_output_dir
-    old_runtime_output = runtime._temp_output_dir
     old_api_output = main_module._TEMP_OUTPUT_DIR
+    state = pytest.MonkeyPatch()
     output_dir = str(tmp_path_factory.mktemp("direct-invoke-output"))
-    runtime._temp_output_dir = output_dir
-    tool_service._temp_output_dir = output_dir
+    state.setenv(
+        "GIS_WORKSPACE_DB_PATH", os.path.join(output_dir, "workspace.db")
+    )
+    # storage_service calls init_db() on import, so redirect before importing it.
+    from backend.services import storage_service
+
     main_module._TEMP_OUTPUT_DIR = output_dir
     os.makedirs(os.path.join(output_dir, "uploads"), exist_ok=True)
+    history_state = {
+        "_CUSTOM_PATH": [None],
+        "_ENTRIES": [],
+        "_NEXT_INDEX": [1],
+        "_LOADED": [False],
+        "_LOAD_ERROR": [None],
+        "_PERSIST_ERROR": [None],
+    }
+    for name, value in history_state.items():
+        state.setattr(history_service, name, value)
+    state.setattr(
+        history_service,
+        "_history_path",
+        lambda: history_service._CUSTOM_PATH[0]
+        or os.path.join(output_dir, "tool_history.json"),
+    )
+    state.setattr(
+        storage_service, "_CUSTOM_DB_PATH", [os.path.join(output_dir, "workspace.db")]
+    )
+    from backend.services import task_manager
+
+    runtime_state = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_log": [],
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_exec_call_count": 0,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_active_project_id": None,
+        "_raster_output_scope": threading.local(),
+        "_temp_output_dir": output_dir,
+        "_workspace_dir": os.path.join(output_dir, "workspace"),
+    }
+    with runtime._state_lock:
+        for name, value in runtime_state.items():
+            state.setattr(tool_service, name, value)
+    with task_manager._lock:
+        state.setattr(task_manager, "_BASE_DIR", os.path.join(output_dir, "tasks"))
+        state.setattr(task_manager, "_tasks", {})
+        state.setattr(task_manager, "_session_active", {})
     try:
+        storage_service.init_db()
         yield output_dir
     finally:
-        runtime._temp_output_dir = old_runtime_output
-        tool_service._temp_output_dir = old_tool_output
+        with runtime._state_lock, task_manager._lock:
+            state.undo()
         main_module._TEMP_OUTPUT_DIR = old_api_output
 
 
@@ -380,3 +438,19 @@ def test_e2e_corrupt_history_warning_and_failed_clear_response(tmp_path, monkeyp
         assert client.get("/api/history?limit=5").json()["history"][0]["tool"] == "focus_map"
     finally:
         history_service.set_history_file(None)
+
+
+def test_direct_invoke_history_default_stays_in_module_temp_dir(isolated_e2e_output):
+    history_service.set_history_file(None)
+
+    assert history_service._history_path() == os.path.join(
+        isolated_e2e_output, "tool_history.json"
+    )
+
+
+def test_direct_invoke_task_and_database_stores_are_module_local(isolated_e2e_output):
+    from backend.services import storage_service, task_manager
+
+    assert task_manager._BASE_DIR == os.path.join(isolated_e2e_output, "tasks")
+    assert os.path.commonpath((task_manager._BASE_DIR, isolated_e2e_output)) == isolated_e2e_output
+    assert storage_service.get_db_path() == os.path.join(isolated_e2e_output, "workspace.db")

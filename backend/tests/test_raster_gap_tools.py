@@ -7,6 +7,7 @@ raster_extract_by_mask / surface_volumes）。
 """
 import os
 import sys
+import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import numpy as np
@@ -32,16 +33,77 @@ NEW_TOOLS = [
 NEW_TOOL_NAMES = [t.name for t in NEW_TOOLS]
 
 
+def _isolate_raster_gap_state(monkeypatch, tmp_path):
+    from backend.services.tool_modules import runtime
+
+    # Raster helpers resolve generated and fixture GeoTIFFs under this directory's uploads/.
+    output_dir = str(tmp_path)
+    isolated_runtime = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_call_count": 0,
+        "_exec_log": [],
+        "_temp_output_dir": output_dir,
+        "_workspace_dir": str(tmp_path / "workspace"),
+        "_raster_output_scope": threading.local(),
+        "_active_project_id": None,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_session_locks": {},
+    }
+    for path in (output_dir, os.path.join(output_dir, "output"), isolated_runtime["_workspace_dir"]):
+        os.makedirs(path, exist_ok=True)
+    with runtime._state_lock, runtime._session_locks_guard:
+        for name, value in isolated_runtime.items():
+            monkeypatch.setattr(T, name, value)
+    monkeypatch.setattr(sys.modules[__name__], "_pending_layer_ops", isolated_runtime["_pending_layer_ops"])
+
+
 @pytest.fixture(autouse=True)
-def _clean(tmp_path):
-    previous_output_dir = T._temp_output_dir
+def _clean(tmp_path, monkeypatch):
+    _isolate_raster_gap_state(monkeypatch, tmp_path)
     reset_state()
-    _pending_layer_ops.clear()
-    T._temp_output_dir = str(tmp_path)
     yield
     reset_state()
-    _pending_layer_ops.clear()
-    T._temp_output_dir = previous_output_dir
+
+
+def test_raster_gap_fixture_restores_existing_runtime_state(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    registry = runtime._registered_layers
+    pending_ops = runtime._pending_layer_ops
+    registry["outside-sentinel"] = {"sentinel": True}
+    pending_ops.append({"action": "outside-sentinel"})
+    runtime.set_current_task("outside-raster-task-context")
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_raster_gap_state(patcher, tmp_path)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layer_ops is not pending_ops
+        assert T._registered_layers is runtime._registered_layers
+        assert sys.modules[__name__]._pending_layer_ops is runtime._pending_layer_ops
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry
+    assert registry["outside-sentinel"]["sentinel"]
+    assert runtime._pending_layer_ops is pending_ops
+    assert pending_ops[-1]["action"] == "outside-sentinel"
+    assert runtime.get_current_task_id() == "outside-raster-task-context"
 
 
 def _make_tif(tmp_path, name, data, res=1.0, nodata=None, origin=(0.0, None), crs=None):

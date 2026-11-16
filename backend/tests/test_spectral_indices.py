@@ -1,23 +1,89 @@
 # -*- coding: utf-8 -*-
 """阶段 C：遥感指数工具测试 — NDWI / NDBI / EVI / NDMI"""
 import os
+import sys
+import threading
 import numpy as np
 import pytest
+from backend.services import tools as T
 from backend.services.tools import (
     ndwi_analysis, ndbi_analysis, evi_analysis, ndmi_analysis,
     ndvi_analysis, _registered_layers, _pending_layer_ops, reset_state,
 )
 
 
+def _isolate_spectral_indices_runtime(monkeypatch, tmp_path):
+    from backend.services.tool_modules import runtime
+
+    output_dir = str(tmp_path)
+    isolated_runtime = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_call_count": 0,
+        "_exec_log": [],
+        "_temp_output_dir": output_dir,
+        "_workspace_dir": str(tmp_path / "workspace"),
+        "_raster_output_scope": threading.local(),
+        "_active_project_id": None,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_session_locks": {},
+    }
+    for path in (output_dir, os.path.join(output_dir, "output"), isolated_runtime["_workspace_dir"]):
+        os.makedirs(path, exist_ok=True)
+    with runtime._state_lock, runtime._session_locks_guard:
+        for name, value in isolated_runtime.items():
+            monkeypatch.setattr(T, name, value)
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "_registered_layers", isolated_runtime["_registered_layers"])
+    monkeypatch.setattr(module, "_pending_layer_ops", isolated_runtime["_pending_layer_ops"])
+
+
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(tmp_path, monkeypatch):
+    _isolate_spectral_indices_runtime(monkeypatch, tmp_path)
     reset_state()
-    _registered_layers.clear()
-    _pending_layer_ops.clear()
     yield
     reset_state()
-    _registered_layers.clear()
-    _pending_layer_ops.clear()
+
+
+def test_spectral_indices_fixture_restores_existing_runtime_state(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    registry, pending_ops = runtime._registered_layers, runtime._pending_layer_ops
+    registry["outside-sentinel"] = {"sentinel": True}
+    pending_ops.append({"action": "outside-sentinel"})
+    runtime.set_current_task("outside-spectral-task-context")
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_spectral_indices_runtime(patcher, tmp_path)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layer_ops is not pending_ops
+        assert T._registered_layers is runtime._registered_layers
+        assert sys.modules[__name__]._registered_layers is runtime._registered_layers
+        assert sys.modules[__name__]._pending_layer_ops is runtime._pending_layer_ops
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry
+    assert registry["outside-sentinel"]["sentinel"]
+    assert runtime._pending_layer_ops is pending_ops
+    assert pending_ops[-1]["action"] == "outside-sentinel"
+    assert runtime.get_current_task_id() == "outside-spectral-task-context"
 
 
 def _make_tif(path, bands):

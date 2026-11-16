@@ -4,18 +4,19 @@ import time
 import pytest
 
 from backend.services import ai_service, graph, tools
+from backend.services.tool_modules import runtime
 from backend.services.llm_config import LLMConfig
 
 
 @pytest.fixture(autouse=True)
 def isolate_history_storage(monkeypatch, tmp_path):
-    """Prevent stale privacy markers or registered layers changing retry-mode tests."""
-    tools._registered_layers.clear()
+    """Isolate history and registry state without clearing process-shared layers."""
+    isolated_registry = {}
+    with runtime._state_lock:
+        monkeypatch.setattr(runtime, "_registered_layers", isolated_registry)
+        monkeypatch.setattr(tools, "_registered_layers", isolated_registry)
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
-    try:
-        yield
-    finally:
-        tools._registered_layers.clear()
+    yield
 
 
 def _patch_agent_run(monkeypatch, agent):

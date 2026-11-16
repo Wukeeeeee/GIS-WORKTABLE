@@ -23,11 +23,13 @@ def isolate_task_storage(tmp_path, monkeypatch):
     task_root = tmp_path / "tasks"
     task_root.mkdir()
     monkeypatch.setattr(task_manager, "_BASE_DIR", str(task_root))
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
+    with task_manager._lock:
+        monkeypatch.setattr(task_manager, "_tasks", {})
+        monkeypatch.setattr(task_manager, "_session_active", {})
     yield
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
+    with task_manager._lock:
+        task_manager._tasks.clear()
+        task_manager._session_active.clear()
 
 
 # =======================================================================

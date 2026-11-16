@@ -126,6 +126,7 @@ from backend.services.tool_modules.common import (
 from backend.services.tool_modules import runtime
 from backend.services.tool_modules import io_export as _io_export
 from backend.services.tool_modules import map_ops as _map_ops
+from backend.services.tool_modules import workflow_tools as _workflow_tools
 from backend.services.tool_modules.runtime import (
     _registered_layers,
     _pending_layers,
@@ -2930,65 +2931,11 @@ def create_workflow(workflow_json: str) -> str:
      {"tool":"spatial_buffer","params":{"layer_name":"$prev","distance":100,"unit":"m"},"output":"buf_layer"}]
     工具名取工具函数名（不包含命名空间），$prev引用上一步输出，$N引用第N步输出（从1开始）。
     各步骤顺序执行，中间结果自动注册。"""
-    try:
-        import json as _json
-        steps = _json.loads(workflow_json)
-        if not isinstance(steps, list) or not steps:
-            return "工作流执行失败：workflow_json 必须是非空数组"
-        outputs = {}
-        results = []
-        # 构建工具查找表
-        tool_map = {}
-        for t in tools:
-            name = t.name if hasattr(t, 'name') else str(t)
-            tool_map[name] = t
-        for idx, step in enumerate(steps):
-            step_num = idx + 1
-            if not isinstance(step, dict):
-                return f"工作流执行失败：第{step_num}步必须是对象"
-            tool_name = step.get("tool", "")
-            raw_params = step.get("params", {})
-            if not isinstance(raw_params, dict):
-                return f"工作流执行失败：第{step_num}步 params 必须是对象"
-            output_name = step.get("output", f"step_{step_num}")
-            if not isinstance(output_name, str) or not output_name.strip():
-                return f"工作流执行失败：第{step_num}步 output 必须是非空字符串"
-            if not isinstance(tool_name, str) or tool_name not in tool_map:
-                return f"工作流执行失败：第{step_num}步未找到工具 '{tool_name}'"
-            # 解析 $prev / $N 引用
-            resolved_params = {}
-            for k, v in raw_params.items():
-                if isinstance(v, str) and v.startswith("$"):
-                    ref = v[1:]
-                    if ref == "prev":
-                        if not outputs:
-                            return f"工作流执行失败：第{step_num}步参数 {k} 引用了不存在的上一步输出"
-                        prev_out = list(outputs.values())[-1]
-                        resolved_params[k] = prev_out
-                    elif ref.isdigit():
-                        n = int(ref)
-                        if n in outputs:
-                            resolved_params[k] = outputs[n]
-                        else:
-                            return f"工作流执行失败：第{step_num}步参数 {k} 引用了不存在的第 {n} 步输出"
-                    else:
-                        return f"工作流执行失败：第{step_num}步参数 {k} 的输出引用格式无效：{v}"
-                else:
-                    resolved_params[k] = v
-            try:
-                tool_fn = tool_map[tool_name]
-                step_result = tool_fn.invoke(resolved_params)
-            except Exception as e:
-                return f"工作流执行失败：第{step_num}步 '{tool_name}' 执行失败: {str(e)[:200]}"
-            if _tool_result_failed(tool_name, step_result):
-                return f"工作流执行失败：第{step_num}步 '{tool_name}' 执行失败: {str(step_result)[:200]}"
-            step_output = output_name
-            outputs[step_num] = step_output
-            outputs[output_name] = step_output
-            results.append(f"步骤{step_num}({tool_name}) → {output_name}: {str(step_result)[:100]}")
-        return "工作流执行完成:\n" + "\n".join(results)
-    except Exception as e:
-        return f"工作流执行失败: {str(e)[:300]}"
+    return _workflow_tools.create_workflow_impl(
+        workflow_json,
+        tool_provider=lambda: tools,
+        failure_classifier=_tool_result_failed,
+    )
 
 
 # Re-exported from backend.services.tool_modules.terrain: view_3d_terrain
@@ -4525,115 +4472,40 @@ def execute_workflow(workflow_json: str) -> str:
       每个节点包含 id、name、tool(工具名)、inputs(参数字典，支持 ${node_id.output_key} 引用上游) 与 depends_on。
       若节点运行时注册了一个 GIS 图层，后续节点可通过 ${node_id.layer_name} 引用；注册多个时输出 layer_names。"""
     try:
-        import json
         from backend.services.workflow import (
             new_workflow, validate_workflow, WorkflowExecutor
         )
+        from backend.services.tool_modules.workflow_tools import execute_workflow_impl
+    except Exception as error:
+        return f"Workflow 执行失败: {str(error)[:200]}"
 
-        wf_data = json.loads(workflow_json)
-
-        # LangGraph custom stream events let the chat surface Workflow's real node
-        # progress while direct tool-panel invocations remain usable without a stream.
-        stream_writer = None
+    def get_stream_writer_if_available():
+        # LangGraph custom events surface node progress when invoked in a stream.
+        # Direct tool-panel calls remain usable without an active stream.
         try:
             from langgraph.config import get_stream_writer
-            stream_writer = get_stream_writer()
+            return get_stream_writer()
         except Exception:
-            pass
-        workflow_invocation_id = uuid.uuid4().hex[:12]
-        workflow_name = str(wf_data.get("name") or "未命名工作流")[:120]
-        workflow_nodes = {
-            str(node.get("id")): node
-            for node in wf_data.get("nodes", [])
-            if isinstance(node, dict) and node.get("id") is not None
-        }
+            return None
 
-        def publish_workflow_event(event):
-            if not callable(stream_writer) or not isinstance(event, dict):
-                return
-            detail = dict(event)
-            node = workflow_nodes.get(str(detail.get("node_id")), {})
-            detail.setdefault("tool", node.get("tool", ""))
-            try:
-                stream_writer({
-                    "type": "workflow_progress",
-                    "invocation_id": workflow_invocation_id,
-                    "workflow_name": workflow_name,
-                    "event": detail,
-                })
-            except Exception:
-                # Progress delivery is best-effort; it must not change GIS execution.
-                pass
+    def layer_snapshot():
+        with _state_lock:
+            return {
+                name: info.get("registration_token")
+                for name, info in _registered_layers.items()
+            }
 
-        # 保留工具对象本身，让 WorkflowExecutor 通过 invoke 调用并走完整记录链路。
-        tool_registry = {}
-        for t in tools:
-            try:
-                tool_registry[t.name] = t
-            except Exception:
-                pass
-
-        def layer_snapshot():
-            with _state_lock:
-                return {
-                    name: info.get("registration_token")
-                    for name, info in _registered_layers.items()
-                }
-
-        # 校验
-        errors = validate_workflow(wf_data, list(tool_registry.keys()))
-        if errors:
-            for node in wf_data.get("nodes", []):
-                if not isinstance(node, dict):
-                    continue
-                node_id = node.get("id")
-                node_errors = [error for error in errors if node_id and f"节点 {node_id} " in error]
-                if node_errors:
-                    publish_workflow_event({
-                        "type": "workflow_node_failed", "node_id": node_id,
-                        "name": node.get("name", ""), "tool": node.get("tool", ""),
-                        "error": "; ".join(node_errors)[:500],
-                    })
-                else:
-                    publish_workflow_event({
-                        "type": "workflow_node_skipped", "node_id": node_id,
-                        "name": node.get("name", ""), "tool": node.get("tool", ""),
-                        "error": "工作流结构校验未通过，节点未执行",
-                    })
-            return "Workflow 校验失败：\n" + "\n".join(f"- {e}" for e in errors)
-
-        # 创建 Workflow 对象
-        wf = new_workflow(
-            name=wf_data.get("name", "未命名工作流"),
-            description=wf_data.get("description", ""),
-            nodes=wf_data.get("nodes", []),
-        )
-
-        # 执行
-        executor = WorkflowExecutor(
-            tool_registry=tool_registry,
-            register_layer_fn=_register_layer,
-            event_callback=publish_workflow_event,
-            failure_detector=_tool_result_failed,
-            layer_snapshot_fn=layer_snapshot,
-        )
-        result = executor.execute(wf)
-
-        # 生成摘要
-        lines = [f"工作流「{result['name']}」执行完成，状态: {result['status']}"]
-        for node in result["nodes"]:
-            status_icon = {"success": "✓", "failed": "✗", "skipped": "⊘", "running": "⟳", "pending": "○"}.get(node["status"], "?")
-            dur = f" ({node['duration']}s)" if node.get("duration") else ""
-            lines.append(f"  {status_icon} {node['name']} [{node['tool']}] - {node['status']}{dur}")
-            if node.get("error"):
-                lines.append(f"    错误: {node['error'][:100]}")
-
-        return "\n".join(lines)
-
-    except json.JSONDecodeError as e:
-        return f"Workflow JSON 解析失败: {str(e)}"
-    except Exception as e:
-        return f"Workflow 执行失败: {str(e)[:200]}"
+    return execute_workflow_impl(
+        workflow_json,
+        tool_provider=lambda: tools,
+        new_workflow=new_workflow,
+        validate_workflow=validate_workflow,
+        executor_factory=WorkflowExecutor,
+        register_layer_fn=_register_layer,
+        failure_detector=_tool_result_failed,
+        layer_snapshot_fn=layer_snapshot,
+        stream_writer_provider=get_stream_writer_if_available,
+    )
 
 
 @tool
@@ -4651,32 +4523,15 @@ def materialize_workflow(workflow_name: str = "") -> str:
     物化结果说明及工作流保存路径。
     """
     try:
-        from backend.services.workflow import materialize_from_history, save_workflow
-        tid = runtime.get_current_task_id() or _current_task_id or ""
-        if not tid:
-            return "当前会话暂无活跃的任务记录，请先执行至少一次 GIS 分析操作。"
+        from backend.services import workflow as _workflow_service
 
-        wf = materialize_from_history(tid, workflow_name=workflow_name)
-        if not wf or not wf.get("nodes"):
-            return f"任务 {tid} 中未找到成功的工具执行记录，无法物化工作流。"
-
-        save_dir = os.path.join(_temp_output_dir, "workflows")
-        os.makedirs(save_dir, exist_ok=True)
-        filename = f"{wf['id']}.giswork"
-        filepath = os.path.join(save_dir, filename)
-
-        if save_workflow(wf, filepath):
-            node_summaries = [f"  {i+1}. {n['name']} (工具: {n['tool']})" for i, n in enumerate(wf["nodes"])]
-            nodes_text = "\n".join(node_summaries)
-            return (
-                f"已成功从真实执行历史中物化 DAG 工作流！\n"
-                f"工作流名称：{wf['name']}\n"
-                f"包含节点（{len(wf['nodes'])}个）：\n{nodes_text}\n"
-                f"保存路径：{filepath}\n"
-                f"后续可通过 execute_workflow 工具或前端工作流面板直接复用/重算。"
-            )
-        else:
-            return "工作流物化生成成功，但保存到磁盘时失败。"
+        return _workflow_tools.materialize_workflow_impl(
+            workflow_name,
+            task_id_provider=lambda: runtime.get_current_task_id() or _current_task_id or "",
+            output_dir=_temp_output_dir,
+            materialize_from_history=_workflow_service.materialize_from_history,
+            save_workflow=_workflow_service.save_workflow,
+        )
     except Exception as e:
         return f"物化工作流失败: {str(e)[:200]}"
 

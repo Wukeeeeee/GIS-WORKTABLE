@@ -6,6 +6,7 @@
 """
 import os
 import sys
+import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import numpy as np
@@ -16,6 +17,7 @@ from backend.services.tools import (
     spatial_interpolate, _register_layer, _registered_layers, reset_state,
     _pending_layer_ops,
 )
+from backend.services import history_service
 
 
 # 南（y=0.0）低值 -> 北（y=0.10）高值，南北非对称
@@ -31,15 +33,93 @@ _PROFILE_POINTS = {
 }
 
 
+def _isolate_interpolation_state(monkeypatch, tmp_path):
+    from backend.services.tool_modules import runtime
+
+    output_dir = str(tmp_path / "tool-runtime")
+    isolated_runtime = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_call_count": 0,
+        "_exec_log": [],
+        "_temp_output_dir": output_dir,
+        "_workspace_dir": str(tmp_path / "workspace"),
+        "_raster_output_scope": threading.local(),
+        "_active_project_id": None,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_session_locks": {},
+    }
+    for path in (output_dir, os.path.join(output_dir, "output"), isolated_runtime["_workspace_dir"]):
+        os.makedirs(path, exist_ok=True)
+    with runtime._state_lock, runtime._session_locks_guard:
+        for name, value in isolated_runtime.items():
+            monkeypatch.setattr(T, name, value)
+    monkeypatch.setattr(sys.modules[__name__], "_registered_layers", isolated_runtime["_registered_layers"])
+    monkeypatch.setattr(sys.modules[__name__], "_pending_layer_ops", isolated_runtime["_pending_layer_ops"])
+    history_state = {
+        "_CUSTOM_PATH": [str(tmp_path / "tool_history.json")],
+        "_ENTRIES": [],
+        "_NEXT_INDEX": [1],
+        "_LOADED": [False],
+        "_LOAD_ERROR": [None],
+        "_PERSIST_ERROR": [None],
+    }
+    for name, value in history_state.items():
+        monkeypatch.setattr(history_service, name, value)
+
+
 @pytest.fixture(autouse=True)
-def _clean():
+def _clean(tmp_path, monkeypatch):
+    _isolate_interpolation_state(monkeypatch, tmp_path)
     reset_state()
-    _registered_layers.clear()
-    _pending_layer_ops.clear()
     yield
     reset_state()
-    _registered_layers.clear()
-    _pending_layer_ops.clear()
+
+
+def test_interpolation_fixture_restores_existing_runtime_and_history_state(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    registry, pending_ops = runtime._registered_layers, runtime._pending_layer_ops
+    entries, history_path = history_service._ENTRIES, history_service._CUSTOM_PATH
+    registry["outside-sentinel"] = {"sentinel": True}
+    pending_ops.append({"action": "outside-op-sentinel"})
+    entries.append({"tool": "outside-history-sentinel"})
+    history_path[0] = "outside-history-path.json"
+    runtime.set_current_task("outside-task-context-sentinel")
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_interpolation_state(patcher, tmp_path)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layer_ops is not pending_ops
+        assert history_service._ENTRIES is not entries
+        assert history_service._CUSTOM_PATH is not history_path
+        assert T._registered_layers is runtime._registered_layers
+        assert sys.modules[__name__]._registered_layers is runtime._registered_layers
+        assert sys.modules[__name__]._pending_layer_ops is runtime._pending_layer_ops
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry and "outside-sentinel" in registry
+    assert runtime._pending_layer_ops is pending_ops and pending_ops[-1]["action"] == "outside-op-sentinel"
+    assert history_service._ENTRIES is entries and entries[-1]["tool"] == "outside-history-sentinel"
+    assert history_service._CUSTOM_PATH is history_path
+    assert history_path[0] == "outside-history-path.json"
+    assert runtime.get_current_task_id() == "outside-task-context-sentinel"
 
 
 def _run_interp(**kw):
@@ -118,14 +198,19 @@ class TestInterpolateOrientation:
 
 
 class TestTempOutputDirLifecycle:
-    def test_reset_state_initializes_output_dir(self):
+    def test_reset_state_initializes_output_dir(self, monkeypatch, tmp_path):
         """回归：_temp_output_dir 的注释写着"在 reset_state 时设置"，但代码没做。
 
         一旦一轮里最先执行的工具是直接写该目录的（如 spatial_interpolate），
         目录还是空串，产物会落到 CWD/uploads，而 URL 指向 /output/...，前端 404。
         """
+        from backend.services.tool_modules import runtime
+
+        monkeypatch.setattr(runtime.tempfile, "gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr(T, "_temp_output_dir", "")
+        monkeypatch.setattr(T, "_workspace_dir", "")
         reset_state()
-        assert T._temp_output_dir, "reset_state 之后 _temp_output_dir 仍为空"
+        assert T._temp_output_dir == str(tmp_path / "gis_worktable_output")
         assert os.path.isdir(T._temp_output_dir)
 
     def test_interpolate_works_without_prior_setup(self, monkeypatch, tmp_path):

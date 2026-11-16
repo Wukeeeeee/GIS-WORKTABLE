@@ -29,6 +29,19 @@ from backend.services import tools as T
 from backend.services.tools import tools as TOOL_LIST, reset_state, get_pending_state, _registered_layers
 from backend.services import cloud_native as cn
 from backend.services import url_security
+from backend.services.tool_modules import runtime
+
+
+@pytest.fixture(autouse=True)
+def isolate_registered_layers():
+    def clear():
+        with runtime._state_lock:
+            runtime._registered_layers.clear()
+
+    clear()
+    yield
+    clear()
+    assert runtime._registered_layers == {}
 
 
 def test_pinned_address_retries_share_one_connection_deadline(monkeypatch):

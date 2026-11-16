@@ -1,43 +1,104 @@
 """Contract checks for semantic task grouping in the streamed execution cards."""
 
-from backend.services.graph import _stream_step_descriptor, _stream_tool_failure, _stream_tool_warning
+import os
 import json
+import sys
+import threading
+from pathlib import Path
+
+from backend.services.graph import _stream_step_descriptor, _stream_tool_failure, _stream_tool_warning
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 import pytest
 
 
+def _isolate_stream_test_state(monkeypatch, tmp_path):
+    from backend.services import ai_service, tools
+    from backend.services.tool_modules import runtime
+
+    output_dir = str(tmp_path / "output")
+    isolated_runtime = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_call_count": 0,
+        "_exec_log": [],
+        "_temp_output_dir": output_dir,
+        "_workspace_dir": str(tmp_path / "workspace"),
+        "_raster_output_scope": threading.local(),
+        "_active_project_id": None,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_session_locks": {},
+    }
+    history_dir = str(tmp_path / "history")
+    for path in (output_dir, os.path.join(output_dir, "output"),
+                 os.path.join(output_dir, "uploads"),
+                 isolated_runtime["_workspace_dir"], history_dir):
+        os.makedirs(path, exist_ok=True)
+    with runtime._state_lock, runtime._session_locks_guard:
+        for name, value in isolated_runtime.items():
+            monkeypatch.setattr(tools, name, value)
+    monkeypatch.setattr(ai_service, "_HISTORY_DIR", history_dir)
+    monkeypatch.setattr(ai_service, "conversation_history", {})
+
+
 @pytest.fixture(autouse=True)
-def clean_stream_session_isolation():
-    from backend.services import tools
-    from backend.services.privacy_service import _marker
-    old_layers = dict(tools._registered_layers)
-    tools._registered_layers.clear()
-    tools.reset_state()
-    test_sessions = [
-        "controlled-step-sse",
-        "stream-retry-after-tool-result",
-        "stream-provider-error-redaction",
-        "workflow-custom-progress",
-    ]
-    for s in test_sessions:
-        marker = _marker(s)
-        if marker.exists():
-            try:
-                marker.unlink()
-            except OSError:
-                pass
+def clean_stream_session_isolation(tmp_path, monkeypatch):
+    _isolate_stream_test_state(monkeypatch, tmp_path)
+    from backend.services.tools import reset_state
+
+    reset_state()
     yield
-    tools._registered_layers.clear()
-    tools._registered_layers.update(old_layers)
-    tools.reset_state()
-    for s in test_sessions:
-        marker = _marker(s)
-        if marker.exists():
-            try:
-                marker.unlink()
-            except OSError:
-                pass
+    reset_state()
+
+
+def test_stream_fixture_redirects_history_and_restores_shared_runtime(tmp_path):
+    from backend.services import ai_service, tools
+    from backend.services.tool_modules import runtime
+
+    registry, pending_ops = runtime._registered_layers, runtime._pending_layer_ops
+    history, history_dir = ai_service.conversation_history, ai_service._HISTORY_DIR
+    registry["outside-sentinel"] = {"sentinel": True}
+    pending_ops.append({"action": "outside-sentinel"})
+    history["outside-sentinel"] = [{"role": "user", "content": "preserve"}]
+    runtime.set_current_task("outside-stream-task-context")
+
+    patcher = pytest.MonkeyPatch()
+    nested_tmp = tmp_path / "nested-isolation"
+    try:
+        _isolate_stream_test_state(patcher, nested_tmp)
+        from backend.services.privacy_service import _marker
+        marker = _marker("outside-sentinel")
+        assert marker.parent == (nested_tmp / "history")
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layer_ops is not pending_ops
+        assert ai_service.conversation_history is not history
+        assert ai_service._HISTORY_DIR != history_dir
+        assert tools._registered_layers is runtime._registered_layers
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry
+    assert registry["outside-sentinel"]["sentinel"]
+    assert runtime._pending_layer_ops is pending_ops
+    assert pending_ops[-1]["action"] == "outside-sentinel"
+    assert ai_service.conversation_history is history
+    assert history["outside-sentinel"][0]["content"] == "preserve"
+    assert ai_service._HISTORY_DIR == history_dir
+    assert runtime.get_current_task_id() == "outside-stream-task-context"
 
 
 

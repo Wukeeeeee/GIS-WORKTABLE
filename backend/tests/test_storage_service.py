@@ -2,16 +2,50 @@
 """测试 StorageService：数据库自愈、相对路径转换、产物登记与孤立隔离"""
 
 import os
+import tempfile
 import pytest
-from backend.services import storage_service as SS
+
+# storage_service initializes its default database on import. Keep that import
+# side effect out of the repository's persistent workspace even in this test.
+_IMPORT_DB_DIR = tempfile.TemporaryDirectory(prefix="gis-storage-test-import-")
+_PREVIOUS_DB_PATH_ENV = os.environ.get("GIS_WORKSPACE_DB_PATH")
+os.environ["GIS_WORKSPACE_DB_PATH"] = os.path.join(_IMPORT_DB_DIR.name, "bootstrap.db")
+try:
+    from backend.services import storage_service as SS
+finally:
+    if _PREVIOUS_DB_PATH_ENV is None:
+        os.environ.pop("GIS_WORKSPACE_DB_PATH", None)
+    else:
+        os.environ["GIS_WORKSPACE_DB_PATH"] = _PREVIOUS_DB_PATH_ENV
+
+
+def _isolate_db_path(monkeypatch, test_db):
+    monkeypatch.setattr(SS, "_CUSTOM_DB_PATH", [None])
+    SS.set_db_path(test_db)
 
 
 @pytest.fixture(autouse=True)
-def temp_db(tmp_path):
+def temp_db(tmp_path, monkeypatch):
     test_db = str(tmp_path / "test_workspace.db")
-    SS.set_db_path(test_db)
+    _isolate_db_path(monkeypatch, test_db)
     yield test_db
-    SS.set_db_path(None)
+
+
+def test_isolated_db_switch_restores_path_reference(temp_db):
+    original_path_ref = SS._CUSTOM_DB_PATH
+    original_path = original_path_ref[0]
+    patcher = pytest.MonkeyPatch()
+    nested_db = os.path.join(os.path.dirname(temp_db), "nested_workspace.db")
+    try:
+        _isolate_db_path(patcher, nested_db)
+        assert SS.get_db_path() == nested_db
+        assert SS._CUSTOM_DB_PATH is not original_path_ref
+    finally:
+        patcher.undo()
+
+    assert SS._CUSTOM_DB_PATH is original_path_ref
+    assert SS._CUSTOM_DB_PATH[0] == original_path
+    assert SS.get_db_path() == temp_db
 
 
 def test_db_init_and_stats():
@@ -19,6 +53,12 @@ def test_db_init_and_stats():
     assert stats["exists"] is True
     assert stats["runs_count"] == 0
     assert stats["artifacts_count"] == 0
+
+
+def test_pytest_session_database_is_redirected_from_repository():
+    configured_path = os.environ.get("GIS_WORKSPACE_DB_PATH")
+    assert configured_path
+    assert os.path.abspath(configured_path) != os.path.abspath(SS._DEFAULT_DB_PATH)
 
 
 def test_path_normalization():

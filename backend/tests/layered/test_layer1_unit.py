@@ -180,7 +180,11 @@ def test_build_system_content_no_cross_session_task_leak(tmp_path, monkeypatch):
     from backend.services.ai_service import _build_system_content
 
     monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
+    with task_manager._lock:
+        monkeypatch.setattr(task_manager, "_tasks", {})
+        monkeypatch.setattr(task_manager, "_session_active", {})
     _tid = task_manager.create_task("广东各市GDP排名（旧会话任务）", "session_OLD")
+    previous_task_id = _tools.get_current_task_id()
     try:
         # 模拟真实时序：全局 current_task_id 停留在旧会话的任务上
         _tools.set_current_task(_tid)
@@ -194,4 +198,6 @@ def test_build_system_content_no_cross_session_task_leak(tmp_path, monkeypatch):
         sys_old, _, _ = _build_system_content(cfg, "继续", session_id="session_OLD", force_skills=[])
         assert "广东各市GDP排名" in sys_old
     finally:
+        _tools.set_current_task(previous_task_id)
         task_manager.delete_task(_tid)
+    assert _tools.get_current_task_id() == previous_task_id

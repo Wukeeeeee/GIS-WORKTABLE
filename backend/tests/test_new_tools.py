@@ -4,6 +4,7 @@ zonal_statistics / add_length_field / spatial_explode / geometry_convert /
 raster_resample / raster_reproject
 """
 import sys, os
+import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import json
@@ -23,21 +24,41 @@ def _registry():
     return {t.name: t for t in TOOL_LIST}
 
 
-@pytest.fixture(scope="module", autouse=True)
-def isolated_tool_output(tmp_path_factory):
-    """Keep module-scoped raster uploads out of the shared GIS output directory."""
+def _isolate_new_tools_runtime(monkeypatch, tmp_path):
     from backend.services.tool_modules import runtime
 
-    old_runtime_output = runtime._temp_output_dir
-    old_tool_output = T._temp_output_dir
-    output_dir = str(tmp_path_factory.mktemp("new-tools-output"))
-    runtime._temp_output_dir = output_dir
-    T._temp_output_dir = output_dir
-    try:
-        yield output_dir
-    finally:
-        runtime._temp_output_dir = old_runtime_output
-        T._temp_output_dir = old_tool_output
+    output_dir = str(tmp_path)
+    isolated_runtime = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_call_count": 0,
+        "_exec_log": [],
+        "_temp_output_dir": output_dir,
+        "_workspace_dir": str(tmp_path / "workspace"),
+        "_raster_output_scope": threading.local(),
+        "_active_project_id": None,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_session_locks": {},
+    }
+    for path in (output_dir, os.path.join(output_dir, "output"), isolated_runtime["_workspace_dir"]):
+        os.makedirs(path, exist_ok=True)
+    with runtime._state_lock, runtime._session_locks_guard:
+        for name, value in isolated_runtime.items():
+            monkeypatch.setattr(T, name, value)
 
 
 @pytest.fixture(scope="module")
@@ -54,11 +75,10 @@ def dem_tif(tmp_path_factory):
     return path
 
 
-@pytest.fixture(scope="module")
-def dem_tif_uploaded(dem_tif):
+@pytest.fixture
+def dem_tif_uploaded(dem_tif, tmp_path, _clean_layers):
     """把 DEM 放到 uploads 目录（栅格工具按 uploads 文件名定位）"""
     import shutil, os
-    T.init_temp_dir()  # 确保 _temp_output_dir 已初始化
     upload_dir = os.path.join(T._temp_output_dir, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
     dst = os.path.join(upload_dir, "dem.tif")
@@ -67,9 +87,35 @@ def dem_tif_uploaded(dem_tif):
 
 
 @pytest.fixture(autouse=True)
-def _clean_layers():
+def _clean_layers(tmp_path, monkeypatch):
+    _isolate_new_tools_runtime(monkeypatch, tmp_path)
     reset_state()
     yield
+    reset_state()
+
+
+def test_new_tools_fixture_restores_existing_runtime_state(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    registry, pending_ops = runtime._registered_layers, runtime._pending_layer_ops
+    registry["outside-sentinel"] = {"sentinel": True}
+    pending_ops.append({"action": "outside-sentinel"})
+    runtime.set_current_task("outside-new-tools-task-context")
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_new_tools_runtime(patcher, tmp_path)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layer_ops is not pending_ops
+        assert T._registered_layers is runtime._registered_layers
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry
+    assert registry["outside-sentinel"]["sentinel"]
+    assert runtime._pending_layer_ops is pending_ops
+    assert pending_ops[-1]["action"] == "outside-sentinel"
+    assert runtime.get_current_task_id() == "outside-new-tools-task-context"
 
 
 def _reg(name, fc):

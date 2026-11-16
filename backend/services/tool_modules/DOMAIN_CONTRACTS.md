@@ -23,6 +23,7 @@ All refactoring adheres to a strict four-layer unidirectional dependency archite
  │   Layer 2: Domain Modules                              │
  │   - Agent B: vector.py, network.py                    │
  │   - Agent C: raster.py, terrain.py, map_ops.py         │
+ │   - workflow_tools.py: stateless workflow execution    │
  └───────────────────────────┬────────────────────────────┘
                              │ imports shared state & helpers
                              ▼
@@ -47,7 +48,7 @@ Validation errors returned as plain text must start with `错误：` (or an exis
 2. **Layer Invariance**:
    - `Layer 0 (common.py)` depends ONLY on the standard library and pure math libraries.
    - `Layer 1 (runtime.py)` depends ONLY on `common.py`, standard libraries, and foundational GIS libraries (`geopandas`, `shapely`).
-   - `Layer 2 (domain modules)` depend on `runtime.py`, `common.py`, and third-party domain libraries (`scipy`, `numpy`, `rasterio`, `networkx`, `matplotlib`, etc.). `map_ops.py` owns layer-control and map-focus business logic, accessing runtime state dynamically through the runtime module so module-level mutable state is never copied. Network and terrain tools reuse the shared raster lookup/output helpers through one-way imports into `raster.py`; raster must not import network or terrain. Do not copy these helpers into domain modules, where state handling can diverge.
+   - `Layer 2 (domain modules)` depend on `runtime.py`, `common.py`, and third-party domain libraries (`scipy`, `numpy`, `rasterio`, `networkx`, `matplotlib`, etc.). `map_ops.py` owns layer-control and map-focus business logic, accessing runtime state dynamically through the runtime module so module-level mutable state is never copied. Network and terrain tools reuse the shared raster lookup/output helpers through one-way imports into `raster.py`; raster must not import network or terrain. Do not copy these helpers into domain modules, where state handling can diverge. `workflow_tools.py` owns workflow-step execution, DAG execution/event formatting, and materialization formatting; the facade injects the public tool list, workflow factory/validator/executor, layer registration and snapshot callbacks, failure classifier, stream-writer provider, current task ID, workflow-history loader, and saver so registry, task-state, error, and event-stream semantics are preserved without a reverse import.
    - `Layer 3 (tools.py)` imports domain functions, binds `@tool` wrappers, maintains the public tool list, and delegates attribute accesses to `runtime.py`.
    - `io_export.py` owns file-export implementations plus map/PDF export-operation queueing. `tools.py` retains decorated compatibility wrappers and passes its authoritative `_pending_layer_ops` object explicitly; `io_export.py` must not create a second queue or import the facade.
    - `map_ops.py` owns layer-control and map-focus implementations. It accesses the authoritative runtime module state directly; `runtime.py` must not import `map_ops.py`, and `map_ops.py` must not import the `tools.py` facade.

@@ -13,11 +13,19 @@ from backend.services import tools as gis_tools
 @pytest.fixture
 def local_map(monkeypatch, tmp_path):
     monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
+    with task_manager._lock:
+        monkeypatch.setattr(task_manager, "_tasks", {})
+        monkeypatch.setattr(task_manager, "_session_active", {})
     gis_tools._registered_layers.clear()
-    history_service.set_history_file(str(tmp_path / "history.json"))
-    old_db = storage_service.get_db_path()
+    # Redirect the singleton history cache itself; set_history_file() clears
+    # shared in-memory entries and would not restore them after this test.
+    monkeypatch.setattr(history_service, "_CUSTOM_PATH", [str(tmp_path / "history.json")])
+    monkeypatch.setattr(history_service, "_ENTRIES", [])
+    monkeypatch.setattr(history_service, "_NEXT_INDEX", [1])
+    monkeypatch.setattr(history_service, "_LOADED", [False])
+    monkeypatch.setattr(history_service, "_LOAD_ERROR", [None])
+    monkeypatch.setattr(history_service, "_PERSIST_ERROR", [None])
+    monkeypatch.setattr(storage_service, "_CUSTOM_DB_PATH", [None])
     storage_service.set_db_path(str(tmp_path / "workspace.db"))
     task_id = task_manager.create_task("长沙人口分布图", "cartography-local-session")
     gis_tools.reset_state(task_id=task_id)
@@ -40,10 +48,9 @@ def local_map(monkeypatch, tmp_path):
     finally:
         gis_tools.reset_state()
         gis_tools._registered_layers.clear()
-        task_manager._tasks.clear()
-        task_manager._session_active.clear()
-        history_service.set_history_file(None)
-        storage_service.set_db_path(old_db)
+        with task_manager._lock:
+            task_manager._tasks.clear()
+            task_manager._session_active.clear()
 
 
 @pytest.fixture

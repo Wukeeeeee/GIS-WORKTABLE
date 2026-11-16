@@ -8,9 +8,17 @@ from backend.services.workflow import materialize_from_history, save_workflow, l
 
 
 @pytest.fixture(autouse=True)
-def clean_history(tmp_path):
-    h_file = str(tmp_path / "test_tool_history.json")
-    history_service.set_history_file(h_file)
+def clean_history(tmp_path, monkeypatch):
+    # Replace the singleton's cache objects rather than changing its live path
+    # and clearing any pre-existing in-memory history.
+    monkeypatch.setattr(
+        history_service, "_CUSTOM_PATH", [str(tmp_path / "test_tool_history.json")]
+    )
+    monkeypatch.setattr(history_service, "_ENTRIES", [])
+    monkeypatch.setattr(history_service, "_NEXT_INDEX", [1])
+    monkeypatch.setattr(history_service, "_LOADED", [False])
+    monkeypatch.setattr(history_service, "_LOAD_ERROR", [None])
+    monkeypatch.setattr(history_service, "_PERSIST_ERROR", [None])
     history_service.clear()
     yield
     history_service.clear()

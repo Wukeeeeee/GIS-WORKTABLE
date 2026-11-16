@@ -24,12 +24,43 @@ def _poly_fc(field="population"):
     ]}
 
 
+def _isolate_visualize_3d_state(monkeypatch):
+    from backend.services.tool_modules import runtime
+
+    isolated = {
+        "_registered_layers": {},
+        "_pending_layer_ops": [],
+    }
+    with runtime._state_lock:
+        for name, value in isolated.items():
+            monkeypatch.setattr(T, name, value)
+
+
 @pytest.fixture(autouse=True)
-def _clean_state():
-    T._pending_layer_ops.clear()
-    T._registered_layers.clear()
-    yield
-    T._registered_layers.clear()
+def _clean_state(monkeypatch):
+    _isolate_visualize_3d_state(monkeypatch)
+
+
+def test_visualize_3d_fixture_restores_existing_runtime_state():
+    from backend.services.tool_modules import runtime
+
+    registry, pending_ops = runtime._registered_layers, runtime._pending_layer_ops
+    registry["outside-sentinel"] = {"sentinel": True}
+    pending_ops.append({"action": "outside-sentinel"})
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_visualize_3d_state(patcher)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layer_ops is not pending_ops
+        assert T._registered_layers is runtime._registered_layers
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry
+    assert registry["outside-sentinel"]["sentinel"]
+    assert runtime._pending_layer_ops is pending_ops
+    assert pending_ops[-1]["action"] == "outside-sentinel"
 
 
 class TestVisualize3d:

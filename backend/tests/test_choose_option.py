@@ -1,10 +1,24 @@
 # -*- coding: utf-8 -*-
 """两阶段数据源选择（choose_option）测试"""
 import os, sys, json
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.services import pending_action as pa
 from backend.services import tools
+
+
+@pytest.fixture(autouse=True)
+def isolate_pending_action_state(tmp_path, monkeypatch):
+    active_session_token = pa._active_session.set("default")
+    monkeypatch.setattr(pa, "_STORE_DIR", str(tmp_path / "pending"))
+    monkeypatch.setattr(pa, "_memory", {})
+    monkeypatch.setattr(tools, "_temp_output_dir", str(tmp_path / "output"))
+    monkeypatch.setattr(tools, "_workspace_dir", str(tmp_path / "workspace"))
+    try:
+        yield
+    finally:
+        pa._active_session.reset(active_session_token)
 
 
 def test_cancel_choice_is_handled_without_requesting_an_llm(monkeypatch):

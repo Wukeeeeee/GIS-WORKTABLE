@@ -391,3 +391,98 @@ def test_facade_spatial_stats_limit_rebinds_to_vector(monkeypatch):
     monkeypatch.setattr(tools, "_MAX_DENSE_SPATIAL_STATS_FEATURES", 3)
 
     assert vector._MAX_DENSE_SPATIAL_STATS_FEATURES == 3
+
+
+def test_create_workflow_implementation_is_injected_and_facade_order_is_stable():
+    from backend.services.tool_modules import workflow_tools
+
+    calls = []
+    failures = []
+
+    class StubTool:
+        def __init__(self, name):
+            self.name = name
+
+        def invoke(self, arguments):
+            calls.append((self.name, arguments))
+            return self.name + "-done"
+
+    result = workflow_tools.create_workflow_impl(
+        '[{"tool":"first","params":{"input":"seed"},"output":"layer-a"},'
+        '{"tool":"second","params":{"source":"$prev","prior":"$1"},"output":"layer-b"}]',
+        tool_provider=lambda: [StubTool("first"), StubTool("second")],
+        failure_classifier=lambda name, value: failures.append((name, value)) or False,
+    )
+
+    assert calls == [
+        ("first", {"input": "seed"}),
+        ("second", {"source": "layer-a", "prior": "layer-a"}),
+    ]
+    assert failures == [("first", "first-done"), ("second", "second-done")]
+    assert result == (
+        "工作流执行完成:\n"
+        "步骤1(first) → layer-a: first-done\n"
+        "步骤2(second) → layer-b: second-done"
+    )
+
+    assert tools.create_workflow.name == "create_workflow"
+    assert tools._TOOL_REGISTRY["create_workflow"] is tools.create_workflow
+    tool_names = [tool.name for tool in tools.tools]
+    index = tool_names.index("create_workflow")
+    assert tool_names.count("create_workflow") == 1
+    assert tool_names[index - 1:index + 2] == [
+        "hydrology_analysis", "create_workflow", "view_3d_terrain",
+    ]
+
+
+def test_create_workflow_facade_stops_on_registered_tool_failure(monkeypatch):
+    class FailingTool:
+        name = "spatial_buffer"
+
+        def invoke(self, _arguments):
+            return "工具执行失败: synthetic failure"
+
+    monkeypatch.setattr(tools, "tools", [FailingTool()])
+    result = tools.create_workflow.invoke(
+        '{"not-a-list": true}'
+    )
+    assert "必须是非空数组" in result
+
+    result = tools.create_workflow.invoke(
+        '[{"tool":"spatial_buffer","params":{},"output":"buffer"}]'
+    )
+    assert result == "工作流执行失败：第1步 'spatial_buffer' 执行失败: 工具执行失败: synthetic failure"
+
+
+def test_materialize_workflow_implementation_uses_injected_task_and_storage(tmp_path):
+    from backend.services.tool_modules import workflow_tools
+
+    materialized = []
+    saved = []
+    workflow = {
+        "id": "workflow-probe",
+        "name": "probe workflow",
+        "nodes": [{"name": "buffer", "tool": "spatial_buffer"}],
+    }
+
+    def materialize(task_id, *, workflow_name):
+        materialized.append((task_id, workflow_name))
+        return workflow
+
+    def save(candidate, filepath):
+        saved.append((candidate, filepath))
+        return True
+
+    result = workflow_tools.materialize_workflow_impl(
+        "custom name",
+        task_id_provider=lambda: "task-probe",
+        output_dir=str(tmp_path),
+        materialize_from_history=materialize,
+        save_workflow=save,
+    )
+
+    expected_path = str(tmp_path / "workflows" / "workflow-probe.giswork")
+    assert materialized == [("task-probe", "custom name")]
+    assert saved == [(workflow, expected_path)]
+    assert "probe workflow" in result
+    assert expected_path in result

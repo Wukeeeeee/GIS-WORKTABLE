@@ -10,16 +10,28 @@ from backend.services import ai_service
 from backend.services import graph
 
 
+def _reset_cancel_state():
+    with ai_service._CANCEL_LOCK:
+        if ai_service._active_cancel_requests or ai_service._active_cancel_sessions:
+            raise AssertionError("AI cancellation worker leaked past the test boundary")
+        ai_service._cancelled_requests.clear()
+        ai_service._cancelled_sessions.clear()
+        ai_service._session_cancel_generation.clear()
+        ai_service._global_cancel_generation = 0
+
+
 @pytest.fixture(autouse=True)
 def isolate_history_storage(monkeypatch, tmp_path):
-    """Isolate history markers and workspace layers from persistent test state."""
+    """Isolate cancellation state, history markers, and workspace layers per test."""
     tools_module = graph._tools_mod
+    _reset_cancel_state()
     tools_module._registered_layers.clear()
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
     try:
         yield
     finally:
         tools_module._registered_layers.clear()
+        _reset_cancel_state()
 
 
 def test_cancelled_request_stays_cancelled_after_same_session_starts_next_request():
@@ -328,8 +340,9 @@ def test_cancelled_direct_tool_request_holds_workspace_lock_until_worker_stops(
         "backend.services.tool_args_guard.validate_tool_args",
         lambda _name, arguments: (arguments, []),
     )
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
+    with task_manager._lock:
+        monkeypatch.setattr(task_manager, "_tasks", {})
+        monkeypatch.setattr(task_manager, "_session_active", {})
     tools.reset_state()
 
     class BlockingTool:
@@ -371,8 +384,9 @@ def test_cancelled_direct_tool_request_holds_workspace_lock_until_worker_stops(
     finally:
         release_worker.set()
         tools.reset_state()
-        task_manager._tasks.clear()
-        task_manager._session_active.clear()
+        with task_manager._lock:
+            task_manager._tasks.clear()
+            task_manager._session_active.clear()
 
 
 def test_blocked_model_stream_observes_cancel_promptly_and_retains_shared_lock_until_worker_stops():

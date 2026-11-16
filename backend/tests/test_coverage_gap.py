@@ -30,15 +30,95 @@ feature_to_raster = T.feature_to_raster
 create_fishnet = T.create_fishnet
 
 
+def _isolate_runtime_state(monkeypatch, tmp_path):
+    from backend.services.tool_modules import runtime
+
+    module = sys.modules[__name__]
+    isolated_state = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_log": [],
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_exec_call_count": 0,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_active_project_id": None,
+        "_temp_output_dir": str(tmp_path),
+        "_workspace_dir": str(tmp_path / "workspace"),
+    }
+    with runtime._state_lock:
+        for name, value in isolated_state.items():
+            # T is a compatibility facade that synchronizes runtime aliases;
+            # patch the test's from-import aliases as well.
+            monkeypatch.setattr(T, name, value)
+            if name in {"_registered_layers", "_pending_layers", "_pending_layer_ops"}:
+                monkeypatch.setattr(module, name, value)
+
+
 @pytest.fixture(autouse=True)
 def cleanup(tmp_path, monkeypatch):
     from backend.services.tool_modules import runtime
 
-    monkeypatch.setattr(runtime, "_temp_output_dir", str(tmp_path))
+    _isolate_runtime_state(monkeypatch, tmp_path)
     reset_state()
     init_temp_dir()
     yield
     reset_state()
+    with runtime._state_lock:
+        runtime._registered_layers.clear()
+        assert runtime._registered_layers == {}
+
+
+def test_runtime_state_isolation_restores_existing_aliases(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    module = sys.modules[__name__]
+    registry, pending, ops = (
+        runtime._registered_layers,
+        runtime._pending_layers,
+        runtime._pending_layer_ops,
+    )
+    registry["sentinel-layer"] = {"geojson": {"type": "FeatureCollection", "features": []}}
+    pending.append({"name": "sentinel-pending"})
+    ops.append({"action": "sentinel"})
+    runtime.set_current_run("sentinel-run")
+    output_dir, workspace_dir = runtime._temp_output_dir, runtime._workspace_dir
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_runtime_state(patcher, tmp_path)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layers is not pending
+        assert runtime._pending_layer_ops is not ops
+        assert T._registered_layers is runtime._registered_layers
+        assert T._pending_layers is runtime._pending_layers
+        assert module._registered_layers is runtime._registered_layers
+        assert module._pending_layers is runtime._pending_layers
+        assert module._pending_layer_ops is runtime._pending_layer_ops
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry
+    assert registry["sentinel-layer"]
+    assert runtime._pending_layers is pending and pending[0]["name"] == "sentinel-pending"
+    assert runtime._pending_layer_ops is ops and ops[0]["action"] == "sentinel"
+    assert T._registered_layers is registry and T._pending_layers is pending
+    assert module._registered_layers is registry
+    assert module._pending_layers is pending and module._pending_layer_ops is ops
+    assert runtime._current_run_id == "sentinel-run"
+    assert (runtime._temp_output_dir, runtime._workspace_dir) == (output_dir, workspace_dir)
 
 
 _SQUARE = {

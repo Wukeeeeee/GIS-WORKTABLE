@@ -12,6 +12,7 @@ from backend.services.tool_modules import (
     network,
     raster,
     terrain,
+    workflow_tools,
 )
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "network",
     "raster",
     "terrain",
+    "workflow_tools",
 ]
 
 __version__ = "0.1.0"

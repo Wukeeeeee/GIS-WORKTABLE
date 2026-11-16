@@ -15,11 +15,19 @@ from backend.services.graph import _should_use_agent
 def local_gis_task(tmp_path, monkeypatch):
     gis_tools._registered_layers.clear()
     monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
-    history_service.set_history_file(str(tmp_path / "history.json"))
+    with task_manager._lock:
+        monkeypatch.setattr(task_manager, "_tasks", {})
+        monkeypatch.setattr(task_manager, "_session_active", {})
+    # Isolate both history persistence and its singleton cache without
+    # clearing or replacing any history already held by the test process.
+    monkeypatch.setattr(history_service, "_CUSTOM_PATH", [str(tmp_path / "history.json")])
+    monkeypatch.setattr(history_service, "_ENTRIES", [])
+    monkeypatch.setattr(history_service, "_NEXT_INDEX", [1])
+    monkeypatch.setattr(history_service, "_LOADED", [False])
+    monkeypatch.setattr(history_service, "_LOAD_ERROR", [None])
+    monkeypatch.setattr(history_service, "_PERSIST_ERROR", [None])
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "ai-history"))
-    old_db = storage_service.get_db_path()
+    monkeypatch.setattr(storage_service, "_CUSTOM_DB_PATH", [None])
     storage_service.set_db_path(str(tmp_path / "workspace.db"))
     monkeypatch.setattr(gis_tools, "_temp_output_dir", str(tmp_path / "output"))
     monkeypatch.setattr(gis_tools, "_workspace_dir", str(tmp_path / "workspace"))
@@ -45,10 +53,9 @@ def local_gis_task(tmp_path, monkeypatch):
     finally:
         gis_tools.reset_state()
         gis_tools._registered_layers.clear()
-        task_manager._tasks.clear()
-        task_manager._session_active.clear()
-        history_service.set_history_file(None)
-        storage_service.set_db_path(old_db)
+        with task_manager._lock:
+            task_manager._tasks.clear()
+            task_manager._session_active.clear()
 
 
 @pytest.fixture

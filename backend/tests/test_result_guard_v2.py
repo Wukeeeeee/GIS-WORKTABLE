@@ -24,12 +24,14 @@ def isolate_storage_service_db(tmp_path, monkeypatch):
     output_dir.mkdir()
     monkeypatch.setattr(sys.modules[__name__], "OUTPUT_DIR", str(output_dir))
     monkeypatch.setitem(RG._OUTPUT_DIRS, "output", str(output_dir))
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
+    with task_manager._lock:
+        monkeypatch.setattr(task_manager, "_tasks", {})
+        monkeypatch.setattr(task_manager, "_session_active", {})
     storage_service.init_db()
     yield
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
+    with task_manager._lock:
+        task_manager._tasks.clear()
+        task_manager._session_active.clear()
 
 
 def _create_file(filename, content="hello"):

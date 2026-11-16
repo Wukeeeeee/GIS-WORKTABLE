@@ -22,16 +22,92 @@ from backend.services.tools import (
 from backend.services import history_service
 
 
+def _isolate_swipe_test_state(monkeypatch, tmp_path):
+    from backend.services.tool_modules import runtime
+
+    isolated_runtime = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_log": [],
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_exec_call_count": 0,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_active_project_id": None,
+        "_temp_output_dir": str(tmp_path),
+        "_workspace_dir": str(tmp_path / "workspace"),
+    }
+    isolated_history = {
+        "_CUSTOM_PATH": [str(tmp_path / "tool_history.json")],
+        "_ENTRIES": [],
+        "_NEXT_INDEX": [1],
+        "_LOADED": [False],
+        "_LOAD_ERROR": [None],
+        "_PERSIST_ERROR": [None],
+    }
+    with runtime._state_lock:
+        for name, value in isolated_runtime.items():
+            monkeypatch.setattr(T, name, value)
+    for name, value in isolated_history.items():
+        monkeypatch.setattr(history_service, name, value)
+
+
 @pytest.fixture(autouse=True)
-def _isolated_history(tmp_path, request):
-    """每个测试独立历史文件和图层注册表，测完恢复"""
-    T._registered_layers.clear()
-    history_service.set_history_file(str(tmp_path / "tool_history.json"))
+def _isolated_history(tmp_path, monkeypatch):
+    """每个测试独立历史缓存、runtime 状态与临时输出目录。"""
+    from backend.services.tool_modules import runtime
+
+    _isolate_swipe_test_state(monkeypatch, tmp_path)
+    reset_state()
+    yield
+    reset_state()
+    with runtime._state_lock:
+        runtime._registered_layers.clear()
+
+
+def test_swipe_fixture_restores_existing_runtime_and_history_state(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    registry, pending = runtime._registered_layers, runtime._pending_layers
+    entries, next_index, custom_path = (
+        history_service._ENTRIES,
+        history_service._NEXT_INDEX,
+        history_service._CUSTOM_PATH,
+    )
+    registry["sentinel-layer"] = {"geojson": {"type": "FeatureCollection", "features": []}}
+    pending.append({"name": "sentinel-pending"})
+    entries.append({"index": 81, "tool": "sentinel-history", "args": {}, "ok": True})
+    next_index[0] = 82
+    custom_path[0] = "sentinel-history-path.json"
+
+    patcher = pytest.MonkeyPatch()
     try:
-        yield
+        _isolate_swipe_test_state(patcher, tmp_path)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layers is not pending
+        assert history_service._ENTRIES is not entries
+        assert history_service._CUSTOM_PATH is not custom_path
+        assert T._registered_layers is runtime._registered_layers
     finally:
-        T._registered_layers.clear()
-        history_service.set_history_file(None)
+        patcher.undo()
+
+    assert runtime._registered_layers is registry and "sentinel-layer" in registry
+    assert runtime._pending_layers is pending and pending[0]["name"] == "sentinel-pending"
+    assert history_service._ENTRIES is entries and entries[0]["tool"] == "sentinel-history"
+    assert history_service._NEXT_INDEX is next_index and next_index[0] == 82
+    assert history_service._CUSTOM_PATH is custom_path and custom_path[0] == "sentinel-history-path.json"
 
 
 def _registry():

@@ -27,10 +27,17 @@ def client():
 
 @pytest.fixture(autouse=True)
 def isolate_task_storage(tmp_path, monkeypatch):
-    """Keep every adversarial task-manager case away from real task data."""
+    """Isolate both disk storage and process caches for each adversarial case."""
     task_root = tmp_path / "tasks"
     task_root.mkdir()
     monkeypatch.setattr(task_manager, "_BASE_DIR", str(task_root))
+    with task_manager._lock:
+        monkeypatch.setattr(task_manager, "_tasks", {})
+        monkeypatch.setattr(task_manager, "_session_active", {})
+    yield
+    with task_manager._lock:
+        task_manager._tasks.clear()
+        task_manager._session_active.clear()
 
 
 def test_adversarial_path_traversal_service_layer():

@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """阶段 C：空间统计工具测试 — Moran's I / Getis-Ord Gi* / KDE"""
+import os
+import sys
+import threading
+
 import pytest
+from backend.services import tools as T
 from backend.services.tools import (
     spatial_moran, spatial_hotspot, spatial_kde,
     _register_layer, _registered_layers, reset_state,
@@ -75,14 +80,76 @@ _KDE_POINTS = {
 }
 
 
+def _isolate_spatial_stats_runtime(monkeypatch, tmp_path):
+    from backend.services.tool_modules import runtime
+
+    output_dir = str(tmp_path)
+    isolated_runtime = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_call_count": 0,
+        "_exec_log": [],
+        "_temp_output_dir": output_dir,
+        "_workspace_dir": str(tmp_path / "workspace"),
+        "_raster_output_scope": threading.local(),
+        "_active_project_id": None,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_session_locks": {},
+    }
+    for path in (output_dir, os.path.join(output_dir, "output"), isolated_runtime["_workspace_dir"]):
+        os.makedirs(path, exist_ok=True)
+    with runtime._state_lock, runtime._session_locks_guard:
+        for name, value in isolated_runtime.items():
+            monkeypatch.setattr(T, name, value)
+    monkeypatch.setattr(sys.modules[__name__], "_registered_layers", isolated_runtime["_registered_layers"])
+
+
 @pytest.fixture(autouse=True)
-def _clean():
-    """每个测试前后清空注册表，避免互相污染"""
+def _clean(tmp_path, monkeypatch):
+    """每个测试只清理隔离后的 runtime，避免触及进程共享状态。"""
+    _isolate_spatial_stats_runtime(monkeypatch, tmp_path)
     reset_state()
-    _registered_layers.clear()
     yield
     reset_state()
-    _registered_layers.clear()
+
+
+def test_spatial_stats_fixture_restores_existing_runtime_state(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    registry, pending_ops = runtime._registered_layers, runtime._pending_layer_ops
+    registry["outside-sentinel"] = {"sentinel": True}
+    pending_ops.append({"action": "outside-sentinel"})
+    runtime.set_current_task("outside-spatial-stats-task-context")
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_spatial_stats_runtime(patcher, tmp_path)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layer_ops is not pending_ops
+        assert T._registered_layers is runtime._registered_layers
+        assert sys.modules[__name__]._registered_layers is runtime._registered_layers
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry
+    assert registry["outside-sentinel"]["sentinel"]
+    assert runtime._pending_layer_ops is pending_ops
+    assert pending_ops[-1]["action"] == "outside-sentinel"
+    assert runtime.get_current_task_id() == "outside-spatial-stats-task-context"
 
 
 def _setup(name, geojson):

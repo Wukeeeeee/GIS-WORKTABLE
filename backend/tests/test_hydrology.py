@@ -6,6 +6,7 @@
 """
 import os
 import sys
+import threading
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import numpy as np
@@ -13,18 +14,102 @@ import pytest
 
 from backend.services import tools as T
 from backend.services.tools import _fill_sinks, hydrology_analysis, reset_state, _pending_layer_ops
+from backend.services import history_service
+
+
+def _isolate_hydrology_state(monkeypatch, tmp_path):
+    from backend.services.tool_modules import runtime
+
+    isolated_runtime = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_call_count": 0,
+        "_exec_log": [],
+        "_temp_output_dir": str(tmp_path),
+        "_workspace_dir": str(tmp_path / "workspace"),
+        "_raster_output_scope": threading.local(),
+        "_active_project_id": None,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_session_locks": {},
+    }
+    for path in (tmp_path, tmp_path / "output", tmp_path / "workspace"):
+        path.mkdir(parents=True, exist_ok=True)
+    with runtime._state_lock, runtime._session_locks_guard:
+        for name, value in isolated_runtime.items():
+            monkeypatch.setattr(T, name, value)
+    # This module imported the pending queue by value; keep its assertion on
+    # the same isolated list used by runtime and the tools facade.
+    monkeypatch.setattr(
+        sys.modules[__name__], "_pending_layer_ops", isolated_runtime["_pending_layer_ops"]
+    )
+    history_state = {
+        "_CUSTOM_PATH": [str(tmp_path / "tool_history.json")],
+        "_ENTRIES": [],
+        "_NEXT_INDEX": [1],
+        "_LOADED": [False],
+        "_LOAD_ERROR": [None],
+        "_PERSIST_ERROR": [None],
+    }
+    for name, value in history_state.items():
+        monkeypatch.setattr(history_service, name, value)
 
 
 @pytest.fixture(autouse=True)
-def _clean(tmp_path):
-    previous_output_dir = T._temp_output_dir
+def _clean(tmp_path, monkeypatch):
+    _isolate_hydrology_state(monkeypatch, tmp_path)
     reset_state()
-    _pending_layer_ops.clear()
-    T._temp_output_dir = str(tmp_path)
     yield
     reset_state()
-    _pending_layer_ops.clear()
-    T._temp_output_dir = previous_output_dir
+
+
+def test_hydrology_fixture_restores_existing_runtime_and_history_state(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    registry, pending = runtime._registered_layers, runtime._pending_layers
+    pending_ops = runtime._pending_layer_ops
+    history_entries, history_path = history_service._ENTRIES, history_service._CUSTOM_PATH
+    registry["external-sentinel"] = {"sentinel": True}
+    pending.append({"name": "external-pending-sentinel"})
+    pending_ops.append({"action": "external-op-sentinel"})
+    history_entries.append({"tool": "external-history-sentinel"})
+    history_path[0] = "external-history-path.json"
+    runtime.set_current_task("external-task-context-sentinel")
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_hydrology_state(patcher, tmp_path)
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layers is not pending
+        assert runtime._pending_layer_ops is not pending_ops
+        assert history_service._ENTRIES is not history_entries
+        assert history_service._CUSTOM_PATH is not history_path
+        assert T._pending_layer_ops is runtime._pending_layer_ops
+        assert sys.modules[__name__]._pending_layer_ops is runtime._pending_layer_ops
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is registry and "external-sentinel" in registry
+    assert runtime._pending_layers is pending and pending[-1]["name"] == "external-pending-sentinel"
+    assert runtime._pending_layer_ops is pending_ops and pending_ops[-1]["action"] == "external-op-sentinel"
+    assert history_service._ENTRIES is history_entries
+    assert history_entries[-1]["tool"] == "external-history-sentinel"
+    assert history_service._CUSTOM_PATH is history_path
+    assert history_path[0] == "external-history-path.json"
+    assert runtime.get_current_task_id() == "external-task-context-sentinel"
 
 
 def _local_min_still_there(a):

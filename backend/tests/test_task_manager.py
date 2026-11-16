@@ -36,11 +36,15 @@ def isolated_task_dir(tmp_path, monkeypatch):
     """把 task_manager 的存储目录指到临时目录，避免污染仓库。"""
     test_dir = str(tmp_path / "tasks")
     monkeypatch.setattr(task_manager, "_BASE_DIR", test_dir)
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
+    # Swap the process caches instead of clearing shared state; monkeypatch
+    # restores the original mappings after the test.
+    with task_manager._lock:
+        monkeypatch.setattr(task_manager, "_tasks", {})
+        monkeypatch.setattr(task_manager, "_session_active", {})
     yield
-    task_manager._tasks.clear()
-    task_manager._session_active.clear()
+    with task_manager._lock:
+        task_manager._tasks.clear()
+        task_manager._session_active.clear()
 
 
 # ============================================================
