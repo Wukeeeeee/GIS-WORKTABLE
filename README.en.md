@@ -6,6 +6,14 @@ An open-source GIS workbench that brings manual spatial tools, AI-assisted workf
 
 The competition walkthrough is Mandarin-first for domestic review, with the English interface available as a switchable edition. See the [English demo runbook](docs/competition/demo-runbook.en.md) and the [portable sample project](frontend/samples/GIS-WorkTable-Competition-Demo.giswork).
 
+## Recent maintenance (2026-11-17)
+
+This round focused on backend test isolation and resource-sensitive regressions:
+
+- **Shared-state isolation:** layered, cloud-native, and Geo QA tests now use the shared runtime/task-manager isolator. Compatibility regressions continue to check `tools.py` state aliases and restoration of the caller's environment.
+- **Bounded regression:** the combined local failure-feedback, compatibility, coverage-gap, and cloud-native test scope did not reproduce the previously recorded PROJ SQLite memory error, thread-start failure, or workflow config error.
+- **Verification limits:** public opt-in cloud-native tests were not run. This was not a full backend regression and does not prove the historical failures' root cause is fully understood. See the [module scan log](docs/validation/module-scan-progress.md) for exact evidence and scope.
+
 ## Recent maintenance (2026-11-05)
 
 This round focused on project capacity, numeric fidelity, raster previews, and result delivery:

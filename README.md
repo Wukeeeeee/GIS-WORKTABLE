@@ -23,6 +23,16 @@
 
 已验证的操作及未验证范围见 [工具验证记录](docs/tool-validation.md)，近期改动见 [更新日志](CHANGELOG.md)。
 
+## 近期维护（2026-11-17）
+
+本轮重点收敛后端测试隔离与资源敏感回归：
+
+| 范围 | 维护与验证 |
+| --- | --- |
+| 共享状态隔离 | layered、cloud-native 与 Geo QA 测试改用公共 runtime/task-manager 隔离器；兼容回归继续检查 `tools.py` 共享状态别名与调用方环境恢复。 |
+| 有界回归 | 失败反馈、兼容、coverage-gap 与 cloud-native 本地测试组合未复现此前记录的 PROJ SQLite 内存错误、线程启动失败或工作流 config 错误。 |
+| 验证边界 | cloud-native 的公网 opt-in 用例未运行；本轮不是全后端回归，也不证明历史异常根因已完全定位。复现细节与实测范围见[模块扫描进度](docs/validation/module-scan-progress.md)。 |
+
 ## 近期维护（2026-11-05）
 
 本轮重点加固工程容量、数值精度、栅格预览与结果交付：
