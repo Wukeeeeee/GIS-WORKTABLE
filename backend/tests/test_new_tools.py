@@ -10,9 +10,6 @@ import json
 import numpy as np
 import pytest
 
-os.environ.pop("PROJ_LIB", None)
-os.environ.pop("PROJ_DATA", None)
-
 from backend.services import tools as T
 from backend.services.tools import (
     tools as TOOL_LIST, _register_layer, reset_state, get_pending_state,

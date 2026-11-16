@@ -1,10 +1,63 @@
 """Compatibility checks for the tools facade and modular shared runtime."""
 
+import importlib
 import os
 import threading
+from pathlib import Path
+
+import pytest
 
 from backend.services import tools
 from backend.services.tool_modules import map_ops, runtime
+
+
+def _root_test_conftest(pytestconfig):
+    target = Path(__file__).resolve().with_name("conftest.py")
+    matches = [
+        plugin
+        for plugin in pytestconfig.pluginmanager.get_plugins()
+        if getattr(plugin, "__file__", None)
+        and Path(plugin.__file__).resolve() == target
+    ]
+    assert len(matches) == 1, (
+        f"Expected one root test conftest at {target}, got {len(matches)}"
+    )
+    return matches[0]
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "test_geo_qa",
+        "test_new_tools",
+        "test_cloud_native",
+        "test_direct_invoke_e2e",
+        "test_mcp_server",
+        "layered.conftest",
+    ],
+)
+def test_tool_test_module_import_preserves_proj_environment(monkeypatch, module_name):
+    module = importlib.import_module(module_name)
+    original_client = getattr(module, "client", None)
+
+    monkeypatch.setenv("PROJ_LIB", "caller-proj-lib")
+    monkeypatch.setenv("PROJ_DATA", "caller-proj-data")
+
+    try:
+        importlib.reload(module)
+        assert os.environ["PROJ_LIB"] == "caller-proj-lib"
+        assert os.environ["PROJ_DATA"] == "caller-proj-data"
+    finally:
+        reloaded_client = getattr(module, "client", None)
+        if (
+            original_client is not None
+            and reloaded_client is not None
+            and reloaded_client is not original_client
+        ):
+            close = getattr(reloaded_client, "close", None)
+            if callable(close):
+                close()
+            module.client = original_client
 
 
 def test_facade_reexports_authoritative_mutable_state(monkeypatch):
@@ -28,8 +81,8 @@ def test_facade_forwards_runtime_output_directory(monkeypatch, tmp_path):
     assert tools._temp_output_dir == output_dir
 
 
-def test_pytest_unconfigure_restores_caller_proj_environment(monkeypatch):
-    import conftest
+def test_pytest_unconfigure_restores_caller_proj_environment(monkeypatch, pytestconfig):
+    conftest = _root_test_conftest(pytestconfig)
 
     monkeypatch.setattr(conftest, "_PREVIOUS_PROJ_ENV", {
         "PROJ_LIB": "caller-proj-lib",
@@ -47,8 +100,10 @@ def test_pytest_unconfigure_restores_caller_proj_environment(monkeypatch):
     assert os.environ["PROJ_DATA"] == "caller-proj-data"
 
 
-def test_pytest_unconfigure_keeps_proj_environment_unset_when_previously_absent(monkeypatch):
-    import conftest
+def test_pytest_unconfigure_keeps_proj_environment_unset_when_previously_absent(
+    monkeypatch, pytestconfig
+):
+    conftest = _root_test_conftest(pytestconfig)
 
     monkeypatch.setattr(conftest, "_PREVIOUS_PROJ_ENV", {
         "PROJ_LIB": None,
@@ -66,8 +121,8 @@ def test_pytest_unconfigure_keeps_proj_environment_unset_when_previously_absent(
     assert "PROJ_DATA" not in os.environ
 
 
-def test_pytest_unconfigure_restores_numeric_thread_limits(monkeypatch):
-    import conftest
+def test_pytest_unconfigure_restores_numeric_thread_limits(monkeypatch, pytestconfig):
+    conftest = _root_test_conftest(pytestconfig)
 
     previous = {
         "OPENBLAS_NUM_THREADS": "caller-openblas",
@@ -89,8 +144,8 @@ def test_pytest_unconfigure_restores_numeric_thread_limits(monkeypatch):
         assert os.environ.get(name) == value
 
 
-def test_pytest_unconfigure_restores_pyarrow_thread_counts(monkeypatch):
-    import conftest
+def test_pytest_unconfigure_restores_pyarrow_thread_counts(monkeypatch, pytestconfig):
+    conftest = _root_test_conftest(pytestconfig)
 
     class FakeArrow:
         def __init__(self):
@@ -112,9 +167,9 @@ def test_pytest_unconfigure_restores_pyarrow_thread_counts(monkeypatch):
     assert arrow.counts == [("cpu", 6), ("io", 4)]
 
 
-def test_pytest_configure_limits_pyarrow_thread_counts(monkeypatch):
+def test_pytest_configure_limits_pyarrow_thread_counts(monkeypatch, pytestconfig):
     import sys
-    import conftest
+    conftest = _root_test_conftest(pytestconfig)
 
     class FakeArrow:
         def __init__(self):

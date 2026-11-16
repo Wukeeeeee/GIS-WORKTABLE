@@ -15,9 +15,6 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-os.environ.pop("PROJ_LIB", None)
-os.environ.pop("PROJ_DATA", None)
-
 from backend import main as main_module
 from backend.main import app
 from backend.services import tools as tool_service, history_service

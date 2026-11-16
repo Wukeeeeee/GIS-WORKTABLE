@@ -15,9 +15,6 @@ import pytest
 
 pytest.importorskip("mcp", reason="未安装 mcp SDK")
 
-os.environ.pop("PROJ_LIB", None)
-os.environ.pop("PROJ_DATA", None)
-
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from backend.services import mcp_server as ms

@@ -4187,3 +4187,74 @@
 - **改动：**改用模块级 `pytest.mark.usefixtures("isolated_tool_runtime")`，删除重复 runtime 状态表和外层 reset；嵌套 sentinel 改为调用共享 isolator，继续验证 runtime 与测试模块 `_registered_layers` 别名的恢复。
 - **验证：**变更后 `python -m pytest backend/tests/test_drill.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**58 passed**。再与 agent retry、AI cancellation、多轮状态、新工具、空间/栅格、DEM、interpolation、drill 和兼容测试模块合并复验：**532 passed, 1 warning**（既有 pandas 日期格式推断提示）。`git diff --check` 通过；测试未访问真实 DataV 服务。
 - **边界与下一步：**本次验证只覆盖上述 13 个测试模块，不等同全后端测试；309 项历史组合的 PROJ/线程异常仍未定位。未跟踪 `.agents/` 保持不动。
+
+### 2026-11-16 将 Geo QA 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_geo_qa.py` 仍维护局部 runtime 字段表，并在每例前后 `reset_state()`；嵌套 sentinel 也复用了自建状态表。变更前与工具兼容测试合跑 **57 passed**。用例处理内存合成 GeoJSON，不访问外部服务或持久数据。
+- **改动：**切换到模块级 `isolated_tool_runtime`，删除局部状态表和外层 reset；嵌套 sentinel 使用公共隔离 helper，并保留 pending 图层、QA warning、当前 task 与输出目录的恢复断言。用例内部为验证 pending-state 轮次保留的显式 `reset_state()` 未改。
+- **验证：**变更后 `python -m pytest backend/tests/test_geo_qa.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**57 passed**；`git diff --check` 通过。
+- **边界与下一步：**仅覆盖 Geo QA 与工具兼容测试；该文件仍在模块导入时清除 `PROJ_LIB` / `PROJ_DATA`，其对同一 pytest 会话其它模块的环境影响尚未审计。309 项历史组合的 PROJ/线程异常仍未定位；工作区原有未跟踪 `.agents/` 保持不动，未提交或推送。
+
+### 2026-11-16 移除 Geo QA 测试重复的 PROJ 环境清理
+
+- **问题与证据：**复核发现 `backend/tests/conftest.py` 在收集测试前已保存并清除 `PROJ_LIB` / `PROJ_DATA`，并在 `pytest_unconfigure` 恢复调用方原值；`test_geo_qa.py` 又在模块导入时清除相同变量，造成重复的进程级副作用。兼容测试已有 conftest 恢复钩子的两种环境回归。
+- **改动：**删除 Geo QA 测试模块的重复环境清除；在兼容测试新增 reload 回归，设置调用方环境标记后重载 `test_geo_qa`，断言该模块导入不再改写环境。此项复核解决上一条记录中的 Geo QA 环境影响未审计项，不改变 conftest 的会话级 PROJ 修复/恢复契约。
+- **验证：**Geo QA + 工具兼容模块 **58 passed**；兼容模块独立运行 **41 passed**；与 agent retry、AI cancellation、多轮状态、新工具、空间/栅格、DEM、interpolation、drill 等模块合并复验 **550 passed, 1 warning**（spatial-tools 中既有 pandas 日期格式推断提示）。测试仅使用本地合成输入；未访问外部服务或用户数据。
+- **边界与下一步：**只验证上述 14 个测试模块，不代表全后端测试；其它测试文件仍可能存在重复 PROJ 环境清除，待逐模块审查。309 项历史组合的 PROJ/线程异常仍未定位；未提交或推送。
+
+### 2026-11-16 移除 new-tools 测试重复的 PROJ 环境清理
+
+- **问题与证据：**`test_new_tools.py` 在模块导入时再次清除 `PROJ_LIB` / `PROJ_DATA`，而根级 `backend/tests/conftest.py` 已统一保存、清理并于 pytest 结束时恢复；此前 Geo QA 测试已确认该局部清理可以删除。
+- **改动：**删除 new-tools 的重复环境修改；将兼容测试的导入回归参数化为 Geo QA 与 new-tools 两个模块，重载时设置调用方标记并断言 PROJ 环境保持不变。DEM 栅格仍由 pytest 临时目录生成，未改动其工具输出契约。
+- **验证：**new-tools + 工具兼容模块 **71 passed**；14 个相关工具/状态模块合并复验 **551 passed, 1 warning**（spatial-tools 中既有 pandas 日期格式推断提示）；`git diff --check` 通过。未访问外部服务、真实缓存或用户数据。
+- **边界与下一步：**只验证上述相关测试集合，不代表全后端验证；`test_cloud_native.py`、`test_direct_invoke_e2e.py`、`test_mcp_server.py` 及 `tests/layered/conftest.py` 仍可见类似 PROJ 环境清理，需分别确认导入依赖与恢复责任后再收敛。309 项历史组合的 PROJ/线程异常仍未定位；未提交或推送。
+
+### 2026-11-16 移除 cloud-native 测试重复的 PROJ 环境清理
+
+- **问题与证据：**`test_cloud_native.py` 在模块导入时自行清除 `PROJ_LIB` / `PROJ_DATA`；根级 `backend/tests/conftest.py` 已统一处理这两个变量，并负责在 pytest 退出时还原调用方环境。运行前 `GIS_WORKTABLE_RUN_REMOTE_TESTS` 未设置；变更前该文件与兼容模块合跑 **108 passed, 4 skipped**，4 项均为显式 opt-in 的公网集成用例。
+- **改动：**删除 cloud-native 测试的重复环境清理；扩展兼容回归，在 reload Geo QA、new-tools、cloud-native 测试模块时断言调用方 PROJ 环境保持原值。未修改远程测试开关或云原生生产代码。
+- **验证：**变更后 `python -m pytest backend/tests/test_cloud_native.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**109 passed, 4 skipped**。远程集成测试仍按默认设置跳过；其余覆盖为本地数据和测试自建 loopback。未访问公网服务、真实用户数据或凭据。
+- **边界与下一步：**仅覆盖 cloud-native 与兼容模块，未重跑全部后端；cloud-native 测试仍有自有 runtime 状态隔离 helper，尚未迁移。`test_direct_invoke_e2e.py`、`test_mcp_server.py` 和 `tests/layered/conftest.py` 仍需分别审查环境/导入责任。309 项历史组合的 PROJ/线程异常仍未定位；未提交或推送。
+
+### 2026-11-16 移除 direct-invoke 测试重复的 PROJ 环境清理
+
+- **问题与证据：**`test_direct_invoke_e2e.py` 在导入生产 `backend.main` 前自行清除 `PROJ_LIB` / `PROJ_DATA`；根级 pytest 配置已在测试收集前保存并清理调用方环境，且生产入口本身保留其 GIS 初始化前的 PROJ 修复。测试说明全流程用合成数据、不借助 AI；其 module fixture 将数据库、history、task 与工具输出重定向到临时目录。变更前与工具兼容测试合跑 **60 passed**。
+- **改动：**删除 direct-invoke 测试文件的重复环境清理；兼容测试的导入重载回归增加该模块，并在重载后关闭临时创建的 `TestClient`、恢复原 client 引用，避免测试资源泄漏。
+- **验证：**`python -m pytest backend/tests/test_direct_invoke_e2e.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**61 passed**；`git diff --check` 通过。仅执行本地 FastAPI TestClient 与临时数据路径，未访问外部服务、用户数据或真实凭据。
+- **边界与下一步：**本次仅覆盖 direct-invoke 与兼容测试；生产 `backend.main` 的 PROJ 初始化逻辑未改。`test_mcp_server.py` 和 `tests/layered/conftest.py` 仍需审查；309 项历史组合的 PROJ/线程异常仍未定位。未提交或推送。
+
+### 2026-11-16 移除 MCP 测试重复的 PROJ 环境清理
+
+- **问题与证据：**`test_mcp_server.py` 在导入 MCP SDK 后自行清除 `PROJ_LIB` / `PROJ_DATA`；根级 pytest 配置已保存、清理并恢复这两个变量，生产 `backend.services.mcp_server` 也在服务初始化时执行 PROJ 修复。变更前与兼容测试合跑 **55 passed**。
+- **改动：**删除 MCP 测试文件的重复环境清理；将兼容测试的环境保留回归扩展到 MCP 测试模块。MCP server 生产初始化保持不变。
+- **验证：**`python -m pytest backend/tests/test_mcp_server.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**56 passed**；`git diff --check` 通过。使用 MCP 内存传输、本地 stdio 子进程；URL 获取与 Wikidata/OSM 搜索均由测试替身模拟，未访问外部服务、凭据或用户数据。
+- **边界与下一步：**只覆盖 MCP 与兼容模块，不代表全后端验证；`tests/layered/conftest.py` 的重复 PROJ 清理仍待确认，且该配置导入生产 `backend.main`，后者的 PROJ 初始化策略暂不调整。309 项历史组合的 PROJ/线程异常仍未定位；未提交或推送。
+
+### 2026-11-16 收敛 layered conftest 的重复 PROJ 清理并修复兼容测试的 conftest 定位
+
+- **问题与证据：**`backend/tests/layered/conftest.py` 位于根级 `backend/tests/conftest.py` 之下；根级配置已保存、清理并最终恢复 PROJ 环境，随后生产 `backend.main` 也负责 GIS 初始化前的 PROJ 修复。子目录再执行相同 `os.environ.pop` 属于重复清理。检查 layered 第 1 层测试没有外部请求，runtime 输出经 autouse fixture 写入 `tmp_path`。
+- **发现的回归缺口：**把 `layered/test_layer1_unit.py` 与工具兼容测试合跑时，兼容测试的 `import conftest` 解析到了 `tests/layered/conftest.py`，导致针对根级 `_PREVIOUS_PROJ_ENV`、Arrow 和线程恢复钩子的 5 项测试失败（其余 51 项通过）。此前单独跑兼容模块无法暴露此名称遮蔽问题。
+- **改动：**移除 layered 子配置的重复 PROJ 清理；兼容测试改为通过 pytest plugin manager 按文件绝对路径定位根级 `tests/conftest.py`。导入回归扩展到 layered 配置，重载前先让 `backend.main` 完成其既有初始化。首次扩展回归时将 `layered.conftest.client` 的 fixture descriptor 误当作可关闭的 `TestClient`，出现 1 项失败；修正为仅对具有 callable `close()` 的重载对象关闭，并恢复原引用。
+- **验证：**`python -m pytest backend/tests/layered/test_layer1_unit.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**57 passed**；兼容模块单独运行：**46 passed**；`git diff --check` 通过。未访问外部服务或用户数据库，根级测试配置将 workspace DB 放在临时目录。
+- **边界与下一步：**仅验证 layered 第 1 层和共享兼容测试；layered 第 2–5 层未运行，其中 GIS/端到端路径需另行审查网络与服务替身。layered runtime fixture 仍有自建状态表，尚未迁移；309 项历史组合的 PROJ/线程异常仍未定位。未提交或推送。
+
+### 2026-11-16 将 layered 测试 runtime/task-manager 状态接入公共隔离器
+
+- **问题与证据：**`tests/layered/conftest.py::clean_gis_state` 复制 runtime 状态字段表、直接 patch task-manager 内部字典，并在 fixture 前后调用全局 `reset_state()`；layered 全套基线 **24 passed**。第 3 层 DataV 边界、Layer 5 Agent 流程使用本地替身；URL endpoint 只验证非法目标，图像与服务数据落在 `tmp_path`，workspace DB 由根级 conftest 指向临时目录。
+- **改动：**改为调用公共 `tool_runtime_isolator`，移除重复 runtime/task 状态表、`threading.local` 初始化和 fixture 外层 reset；把隔离状态放在 `<tmp_path>/runtime-state`，保留 layered 原有 `<tmp_path>/tool-runtime`、`workspace`、`tasks` 路径契约。首轮直接使用默认 tmp_path 后出现 3 项 `FileExistsError`：共享 fixture 预建了用例自己要 `mkdir()` 的 `output` 和 `tasks` 目录；改用独立 runtime-state 根并恢复各输出/任务目录后通过。
+- **验证：**`python -m pytest backend/tests/layered backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**70 passed**（layered 24 项 + 兼容 46 项）。`git diff --check` 通过；未访问外部服务、凭据或用户数据。
+- **边界与下一步：**验证覆盖 layered 第 1–5 层与兼容模块，不等同全后端测试。layer 5 的 Agent 工作流由 mock 覆盖，不代表真实模型/远程服务验收；309 项历史组合的 PROJ/线程异常仍未定位。未提交或推送，原 `.agents/` 未触碰。
+
+### 2026-11-16 将 cloud-native 测试 runtime/task-manager 状态接入公共隔离器
+
+- **问题与证据：**`test_cloud_native.py` 复制 runtime 全量状态字典和 `sys.modules` 别名扫描，并在每例前后调用 `reset_state()`、`reset_registered_layers([])`；变更前与兼容测试合跑 **112 passed, 4 skipped**。远程集成测试仅在 `GIS_WORKTABLE_RUN_REMOTE_TESTS=1` 时运行，本轮环境未设置该开关；其余用例使用本地 COG/PMTiles/GeoParquet/FlatGeobuf 样本、测试替身或 loopback server。
+- **改动：**改用公共 `tool_runtime_isolator`，移除重复状态字典、别名扫描和外层 reset；隔离状态放在 `<tmp_path>/runtime-state`，将工具输出根保持为原有 `<tmp_path>`、workspace 仍映射到 `<tmp_path>/workspace`。嵌套 sentinel 改用公共隔离 helper，并保留 runtime facade、测试模块及 raster/terrain 队列 alias 的恢复断言。用例内部用于模拟重复操作的显式 `reset_state()` 保持不变。
+- **验证：**cloud-native + 兼容模块 **112 passed, 4 skipped**；再与 layered 第 1–5 层合并复验 `python -m pytest backend/tests/layered backend/tests/test_cloud_native.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**136 passed, 4 skipped**。`git diff --check` 通过；远程集成测试未触发，未访问公网、真实缓存、用户数据或凭据。
+- **边界与下一步：**远程 COG/PMTiles/GeoParquet/FlatGeobuf 仍未验证；本轮合并范围仅含 layered、cloud-native 与兼容测试，不代表全后端验证。309 项历史组合的 PROJ/线程异常仍未定位；未提交或推送，原 `.agents/` 未触碰。
+
+### 2026-11-16 复测 PROJ/线程异常的有界组合并定位两个线程增量点
+
+- **当前复测：**在子进程将 `GIS_WORKTABLE_RUN_REMOTE_TESTS=0` 后运行 `test_cloud_native.py` + `test_tool_failure_feedback.py`，**84 passed, 4 skipped**；4 项为显式 opt-in 公网集成用例。进程线程数从 pytest 启动前 **4** 到收集后 **7**，在 `pytest_sessionfinish` 为 **11**；Python `threading.active_count()` 始终为 **1**。本次未出现 PROJ SQLite 错误或线程创建失败。
+- **最小定位：**对两个本地单测单独采样：guarded range relay 从 setup **7→8**（本地 server Python 线程），call **8→10**，teardown **10→9**（Python 线程回到 1，仍净增 2 个进程线程）；`test_geoparquet_to_geojson` 的 call 从 **9→11**，Python 线程仍为 1。两项分别对应 loopback HTTP/urllib 首次路径与 GeoParquet 读取的 native 线程增量。
+- **对照与结论：**工具兼容测试单独 **46 passed**；该子进程在 unconfigure 前后均为 7 个进程线程，即 Arrow 原值恢复 `(6, 4)` 未造成可测增量。当前证据支持 native worker 在受测路径/会话阶段被初始化，但具体组件、是否可回收及其与历史 309 项中的 PROJ SQLite OOM/线程上限失败的因果关系仍未确认；不据此改生产代码。
+- **边界与下一步：**没有重跑完整 309 项组合；本轮采样中一版临时 hook wrapper 签名错误，随后修正并用两个正确 hook 的单测复测（**2 passed**），该错误属于诊断脚本而非仓库测试。下一步可在隔离子进程中重复执行同一路径并测稳定性/生命周期，再决定是否有可定位的库级资源边界。未访问公网、真实数据或凭据；未提交或推送。

@@ -9,51 +9,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import pytest
 
-os.environ.pop("PROJ_LIB", None)
-os.environ.pop("PROJ_DATA", None)
-
-from backend.services import tools as T
 from backend.services.geo_qa import qa_check
 from backend.services.tools import _push_layer, get_pending_state, reset_state
 from backend.services.tool_modules import runtime
 
 
-def _isolate_geo_qa_runtime(monkeypatch, tmp_path):
-    isolated_state = {
-        "_pending_layers": [],
-        "_pending_qa_warnings": [],
-        "_pending_images": [],
-        "_pending_aoi_suggestions": {},
-        "_pending_heatmap": {"latest": None},
-        "_clear_layers_flag": False,
-        "_pending_layer_ops": [],
-        "_current_amap_key": "",
-        "_search_call_count": 0,
-        "_domain_fail": {},
-        "_exec_call_count": 0,
-        "_exec_log": [],
-        "_current_task_id": "",
-        "_last_user_message": "",
-        "_conversation_context": "",
-        "_current_run_id": "",
-        "_active_project_id": None,
-        "_temp_output_dir": str(tmp_path),
-        "_workspace_dir": str(tmp_path / "workspace"),
-    }
-    with runtime._state_lock:
-        for name, value in isolated_state.items():
-            monkeypatch.setattr(T, name, value)
+pytestmark = pytest.mark.usefixtures("isolated_tool_runtime")
 
 
-@pytest.fixture(autouse=True)
-def isolate_geo_qa_state(tmp_path, monkeypatch):
-    _isolate_geo_qa_runtime(monkeypatch, tmp_path)
-    reset_state()
-    yield
-    reset_state()
-
-
-def test_geo_qa_fixture_restores_existing_runtime_state(tmp_path):
+def test_geo_qa_fixture_restores_existing_runtime_state(tmp_path, isolated_tool_runtime):
     outer_pending = runtime._pending_layers
     outer_warnings = runtime._pending_qa_warnings
     outer_pending.append({"name": "outside-sentinel"})
@@ -63,8 +27,7 @@ def test_geo_qa_fixture_restores_existing_runtime_state(tmp_path):
 
     patcher = pytest.MonkeyPatch()
     try:
-        _isolate_geo_qa_runtime(patcher, tmp_path / "nested-isolation")
-        reset_state()
+        isolated_tool_runtime(patcher, tmp_path / "nested-isolation")
         _push_layer("坏层", _fc(_point(88.0, 116.4)))
         assert runtime._pending_layers is not outer_pending
         assert runtime._pending_qa_warnings is not outer_warnings

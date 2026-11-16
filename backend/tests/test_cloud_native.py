@@ -22,9 +22,6 @@ from pathlib import Path
 
 import pytest
 
-os.environ.pop("PROJ_LIB", None)
-os.environ.pop("PROJ_DATA", None)
-
 from backend.services import tools as T
 from backend.services.tools import tools as TOOL_LIST, reset_state, get_pending_state, _registered_layers
 from backend.services import cloud_native as cn
@@ -32,65 +29,15 @@ from backend.services import url_security
 from backend.services.tool_modules import runtime
 
 
-def _isolate_cloud_native_runtime(monkeypatch, tmp_path):
-    isolated_state = {
-        "_registered_layers": {},
-        "_pending_layers": [],
-        "_pending_layer_ops": [],
-        "_pending_images": [],
-        "_pending_qa_warnings": [],
-        "_pending_aoi_suggestions": {},
-        "_pending_heatmap": {"latest": None},
-        "_domain_fail": {},
-        "_search_cache": {},
-        "_search_last_hit": {},
-        "_exec_log": [],
-        "_clear_layers_flag": False,
-        "_current_amap_key": "",
-        "_search_call_count": 0,
-        "_exec_call_count": 0,
-        "_current_task_id": "",
-        "_last_user_message": "",
-        "_current_run_id": "",
-        "_conversation_context": "",
-        "_active_project_id": None,
-        "_temp_output_dir": str(tmp_path),
-        "_workspace_dir": str(tmp_path / "workspace"),
-    }
-    mutable_names = {
-        name for name in isolated_state
-        if isinstance(getattr(runtime, name), (dict, list, threading.local))
-    }
-    original_values = {name: getattr(runtime, name) for name in mutable_names}
-    aliases = []
-    seen_modules = set()
-    for module in tuple(sys.modules.values()):
-        if module is None or id(module) in seen_modules or module in (runtime, T):
-            continue
-        seen_modules.add(id(module))
-        namespace = getattr(module, "__dict__", {})
-        for name in mutable_names:
-            if namespace.get(name) is original_values[name]:
-                aliases.append((module, name, isolated_state[name]))
-
-    with runtime._state_lock:
-        for name, value in isolated_state.items():
-            monkeypatch.setattr(T, name, value)
-        for module, name, value in aliases:
-            monkeypatch.setattr(module, name, value)
-
-
 @pytest.fixture(autouse=True)
-def isolate_cloud_native_runtime(tmp_path, monkeypatch):
-    _isolate_cloud_native_runtime(monkeypatch, tmp_path)
-    reset_state()
-    T.reset_registered_layers([])
-    yield
-    reset_state()
-    T.reset_registered_layers([])
+def isolate_cloud_native_runtime(tmp_path, monkeypatch, tool_runtime_isolator):
+    """Use shared runtime/task isolation while preserving cloud-native output roots."""
+    tool_runtime_isolator(monkeypatch, tmp_path / "runtime-state")
+    monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
+    monkeypatch.setattr(T, "_workspace_dir", str(tmp_path / "workspace"))
 
 
-def test_cloud_native_fixture_restores_runtime_aliases(tmp_path):
+def test_cloud_native_fixture_restores_runtime_aliases(tmp_path, tool_runtime_isolator):
     from backend.services.tool_modules import raster, terrain
 
     outer_registry = runtime._registered_layers
@@ -104,9 +51,7 @@ def test_cloud_native_fixture_restores_runtime_aliases(tmp_path):
 
     patcher = pytest.MonkeyPatch()
     try:
-        _isolate_cloud_native_runtime(patcher, tmp_path / "nested-isolation")
-        T.reset_registered_layers([])
-        reset_state()
+        tool_runtime_isolator(patcher, tmp_path / "nested-isolation")
         T._register_layer("nested-layer", {
             "type": "FeatureCollection", "features": [],
         })
