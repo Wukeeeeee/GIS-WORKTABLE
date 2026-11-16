@@ -43,7 +43,7 @@ def _use_temp_projects(tmp_path, monkeypatch):
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(root / "blobs"))
     monkeypatch.setattr(project_service, "_INDEX_PATH", str(root / "index.json"))
-    project_service._blob_refcount.clear()
+    monkeypatch.setattr(project_service, "_blob_refcount", {})
     uploads = tmp_path / "runtime" / "uploads"
     uploads.mkdir(parents=True)
     source = uploads / "source.png"
@@ -56,6 +56,24 @@ def _use_temp_projects(tmp_path, monkeypatch):
     monkeypatch.setattr(tools, "_pending_layers", [])
     monkeypatch.setattr(tools, "_pending_layer_ops", [])
     return source
+
+
+def test_temp_project_setup_restores_host_blob_refcount(tmp_path, monkeypatch):
+    sentinel = f"__project_blob_refcount_{os.urandom(8).hex()}__"
+    simulated_host_cache = {sentinel: 7}
+    monkeypatch.setattr(project_service, "_blob_refcount", simulated_host_cache)
+    patcher = pytest.MonkeyPatch()
+    try:
+        source = _use_temp_projects(tmp_path / "nested", patcher)
+        assert source.is_file()
+        assert project_service._blob_refcount is not simulated_host_cache
+        assert project_service._blob_refcount == {}
+        assert simulated_host_cache[sentinel] == 7
+        patcher.undo()
+        assert project_service._blob_refcount is simulated_host_cache
+        assert simulated_host_cache[sentinel] == 7
+    finally:
+        patcher.undo()
 
 
 def test_raster_original_path_accepts_nested_rerun_asset_but_rejects_escape(tmp_path, monkeypatch):

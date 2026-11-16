@@ -12,12 +12,7 @@ from backend.services.graph import _should_use_agent
 
 
 @pytest.fixture
-def local_gis_task(tmp_path, monkeypatch):
-    gis_tools._registered_layers.clear()
-    monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
-    with task_manager._lock:
-        monkeypatch.setattr(task_manager, "_tasks", {})
-        monkeypatch.setattr(task_manager, "_session_active", {})
+def local_gis_task(tmp_path, monkeypatch, isolated_tool_runtime):
     # Isolate both history persistence and its singleton cache without
     # clearing or replacing any history already held by the test process.
     monkeypatch.setattr(history_service, "_CUSTOM_PATH", [str(tmp_path / "history.json")])
@@ -29,9 +24,6 @@ def local_gis_task(tmp_path, monkeypatch):
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "ai-history"))
     monkeypatch.setattr(storage_service, "_CUSTOM_DB_PATH", [None])
     storage_service.set_db_path(str(tmp_path / "workspace.db"))
-    monkeypatch.setattr(gis_tools, "_temp_output_dir", str(tmp_path / "output"))
-    monkeypatch.setattr(gis_tools, "_workspace_dir", str(tmp_path / "workspace"))
-    (tmp_path / "output").mkdir()
     task_id = task_manager.create_task("长沙边界缓冲与导出", "four-turn-session")
     gis_tools.reset_state(task_id=task_id)
     for run_id in ("run-four-turn-1", "run-four-turn-2", "run-four-turn-3"):
@@ -48,14 +40,72 @@ def local_gis_task(tmp_path, monkeypatch):
     }
     gis_tools._register_layer("长沙市", source)
     wrapped = {t.name: t for t in gis_tools.tools}
+    yield task_id, wrapped, tmp_path
+
+
+def test_gis_runtime_isolation_restores_existing_state(tmp_path, isolated_tool_runtime):
+    from backend.services.tool_modules import runtime
+
+    registry = runtime._registered_layers
+    pending_layers = runtime._pending_layers
+    pending_ops = runtime._pending_layer_ops
+    previous_task_id = runtime.get_current_task_id()
+    task_cache = task_manager._tasks
+    active_sessions = task_manager._session_active
+    previous_task_dir = task_manager._BASE_DIR
+    sentinel = f"__gis_operation_context_fixture_{uuid.uuid4().hex}__"
+    registry[sentinel] = {"sentinel": True}
+    pending_layers.append({"name": sentinel})
+    pending_ops.append({"action": sentinel})
+    runtime.set_current_task(sentinel)
+    task_cache[sentinel] = {"sentinel": True}
+    active_sessions[sentinel] = sentinel
+
+    patcher = pytest.MonkeyPatch()
     try:
-        yield task_id, wrapped, tmp_path
-    finally:
+        isolated_tool_runtime(patcher, tmp_path / "nested")
         gis_tools.reset_state()
-        gis_tools._registered_layers.clear()
-        with task_manager._lock:
-            task_manager._tasks.clear()
-            task_manager._session_active.clear()
+        runtime._registered_layers[sentinel] = {"isolated": True}
+        assert runtime._registered_layers is not registry
+        assert runtime._pending_layers is not pending_layers
+        assert runtime._pending_layer_ops is not pending_ops
+        assert task_manager._tasks is not task_cache
+        assert task_manager._session_active is not active_sessions
+        task_manager._tasks[sentinel] = {"isolated": True}
+        patcher.undo()
+        assert runtime._registered_layers is registry
+        assert registry[sentinel]["sentinel"] is True
+        assert runtime._pending_layers is pending_layers
+        assert pending_layers[-1]["name"] == sentinel
+        assert runtime._pending_layer_ops is pending_ops
+        assert pending_ops[-1]["action"] == sentinel
+        assert runtime.get_current_task_id() == sentinel
+        assert task_manager._tasks is task_cache
+        assert task_cache[sentinel]["sentinel"] is True
+        assert task_manager._session_active is active_sessions
+        assert active_sessions[sentinel] == sentinel
+        assert task_manager._BASE_DIR == previous_task_dir
+    finally:
+        patcher.undo()
+        registry.pop(sentinel, None)
+        pending_layers[:] = [item for item in pending_layers if item.get("name") != sentinel]
+        pending_ops[:] = [item for item in pending_ops if item.get("action") != sentinel]
+        runtime.set_current_task(previous_task_id)
+        task_cache.pop(sentinel, None)
+        active_sessions.pop(sentinel, None)
+
+    assert runtime._registered_layers is registry
+    assert registry.get(sentinel) is None
+    assert runtime._pending_layers is pending_layers
+    assert all(item.get("name") != sentinel for item in pending_layers)
+    assert runtime._pending_layer_ops is pending_ops
+    assert all(item.get("action") != sentinel for item in pending_ops)
+    assert runtime.get_current_task_id() == previous_task_id
+    assert task_manager._tasks is task_cache
+    assert sentinel not in task_cache
+    assert task_manager._session_active is active_sessions
+    assert sentinel not in active_sessions
+    assert task_manager._BASE_DIR == previous_task_dir
 
 
 @pytest.fixture

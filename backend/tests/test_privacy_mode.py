@@ -18,15 +18,15 @@ CITY_B = "上海保密站"
 
 
 @pytest.fixture
-def workspace(monkeypatch, tmp_path):
-    # Clear any prior test's layer state before monkeypatch restores this object.
-    tools._registered_layers.clear()
+def workspace(monkeypatch, tmp_path, isolated_tool_runtime):
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
     monkeypatch.setattr(privacy, "_vaults", {})
-    monkeypatch.setattr(tools, "_registered_layers", {})
-    for attr in ("_pending_layers", "_pending_images", "_pending_layer_ops", "_pending_qa_warnings", "_exec_log"):
-        monkeypatch.setattr(tools, attr, [])
-    monkeypatch.setattr(tools, "_current_task_id", None)
+    from backend.services import privacy_audit_service
+    monkeypatch.setattr(
+        privacy_audit_service,
+        "_AUDIT_PATH",
+        str(tmp_path / "privacy" / "egress.jsonl"),
+    )
     fc = {"type": "FeatureCollection", "features": [
         {"type": "Feature", "geometry": {"type": "Point", "coordinates": [116.4074, 39.9042]},
          "properties": {"内部站点名称": CITY_A, SECRET_FIELD: 43760.7,

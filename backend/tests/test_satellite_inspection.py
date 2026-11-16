@@ -280,11 +280,14 @@ class TestSatelliteFetcher:
 class TestOverlayPNGOutput:
     """测试 overlay PNG 生成（mock 瓦片下载）"""
 
-    def test_overlay_generated(self, tmp_path, monkeypatch):
+    def test_overlay_generated(self, tmp_path, monkeypatch, isolated_tool_runtime):
         """巡检完成后应生成 overlay PNG 并加入待推送列表"""
         from backend.services import tools
         from PIL import Image
         import numpy as np
+
+        # Production writes to the relative cache/charts path; keep this test in its temp cwd.
+        monkeypatch.chdir(tmp_path)
 
         # 构造测试影像：一半植被绿、一半建筑灰
         test_img = Image.new("RGB", (64, 64), (128, 128, 128))
@@ -305,9 +308,6 @@ class TestOverlayPNGOutput:
         monkeypatch.setattr(tools, "_fetch_satellite_imagery", _mock_fetch)
         monkeypatch.setattr(tools, "_fetch_esri_imagery", _mock_fetch)
 
-        # 清空待推送图片
-        tools._pending_images.clear()
-
         # 执行巡检
         func = getattr(tools.inspect_satellite_image, 'func', tools.inspect_satellite_image)
         result = func(bbox="113.0,23.0,113.1,23.1")
@@ -326,3 +326,4 @@ class TestOverlayPNGOutput:
             if url.startswith("/"):
                 fpath = url.lstrip("/")
                 assert os.path.exists(fpath), f"overlay 文件不存在: {fpath}"
+            assert os.path.commonpath([str(tmp_path.resolve()), item["path"]]) == str(tmp_path.resolve())

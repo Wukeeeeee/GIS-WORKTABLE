@@ -12,9 +12,7 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
-from backend.services import tools as _tools_mod
 from backend.services.tools import (
-    reset_state,
     datav_boundary,
     spatial_graduated_colors,
     _registered_layers,
@@ -29,25 +27,15 @@ from backend.services.ai_service import (
 
 
 @pytest.fixture(autouse=True)
-def clean_tool_state(tmp_path, monkeypatch):
+def clean_tool_state(tmp_path, monkeypatch, isolated_tool_runtime):
     from backend.services import pending_action as pa
 
     active_session_token = pa._active_session.set("default")
     monkeypatch.setattr(pa, "_STORE_DIR", str(tmp_path / "pending"))
     monkeypatch.setattr(pa, "_memory", {})
-    monkeypatch.setattr(_tools_mod, "_temp_output_dir", str(tmp_path / "output"))
-    monkeypatch.setattr(_tools_mod, "_workspace_dir", str(tmp_path / "workspace"))
-    reset_state()
-    _registered_layers.clear()
-    set_last_user_message("")
-    set_conversation_context("")
     try:
         yield
     finally:
-        reset_state()
-        _registered_layers.clear()
-        set_last_user_message("")
-        set_conversation_context("")
         pa._active_session.reset(active_session_token)
 
 

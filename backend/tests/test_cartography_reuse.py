@@ -11,12 +11,7 @@ from backend.services import tools as gis_tools
 
 
 @pytest.fixture
-def local_map(monkeypatch, tmp_path):
-    monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
-    with task_manager._lock:
-        monkeypatch.setattr(task_manager, "_tasks", {})
-        monkeypatch.setattr(task_manager, "_session_active", {})
-    gis_tools._registered_layers.clear()
+def local_map(monkeypatch, tmp_path, isolated_tool_runtime):
     # Redirect the singleton history cache itself; set_history_file() clears
     # shared in-memory entries and would not restore them after this test.
     monkeypatch.setattr(history_service, "_CUSTOM_PATH", [str(tmp_path / "history.json")])
@@ -43,14 +38,7 @@ def local_map(monkeypatch, tmp_path):
         })
     gis_tools._register_layer("长沙人口测试图层", {"type": "FeatureCollection", "features": features})
     wrapped = {tool.name: tool for tool in gis_tools.tools}
-    try:
-        yield task_id, wrapped
-    finally:
-        gis_tools.reset_state()
-        gis_tools._registered_layers.clear()
-        with task_manager._lock:
-            task_manager._tasks.clear()
-            task_manager._session_active.clear()
+    yield task_id, wrapped
 
 
 @pytest.fixture

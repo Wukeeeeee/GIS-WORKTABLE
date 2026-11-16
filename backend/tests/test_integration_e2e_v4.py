@@ -376,22 +376,19 @@ class TestLayerLifecycleE2E:
 class TestPendingItemsE2E:
     """待推送项管理端到端"""
 
-    def test_pending_layer_queue(self):
+    def test_pending_layer_queue(self, isolated_tool_runtime):
         """推送图层后应在待推送队列中"""
         before = len(_pending_layers)
         name = f"pending_{uuid.uuid4().hex[:6]}"
         geojson = {"type": "FeatureCollection", "features": []}
         tools._push_layer(name, geojson, {"color": "#ff0000"})
         assert len(_pending_layers) > before
-        # 清空
-        _pending_layers.clear()
 
-    def test_pending_image_queue(self):
+    def test_pending_image_queue(self, isolated_tool_runtime):
         """推送图片后应在待推送图片队列中"""
         before = len(tools._pending_images)
         tools._pending_images.append({"url": "/cache/charts/test.png", "type": "png"})
         assert len(tools._pending_images) > before
-        tools._pending_images.clear()
 
 
 class TestRandomDataConsistency:

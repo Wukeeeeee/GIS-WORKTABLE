@@ -4,6 +4,8 @@
 import pytest
 from backend.services.sql_engine import execute_layer_sql, is_safe_readonly_sql
 
+pytestmark = pytest.mark.usefixtures("isolated_tool_runtime")
+
 
 def test_sql_security_whitelist():
     # 合法查询

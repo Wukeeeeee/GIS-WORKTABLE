@@ -3909,3 +3909,107 @@
 - **改动：**取消夹具改为逐例替换取消 maps、锁、任务缓存/索引/目录、history、pending-action memory/store，以及 runtime queues、registry、上下文和输出目录；通过对象身份同步已加载模块的可变别名。原 `_reset_cancel_state` 改为仅断言不存在活动 worker，不再清空缓存；取消测试内的 `reset_state()` 和 task 清理只触及隔离态。增加 sentinel 恢复回归。
 - **验证：**修改前原文件 **22 passed**；修复后 **23 passed**。随后与 multi-turn、cloud-native、choose-option、layer-registry、focus-map、Geo QA、agent-retry 联合 **187 passed、4 skipped、9 warnings**。审查确认该模块网络/LLM 均由本地 ASGI、mock agent 或阻塞测试 double 覆盖；history/pending/task/output/workspace 均定向临时目录。4 项跳过来自 cloud-native 默认关闭的公开 URL 测试。
 - **边界与下一步：**取消 worker 的跨进程/真实 HTTP 客户端压力情形未测；其它 runtime/task manager 清理夹具及此前 309 项组合 PROJ/线程异常仍待审计。本轮未提交或推送。
+
+### 2026-11-16 隔离 data-discovery 工具链测试的共享状态与输出
+
+- **问题与证据：**`backend/tests/test_data_discovery.py::TestToolChain::test_download_tool_loads_layer_to_map` 直接调用 runtime `reset_state()`，会清空 pending queues、重设任务/会话标量；随后 `get_pending_state()` 还会消费 pending layers、images、QA warnings、layer ops 和 heatmap。该测试下载未指定 `out_dir`，默认经 `storage._TEMP_OUTPUT_DIR` 写入共享输出树。
+- **改动：**移除对宿主状态的 `reset_state()`；在该用例内 monkeypatch runtime 的权威 registry、待消费 queues、heatmap/AOI 容器及 clear flag（tools 兼容门面仍代理到当前 runtime），并把 `storage._TEMP_OUTPUT_DIR` 指向 `tmp_path`。断言测试仍完整走下载→注册→待发送链路，同时原 registry/容器身份和值没有被改动。
+- **验证：**`python -m pytest -q backend/tests/test_data_discovery.py`：**24 passed**；`git diff --check` 通过。OSM Overpass 响应与地理编码通过 monkeypatch 替代，产物根目录定向到 pytest 临时目录，未访问外部服务或用户数据。
+- **边界与下一步：**只隔离该模块中这条端到端工具测试；其它仍直接调用 `reset_state()` 的测试模块尚未逐项复核，组合运行中既有的 PROJ/线程异常也仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 PDF 成功反馈测试的 pending-op 队列
+
+- **问题与证据：**`test_pdf_export_failure_feedback.py::test_pdf_export_success_is_not_reported_as_failure` 为制造空 pending-op 调用全局 `tools.reset_state()`。一次性 Python 进程注入 pending-layer、pending-op、domain-fail 与 task-id sentinel 后复现：四项均被清空或重设。`export_pdf_impl` 成功路径只向 `_pending_layer_ops` 追加一条 `export_pdf` 操作，并不需要重置请求 runtime。
+- **改动：**删除测试中的全局 reset；只通过兼容门面替换 pending-op 队列，断言成功返回、失败分类为 false、正确操作被排队，并在测试内执行 monkeypatch 恢复后验证原队列身份和值保留。
+- **验证：**`test_pdf_export_failure_feedback.py` 与 `test_tool_modules_compat.py` 联合 **37 passed**；`git diff --check` 通过。没有文件输出、外部请求或真实数据/凭据访问。
+- **边界与下一步：**仅处理 PDF 成功反馈测试的状态污染；其它直接调用 runtime reset 的测试仍需按调用链审计，组合 PROJ/线程异常仍未定位。本轮未提交或推送。
+
+### 2026-11-16 统一隔离 GIS 工作流与工具集成测试的 runtime/task 状态
+
+- **问题与证据：**`test_gis_operation_context.py::local_gis_task` 和 `test_cartography_reuse.py::local_map` 原先在 setup 原地清空 `_registered_layers`、调用全局 `reset_state()`，teardown 又 reset 并清空 task manager 的共享 `_tasks`/`_session_active`；一次性进程按旧顺序注入 registry、pending-layer、pending-op、task-id sentinel 后，四项均被清除或复位。审查还发现 `test_integration_e2e_v2.py` 无隔离夹具，覆盖直接 reset、`save_file` 和 Python 子进程输出；运行时默认输出目录/当前任务可能流入共享路径。
+- **改动：**在 `backend/tests/conftest.py` 扩展 `isolated_tool_runtime`，逐例替换 runtime 状态、已加载模块的容器别名、输出/workspace 目录，以及 task manager 的 `_BASE_DIR`/缓存字典；monkeypatch 负责恢复。上述两个 GIS 流程 fixture 删除原地 `.clear()` 与 teardown reset/缓存清理；`test_integration_e2e_v2.py` 整体启用该 fixture。补充嵌套 sentinel 回归，核对 runtime 与 task manager 原引用和值及任务目录在撤销隔离后恢复。
+- **验证：**`test_data_discovery.py`、`test_pdf_export_failure_feedback.py`、`test_tool_modules_compat.py`、`test_gis_operation_context.py`、`test_cartography_reuse.py`、`test_integration_e2e_v2.py` 同进程联合 **91 passed**；`git diff --check` 通过。GIS 数据为本地合成 GeoJSON，agent/model 路由由测试 double 控制；Python 子进程执行固定安全片段，task manager、SQLite DB、history、workspace 与输出均在 pytest 临时目录，未访问外部服务或真实用户数据。
+- **边界与下一步：**共享 fixture 目前迁移上述三个调用链；其它测试模块仍有独立 runtime 清理夹具待审计，309 项组合中的 PROJ/线程问题仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 spatial SQL 测试的 runtime reset
+
+- **问题与证据：**`test_sql_engine.py` 有多个工具入口用例在查询前后直接 `tools.reset_state()`，并向共享 registry 注册/注销图层；该模块没有 runtime fixture。SQL 引擎测试使用内存 synthetic GeoJSON/本地 DuckDB 路径，无需网络或真实图层。
+- **改动：**模块级启用 `isolated_tool_runtime`，因此测试仍真实验证 `reset_state()` 和工具行为，但状态、容器别名、任务目录、输出目录均为逐例临时状态；不再让 reset 影响宿主进程。
+- **验证：**`test_sql_engine.py` 与 `test_tool_modules_compat.py` 联合 **64 passed**；再与 data-discovery、PDF failure-feedback、GIS operation-context、cartography reuse、integration E2E 合并同进程 **120 passed**；`git diff --check` 通过。无外部服务、凭据或用户数据访问。
+- **边界与下一步：**仅迁移 spatial SQL 测试模块；其余独立 fixture 和直接 runtime 清理仍需逐一审计，既有 309 项组合中的 PROJ/线程异常仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离专题上下文测试的 runtime registry
+
+- **问题与证据：**`test_thematic_context.py::clean_tool_state` 已将 pending-action store/memory 放到临时目录并恢复 session ContextVar，但仍在 setup/teardown 调用全局 `reset_state()`、原地清空 `_registered_layers`，且重设用户消息与会话摘要标量。一次性进程复现旧序列后，registry、pending layers、pending ops 与 task-id sentinel 均被清除/复位。
+- **改动：**改用共享 `isolated_tool_runtime` 替换 runtime 容器、别名和输出/workspace 路径；保留 pending-action 的临时 store/memory 与 `_active_session` token 生命周期；删除全局 reset、registry 原地清理与多余的 scalar 清零。
+- **验证：**专题上下文、choose-option、multi-turn state 三模块同进程 **24 passed**；`git diff --check` 通过。边界获取均由 mock 或静态歧义表驱动，没有外部网络或真实数据访问。
+- **边界与下一步：**此改动只覆盖专题上下文与 pending-action 的这一条测试链；其它 runtime 清理夹具仍需逐项审计，309 项组合中的 PROJ/线程异常仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 privacy-mode 测试的 egress 审计落盘
+
+- **问题与证据：**`test_privacy_mode.py::workspace` 在替换 registry 前先原地 `.clear()` 宿主图层；测试中的私有请求会触发 `privacy_audit_service.record_event()`，该服务默认向仓库 `cache/privacy/egress.jsonl` 追加。测试前该现存文件长度为 **2,267,402 bytes**，修改时间为 **2026-11-15 14:56:29 UTC**；未读取文件内容。
+- **改动：**workspace fixture 改用 `isolated_tool_runtime`，移除对宿主 registry 的清空及重复替换部分 runtime queues；将隐私 egress audit 路径、history 和 vault 都限定在 `tmp_path`。测试内模拟重启的 registry/vault 清空仍仅作用于隔离状态。
+- **验证：**`test_privacy_mode.py` **43 passed**。测试后现存 audit 文件长度和修改时间与之前完全一致；HTTP 请求使用 `httpx.MockTransport`，没有外部网络或真实用户数据访问。
+- **边界与下一步：**仅处理 privacy-mode 测试的 runtime 与审计文件副作用；其它持久化服务测试仍需核对默认落盘位置，309 项组合中的 PROJ/线程异常仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离项目栅格测试的 blob 引用计数缓存
+
+- **问题与证据：**`test_project_raster_persistence.py::_use_temp_projects` 将项目目录重定向到 `tmp_path`，但在 monkeypatch `_blob_refcount` 前对模块级字典原地 `.clear()`，会清掉宿主进程中的 blob 引用缓存。sentinel 回归以测试外层 cache 对象模拟已有引用，确认 helper 应替换而非清空该对象。
+- **改动：**将原地清空改为 `monkeypatch.setattr(project_service, "_blob_refcount", {})`；新增嵌套 patch sentinel 测试，核对测试期间使用隔离缓存，撤销后恢复外层 cache 原引用和值，未触碰真实 cache 内容。另一个 `.clear()` 位于显式 spawn 的子进程帮助函数中，且其 project root 由测试传入临时目录，不触碰父进程缓存。
+- **验证：**新增 sentinel 回归 **1 passed**；完整 `test_project_raster_persistence.py` **51 passed**；`git diff --check` 通过。项目、blob、上传栅格和删除操作均局限在各用例 `tmp_path`，无外部服务访问。
+- **边界与下一步：**只处理项目栅格测试的 blob 引用缓存；其它持久化服务和 runtime 夹具仍需继续审计，309 项组合中的 PROJ/线程异常仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离快速通道与会话锁测试的图层注册表
+
+- **问题与证据：**`test_simple_path_guard.py` 与 `test_session_lock_busy.py` 的 autouse fixture 在 setup 和 teardown 对 `tools._registered_layers` 原地 `.clear()`。该对象是进程级 runtime registry，测试收尾清理的是共享对象而非逐例隔离对象；会话锁测试还会真实调用 runtime 锁接口。
+- **改动：**两模块的 autouse fixture 改为依赖共享 `isolated_tool_runtime`，并移除 registry 原地清理；保留各自 `ai_service._HISTORY_DIR` 的 `tmp_path` 重定向。共享夹具逐例替换 runtime 容器、同步已加载别名，并将 task manager 与输出/workspace 路径隔离。
+- **验证：**`python -m pytest backend/tests/test_simple_path_guard.py backend/tests/test_session_lock_busy.py backend/tests/test_gis_operation_context.py -q -ra --tb=short -p no:cacheprovider`：**26 passed**。其中 GIS operation context 模块含 nested sentinel 回归，覆盖隔离期间改写后原 registry/pending 容器身份和值恢复。`git diff --check` 通过；仅有现存触及文件的 LF/CRLF 转换提示。
+- **边界与下一步：**验证为本地合成会话、mock 模型/agent 和锁行为；未运行真实模型、浏览器或外部服务。其它测试模块中仍有直接 runtime reset/clear 需要逐项审计；此前 309 项组合中的 PROJ/线程异常尚未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离卫星巡检与 API E2E 的 overlay 文件输出
+
+- **问题与证据：**`test_satellite_inspection.py::TestOverlayPNGOutput::test_overlay_generated` 与 `test_integration_e2e.py::TestInspectionE2E` 多项测试真实生成 overlay PNG；生产代码 `backend/services/tools.py::inspect_satellite_image` 使用相对路径 `cache/charts/<name>.png` 写文件。前者原先只清空待推送图片队列，后者没有逐例 runtime fixture；两者都未把 cwd 限定在临时目录，因此可能在仓库 cache 下写测试产物。另确认 `tools` 兼容门面的 `__setattr__` 会同步已加载工具模块别名，不能把相关状态别名误判为未隔离。
+- **改动：**卫星巡检 overlay 用例依赖 `isolated_tool_runtime`，删除共享 pending-images 队列的原地 `.clear()`，改在 `tmp_path` cwd 生成并断言产物位置；API E2E 模块新增逐例 runtime/output 隔离并将 cwd 重定向到 `tmp_path`，移除无必要的队列清理。
+- **验证：**`python -m pytest backend/tests/test_satellite_inspection.py backend/tests/test_integration_e2e.py -q -ra --tb=short -p no:cacheprovider`：**31 passed**。测试前后仓库 `cache/charts` 目录修改时间一致（如目录不存在则状态亦一致），确认未在该仓库目录写入。影像来自合成 PIL 图片和 monkeypatch fetcher；没有外部影像请求。`git diff --check` 通过。
+- **边界与下一步：**只隔离上述卫星巡检和 API E2E 模块；其它使用相对路径写入 cache/output 的测试仍待检查。未运行真实瓦片源、浏览器或模型；此前 309 项组合 PROJ/线程异常尚未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 API E2E v4 的待推送队列用例
+
+- **问题与证据：**`test_integration_e2e_v4.py::TestPendingItemsE2E` 的图层队列用例与图片队列用例直接向 runtime 队列追加数据，随后在第一例 teardown 或第二例结尾对进程级队列调用 `.clear()`；该模块原先未依赖 runtime 隔离夹具。
+- **改动：**两用例改为依赖 `isolated_tool_runtime`，删除对 pending-layer 与 pending-image 队列的原地清理；逐例替换与恢复负责生命周期，不再清除宿主队列。
+- **验证：**`python -m pytest backend/tests/test_integration_e2e_v4.py -q -ra --tb=short -p no:cacheprovider`：**24 passed**。凭据用例已有独立临时 credential store 与临时 Fernet key；OSMnx 路由调用使用 fake module/数据，未访问外部服务或真实凭据。
+- **边界与下一步：**本轮只迁移两个 pending-queue 用例，模块其它运行状态清理仍待审计；其它相对 cache/output 写入测试及此前 309 项组合 PROJ/线程异常尚未完全排查。本轮未提交或推送。
+
+### 2026-11-16 隔离 layer-group 项目测试的 blob 引用缓存
+
+- **问题与证据：**`test_layer_group_persistence.py::_use_temp_project_store` 已将项目目录、blob 目录与索引文件重定向到每例 `tmp_path`，但随后对模块级 `project_service._blob_refcount` 原地 `.clear()`，仍会清掉宿主进程中共享的 blob 引用计数缓存。
+- **改动：**helper 改为通过 `monkeypatch.setattr` 替换 `_blob_refcount` 为新字典；新增嵌套 sentinel 回归，核对临时 store 使用独立缓存，撤销内层隔离后外层 sentinel 缓存的对象身份和值恢复，最终恢复原始引用。
+- **验证：**`python -m pytest backend/tests/test_layer_group_persistence.py -q -ra --tb=short -p no:cacheprovider`：**79 passed**，含 1 条由重复 ZIP 成员名防护用例触发的预期 `zipfile` warning。项目/blob/index 操作通过测试 helper 指向临时目录；未访问外部服务或凭据。
+- **边界与下一步：**只处理 layer-group 持久化测试 helper；`test_project_open_race.py` 仍有多处对模块级 `_blob_refcount` 的 `.clear()`，需单独检查和迁移。此前 309 项组合 PROJ/线程异常仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 project-open race 测试的 blob 引用缓存
+
+- **问题与证据：**`test_project_open_race.py` 六个并发/切换场景先将项目文件路径重定向到 `tmp_path`，但仍对模块级 `project_service._blob_refcount` 原地 `.clear()`，会清空宿主进程共享引用计数。
+- **改动：**新增模块级 autouse fixture，逐例以 monkeypatch 替换 blob refcount 字典并在结束时恢复；删除六处原地清空。新增嵌套 sentinel 回归，确认内层隔离撤销后外层缓存对象和值复原。
+- **验证：**`python -m pytest backend/tests/test_project_open_race.py -q -ra --tb=short -p no:cacheprovider`：**8 passed**，覆盖 6 个原有竞争/同步场景与新增 sentinel 回归。项目目录、blob、索引均指向用例 `tmp_path`；只使用本地 FastAPI TestClient 与线程/event，不访问外部服务或凭据。
+- **边界与下一步：**验证限于该模块的线程内并发测试，不代表多进程/生产数据库竞争验收；其它 runtime/持久化清理点及 309 项组合 PROJ/线程异常仍待审计。本轮未提交或推送。
+
+### 2026-11-16 恢复 pytest 调用前的 PROJ 环境变量
+
+- **问题与证据：**`backend/tests/conftest.py` 导入时会删除 `PROJ_LIB`/`PROJ_DATA` 以避免旧 proj.db 覆盖 rasterio，但既有 `pytest_unconfigure` 只恢复 workspace DB 路径。用独立 Python 进程设定两个哨兵变量并调用嵌入式 `pytest.main(--collect-only ...)` 复现：收集成功（9 项），返回后 `PROJ_LIB_restored=False`、`PROJ_DATA_restored=False`，确认调用者进程环境被泄漏修改。
+- **改动：**conftest 在删除前保存两个变量原值，并在 `pytest_unconfigure` 恢复；即便调用者原本未设置，也确保结束时保持 unset。扩展 `test_tool_modules_compat.py` 覆盖原值存在与原值缺失两条恢复路径。
+- **验证：**`python -m pytest backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**37 passed**；再次以独立进程嵌入调用 `pytest.main(--collect-only)`，9 项收集成功，两个哨兵变量均恢复为原值。`git diff --check` 通过（仅有现存文件 CRLF 转换提示）。
+- **边界与下一步：**该修复只避免 pytest 会话结束后泄漏环境变量，不证明或修复 309 项组合中 PROJ SQLite “out of memory”/线程耗尽的根因；仍需在有界批次中诊断其资源/顺序触发条件。本轮未访问外部服务，未提交或推送。
+
+### 2026-11-16 对照确认数值库线程池放大资源占用
+
+- **问题与证据：**有界同进程运行 `test_cloud_native.py` + `test_tool_failure_feedback.py` 时，**84 passed、4 skipped**，但原生线程从 **4 增至 44**。线程审计显示 `test_vector_preconditions_are_failures[spatial_cluster-arguments4]` 单例把进程线程从 **4 增至 37**；`threadpoolctl` 随后识别出两个 OpenBLAS 池和一个 OpenMP 池，均各自配置为 16 线程。该单例虽通过，但其隐式 native worker pool 与此前大组合出现的线程创建失败相符。只运行该单例前临时在隔离进程设定常见 BLAS/OpenMP 上限为 1，仍 **1 passed**，线程变为 **4→7**，三池均为 1。
+- **改动：**pytest conftest 在导入测试代码前临时将 `OPENBLAS_NUM_THREADS`、`OMP_NUM_THREADS`、`MKL_NUM_THREADS`、`NUMEXPR_NUM_THREADS`、`VECLIB_MAXIMUM_THREADS` 设为 1，并在 `pytest_unconfigure` 恢复调用者原值/缺省状态；兼容测试新增 thread-limit 环境恢复回归。保留此前 PROJ 环境恢复逻辑。
+- **验证：**`test_tool_modules_compat.py` **38 passed**；不手动覆写上述线程变量，再有界合并运行 `test_cloud_native.py` + `test_tool_failure_feedback.py`：**84 passed、4 skipped**，耗时 **21.70s**，原生线程 **4→12**，OpenBLAS/OpenMP 池均为 1。另以 `pytest.main(--collect-only)` 收集 9 项并核实 5 个线程环境变量在会话结束后全部恢复。远程 opt-in 明确 unset，cloud-native 仅本地测试，4 个公开 URL 用例跳过。
+- **边界与下一步：**此对照表明限制数值库线程池可显著降低该有界组合资源占用，但未将原 309 项组合重新跑完；仍有 **8** 个净增原生线程，且尚未确认是否为预期 GDAL/HTTP 工作线程或泄漏。不能宣称原 PROJ/线程异常已解决；下一步在更小测试子集中定位剩余线程增量后，再评估是否逐步扩展批次。本轮未访问外部服务，未提交或推送。
+
+### 2026-11-16 拆分限流后残留线程增量
+
+- **复核证据：**对限流后的同一 88 项组合加逐用例线程采样，仍为 **84 passed、4 skipped**、线程 **4→12**；增量分解为测试收集阶段 **+3**、range relay 单测 **+2**、GeoParquet 单测 **+3**。另将最后两项单独运行并等待 1 秒复查，增量仍分别存留；两项前后 `threading.active_count()` 无增长，`threadpoolctl` 仍只显示 1 线程 OpenBLAS 池，因此剩余 native worker 的归属尚不能据此断言为 Python HTTP handler 或数值库池。
+- **验证边界：**仅两个本地单测及收集过程作进一步细分；没有观察到测试失败或 Python 线程泄漏，但 Windows 进程线程数仍有 8 个净增。没有根据猜测改动服务器 daemon/handler 生命周期，也没有增加未经验证的 Arrow/GDAL 限制。
+- **下一步：**继续核验 GeoParquet 读取和本地 guarded relay 各自触发的原生线程来源；在来源明确前保持线程池限制这一已验证的 pytest 资源护栏，同时不把 309 项组合异常记为已解决。本轮未访问外部服务，未提交或推送。

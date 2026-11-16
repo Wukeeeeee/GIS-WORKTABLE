@@ -29,7 +29,28 @@ def _use_temp_project_store(tmp_path, monkeypatch):
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(root / "blobs"))
     monkeypatch.setattr(project_service, "_INDEX_PATH", str(root / "index.json"))
-    project_service._blob_refcount.clear()
+    monkeypatch.setattr(project_service, "_blob_refcount", {})
+
+
+def test_temp_project_store_restores_outer_blob_refcount(tmp_path):
+    original_cache = project_service._blob_refcount
+    outer_cache = {"sentinel-blob": 2}
+    outer_patch = pytest.MonkeyPatch()
+    outer_patch.setattr(project_service, "_blob_refcount", outer_cache)
+    inner_patch = pytest.MonkeyPatch()
+    try:
+        _use_temp_project_store(tmp_path, inner_patch)
+        assert project_service._blob_refcount == {}
+        assert project_service._blob_refcount is not outer_cache
+
+        inner_patch.undo()
+        assert project_service._blob_refcount is outer_cache
+        assert project_service._blob_refcount == {"sentinel-blob": 2}
+    finally:
+        inner_patch.undo()
+        outer_patch.undo()
+
+    assert project_service._blob_refcount is original_cache
 
 
 def test_failed_blob_write_does_not_poison_a_retry(tmp_path, monkeypatch):

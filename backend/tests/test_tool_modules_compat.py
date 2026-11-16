@@ -1,5 +1,6 @@
 """Compatibility checks for the tools facade and modular shared runtime."""
 
+import os
 import threading
 
 from backend.services import tools
@@ -25,6 +26,90 @@ def test_facade_forwards_runtime_output_directory(monkeypatch, tmp_path):
 
     assert runtime._temp_output_dir == output_dir
     assert tools._temp_output_dir == output_dir
+
+
+def test_pytest_unconfigure_restores_caller_proj_environment(monkeypatch):
+    import conftest
+
+    monkeypatch.setattr(conftest, "_PREVIOUS_PROJ_ENV", {
+        "PROJ_LIB": "caller-proj-lib",
+        "PROJ_DATA": "caller-proj-data",
+    })
+    monkeypatch.setattr(conftest, "_ARROW_MODULE", None)
+    monkeypatch.setattr(conftest, "_PREVIOUS_ARROW_THREAD_COUNTS", None)
+    monkeypatch.setattr(conftest, "_WORKSPACE_DB_ENV_ACTIVE", False)
+    monkeypatch.setenv("PROJ_LIB", "test-proj-lib")
+    monkeypatch.setenv("PROJ_DATA", "test-proj-data")
+
+    conftest.pytest_unconfigure(None)
+
+    assert os.environ["PROJ_LIB"] == "caller-proj-lib"
+    assert os.environ["PROJ_DATA"] == "caller-proj-data"
+
+
+def test_pytest_unconfigure_keeps_proj_environment_unset_when_previously_absent(monkeypatch):
+    import conftest
+
+    monkeypatch.setattr(conftest, "_PREVIOUS_PROJ_ENV", {
+        "PROJ_LIB": None,
+        "PROJ_DATA": None,
+    })
+    monkeypatch.setattr(conftest, "_ARROW_MODULE", None)
+    monkeypatch.setattr(conftest, "_PREVIOUS_ARROW_THREAD_COUNTS", None)
+    monkeypatch.setattr(conftest, "_WORKSPACE_DB_ENV_ACTIVE", False)
+    monkeypatch.setenv("PROJ_LIB", "test-proj-lib")
+    monkeypatch.setenv("PROJ_DATA", "test-proj-data")
+
+    conftest.pytest_unconfigure(None)
+
+    assert "PROJ_LIB" not in os.environ
+    assert "PROJ_DATA" not in os.environ
+
+
+def test_pytest_unconfigure_restores_numeric_thread_limits(monkeypatch):
+    import conftest
+
+    previous = {
+        "OPENBLAS_NUM_THREADS": "caller-openblas",
+        "OMP_NUM_THREADS": "caller-openmp",
+        "MKL_NUM_THREADS": None,
+        "NUMEXPR_NUM_THREADS": "caller-numexpr",
+        "VECLIB_MAXIMUM_THREADS": None,
+    }
+    monkeypatch.setattr(conftest, "_PREVIOUS_THREAD_LIMIT_ENV", previous)
+    monkeypatch.setattr(conftest, "_ARROW_MODULE", None)
+    monkeypatch.setattr(conftest, "_PREVIOUS_ARROW_THREAD_COUNTS", None)
+    monkeypatch.setattr(conftest, "_WORKSPACE_DB_ENV_ACTIVE", False)
+    for name in conftest._THREAD_LIMIT_ENV_KEYS:
+        monkeypatch.setenv(name, "1")
+
+    conftest.pytest_unconfigure(None)
+
+    for name, value in previous.items():
+        assert os.environ.get(name) == value
+
+
+def test_pytest_unconfigure_restores_pyarrow_thread_counts(monkeypatch):
+    import conftest
+
+    class FakeArrow:
+        def __init__(self):
+            self.counts = []
+
+        def set_cpu_count(self, count):
+            self.counts.append(("cpu", count))
+
+        def set_io_thread_count(self, count):
+            self.counts.append(("io", count))
+
+    arrow = FakeArrow()
+    monkeypatch.setattr(conftest, "_ARROW_MODULE", arrow)
+    monkeypatch.setattr(conftest, "_PREVIOUS_ARROW_THREAD_COUNTS", (6, 4))
+    monkeypatch.setattr(conftest, "_WORKSPACE_DB_ENV_ACTIVE", False)
+
+    conftest.pytest_unconfigure(None)
+
+    assert arrow.counts == [("cpu", 6), ("io", 4)]
 
 
 def test_map_ops_uses_the_current_runtime_queue_object(monkeypatch):

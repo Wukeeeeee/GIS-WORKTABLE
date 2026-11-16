@@ -19,12 +19,41 @@ _GEOJSON = {
 }
 
 
+def _isolate_blob_refcount(monkeypatch):
+    monkeypatch.setattr(project_service, "_blob_refcount", {})
+
+
+@pytest.fixture(autouse=True)
+def isolate_blob_refcount(monkeypatch):
+    _isolate_blob_refcount(monkeypatch)
+
+
+def test_blob_refcount_isolation_restores_nested_cache():
+    fixture_cache = project_service._blob_refcount
+    host_cache = {"sentinel-blob": 1}
+    outer_patch = pytest.MonkeyPatch()
+    outer_patch.setattr(project_service, "_blob_refcount", host_cache)
+    inner_patch = pytest.MonkeyPatch()
+    try:
+        _isolate_blob_refcount(inner_patch)
+        assert project_service._blob_refcount == {}
+        assert project_service._blob_refcount is not host_cache
+
+        inner_patch.undo()
+        assert project_service._blob_refcount is host_cache
+        assert project_service._blob_refcount == {"sentinel-blob": 1}
+    finally:
+        inner_patch.undo()
+        outer_patch.undo()
+
+    assert project_service._blob_refcount is fixture_cache
+
+
 def test_stale_project_open_cannot_activate_after_newer_open(tmp_path, monkeypatch):
     root = tmp_path / "projects"
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(root / "blobs"))
     monkeypatch.setattr(project_service, "_INDEX_PATH", str(root / "index.json"))
-    project_service._blob_refcount.clear()
     monkeypatch.setattr(tools, "_registered_layers", {})
     monkeypatch.setattr(tools, "_active_project_id", None)
     monkeypatch.setattr(tools, "_pending_layers", [])
@@ -77,7 +106,6 @@ def test_newer_open_during_activation_rolls_back_superseded_registry_state(tmp_p
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(root / "blobs"))
     monkeypatch.setattr(project_service, "_INDEX_PATH", str(root / "index.json"))
-    project_service._blob_refcount.clear()
     saved = project_service.save_project(
         project_id=None, name="candidate", session_id="candidate-session", provider="test",
         map_state={}, messages=[{"role": "user", "content": "new project"}],
@@ -109,7 +137,6 @@ def test_cancelled_project_open_does_not_activate_in_background(tmp_path, monkey
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(root / "blobs"))
     monkeypatch.setattr(project_service, "_INDEX_PATH", str(root / "index.json"))
-    project_service._blob_refcount.clear()
     monkeypatch.setattr(tools, "_registered_layers", {})
     monkeypatch.setattr(tools, "_active_project_id", None)
     monkeypatch.setattr(tools, "_pending_layers", [])
@@ -158,7 +185,6 @@ def test_project_activation_waits_for_inflight_direct_tool_state_mutation(tmp_pa
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(root / "blobs"))
     monkeypatch.setattr(project_service, "_INDEX_PATH", str(root / "index.json"))
-    project_service._blob_refcount.clear()
     monkeypatch.setattr(tools, "_registered_layers", {})
     monkeypatch.setattr(tools, "_active_project_id", None)
     monkeypatch.setattr(tools, "_pending_layers", [])
@@ -224,7 +250,6 @@ def test_layer_sync_from_previous_project_is_rejected_after_project_switch(tmp_p
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(root / "blobs"))
     monkeypatch.setattr(project_service, "_INDEX_PATH", str(root / "index.json"))
-    project_service._blob_refcount.clear()
     monkeypatch.setattr(tools, "_registered_layers", {})
     monkeypatch.setattr(tools, "_active_project_id", None)
     monkeypatch.setattr(tools, "_pending_layers", [])
@@ -277,7 +302,6 @@ def test_deleting_previous_project_does_not_clear_new_session_registry(tmp_path,
     monkeypatch.setattr(project_service, "_PROJECT_DIR", str(root))
     monkeypatch.setattr(project_service, "_BLOB_DIR", str(root / "blobs"))
     monkeypatch.setattr(project_service, "_INDEX_PATH", str(root / "index.json"))
-    project_service._blob_refcount.clear()
     monkeypatch.setattr(tools, "_registered_layers", {})
     monkeypatch.setattr(tools, "_active_project_id", None)
     monkeypatch.setattr(tools, "_pending_layers", [])

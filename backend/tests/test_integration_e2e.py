@@ -8,6 +8,7 @@ import sys
 import uuid
 import random
 import numpy as np
+import pytest
 from PIL import Image
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -23,6 +24,12 @@ from backend.services.tools import (
     get_registered_layers_snapshot,
     _state_lock,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_runtime_and_working_directory(isolated_tool_runtime, monkeypatch, tmp_path):
+    """Keep runtime queues and relative GIS outputs local to each integration test."""
+    monkeypatch.chdir(tmp_path)
 
 
 def _random_bbox(center_lon=113.0, center_lat=23.0, size=0.05):
@@ -65,7 +72,6 @@ class TestInspectionE2E:
         monkeypatch.setattr(tools, "_fetch_satellite_imagery", lambda *a, **k: (test_img, meta))
         monkeypatch.setattr(tools, "_fetch_esri_imagery", lambda *a, **k: (test_img, meta))
 
-        _pending_images.clear()
         bbox = _random_bbox()
         func = getattr(inspect_satellite_image, 'func', inspect_satellite_image)
         result = func(bbox=bbox)

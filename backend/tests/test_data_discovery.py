@@ -286,10 +286,42 @@ class TestFailures:
 # ============================================================
 
 class TestToolChain:
-    def test_download_tool_loads_layer_to_map(self, monkeypatch):
+    def test_download_tool_loads_layer_to_map(self, monkeypatch, tmp_path):
         _patch_osm(monkeypatch, "roads")
-        from backend.services.tools import download_gis_data, reset_state, _registered_layers, get_pending_state
-        reset_state()
+        from backend.services.tool_modules import runtime
+
+        # This integration test should exercise the real tool chain without
+        # clearing or writing into the host process's runtime and data cache.
+        original_registry = runtime._registered_layers
+        original_registry_snapshot = dict(original_registry)
+        original_clear_flag = runtime._clear_layers_flag
+        original_output_root = storage._TEMP_OUTPUT_DIR
+        container_names = (
+            "_pending_layers",
+            "_pending_images",
+            "_pending_qa_warnings",
+            "_pending_layer_ops",
+            "_exec_log",
+        )
+        original_containers = {
+            name: (getattr(runtime, name), list(getattr(runtime, name)))
+            for name in container_names
+        }
+        isolated_containers = {name: [] for name in container_names}
+        isolated_registry = {}
+        for name, isolated in isolated_containers.items():
+            monkeypatch.setattr(runtime, name, isolated)
+        for name in ("_pending_aoi_suggestions", "_pending_heatmap"):
+            original = getattr(runtime, name)
+            isolated = {} if name == "_pending_aoi_suggestions" else {"latest": None}
+            original_containers[name] = (original, dict(original))
+            monkeypatch.setattr(runtime, name, isolated)
+        monkeypatch.setattr(runtime, "_clear_layers_flag", False)
+        monkeypatch.setattr(runtime, "_registered_layers", isolated_registry)
+        monkeypatch.setattr(storage, "_TEMP_OUTPUT_DIR", str(tmp_path))
+
+        from backend.services.tools import download_gis_data, _registered_layers, get_pending_state
+
         txt = download_gis_data.func(kind="roads", area="长沙",
                                      bbox="112.9,28.1,113.2,28.4", max_items=10)
         assert "获取成功" in txt
@@ -306,6 +338,22 @@ class TestToolChain:
         assert "file_path" not in layer["provenance"]
         assert "query" not in layer["provenance"]
         assert _registered_layers["长沙_roads"]["provenance"] == layer["provenance"]
+        assert runtime._registered_layers is isolated_registry
+        assert original_registry == original_registry_snapshot
+        assert runtime._registered_layers is not original_registry
+        for name, (original, snapshot) in original_containers.items():
+            assert getattr(runtime, name) is not original
+            assert original == snapshot
+        assert runtime._clear_layers_flag is False
+
+        monkeypatch.undo()
+        assert runtime._registered_layers is original_registry
+        assert original_registry == original_registry_snapshot
+        for name, (original, snapshot) in original_containers.items():
+            assert getattr(runtime, name) is original
+            assert original == snapshot
+        assert runtime._clear_layers_flag is original_clear_flag
+        assert storage._TEMP_OUTPUT_DIR == original_output_root
 
 
 

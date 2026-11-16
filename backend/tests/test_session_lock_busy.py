@@ -17,16 +17,11 @@ from backend.services import tools
 
 
 @pytest.fixture(autouse=True)
-def isolate_workspace_mode(monkeypatch, tmp_path):
+def isolate_workspace_mode(isolated_tool_runtime, monkeypatch, tmp_path):
     """Lock tests must not inherit protected layers or markers from other tests."""
     from backend.services import ai_service
 
-    tools._registered_layers.clear()
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
-    try:
-        yield
-    finally:
-        tools._registered_layers.clear()
 
 
 def test_no_wait_mode_returns_busy_immediately(monkeypatch):

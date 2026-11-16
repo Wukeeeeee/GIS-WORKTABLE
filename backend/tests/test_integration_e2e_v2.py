@@ -9,7 +9,11 @@ import uuid
 import random
 import tempfile
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+
+pytestmark = pytest.mark.usefixtures("isolated_tool_runtime")
 
 from backend.services import tools
 from backend.services.tools import (
