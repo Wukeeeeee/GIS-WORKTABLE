@@ -18,14 +18,92 @@ def _points():
     }
 
 
-def setup_function():
+def _isolate_layer_registry_runtime(monkeypatch, tmp_path):
+    isolated_state = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_log": [],
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_exec_call_count": 0,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_active_project_id": None,
+        "_temp_output_dir": str(tmp_path),
+        "_workspace_dir": str(tmp_path / "workspace"),
+    }
+    with tools._state_lock:
+        for name, value in isolated_state.items():
+            monkeypatch.setattr(tools, name, value)
+
+    project_root = tmp_path / "projects"
+    monkeypatch.setattr(project_service, "_PROJECT_DIR", str(project_root))
+    monkeypatch.setattr(project_service, "_BLOB_DIR", str(project_root / "blobs"))
+    monkeypatch.setattr(project_service, "_INDEX_PATH", str(project_root / "index.json"))
+    monkeypatch.setattr(project_service, "_blob_refcount", {})
+
+
+@pytest.fixture(autouse=True)
+def isolate_layer_registry_state(tmp_path, monkeypatch):
+    _isolate_layer_registry_runtime(monkeypatch, tmp_path)
+    tools.reset_registered_layers([])
+    tools.reset_state()
+    yield
     tools.reset_registered_layers([])
     tools.reset_state()
 
 
-def teardown_function():
-    tools.reset_registered_layers([])
-    tools.reset_state()
+def test_layer_registry_fixture_restores_runtime_and_project_cache(tmp_path):
+    from backend.services.tool_modules import runtime
+
+    outer_registry = runtime._registered_layers
+    outer_pending = runtime._pending_layers
+    outer_ops = runtime._pending_layer_ops
+    outer_blob_refs = project_service._blob_refcount
+    outer_registry["outside-sentinel"] = {"sentinel": True}
+    outer_pending.append({"name": "outside-sentinel"})
+    outer_ops.append({"action": "outside-sentinel"})
+    outer_blob_refs["outside-sentinel"] = 7
+    runtime.set_current_task("outside-layer-registry-task")
+    previous_project_dir = project_service._PROJECT_DIR
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_layer_registry_runtime(patcher, tmp_path / "nested-isolation")
+        tools.reset_registered_layers([])
+        tools.reset_state()
+        tools._register_layer("nested-layer", _points())
+        project_service._blob_refcount["nested-sentinel"] = 1
+        assert runtime._registered_layers is not outer_registry
+        assert "nested-layer" in runtime._registered_layers
+        assert runtime._pending_layers is not outer_pending
+        assert runtime._pending_layer_ops is not outer_ops
+        assert project_service._blob_refcount is not outer_blob_refs
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is outer_registry
+    assert outer_registry["outside-sentinel"]["sentinel"]
+    assert "nested-layer" not in outer_registry
+    assert runtime._pending_layers is outer_pending
+    assert outer_pending == [{"name": "outside-sentinel"}]
+    assert runtime._pending_layer_ops is outer_ops
+    assert outer_ops == [{"action": "outside-sentinel"}]
+    assert project_service._blob_refcount is outer_blob_refs
+    assert outer_blob_refs == {"outside-sentinel": 7}
+    assert runtime.get_current_task_id() == "outside-layer-registry-task"
+    assert project_service._PROJECT_DIR == previous_project_dir
 
 
 def test_register_normalizes_feature_and_keeps_unique_stable_ids_on_replacement():

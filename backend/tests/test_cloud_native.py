@@ -32,16 +32,104 @@ from backend.services import url_security
 from backend.services.tool_modules import runtime
 
 
-@pytest.fixture(autouse=True)
-def isolate_registered_layers():
-    def clear():
-        with runtime._state_lock:
-            runtime._registered_layers.clear()
+def _isolate_cloud_native_runtime(monkeypatch, tmp_path):
+    isolated_state = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_log": [],
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_exec_call_count": 0,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_active_project_id": None,
+        "_temp_output_dir": str(tmp_path),
+        "_workspace_dir": str(tmp_path / "workspace"),
+    }
+    mutable_names = {
+        name for name in isolated_state
+        if isinstance(getattr(runtime, name), (dict, list, threading.local))
+    }
+    original_values = {name: getattr(runtime, name) for name in mutable_names}
+    aliases = []
+    seen_modules = set()
+    for module in tuple(sys.modules.values()):
+        if module is None or id(module) in seen_modules or module in (runtime, T):
+            continue
+        seen_modules.add(id(module))
+        namespace = getattr(module, "__dict__", {})
+        for name in mutable_names:
+            if namespace.get(name) is original_values[name]:
+                aliases.append((module, name, isolated_state[name]))
 
-    clear()
+    with runtime._state_lock:
+        for name, value in isolated_state.items():
+            monkeypatch.setattr(T, name, value)
+        for module, name, value in aliases:
+            monkeypatch.setattr(module, name, value)
+
+
+@pytest.fixture(autouse=True)
+def isolate_cloud_native_runtime(tmp_path, monkeypatch):
+    _isolate_cloud_native_runtime(monkeypatch, tmp_path)
+    reset_state()
+    T.reset_registered_layers([])
     yield
-    clear()
-    assert runtime._registered_layers == {}
+    reset_state()
+    T.reset_registered_layers([])
+
+
+def test_cloud_native_fixture_restores_runtime_aliases(tmp_path):
+    from backend.services.tool_modules import raster, terrain
+
+    outer_registry = runtime._registered_layers
+    outer_pending = runtime._pending_layers
+    outer_ops = runtime._pending_layer_ops
+    outer_registry["outside-sentinel"] = {"sentinel": True}
+    outer_pending.append({"name": "outside-sentinel"})
+    outer_ops.append({"action": "outside-sentinel"})
+    runtime.set_current_task("outside-cloud-native-task")
+    previous_output_dir = runtime._temp_output_dir
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_cloud_native_runtime(patcher, tmp_path / "nested-isolation")
+        T.reset_registered_layers([])
+        reset_state()
+        T._register_layer("nested-layer", {
+            "type": "FeatureCollection", "features": [],
+        })
+        assert runtime._registered_layers is not outer_registry
+        assert "nested-layer" in runtime._registered_layers
+        assert runtime._pending_layers is not outer_pending
+        assert runtime._pending_layer_ops is not outer_ops
+        assert sys.modules[__name__]._registered_layers is runtime._registered_layers
+        assert raster._pending_layer_ops is runtime._pending_layer_ops
+        assert terrain._pending_layer_ops is runtime._pending_layer_ops
+        assert runtime._temp_output_dir != previous_output_dir
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is outer_registry
+    assert outer_registry["outside-sentinel"]["sentinel"]
+    assert "nested-layer" not in outer_registry
+    assert runtime._pending_layers is outer_pending
+    assert outer_pending == [{"name": "outside-sentinel"}]
+    assert runtime._pending_layer_ops is outer_ops
+    assert outer_ops == [{"action": "outside-sentinel"}]
+    assert runtime.get_current_task_id() == "outside-cloud-native-task"
+    assert runtime._temp_output_dir == previous_output_dir
 
 
 def test_pinned_address_retries_share_one_connection_deadline(monkeypatch):

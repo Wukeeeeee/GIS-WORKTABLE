@@ -11,6 +11,7 @@ import pytest
 
 from backend.services import tools as T
 from backend.services.tools import focus_map, _registered_layers, reset_state
+from backend.services.tool_modules import runtime
 
 
 _SQUARE = {"type": "FeatureCollection", "features": [{
@@ -18,6 +19,82 @@ _SQUARE = {"type": "FeatureCollection", "features": [{
     "geometry": {"type": "Polygon",
                  "coordinates": [[[113.0, 23.0], [113.5, 23.0], [113.5, 23.5], [113.0, 23.5], [113.0, 23.0]]]},
     "properties": {}}]}
+
+
+def _isolate_focus_map_runtime(monkeypatch, tmp_path):
+    module = sys.modules[__name__]
+    isolated_state = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_log": [],
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_exec_call_count": 0,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_active_project_id": None,
+        "_temp_output_dir": str(tmp_path),
+        "_workspace_dir": str(tmp_path / "workspace"),
+    }
+    with runtime._state_lock:
+        for name, value in isolated_state.items():
+            monkeypatch.setattr(T, name, value)
+            if name == "_registered_layers":
+                monkeypatch.setattr(module, name, value)
+
+
+@pytest.fixture(autouse=True)
+def isolate_focus_map_state(tmp_path, monkeypatch):
+    _isolate_focus_map_runtime(monkeypatch, tmp_path)
+    reset_state()
+    yield
+    reset_state()
+
+
+def test_focus_map_fixture_restores_shared_runtime_state(tmp_path):
+    outer_registry = runtime._registered_layers
+    outer_ops = runtime._pending_layer_ops
+    outer_pending = runtime._pending_layers
+    outer_registry["outside-sentinel"] = {"sentinel": True}
+    outer_ops.append({"action": "outside-sentinel"})
+    outer_pending.append({"name": "outside-sentinel"})
+    runtime.set_current_task("outside-focus-map-task")
+    previous_output_dir = runtime._temp_output_dir
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_focus_map_runtime(patcher, tmp_path / "nested-isolation")
+        reset_state()
+        T._pending_layer_ops.clear()
+        T._register_layer("测试图层", _SQUARE)
+        assert runtime._registered_layers is not outer_registry
+        assert "测试图层" in runtime._registered_layers
+        assert runtime._pending_layer_ops is not outer_ops
+        assert runtime._pending_layers is not outer_pending
+        assert _registered_layers is runtime._registered_layers
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is outer_registry
+    assert outer_registry["outside-sentinel"]["sentinel"]
+    assert "测试图层" not in outer_registry
+    assert runtime._pending_layer_ops is outer_ops
+    assert outer_ops == [{"action": "outside-sentinel"}]
+    assert runtime._pending_layers is outer_pending
+    assert outer_pending == [{"name": "outside-sentinel"}]
+    assert runtime.get_current_task_id() == "outside-focus-map-task"
+    assert runtime._temp_output_dir == previous_output_dir
 
 
 def _setup(name="测试图层", geojson=None):

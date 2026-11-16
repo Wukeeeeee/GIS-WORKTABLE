@@ -1,5 +1,6 @@
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 import threading
+import sys
 import time
 import pytest
 
@@ -8,15 +9,97 @@ from backend.services.tool_modules import runtime
 from backend.services.llm_config import LLMConfig
 
 
+def _isolate_retry_runtime(monkeypatch, tmp_path):
+    isolated_state = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_log": [],
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_exec_call_count": 0,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_active_project_id": None,
+        "_session_locks": {},
+        "_raster_output_scope": threading.local(),
+        "_temp_output_dir": str(tmp_path),
+        "_workspace_dir": str(tmp_path / "workspace"),
+    }
+    mutable_names = {
+        name for name in isolated_state
+        if isinstance(getattr(runtime, name), (dict, list, threading.local))
+    }
+    original_values = {name: getattr(runtime, name) for name in mutable_names}
+    aliases = []
+    seen_modules = set()
+    for module in tuple(sys.modules.values()):
+        if module is None or id(module) in seen_modules or module in (runtime, tools):
+            continue
+        seen_modules.add(id(module))
+        namespace = getattr(module, "__dict__", {})
+        for name in mutable_names:
+            if namespace.get(name) is original_values[name]:
+                aliases.append((module, name, isolated_state[name]))
+
+    with runtime._state_lock:
+        for name, value in isolated_state.items():
+            monkeypatch.setattr(tools, name, value)
+        for module, name, value in aliases:
+            monkeypatch.setattr(module, name, value)
+
+
 @pytest.fixture(autouse=True)
 def isolate_history_storage(monkeypatch, tmp_path):
-    """Isolate history and registry state without clearing process-shared layers."""
-    isolated_registry = {}
-    with runtime._state_lock:
-        monkeypatch.setattr(runtime, "_registered_layers", isolated_registry)
-        monkeypatch.setattr(tools, "_registered_layers", isolated_registry)
+    """Isolate history and runtime state without clearing process-shared layers."""
+    _isolate_retry_runtime(monkeypatch, tmp_path)
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
     yield
+
+
+def test_retry_fixture_restores_shared_runtime_state(tmp_path):
+    outer_registry = runtime._registered_layers
+    outer_ops = runtime._pending_layer_ops
+    outer_locks = runtime._session_locks
+    outer_registry["outside-sentinel"] = {"sentinel": True}
+    outer_ops.append({"action": "outside-sentinel"})
+    runtime.set_current_task("outside-retry-task")
+    previous_output_dir = runtime._temp_output_dir
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_retry_runtime(patcher, tmp_path / "nested-isolation")
+        tools.reset_state()
+        tools._register_layer("nested-layer", {
+            "type": "FeatureCollection", "features": [],
+        })
+        tools.acquire_session_lock("nested-session")
+        assert runtime._registered_layers is not outer_registry
+        assert "nested-layer" in runtime._registered_layers
+        assert runtime._pending_layer_ops is not outer_ops
+        assert runtime._session_locks is not outer_locks
+        tools.release_session_lock("nested-session")
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is outer_registry
+    assert outer_registry["outside-sentinel"]["sentinel"]
+    assert "nested-layer" not in outer_registry
+    assert runtime._pending_layer_ops is outer_ops
+    assert outer_ops == [{"action": "outside-sentinel"}]
+    assert runtime._session_locks is outer_locks
+    assert runtime.get_current_task_id() == "outside-retry-task"
+    assert runtime._temp_output_dir == previous_output_dir
 
 
 def _patch_agent_run(monkeypatch, agent):

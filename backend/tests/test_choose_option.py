@@ -6,6 +6,37 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.services import pending_action as pa
 from backend.services import tools
+from backend.services.tool_modules import runtime
+
+
+def _isolate_tool_runtime(monkeypatch, tmp_path):
+    isolated_state = {
+        "_registered_layers": {},
+        "_pending_layers": [],
+        "_pending_layer_ops": [],
+        "_pending_images": [],
+        "_pending_qa_warnings": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_domain_fail": {},
+        "_search_cache": {},
+        "_search_last_hit": {},
+        "_exec_log": [],
+        "_clear_layers_flag": False,
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_exec_call_count": 0,
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_current_run_id": "",
+        "_conversation_context": "",
+        "_active_project_id": None,
+        "_temp_output_dir": str(tmp_path / "output"),
+        "_workspace_dir": str(tmp_path / "workspace"),
+    }
+    with runtime._state_lock:
+        for name, value in isolated_state.items():
+            monkeypatch.setattr(tools, name, value)
 
 
 @pytest.fixture(autouse=True)
@@ -13,12 +44,47 @@ def isolate_pending_action_state(tmp_path, monkeypatch):
     active_session_token = pa._active_session.set("default")
     monkeypatch.setattr(pa, "_STORE_DIR", str(tmp_path / "pending"))
     monkeypatch.setattr(pa, "_memory", {})
-    monkeypatch.setattr(tools, "_temp_output_dir", str(tmp_path / "output"))
-    monkeypatch.setattr(tools, "_workspace_dir", str(tmp_path / "workspace"))
+    _isolate_tool_runtime(monkeypatch, tmp_path)
     try:
         yield
     finally:
         pa._active_session.reset(active_session_token)
+
+
+def test_tool_runtime_isolation_restores_preexisting_state(tmp_path):
+    outer_registry = runtime._registered_layers
+    outer_pending = runtime._pending_layers
+    outer_ops = runtime._pending_layer_ops
+    outer_registry["outside-sentinel"] = {"sentinel": True}
+    outer_pending.append({"name": "outside-sentinel"})
+    outer_ops.append({"action": "outside-sentinel"})
+    runtime.set_current_task("outside-choice-task")
+    previous_output_dir = runtime._temp_output_dir
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_tool_runtime(patcher, tmp_path / "nested-isolation")
+        tools.reset_registered_layers([])
+        tools.reset_state()
+        tools._register_layer("nested-layer", {
+            "type": "FeatureCollection", "features": [],
+        })
+        assert runtime._registered_layers is not outer_registry
+        assert "nested-layer" in runtime._registered_layers
+        assert runtime._pending_layers is not outer_pending
+        assert runtime._pending_layer_ops is not outer_ops
+    finally:
+        patcher.undo()
+
+    assert runtime._registered_layers is outer_registry
+    assert outer_registry["outside-sentinel"]["sentinel"]
+    assert "nested-layer" not in outer_registry
+    assert runtime._pending_layers is outer_pending
+    assert outer_pending == [{"name": "outside-sentinel"}]
+    assert runtime._pending_layer_ops is outer_ops
+    assert outer_ops == [{"action": "outside-sentinel"}]
+    assert runtime.get_current_task_id() == "outside-choice-task"
+    assert runtime._temp_output_dir == previous_output_dir
 
 
 def test_cancel_choice_is_handled_without_requesting_an_llm(monkeypatch):

@@ -7,11 +7,77 @@ qa_check 把它们变成显式警告；本文件验证守卫本身抓得住、�
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+import pytest
+
 os.environ.pop("PROJ_LIB", None)
 os.environ.pop("PROJ_DATA", None)
 
+from backend.services import tools as T
 from backend.services.geo_qa import qa_check
 from backend.services.tools import _push_layer, get_pending_state, reset_state
+from backend.services.tool_modules import runtime
+
+
+def _isolate_geo_qa_runtime(monkeypatch, tmp_path):
+    isolated_state = {
+        "_pending_layers": [],
+        "_pending_qa_warnings": [],
+        "_pending_images": [],
+        "_pending_aoi_suggestions": {},
+        "_pending_heatmap": {"latest": None},
+        "_clear_layers_flag": False,
+        "_pending_layer_ops": [],
+        "_current_amap_key": "",
+        "_search_call_count": 0,
+        "_domain_fail": {},
+        "_exec_call_count": 0,
+        "_exec_log": [],
+        "_current_task_id": "",
+        "_last_user_message": "",
+        "_conversation_context": "",
+        "_current_run_id": "",
+        "_active_project_id": None,
+        "_temp_output_dir": str(tmp_path),
+        "_workspace_dir": str(tmp_path / "workspace"),
+    }
+    with runtime._state_lock:
+        for name, value in isolated_state.items():
+            monkeypatch.setattr(T, name, value)
+
+
+@pytest.fixture(autouse=True)
+def isolate_geo_qa_state(tmp_path, monkeypatch):
+    _isolate_geo_qa_runtime(monkeypatch, tmp_path)
+    reset_state()
+    yield
+    reset_state()
+
+
+def test_geo_qa_fixture_restores_existing_runtime_state(tmp_path):
+    outer_pending = runtime._pending_layers
+    outer_warnings = runtime._pending_qa_warnings
+    outer_pending.append({"name": "outside-sentinel"})
+    outer_warnings.append({"layer": "outside-sentinel"})
+    runtime.set_current_task("outside-geo-qa-task")
+    previous_output_dir = runtime._temp_output_dir
+
+    patcher = pytest.MonkeyPatch()
+    try:
+        _isolate_geo_qa_runtime(patcher, tmp_path / "nested-isolation")
+        reset_state()
+        _push_layer("坏层", _fc(_point(88.0, 116.4)))
+        assert runtime._pending_layers is not outer_pending
+        assert runtime._pending_qa_warnings is not outer_warnings
+        assert get_pending_state()["qa_warnings"]
+    finally:
+        patcher.undo()
+
+    assert runtime._pending_layers is outer_pending
+    assert outer_pending == [{"name": "outside-sentinel"}]
+    assert runtime._pending_qa_warnings is outer_warnings
+    assert outer_warnings == [{"layer": "outside-sentinel"}]
+    assert runtime.get_current_task_id() == "outside-geo-qa-task"
+    assert runtime._temp_output_dir == previous_output_dir
 
 
 def _point(lon, lat):

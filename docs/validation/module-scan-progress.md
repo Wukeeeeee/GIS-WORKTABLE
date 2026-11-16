@@ -3846,3 +3846,66 @@
 - **改动：**新增 `_isolate_spatial_tools_runtime`，逐例替换 runtime 容器、任务上下文、锁、输出/workspace 路径，并同步替换已加载工具模块按值导入的可变 runtime 别名；去掉预创建子目录。新增 sentinel 回归测试验证 registry、pending queues、vector 模块别名、任务上下文和输出根在 teardown 后恢复。
 - **验证：**修正后 `backend/tests/test_spatial_tools.py` **272 passed**。测试 TEMP/TMP/MPL 位于隔离临时目录，`GIS_DISABLE_REMOTE_TESTS=1`，未配置外部 workspace DB。剩余 1691 条警告（主要为 Deprecation/PendingDeprecation 与日期解析警告）。
 - **边界与下一步：**只覆盖该测试模块；此前 309 项组合的 PROJ/线程异常仍待定位。该项本轮尚未提交或推送。
+
+### 2026-11-16 隔离 focus-map 测试的共享运行时
+
+- **问题与证据：**`backend/tests/test_focus_map.py::_setup` 在每个用例中直接调用 `reset_state()`、清空待执行地图操作队列，并向共享注册表加入“测试图层”。同进程 sentinel 探针确认原 pending-op sentinel 被清空、当前任务上下文变空，且共享 registry 留下测试图层；修改前原文件 10 项通过，但没有检查夹具对宿主状态的副作用。
+- **改动：**新增逐例 `_isolate_focus_map_runtime`，在 `tmp_path` 下替换 registry、pending queues、缓存/计数、任务上下文及输出路径，并替换测试模块按值导入的 registry；fixture 的 reset 仅作用于隔离状态。增加嵌套 sentinel 回归，验证调用真实 setup 行为后外层 registry/queues 引用和值、任务上下文和输出根均恢复。
+- **验证：**`backend/tests/test_focus_map.py` **11 passed**（新增恢复回归）。测试只使用合成多边形和进程内 runtime；TEMP/TMP/MPL 定向到 `D:\CodexTestTemp\gis-worktable-focus-map`，远程测试关闭，未配置外部 workspace DB。
+- **边界与下一步：**只覆盖 focus-map 单测模块；其它尚未迁移的 `reset_state()` 用例仍需按模块逐一检查，309 项组合的 PROJ/线程异常尚未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 Geo QA 测试的待发送状态
+
+- **问题与证据：**`backend/tests/test_geo_qa.py` 的三项集成用例直接调用共享 `reset_state()`。修改前同进程探针注入 pending-layer、QA-warning 和 task-context sentinel 后执行一次 reset，三个 sentinel 均被清除/复位；原文件 16 项虽通过，但未验证宿主状态保护。
+- **改动：**新增 autouse fixture，将 reset 会清理的 pending queues、QA warnings、计数/上下文和输出路径逐例 monkeypatch 到隔离 runtime；增加嵌套 sentinel 回归，实际运行 `_push_layer` QA 路径后验证外层容器引用和值、任务上下文和输出路径恢复。
+- **验证：**联合复跑 `backend/tests/test_focus_map.py backend/tests/test_geo_qa.py` **28 passed**。用例数据为合成几何；TEMP/TMP/MPL 位于 `D:\CodexTestTemp\gis-worktable-runtime-isolation`，远程测试关闭，未配置外部 workspace DB。
+- **边界与下一步：**本轮只覆盖 Geo QA 测试；仍有其他测试直接调用 `reset_state()`，需继续按模块审计；此前 309 项组合的 PROJ/线程异常仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离图层注册表生命周期测试的 runtime 与项目缓存
+
+- **问题与证据：**`backend/tests/test_layer_registry_lifecycle.py` 的 xunit setup/teardown 调用 `reset_registered_layers([])` 与 `reset_state()`，分别清空宿主 registry/pending queues 和任务上下文；同进程探针注入 registry、pending layer、pending-op 与 task sentinel 后调用旧 setup，四项均丢失/复位。文件另有 project round-trip 用例直接清空模块级 `_blob_refcount`。
+- **改动：**用 autouse fixture 替换全套相关 runtime 状态，并将 project service 的项目目录、blob/index 路径及引用计数字典定向到每例 `tmp_path`；setup/teardown 仅 reset 隔离态。新增 sentinel 回归覆盖 registry、pending queues、task context、项目路径和 blob refcount 引用/内容恢复。
+- **验证：**先运行原始文件 **49 passed**；修复后联合运行 `test_layer_registry_lifecycle.py`、`test_focus_map.py`、`test_geo_qa.py` 共 **78 passed**。TEMP/TMP/MPL 位于 `D:\CodexTestTemp\gis-worktable-runtime-registry`，远程测试关闭，workspace DB 由 pytest 临时数据库配置接管；项目 round-trip 目录为每例临时路径。
+- **边界与下一步：**只覆盖这三个测试模块；仍有其他测试直接重置 runtime 或 project service 全局缓存，需继续逐项审计；此前 309 项组合的 PROJ/线程异常仍待定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 choose-option 测试对共享图层 runtime 的重置
+
+- **问题与证据：**`backend/tests/test_choose_option.py::test_datav_boundary_disambiguation` 先快照注册表，随后调用 `reset_registered_layers([])` 和 `reset_state()`，finally 再重设快照；同进程探针确认旧逻辑会丢弃注册表原引用、清空 pending-op 并复位 task context。该用例对“鼓楼区”候选走本地歧义分支并返回选择项，不需要调用 DataV 网络接口；pending-action sidecar 原 fixture 已写入 `tmp_path`。
+- **改动：**在现有 pending-action 隔离 fixture 内补充 runtime 隔离，将注册表、全部 pending queues、上下文、计数与输出/workspace 路径逐例替换；增加 sentinel 回归，覆盖调用 `reset_registered_layers`/`reset_state` 后 registry、pending 队列、task context 与输出路径恢复。
+- **验证：**原文件 **8 passed**；修改后与 `test_layer_registry_lifecycle.py`、`test_focus_map.py`、`test_geo_qa.py` 联合 **87 passed**。TEMP/TMP/MPL 指向 `D:\CodexTestTemp\gis-worktable-choice-runtime`，远程测试关闭；pending-action sidecar 和 workspace DB 均由 pytest 临时目录接管。
+- **边界与下一步：**本轮只覆盖 choose-option 测试及此前三个已修改模块；其他仍直接重置 runtime 的测试尚待审计；此前 309 项组合 PROJ/线程异常仍未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 cloud-native 工具测试的运行时和模块别名
+
+- **问题与证据：**`test_cloud_native.py::isolate_registered_layers` 原先直接对共享 `_registered_layers` 执行 `.clear()`，没有恢复 registry 原引用；模块还按值导入 `_registered_layers`，云栅格实现通过 `raster.py`/`terrain.py` 按值捕获 `_pending_layer_ops`。同进程探针显示在调用 fixture 的 clear 与 `reset_state()` 后，registry、pending-op 和 task sentinel 均丢失/复位。
+- **改动：**将原 fixture 改为逐测试替换 runtime registry、pending queues、缓存/上下文和输出路径；按对象身份同步替换所有已加载模块中按值导入的可变别名。测试输出根随例进入 `tmp_path`。新增回归验证测试模块、raster/terrain 别名及原 runtime 引用和值恢复。
+- **验证：**首次全文件运行暴露 fixture 中误用未导入的 `tools` 名称（70 项 setup error），更正为已有 `T` facade 后重跑：cloud-native **66 passed、4 skipped**。随后与 choose-option、layer-registry、focus-map、Geo QA 五模块联合 **153 passed、4 skipped**。远程 opt-in 变量已清除，4 个公开 URL 集成测试按默认策略跳过；其余网络相关用例使用 monkeypatch 或 loopback fixture。TEMP/TMP/MPL 和输出位于 `D:\CodexTestTemp\gis-worktable-cloud-native-group`，workspace DB 使用 pytest 临时目录。
+- **边界与下一步：**远程集成行为未验证，也未访问公开 URL；其余仍直接重置 runtime 的测试尚待审计；此前 309 项组合 PROJ/线程异常未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 agent-retry 安全测试的 runtime 状态与锁映射
+
+- **问题与证据：**`test_agent_retry_safety.py` 虽然已将 history 和 registry 隔离，但超时后台任务用例最后仍直接调用 `tools.reset_state()`。同进程探针注入 pending-op 与 task-context sentinel 后运行 reset，二者均被清空/复位；fixture 还未隔离 session-lock 字典。
+- **改动：**扩展 autouse fixture，替换 reset 会清理的 runtime 状态、session-lock 映射和输出/workspace 路径，并按对象身份同步替换加载模块中按值导入的可变状态别名；history 仍在每例 `tmp_path`。新增回归覆盖 reset、registry 写入与 session-lock 使用后外层状态恢复。
+- **验证：**修改前原文件 **4 passed**；初次新增 fixture 的运行因漏导入 `sys` 出现 5 项 setup error，补导入后原文件 **5 passed**。随后与 cloud-native、choose-option、layer-registry、focus-map、Geo QA 五模块联合 **158 passed、4 skipped、9 warnings**。远程测试 opt-in 未启用，4 个公开 URL 集成项跳过；mock agent 的超时后台线程由测试等待收尾。TEMP/TMP/MPL/history/输出和 workspace DB 均隔离到临时目录。
+- **边界与下一步：**远程集成仍未验证；其它 `reset_state()` 测试仍待审计；此前 309 项组合 PROJ/线程异常未定位。本轮未提交或推送。
+
+### 2026-11-16 隔离 multi-turn 测试的历史、pending action 与 runtime
+
+- **问题与证据：**`test_multi_turn_state.py::isolated_session_state` 虽将 history/pending 目录改到 `tmp_path`，仍原地清空 `pending_action._memory`、`ai_service.conversation_history`、runtime registry/pending，并调用 `reset_state()`。隔离进程 sentinel 探针确认 memory、conversation、registry、pending layer 与 task context 全被清除/复位。
+- **改动：**改为 monkeypatch 替换 pending memory、conversation history、runtime 状态容器、目录路径及当前会话；按对象身份同步替换已加载模块中的 registry/pending 别名；fixture teardown 不再清理宿主容器，并用 ContextVar token 恢复 active session。新增 sentinel 回归覆盖 nested runtime 写入和原历史/容器引用和值恢复。
+- **验证：**修改前原文件 **1 passed**；修改后文件 **2 passed**。再与 cloud-native、choose-option、layer-registry、focus-map、Geo QA、agent-retry 六模块联合 **160 passed、4 skipped、9 warnings**。所有 history/pending 文件和输出位于临时目录；远程测试默认关闭，未访问外部 URL。
+- **边界与下一步：**该文件当前只有短指令分类这 1 项既有行为测试；其余“多轮继续/取消/历史回填/持久化”章节只有注释标题，没有实际用例，因此对应产品行为尚未由此文件验证。其它 runtime 清理夹具仍待审计；此前 309 项组合 PROJ/线程异常未定位。本轮未提交或推送。
+
+### 2026-11-16 补齐 pending action 的多轮执行、取消与恢复行为测试
+
+- **问题与证据：**上轮核对确认 `test_multi_turn_state.py` 只有短指令分类测试，标题所述“继续/取消/无 pending 回退/落盘恢复”无实际回归。`ai_service._try_handle_confirm_command` 与 `pending_action.run_action` 已实现这些分支，但未在该模块通过调用链验证。
+- **改动：**新增四个确定性集成用例：继续后注册/推送图层、消费 pending 并落盘 user/assistant 历史；取消只清 pending、不加载；无 pending 的短指令返回 `None` 交回 AI；从 pending sidecar 清空内存缓存后仍可恢复。历史文件使用项目加密读写接口验证，不直接当明文 JSON 读。
+- **验证：**该模块 **6 passed**。首次新增测试的历史断言错误地把加密文件按明文 JSON 解码，修正为 `_load_history()` 解密读取后重跑通过；这是测试断言错误，不是产品缺陷。再与 cloud-native、choose-option、layer-registry、focus-map、Geo QA、agent-retry 联合 **164 passed、4 skipped、9 warnings**。所有数据和加密历史位于 pytest/TEMP 临时目录；远程 opt-in 已清除，未访问外部 URL。
+- **边界与下一步：**新增用例覆盖上述四条本地流程，但不代替真实 LLM、浏览器/SSE 或跨进程重启验收；其它 runtime 清理夹具和此前 309 项组合 PROJ/线程异常仍待审计。本轮未提交或推送。
+
+### 2026-11-16 隔离 AI cancellation 测试的取消缓存、任务缓存与 GIS runtime
+
+- **问题与证据：**`test_ai_cancellation.py` 的 autouse fixture 直接清空进程级 `_cancelled_requests`/`_cancelled_sessions`/generation maps 和共享注册表；另有工具取消用例在 `finally` 对模块级 task manager `_tasks`、`_session_active` 原地 `.clear()`。同进程注入 sentinel 并按旧清理序列执行，取消标记、任务缓存、registry 与 pending-op 均丢失；原模块 22 项通过但未保护这些宿主状态。
+- **改动：**取消夹具改为逐例替换取消 maps、锁、任务缓存/索引/目录、history、pending-action memory/store，以及 runtime queues、registry、上下文和输出目录；通过对象身份同步已加载模块的可变别名。原 `_reset_cancel_state` 改为仅断言不存在活动 worker，不再清空缓存；取消测试内的 `reset_state()` 和 task 清理只触及隔离态。增加 sentinel 恢复回归。
+- **验证：**修改前原文件 **22 passed**；修复后 **23 passed**。随后与 multi-turn、cloud-native、choose-option、layer-registry、focus-map、Geo QA、agent-retry 联合 **187 passed、4 skipped、9 warnings**。审查确认该模块网络/LLM 均由本地 ASGI、mock agent 或阻塞测试 double 覆盖；history/pending/task/output/workspace 均定向临时目录。4 项跳过来自 cloud-native 默认关闭的公开 URL 测试。
+- **边界与下一步：**取消 worker 的跨进程/真实 HTTP 客户端压力情形未测；其它 runtime/task manager 清理夹具及此前 309 项组合 PROJ/线程异常仍待审计。本轮未提交或推送。
