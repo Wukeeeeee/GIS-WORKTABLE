@@ -90,9 +90,15 @@ def _isolate_tool_runtime(monkeypatch, tmp_path):
 
 
 @pytest.fixture
-def isolated_tool_runtime(monkeypatch, tmp_path):
-    _isolate_tool_runtime(monkeypatch, tmp_path)
+def tool_runtime_isolator():
+    """Expose the shared runtime isolator for suites with a custom output root."""
     return _isolate_tool_runtime
+
+
+@pytest.fixture
+def isolated_tool_runtime(monkeypatch, tmp_path, tool_runtime_isolator):
+    tool_runtime_isolator(monkeypatch, tmp_path)
+    return tool_runtime_isolator
 
 def pytest_configure(config):
     """Redirect storage_service's import-time DB initialization before test collection."""

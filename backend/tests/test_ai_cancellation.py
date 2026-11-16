@@ -1,5 +1,4 @@
 import threading
-import sys
 import time
 from types import SimpleNamespace
 
@@ -17,58 +16,8 @@ def _assert_no_active_cancel_workers():
             raise AssertionError("AI cancellation worker leaked past the test boundary")
 
 
-def _isolate_cancellation_runtime(monkeypatch, tmp_path):
-    from backend.services import pending_action, task_manager
-    from backend.services.tool_modules import runtime
-
-    tools_module = graph._tools_mod
-    isolated_state = {
-        "_registered_layers": {},
-        "_pending_layers": [],
-        "_pending_layer_ops": [],
-        "_pending_images": [],
-        "_pending_qa_warnings": [],
-        "_pending_aoi_suggestions": {},
-        "_pending_heatmap": {"latest": None},
-        "_domain_fail": {},
-        "_search_cache": {},
-        "_search_last_hit": {},
-        "_exec_log": [],
-        "_clear_layers_flag": False,
-        "_current_amap_key": "",
-        "_search_call_count": 0,
-        "_exec_call_count": 0,
-        "_current_task_id": "",
-        "_last_user_message": "",
-        "_current_run_id": "",
-        "_conversation_context": "",
-        "_active_project_id": None,
-        "_session_locks": {},
-        "_raster_output_scope": threading.local(),
-        "_temp_output_dir": str(tmp_path / "output"),
-        "_workspace_dir": str(tmp_path / "workspace"),
-    }
-    mutable_names = {
-        name for name in isolated_state
-        if isinstance(getattr(runtime, name), (dict, list, threading.local))
-    }
-    original_values = {name: getattr(runtime, name) for name in mutable_names}
-    aliases = []
-    seen_modules = set()
-    for module in tuple(sys.modules.values()):
-        if module is None or id(module) in seen_modules or module in (runtime, tools_module):
-            continue
-        seen_modules.add(id(module))
-        namespace = getattr(module, "__dict__", {})
-        for name in mutable_names:
-            if namespace.get(name) is original_values[name]:
-                aliases.append((module, name, isolated_state[name]))
-
-    with runtime._state_lock:
-        for name, value in isolated_state.items():
-            monkeypatch.setattr(tools_module, name, value)
-        for module, name, value in aliases:
-            monkeypatch.setattr(module, name, value)
+def _isolate_cancellation_services(monkeypatch, tmp_path):
+    from backend.services import pending_action
 
     _assert_no_active_cancel_workers()
     monkeypatch.setattr(ai_service, "_CANCEL_LOCK", threading.Lock())
@@ -82,16 +31,14 @@ def _isolate_cancellation_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
     monkeypatch.setattr(pending_action, "_memory", {})
     monkeypatch.setattr(pending_action, "_STORE_DIR", str(tmp_path / "pending"))
-    with task_manager._lock:
-        monkeypatch.setattr(task_manager, "_tasks", {})
-        monkeypatch.setattr(task_manager, "_session_active", {})
-        monkeypatch.setattr(task_manager, "_BASE_DIR", str(tmp_path / "tasks"))
 
 
 @pytest.fixture(autouse=True)
-def isolate_history_storage(monkeypatch, tmp_path):
+def isolate_history_storage(monkeypatch, tmp_path, tool_runtime_isolator):
     """Replace process-wide cancellation, task, history, and GIS state per test."""
-    _isolate_cancellation_runtime(monkeypatch, tmp_path)
+    tool_runtime_isolator(monkeypatch, tmp_path / "runtime-state")
+    monkeypatch.setattr(graph._tools_mod, "_temp_output_dir", str(tmp_path / "output"))
+    _isolate_cancellation_services(monkeypatch, tmp_path)
     graph._tools_mod.reset_state()
     try:
         yield
@@ -100,7 +47,7 @@ def isolate_history_storage(monkeypatch, tmp_path):
         _assert_no_active_cancel_workers()
 
 
-def test_cancellation_fixture_restores_process_wide_state(tmp_path):
+def test_cancellation_fixture_restores_process_wide_state(tmp_path, tool_runtime_isolator):
     from backend.services import pending_action, task_manager
     from backend.services.tool_modules import runtime
 
@@ -123,7 +70,9 @@ def test_cancellation_fixture_restores_process_wide_state(tmp_path):
 
     patcher = pytest.MonkeyPatch()
     try:
-        _isolate_cancellation_runtime(patcher, tmp_path / "nested-isolation")
+        nested_root = tmp_path / "nested-isolation"
+        tool_runtime_isolator(patcher, nested_root)
+        _isolate_cancellation_services(patcher, nested_root)
         graph._tools_mod.reset_state()
         task_manager._tasks["nested-sentinel"] = {"task_id": "nested-sentinel"}
         ai_service._cancelled_sessions["nested-sentinel"] = True

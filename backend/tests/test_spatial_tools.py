@@ -8,7 +8,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import json
 import shutil
-import threading
 import pytest
 
 from backend.services import tools as T
@@ -79,69 +78,14 @@ convert_coordinates = T.convert_coordinates
 clip_raster = T.clip_raster
 
 
-def _isolate_spatial_tools_runtime(monkeypatch, tmp_path):
-    from backend.services.tool_modules import runtime
-
-    output_dir = str(tmp_path)
-    isolated_runtime = {
-        "_registered_layers": {},
-        "_pending_layers": [],
-        "_pending_layer_ops": [],
-        "_pending_images": [],
-        "_pending_qa_warnings": [],
-        "_pending_aoi_suggestions": {},
-        "_pending_heatmap": {"latest": None},
-        "_clear_layers_flag": False,
-        "_current_amap_key": "",
-        "_search_call_count": 0,
-        "_domain_fail": {},
-        "_search_cache": {},
-        "_search_last_hit": {},
-        "_exec_call_count": 0,
-        "_exec_log": [],
-        "_temp_output_dir": output_dir,
-        "_workspace_dir": str(tmp_path / "workspace"),
-        "_raster_output_scope": threading.local(),
-        "_active_project_id": None,
-        "_current_task_id": "",
-        "_last_user_message": "",
-        "_current_run_id": "",
-        "_conversation_context": "",
-        "_session_locks": {},
-    }
-    # Tool modules often import mutable runtime containers by value; rebind every loaded alias.
-    mutable_names = {
-        name for name in isolated_runtime
-        if isinstance(getattr(runtime, name), (dict, list, threading.local))
-    }
-    original_values = {name: getattr(runtime, name) for name in mutable_names}
-    aliases = []
-    seen_modules = set()
-    for module in tuple(sys.modules.values()):
-        if module is None or id(module) in seen_modules or module in (runtime, T):
-            continue
-        seen_modules.add(id(module))
-        namespace = getattr(module, "__dict__", {})
-        for name in mutable_names:
-            if namespace.get(name) is original_values[name]:
-                aliases.append((module, name, isolated_runtime[name]))
-
-    with runtime._state_lock, runtime._session_locks_guard:
-        for name, value in isolated_runtime.items():
-            monkeypatch.setattr(T, name, value)
-        for module, name, value in aliases:
-            monkeypatch.setattr(module, name, value)
-
-
 @pytest.fixture(autouse=True)
-def cleanup(tmp_path, monkeypatch):
-    _isolate_spatial_tools_runtime(monkeypatch, tmp_path)
-    reset_state()
-    yield
-    reset_state()
+def cleanup(tmp_path, monkeypatch, tool_runtime_isolator):
+    """Isolate runtime under a nested root to leave test-owned tmp_path paths free."""
+    tool_runtime_isolator(monkeypatch, tmp_path / "runtime-state")
+    monkeypatch.setattr(T, "_temp_output_dir", str(tmp_path))
 
 
-def test_spatial_tools_fixture_restores_runtime_aliases(tmp_path):
+def test_spatial_tools_fixture_restores_runtime_aliases(tmp_path, tool_runtime_isolator):
     from backend.services.tool_modules import runtime, vector
 
     registry, pending_layers = runtime._registered_layers, runtime._pending_layers
@@ -154,7 +98,7 @@ def test_spatial_tools_fixture_restores_runtime_aliases(tmp_path):
 
     patcher = pytest.MonkeyPatch()
     try:
-        _isolate_spatial_tools_runtime(patcher, tmp_path / "nested-isolation")
+        tool_runtime_isolator(patcher, tmp_path / "nested-isolation")
         assert runtime._registered_layers is not registry
         assert runtime._pending_layers is not pending_layers
         assert runtime._pending_layer_ops is not pending_ops

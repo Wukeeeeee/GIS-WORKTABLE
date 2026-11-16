@@ -4110,3 +4110,80 @@
 - **改动：**以 `isolated_tool_runtime` 替换本地 runtime 状态表与 pending 队列 alias patch；只保留 history-service 状态隔离和 `tmp_path` 下的 uploads/output/workspace 目录准备。嵌套 sentinel 通过公共隔离 helper 验证 runtime 与 history 状态恢复。
 - **验证：**变更前 `test_hydrology.py` **10 passed**；变更后与工具兼容模块合跑 **50 passed**。测试输入/派生文件及 history JSON 均位于临时目录；未调用外部服务。
 - **边界与下一步：**仅覆盖 hydrology 模块；其它 reset-state 工具链及 history-service 调用点仍需继续审计。309 项历史组合的 PROJ/线程异常仍未解决；本轮未提交或推送。
+
+### 2026-11-16 将 interpolation 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_interpolation.py` 虽已隔离 runtime/history，但仍复制完整 runtime 状态表，并在 autouse fixture 前后直接调用 `reset_state()`；这与 `conftest.py` 的 `isolated_tool_runtime` 重复，且维护边界会随 runtime 字段变化而漂移。变更前 `test_interpolation.py` 与 `test_tool_modules_compat.py` 合跑 **50 passed**。
+- **改动：**改用共享 `isolated_tool_runtime` fixture，并保留模块特有的 history-service 状态/路径隔离与嵌套 sentinel 恢复测试；公共 fixture 自动替换本测试模块捕获的 runtime 别名。输出目录生命周期回归仍显式调用 `reset_state()`，且将系统临时目录重定向到该测试 `tmp_path`。
+- **验证：**`python -m pytest backend/tests/test_interpolation.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**50 passed**；合并空间分析、近邻、插值和兼容测试 `python -m pytest backend/tests/test_spatial_tools.py backend/tests/test_nearest_pair.py backend/tests/test_interpolation.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**328 passed, 1 warning**（既有 pandas 日期格式推断提示）。`git diff --check` 通过。用例使用合成点与 tmp_path 栅格输出，相关测试中未发现直接网络调用。
+- **边界与下一步：**仅验证这 4 个空间分析/兼容测试模块，不代表全后端测试或完整 runtime/task-manager 行为已经收口；309 项历史组合的 PROJ/线程异常仍未定位。工作区原有未跟踪 `.agents/` 保持未动；本轮未提交或推送。
+
+### 2026-11-16 将 raster-gap 测试接入共享 runtime 隔离
+
+- **问题与证据：**当前 `test_raster_gap_tools.py` 有完整重复的 runtime 状态表和前后 `reset_state()`；文件仅从 tools 导入 `_pending_layer_ops` 作为本地 alias。变更前全文件复验 **81 passed**。该套件的 GeoTIFF 输入/产物契约是 `<tmp_path>/uploads`，不能直接使用公共 fixture 默认的 `<tmp_path>/output`。
+- **改动：**改为依赖 `isolated_tool_runtime`，移除重复状态表、`threading` 和 fixture 中多余的 `reset_state()`；保留仅针对该套件的输出根覆写 helper，把 `_temp_output_dir` 指向 `tmp_path` 并创建 `uploads`。嵌套 sentinel 改用共享 helper，并继续断言 runtime 及 `_pending_layer_ops` alias 撤销恢复。
+- **验证：**`python -m pytest backend/tests/test_raster_gap_tools.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**121 passed**；再合并 DEM 分析回归为 **131 passed**；最终将 raster-gap、DEM analysis、interpolation 与兼容模块合并复验 `python -m pytest backend/tests/test_raster_gap_tools.py backend/tests/test_dem_analysis.py backend/tests/test_interpolation.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**141 passed**。`git diff --check` 通过。用例创建合成 GeoTIFF/GeoJSON 并将输出写入 `tmp_path/uploads`；测试文件内未发现网络、socket 或缓存访问代码。
+- **边界与下一步：**验证仅覆盖 raster-gap、DEM analysis 和兼容测试模块，不等同全后端验证；309 项历史组合的 PROJ/线程异常仍未解决。之前记录的 raster-gap 自定义隔离改动已进一步收敛到公共 fixture；本轮未提交、推送或部署。
+
+### 2026-11-16 将 spatial-stats 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_spatial_stats.py` 仍复制完整 runtime 状态表，替换本地导入的 `_registered_layers`，并在 fixture 前后调用 `reset_state()`。其中 Monte Carlo/热点用例会在单个测试内部多次 reset 和清空 registry，这是算法测试自己的状态轮次，应保留；但外层隔离应由公共 fixture 管理。变更前该文件与兼容模块合跑 **62 passed**。
+- **改动：**删除重复 runtime 状态表和外层 autouse 清理，改为模块级 `pytest.mark.usefixtures("isolated_tool_runtime")`；嵌套 sentinel 测试通过公共 helper 生成独立临时 runtime 并继续验证 runtime facade/测试模块别名撤销恢复。测试内部为 Monte Carlo 重复抽样所需的 `reset_state()` 和 `_registered_layers.clear()` 保持不变。
+- **验证：**变更后 `python -m pytest backend/tests/test_spatial_stats.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**62 passed**；再与 raster-gap、DEM analysis、interpolation 和兼容模块合跑：**163 passed**。相关测试使用合成点数据，未发现网络、socket、缓存或文件写入访问；输出/runtime 仍通过公共 fixture 隔离。`git diff --check` 通过。
+- **边界与下一步：**只覆盖上述 5 个测试模块，不等于全后端验证；309 项历史组合的 PROJ/线程异常仍未定位。此前未提交的 interpolation 与 raster-gap 迁移仍保持在工作区；本轮未提交、推送或部署。
+
+### 2026-11-16 将 spectral-indices 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_spectral_indices.py` 仍复制 runtime 状态表并手动替换本地 registry/ops alias；外层 fixture 前后 `reset_state()`。GeoTIFF 输入和产物通过 `upload_dir` 使用每例 `tmp_path/output/uploads`，与公共 fixture 默认 `_temp_output_dir=tmp_path/output` 一致。变更前与兼容测试合跑 **50 passed**。
+- **改动：**改为模块级 `pytest.mark.usefixtures("isolated_tool_runtime")`，删去本地 runtime helper 与外层 reset；嵌套 sentinel 使用共享 helper，继续断言测试模块和 facade 引用替换/恢复。保留测试用例内部显式 `reset_state()`，其意图是模拟同一测试内的二次运行并验证前一次产物不被覆盖。
+- **验证：**变更后 `python -m pytest backend/tests/test_spectral_indices.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**50 passed**；与 spatial-stats、raster-gap、DEM analysis、interpolation 和兼容模块合并复验：**173 passed**。GeoTIFF 全部由 `tmp_path/output/uploads` 生成，测试文件中未发现网络或 socket 访问；测试 workspace DB 由 conftest 导向临时目录。`git diff --check` 通过。
+- **边界与下一步：**本轮只迁移 spectral-indices 外层 runtime fixture；全后端及 309 项历史 PROJ/线程异常仍未验证/定位。保留已有 interpolation、raster-gap、spatial-stats 改动和未跟踪 `.agents/`；未提交、推送或部署。
+
+### 2026-11-16 将 nearest-pair 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_nearest_pair.py` 维护一份完整 runtime 字段表，autouse fixture 每例前后执行 `reset_state()`；该文件的调用场景只操作合成 POI 图层和共享 runtime，不依赖单独的输出目录或持久化数据。变更前与兼容模块合跑 **46 passed**。
+- **改动：**以模块级 `pytest.mark.usefixtures("isolated_tool_runtime")` 替代本地状态表和外层 reset；嵌套 sentinel 测试改用公共隔离 helper，仍断言 facade runtime 引用、队列及 current-task context 在撤销后保留。
+- **验证：**变更后 `python -m pytest backend/tests/test_nearest_pair.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**46 passed**；与 spectral-indices、spatial-stats、raster-gap、DEM analysis、interpolation 和兼容模块合并复验：**179 passed**。`git diff --check` 通过。测试文件中未发现文件写入、缓存、网络或 socket 调用，输入为本地合成点要素。
+- **边界与下一步：**仅覆盖上述 7 个模块，不等于全后端验证；309 项历史组合的 PROJ/线程异常仍未定位。保留此前 interpolation、raster-gap、spatial-stats、spectral-indices 工作区改动和未跟踪 `.agents/`；本轮未提交、推送或部署。
+
+### 2026-11-16 将大型 spatial-tools 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_spatial_tools.py` 仍内嵌一份完整 runtime 状态表及已加载模块别名扫描；fixture 前后 `reset_state()`。变更前整文件 **272 passed**。该套件把 `_temp_output_dir` 直接设为每例 `tmp_path`，并有用例自己创建 `tmp_path/output`；直接使用 `isolated_tool_runtime` 会预先创建该目录，与用例的 `mkdir()` 冲突。
+- **改动：**在 `conftest.py` 增加 `tool_runtime_isolator` factory fixture；现有 `isolated_tool_runtime` 改为经该 factory 完成原有初始化，语义不变。空间工具套件用 factory 把 runtime/workspace/task-manager 状态隔离到 `tmp_path/runtime-state`，再把工具输出根设回 `tmp_path`，保留测试自行创建 uploads/output 的路径契约。删除重复 alias 扫描逻辑与外层 `reset_state()`，保留用例内部各自模拟运行轮次的 reset。
+- **验证：**`python -m pytest backend/tests/test_spatial_tools.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**312 passed, 1 warning**（pandas 对异常日期格式的推断提示）。再与 nearest-pair、spectral-indices、spatial-stats、raster-gap、DEM analysis、interpolation 和兼容模块合并复验：**451 passed, 1 warning**。两项地理编码用例明确清空 API key 后只验证“未配置”，不会发起请求；其余数据为合成图层/栅格，文件在各自 `tmp_path`。`git diff --check` 通过。
+- **边界与下一步：**该合并验证涵盖空间工具主测试集及先前 7 个隔离/兼容模块，但不代表全后端验证；309 项历史 PROJ/线程异常仍未定位。保留既有未提交改动和 `.agents/`；本轮未提交、推送或部署。
+
+### 2026-11-16 将 new-tools 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_new_tools.py::_clean_layers` 复制 runtime 状态并在每例前后 `reset_state()`；`dem_tif_uploaded` 依赖该 fixture 确保输出目录已初始化。GeoTIFF 基础样本是 pytest module-scoped 临时文件，每例复制进 `T._temp_output_dir/uploads`。变更前与兼容模块合跑 **69 passed**。
+- **改动：**改用模块级 `pytest.mark.usefixtures("isolated_tool_runtime")`，删除重复状态 helper 和外层 reset；`dem_tif_uploaded` 显式依赖共享 fixture，嵌套 sentinel 使用它返回的 isolator。保留文件内一次测试场景用来验证二次运行的显式 `reset_state()`。
+- **验证：**变更后 `python -m pytest backend/tests/test_new_tools.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**69 passed**；再与 spatial-tools、nearest-pair、spectral-indices、spatial-stats、raster-gap、DEM analysis、interpolation 和兼容模块合并复验：**480 passed, 1 warning**（spatial-tools 中 pandas 日期解析警告）。栅格源文件及 per-test uploads 均由 pytest 临时目录管理；该测试文件未发现网络或 socket 调用。`git diff --check` 通过。
+- **边界与下一步：**已验证新增工具测试及 8 个相关 runtime/空间测试模块，不代表全后端验证；309 项历史 PROJ/线程异常仍未定位。保留已有工作区改动及 `.agents/`；未提交、推送或部署。
+
+### 2026-11-16 将 multi-turn 状态测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_multi_turn_state.py` 自己复制 runtime 状态与别名扫描，但还独立隔离 `ai_service.conversation_history`、`pending_action._memory`、历史/sidecar 路径及 active-session ContextVar。变更前与兼容模块合跑 **46 passed**；测试用例实际写 history 与 pending sidecar，因此这些服务存储路径必须继续落在各自 `tmp_path`。
+- **改动：**移除重复 runtime 状态表/别名扫描，autouse fixture 改为依赖 `isolated_tool_runtime`；新增仅负责多轮服务状态、历史目录和 pending 目录的局部隔离 helper。继续使用 token 化 ContextVar 设置/恢复，不再以 fixture teardown 的 `reset_state()` 清理共享对象；嵌套 sentinel 使用共享 runtime isolator 与局部服务 helper，检查 runtime、history、pending memory/路径以及 task context 的引用恢复。
+- **验证：**变更后 `python -m pytest backend/tests/test_multi_turn_state.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**46 passed**；与 new-tools、spatial-tools、nearest-pair、spectral-indices、spatial-stats、raster-gap、DEM analysis、interpolation 和兼容模块合并复验：**486 passed, 1 warning**（既有 pandas 日期解析提示）。history/sidecar 写入均由 `tmp_path/history` 与 `tmp_path/pending` 隔离，测试文件未发现网络/socket 调用；`git diff --check` 通过。
+- **边界与下一步：**仅验证上述多轮状态与空间工具集合，不等于全后端验证；309 项历史 PROJ/线程异常仍未定位。原工作区修改和未跟踪 `.agents/` 保留；本轮未提交、推送或部署。
+
+### 2026-11-16 将 AI cancellation 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_ai_cancellation.py` 复制 runtime/task-manager 状态隔离，同时还必须隔离 `_CANCEL_LOCK`、取消 generation/cache、history 与 pending-action sidecar；fixture 另以 `_assert_no_active_cancel_workers()` 防止线程越过测试边界。变更前与兼容模块合跑 **63 passed**。两项取消路由只走本地 FastAPI `TestClient`；模型/agent 执行由测试替身或阻塞事件控制。
+- **改动：**以 `tool_runtime_isolator` 替换重复 runtime 别名/状态表与 task-manager patch；保留取消专属锁与映射、history/pending 内存和 tmp_path 路径，以及前后 worker 泄漏断言。初次改用默认 `isolated_tool_runtime` 后有 **2 项失败**：它预建 `<tmp_path>/output`，与取消工作区用例显式 `output_dir.mkdir()` 冲突；改为将 runtime/task-manager 隔离到 `tmp_path/runtime-state`，同时将工具输出根指回原有未创建的 `tmp_path/output` 后恢复通过。
+- **验证：**修正后 `python -m pytest backend/tests/test_ai_cancellation.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**63 passed**；与 multi-turn、新工具、空间工具、nearest-pair、spectral-indices、spatial-stats、raster-gap、DEM analysis、interpolation 和兼容模块合并复验：**509 passed, 1 warning**（既有 pandas 日期解析提示）。测试侧 history/pending/task/workspace 均位于 per-test 临时路径；未调用真实 LLM、凭据或外部网络。`git diff --check` 通过。
+- **边界与下一步：**验证覆盖取消生命周期和相关隔离测试，不等于全后端验证；309 项历史 PROJ/线程异常仍未定位。原有改动及 `.agents/` 保留；本轮未提交、推送或部署。
+
+### 2026-11-16 将 agent-retry-safety 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_agent_retry_safety.py` 仍重复完整 runtime 状态表和加载模块 alias 扫描；另需将 AI history 目录定位到每例 `tmp_path/history`。模型/agent 路径由 `build_llm`、`create_react_agent` 等本地 fake 替换；后台工作测试以事件和有限等待控制。
+- **改动：**改用模块级 `pytest.mark.usefixtures("isolated_tool_runtime")`，移除重复 runtime/helper 与 `sys.modules` alias 扫描；保留 history 目录的 autouse monkeypatch、嵌套隔离 sentinel，以及专门测试运行轮次/后台任务的显式 `reset_state()`。
+- **验证：**变更前后 `python -m pytest backend/tests/test_agent_retry_safety.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider` 均为 **45 passed**；再与 cancellation、multi-turn、新工具、空间/栅格、DEM、插值及兼容测试合跑：**514 passed, 1 warning**（既有 pandas 日期解析提示）。history 目录及 runtime 输出位于 pytest 临时路径；模型/agent 执行由 fake 实现提供，不访问外部服务。`git diff --check` 通过。
+- **边界与下一步：**仅验证本文件与先前空间/取消测试集合，不等于全后端验证；309 项历史 PROJ/线程异常仍未定位。保留当前工作区的其他迁移和未跟踪 `.agents/`；未提交、推送或部署。
+
+### 2026-11-16 将 drill 测试接入共享 runtime 隔离
+
+- **问题与证据：**`test_drill.py` 仍维护重复的完整 runtime 状态表，并在 autouse fixture 前后调用 `reset_state()`；网络请求在该测试模块中均为 mock。变更前该文件与工具兼容模块合跑 **58 passed**。
+- **改动：**改用模块级 `pytest.mark.usefixtures("isolated_tool_runtime")`，删除重复 runtime 状态表和外层 reset；嵌套 sentinel 改为调用共享 isolator，继续验证 runtime 与测试模块 `_registered_layers` 别名的恢复。
+- **验证：**变更后 `python -m pytest backend/tests/test_drill.py backend/tests/test_tool_modules_compat.py -q -ra --tb=short -p no:cacheprovider`：**58 passed**。再与 agent retry、AI cancellation、多轮状态、新工具、空间/栅格、DEM、interpolation、drill 和兼容测试模块合并复验：**532 passed, 1 warning**（既有 pandas 日期格式推断提示）。`git diff --check` 通过；测试未访问真实 DataV 服务。
+- **边界与下一步：**本次验证只覆盖上述 13 个测试模块，不等同全后端测试；309 项历史组合的 PROJ/线程异常仍未定位。未跟踪 `.agents/` 保持不动。

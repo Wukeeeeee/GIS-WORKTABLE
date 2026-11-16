@@ -12,15 +12,12 @@
 """
 import json
 import os
-import sys
-import threading
 
 import pytest
 
-from backend.services import pending_action, ai_service, tools
+from backend.services import pending_action, ai_service
 from backend.services.tool_modules import runtime
 from backend.services.tools import (
-    reset_state,
     _registered_layers,
     _pending_layers,
     _register_layer,
@@ -36,54 +33,7 @@ FRANCE_GJ = {
 }
 
 
-def _isolate_multi_turn_state(monkeypatch, tmp_path):
-    isolated_state = {
-        "_registered_layers": {},
-        "_pending_layers": [],
-        "_pending_layer_ops": [],
-        "_pending_images": [],
-        "_pending_qa_warnings": [],
-        "_pending_aoi_suggestions": {},
-        "_pending_heatmap": {"latest": None},
-        "_domain_fail": {},
-        "_search_cache": {},
-        "_search_last_hit": {},
-        "_exec_log": [],
-        "_clear_layers_flag": False,
-        "_current_amap_key": "",
-        "_search_call_count": 0,
-        "_exec_call_count": 0,
-        "_current_task_id": "",
-        "_last_user_message": "",
-        "_current_run_id": "",
-        "_conversation_context": "",
-        "_active_project_id": None,
-        "_session_locks": {},
-        "_raster_output_scope": threading.local(),
-        "_temp_output_dir": str(tmp_path / "output"),
-        "_workspace_dir": str(tmp_path / "workspace"),
-    }
-    mutable_names = {
-        name for name in isolated_state
-        if isinstance(getattr(runtime, name), (dict, list, threading.local))
-    }
-    original_values = {name: getattr(runtime, name) for name in mutable_names}
-    aliases = []
-    seen_modules = set()
-    for module in tuple(sys.modules.values()):
-        if module is None or id(module) in seen_modules or module in (runtime, tools):
-            continue
-        seen_modules.add(id(module))
-        namespace = getattr(module, "__dict__", {})
-        for name in mutable_names:
-            if namespace.get(name) is original_values[name]:
-                aliases.append((module, name, isolated_state[name]))
-
-    with runtime._state_lock:
-        for name, value in isolated_state.items():
-            monkeypatch.setattr(tools, name, value)
-        for module, name, value in aliases:
-            monkeypatch.setattr(module, name, value)
+def _isolate_multi_turn_services(monkeypatch, tmp_path):
     monkeypatch.setattr(ai_service, "conversation_history", {})
     monkeypatch.setattr(pending_action, "_memory", {})
     monkeypatch.setattr(ai_service, "_HISTORY_DIR", str(tmp_path / "history"))
@@ -91,19 +41,19 @@ def _isolate_multi_turn_state(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def isolated_session_state(tmp_path, monkeypatch):
+def isolated_session_state(tmp_path, monkeypatch, isolated_tool_runtime):
     """替换会话/runtime 状态，不清空进程共享历史或图层。"""
     active_session_token = pending_action._active_session.set("default")
-    _isolate_multi_turn_state(monkeypatch, tmp_path)
-    reset_state()
+    _isolate_multi_turn_services(monkeypatch, tmp_path)
     try:
         yield
     finally:
-        reset_state()
         pending_action._active_session.reset(active_session_token)
 
 
-def test_multi_turn_fixture_restores_shared_history_and_runtime(tmp_path):
+def test_multi_turn_fixture_restores_shared_history_and_runtime(
+    tmp_path, isolated_tool_runtime
+):
     outer_registry = runtime._registered_layers
     outer_pending = runtime._pending_layers
     outer_memory = pending_action._memory
@@ -118,8 +68,9 @@ def test_multi_turn_fixture_restores_shared_history_and_runtime(tmp_path):
 
     patcher = pytest.MonkeyPatch()
     try:
-        _isolate_multi_turn_state(patcher, tmp_path / "nested-isolation")
-        reset_state()
+        nested_root = tmp_path / "nested-isolation"
+        isolated_tool_runtime(patcher, nested_root)
+        _isolate_multi_turn_services(patcher, nested_root)
         _register_layer("nested-layer", FRANCE_GJ)
         pending_action._memory["nested"] = {"action": "nested"}
         ai_service.conversation_history["nested"] = [{"role": "user", "content": "nested"}]
